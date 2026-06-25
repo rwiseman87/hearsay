@@ -1,0 +1,154 @@
+# Hearsay
+
+Local-first meeting-note transcriber for macOS. Captures the local mic and system audio as
+**separate** streams ("Me" vs "Them"), transcribes in real time, identifies the remote speakers,
+and streams Markdown notes. Transcription, diarization, and the LLM run locally by default; AWS
+Bedrock is configurable.
+
+Canonical design + phased roadmap: `~/.claude/plans/i-want-to-plan-keen-lake.md`.
+Resumable task tracker: `docs/TODO.md`. IPC contract: `shared/protocol/ipc.md`.
+
+## Architecture
+
+Hybrid, three processes (Apple Silicon, macOS 14.4+):
+
+- **Swift helper** (`helper/`) — the ONLY process that touches guarded native APIs (Core Audio tap,
+  AVAudioEngine, ScreenCaptureKit, Vision OCR, EventKit, Accessibility). Streams PCM + name hints over IPC.
+- **Python core** (`src/hearsay/`) — ASR, diarization, speaker-attribution fusion, LLM notes, Markdown,
+  persistence, and a loopback FastAPI + WebSocket API.
+- **Web UI** — typed React frontend served by the core, shown in a WKWebView window (later phase).
+
+The core spawns and supervises the helper; they talk over two Unix sockets (binary PCM + NDJSON
+control). Capture is device-local by design and cannot be centralized — only config / output storage /
+inference / telemetry could be.
+
+## Project Structure
+
+```
+src/hearsay/
+  config/settings.py   typed settings (pydantic-settings); the single config source
+  enums.py             StrEnums (Stream, SampleFormat, FrameType, ...)
+  log.py               common JSON logger (get_logger)
+  helper/              IPC: protocol.py (FrameCodec), supervisor, media/control channels
+  db/                  SQLAlchemy engine/session + Alembic migrations/
+  models/              SQLAlchemy ORM models (UUID PK + created_at/updated_at)
+  schemas/             Pydantic request/response models
+  services/            business logic (routers stay thin)
+  api/                 FastAPI routers + WebSocket
+  asr/ diarization/ fusion/ llm/ transcript/ export/ platforms/   (added per phase)
+helper/                SwiftPM: hearsay-helper executable + HearsayIPC library
+shared/protocol/ipc.md IPC contract (source of truth)   ·   shared/fixtures/   golden frames
+scripts/               dev tooling (gen_fixtures.py)
+tests/                 pytest suite
+```
+
+## Code Conventions
+
+- Python: strict typing everywhere — `from __future__ import annotations`, full annotations,
+  `mypy --strict` clean. Ship `py.typed`.
+- Python enums: use `StrEnum` for DB + JSON serialization. (The binary IPC uses integer codes; the
+  mapping lives in `hearsay.helper.protocol`.)
+- Pydantic schemas in `src/hearsay/schemas/`.
+- Google-style docstrings. Comments only where logic is non-obvious. Do not add docstrings, comments,
+  or type hints to code you did not change.
+- Format + lint with `ruff` (line length 100). Prefer the standard library; add a dependency only for
+  clear value.
+- Frontend: TypeScript strict mode, functional components. Native Fetch API -- no Axios; one canonical
+  fetch wrapper carrying the session token.
+- All list endpoints return paginated responses: `{ total, page, page_size, items }`.
+- Use the common logger (`hearsay.log.get_logger`); structured JSON logs.
+- Swift: 4-space indent; `swift build` clean. Native frameworks only in the helper (see Swift Helper).
+
+## Build, Test & Tooling
+
+- **uv** for all Python env/deps/runtime. The **Makefile** is the task runner.
+- Targets: `make sync`, `make test` (pytest + Swift selftest), `make typecheck`, `make lint`, `make fmt`,
+  `make codegen`, `make audit`, `make licenses`, `make ci`.
+- `make ci` is the gate and must stay green: ruff + `mypy --strict` + pytest + Swift `selftest` +
+  `pip-audit` + license gate.
+- Pin exact versions in lockfiles (`uv.lock`, `package-lock.json`). npm: `ignore-scripts=true` in `.npmrc`.
+
+## IPC Contract
+
+- `shared/protocol/ipc.md` is the single source of truth: a fixed 28-byte little-endian media-frame
+  header + payload on `media.sock`, and NDJSON commands/events on `control.sock`.
+- The Python `hearsay.helper.protocol` and Swift `HearsayIPC.FrameCodec` MUST match byte-for-byte.
+- `shared/fixtures/frames.jsonl` (regenerate with `make codegen`) pins the contract; both languages
+  validate against it in CI (`pytest` + `hearsay-helper selftest`). Never hand-edit fixtures.
+
+## Swift Helper
+
+- SwiftPM package in `helper/`: `hearsay-helper` executable + `HearsayIPC` library. Deployment macOS 14.4.
+- All TCC-guarded native work lives here (mic, audio capture, screen recording, accessibility, calendar).
+- Tests run via `hearsay-helper selftest` (works with Command Line Tools); `swift test`/XCTest needs full
+  Xcode. Keep the helper thin and stateless where possible.
+
+## Database
+
+- Local-first **SQLite** via **async SQLAlchemy 2.0** (`sqlite+aiosqlite`); portable to PostgreSQL later.
+- Models: `src/hearsay/models/` -- all use UUID primary keys and `created_at`/`updated_at` timestamps.
+- Migrations: `src/hearsay/db/migrations/versions/` (Alembic, forward-only).
+  - create: `uv run alembic revision --autogenerate -m "description"`  ·  apply: `uv run alembic upgrade head`
+- Never use raw SQL strings (SQLAlchemy parameterizes). Wrap multi-step writes in explicit transactions;
+  `PRAGMA journal_mode=WAL` + `busy_timeout`.
+
+## API & Web
+
+- Bind the core to **127.0.0.1 only** and require a **per-session bearer token** on REST + WebSocket
+  (loopback is not a security boundary); enforce an Origin/Host allowlist. Minimal CSP in the webview.
+- API routers are thin -- validate input, call a service, return a response. Business logic lives in
+  `src/hearsay/services/`.
+- Backend types are codegen'd from the OpenAPI schema; CI fails on drift.
+
+## Testing
+
+- pytest with async fixtures (conftest.py creates a test DB per session); use SAVEPOINT/rollback isolation.
+- API tests use `httpx.AsyncClient` against the FastAPI app; service tests use in-memory fixtures.
+- The fusion engine is pure logic -- unit-test it heavily with synthetic timelines.
+- Run: `make test` (or `uv run pytest -x -v`).
+
+## Audio Capture (guardrails)
+
+- System audio: Core Audio process tap configured **global-except-self** (dodges the Teams
+  per-process-silent bug; also covers browser meeting apps).
+- Resample both sources to **16 kHz mono**; stamp both with ONE monotonic clock (`host_ts`). Fusion aligns
+  by timestamp, never by sample index.
+- Zero-buffer watchdog: on sustained all-zero buffers, rebuild BOTH the tap and the aggregate device; emit
+  `tap_health`. The mic is always "Me" and is never diarized.
+
+## Speaker Identification & Fusion (guardrails)
+
+- Layers: channel (Me/Them) + calendar roster + diarization (Them only) + active-speaker hints + manual labels.
+- Bind a diarization cluster -> name by **weighted majority vote** over many sparse hints; a single wrong
+  hint must never flip a stable binding. Manual labels lock a binding (votes cannot override).
+- Active-speaker is **OCR-primary** (ScreenCaptureKit + Vision); Zoom Accessibility is opt-in. Degrade
+  gracefully to "Speaker N" + manual labeling when hints are absent.
+
+## Privacy & Security
+
+- Local-first by default; raw-audio retention OFF by default; no telemetry by default.
+- Minimize permissions: Microphone + Audio Capture + Screen Recording; Accessibility only for the opt-in
+  Zoom path. Provide delete-meeting (DB rows + folder) + a retention setting; surface a recording-consent notice.
+- Validate and sanitize all user input at API boundaries (Pydantic) -> 422, never let the DB raise a 500.
+- No secrets in code -- use pydantic-settings / macOS Keychain (`SecretStr`); redact transcripts in logs.
+- NEVER add a dependency without checking its license (must be MIT, BSD, or Apache-2.0) -- `make licenses`.
+- NEVER add a dependency without checking for known CVEs (`make audit` / `pip-audit` / `npm audit`).
+
+## Distribution
+
+- Notarized direct download, NOT sandboxed / not App Store (the system-audio tap and Accessibility need it).
+- Packaging (bundled CPython + depth-first codesign + notarize) is deferred until there is a real decision
+  to distribute; for internal use, run from source.
+
+## Dependency Decisions
+
+- Persistence (2026-06-25): local-first SQLite via async SQLAlchemy 2.0 + Alembic. Single-user desktop app,
+  so no Postgres server; the SQLAlchemy layer keeps a future Postgres/central pivot cheap.
+- Python 3.14 locked (2026-06-25): the full ML stack (torch 2.12.1, pyannote-audio 4.0.5, onnxruntime
+  1.27.0, pywhispercpp 1.5.0, mlx-whisper 0.4.3, numpy 2.4.6) resolves on cp314 under uv.
+
+## Environment Variables
+
+- DATABASE_URL: SQLAlchemy database URL (default local SQLite `sqlite+aiosqlite:///<app-support>/hearsay.db`;
+  portable to PostgreSQL for a future central deployment)
+- ENVIRONMENT: development | staging | production

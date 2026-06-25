@@ -1,0 +1,35 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# NOTE: per CLAUDE.md, pin these actions to full commit SHAs before merging
+# (left as tags here so the workflow is readable; a maintainer must SHA-pin).
+jobs:
+  build:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        run: curl -LsSf https://astral.sh/uv/install.sh | sh
+
+      - name: Sync Python env
+        run: uv sync
+
+      - name: Lint
+        run: make lint
+
+      - name: Type-check
+        run: make typecheck
+
+      - name: Python + Swift tests
+        run: make test
+
+      - name: Dependency CVE audit
+        run: make audit
+
+      - name: Open-license gate
+        run: make licenses
