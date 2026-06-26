@@ -37,6 +37,90 @@ make codegen  # regenerate shared/fixtures from the codec
 
 ## Progress log
 
+- **2026-06-26** **Docs written + Phase 1 backend MVP committed.** Refreshed `README.md` (status, quickstart,
+  layout, docs index) and added `docs/architecture.md` (3-process design + module-by-module tour of the Python
+  core — what each piece does + why + the seams table), `docs/pipeline.md` (the capture->VAD->ASR->DB+md+WS data
+  flow with mermaid + rationale), `docs/api.md` (auth model + REST/WS reference with examples), `docs/development.md`
+  (setup, make targets, serve/live, model management, testing, troubleshooting). Verified the nested-env config
+  claims (`HEARSAY_ASR__MODEL` etc.) actually parse. `.gitignore`: added `outputs/` (scratch) + `.vscode/`.
+  Increments 1-5 committed on `feat/phase-1-mvp`. Remaining Phase 1: React UI + OpenAPI->TS codegen (increment 6).
+- **2026-06-26** **ON-DEVICE REAL-CALL VALIDATION PASSED + 3 fixes it surfaced.** User ran `hearsay live --model base`
+  during a real call: **channel separation confirmed** (their voice -> `Me`, video audio -> `Them` — the make-or-break
+  holds through the full pipeline), real-time finals in ~1-2s (Metal inference 0.03-0.37s), `transcript.md` +
+  `meeting.json` written. Fixed what it exposed: (1) **transcript ordering** — Me/Them are independent consumers so
+  finals appended in ASR-completion order, not time order; implemented the plan's **atomic finalize rewrite** (sink
+  `close`->`finalize(lines)`, pipeline pulls all segments from the DB sorted by `start_s` and rewrites `transcript.md`
+  grouped/in-order via temp+`os.replace`). (2) **non-speech tokens** — `_clean_text` drops clips whisper renders as a
+  lone `[BLANK_AUDIO]`/`[Music]`/`(buzzing)`. (3) **log spam** — `WhisperCppBackend` now sets
+  `redirect_whispercpp_logs_to=None` + `print_progress=False` + quiets the `pywhispercpp` logger (dozens of lines/
+  utterance -> ~1). Re-verified: JFK still transcribes correctly. +2 tests (finalize ordering, `_clean_text`) -> 81
+  pass; ruff + `mypy --strict` clean (incl. against pywhispercpp's real stubs now the extra is installed). Phase 1
+  backend is **validated + polished**. Remaining: React UI (increment 6). Still uncommitted on `main`.
+- **2026-06-26** **Real-backend env set up + `hearsay live` validation harness ready (UI deferred per user — validate first).**
+  `uv sync --extra asr` resolves on cp314 (onnxruntime 1.27.0, pywhispercpp 1.5.0, numpy 2.4.6); `pip-audit` clean;
+  license gate clean. `hearsay fetch-models` downloaded Silero. With the extra installed, the 2 Silero tests now run
+  in-suite (download JFK, assert speech detection) → **80 pass**; and mypy now type-checks the whisper wrapper against
+  pywhispercpp's real stubs (fixed: pass `language=` explicitly instead of `**params`). Added `hearsay live
+  [--model M] [--synthetic] [--seconds N]` — runs the **exact** production path (SessionManager -> real HelperCapture
+  -> TranscriptionPipeline -> whisper.cpp + Silero -> DB + transcript.md) and prints live `[final]`/`[partial]` lines.
+  **Synthetic glue smoke passed**: helper spawned, base model downloaded+loaded on Metal, meeting folder +
+  transcript.md created, clean stop (tones -> no speech -> empty transcript, as expected). `base` model now cached.
+  **Next: user runs `hearsay live` in a real call (Phase 1 exit: Me=your voice, Them=remote, finals in transcript.md),
+  then build the React UI (increment 6).**
+- **2026-06-26** **Phase 1 increments 3 + 5 (transcript sink + pipeline wiring) done — backend MVP complete.**
+  Increment 3: `export/` Sink seam (`TranscriptSink` protocol, `MeetingMeta`/`TranscriptLine`) + `LocalMarkdownSink`
+  (single writer, complete newline-terminated blocks + `os.fsync`, consecutive same-speaker grouping under
+  `### HH:MM:SS — Speaker`, atomic `meeting.json` via temp+`os.replace`); 4 tests. Increment 5: `transcript/pipeline.py`
+  `TranscriptionPipeline` — per-stream consumer reads `AudioChunk`s, anchors both streams to the first `host_ts`,
+  segments via VAD, transcribes off-loop (`to_thread` + lock), then **final** → DB (`add_segment`) + `transcript.md`
+  + WS, **partial** → WS only. Wired into `MeetingSession`/`SessionManager` via injected `asr_factory`/`vad_factory`/
+  `sink_factory` (real = whisper.cpp + Silero + LocalMarkdown; tests inject fakes); `Capture` now exposes `.media`;
+  moved `Broadcaster` to `transcript/broadcast.py` (cycle break). Pipeline runs only when capture yields media, so the
+  no-helper API tests still pass. Added ASR model picker: `GET /api/asr/models` + `PUT /api/asr/model` (swap-at-whim;
+  next-meeting effect) + schemas. End-to-end pipeline test (fake media + stub VAD + fake ASR → real DB + sink +
+  broadcaster) asserts the segment persists, `transcript.md` gets it, and a final WS event fires. 78 pass + 2 skip;
+  ruff + `mypy --strict` clean. **Remaining Phase 1: React UI + OpenAPI→TS codegen (increment 6), then the on-device
+  real-call exit test.** Uncommitted on `main`.
+- **2026-06-26** **Phase 1 increment 4 (ASR + VAD) done — real backends verified on-device.** Decision (with the
+  user): VAD = **Silero via onnxruntime** (torch-free; the `silero-vad` pip pkg drags torch+torchaudio, and
+  mlx-whisper also pulls torch — pywhispercpp is the only torch-free ASR). Don't phase-split ASR: ship the
+  `ASRBackend` protocol + **both** backends now, gated by install extra. Built: `vad/base.py` (`VAD` protocol +
+  `Segmenter` with start/stop hysteresis + partial cadence — pure, 5 unit tests via a stub VAD), `vad/silero.py`
+  (onnx inference; **bug found+fixed**: Silero needs 64 samples of left-context prepended per 512-frame or every
+  frame scores ~0 — verified the fix on JFK: 234/343 speech frames, max 1.0; silence ~0), pinned+sha256 model
+  download. `asr/base.py` (`ASRBackend` protocol + `ASRSegment`), `asr/whispercpp_backend.py` (pywhispercpp,
+  default, torch-free), `asr/mlx_backend.py` (opt-in, lazy), `asr/manager.py` (`build_asr` dispatch + `resolve_model`
+  name→backend-id, verified mlx-community repo slugs exist, `available_models`). Settings `asr`/`vad` groups +
+  `models_dir`; `ASRBackendKind` enum; `hearsay fetch-models` CLI; `asr` extra now pywhispercpp+onnxruntime+numpy
+  (torch-free). **On-device proof (M4 Max, cp314):** pywhispercpp loaded ggml-tiny on Metal and transcribed JFK
+  correctly via `WhisperCppBackend`; Silero+Segmenter produced 4 clean utterances at JFK's pauses. 5 segmenter +
+  4 manager tests (CI) + 2 guarded Silero tests (skip without onnxruntime) → 71 pass + 2 skip; ruff + `mypy --strict`
+  clean. Uncommitted on `main`.
+- **2026-06-26** **Phase 1 increment 2 (core skeleton + API) done.** `schemas/` (PEP 695 generic `Page`,
+  `MeetingCreate`/`MeetingRead`, `SegmentRead`, `TranscriptEvent`); `services/MeetingService` (CRUD + pagination +
+  finalize + cascade delete, folder-name slug helper). FastAPI app (`api/app.py` `create_app`): per-session bearer
+  token + Host/Origin loopback allowlist (`api/security.py`), Annotated DI (`api/deps.py`), thin meetings router
+  (`/api/meetings` CRUD + `/stop` + `/segments`), live `/ws/meetings/{id}` WebSocket (`api/ws.py`, token via
+  `?token=`, Origin-checked, subscribes to the session broadcaster). Orchestration in `transcript/`: `Capture`
+  protocol + `HelperCapture` (wraps the Phase-0 supervisor; media/ASR pipeline attaches here later),
+  `MeetingSession` + `SessionManager` (one active meeting, lock-guarded start/stop/delete, creates the meeting row +
+  folder), `Broadcaster` fan-out. `hearsay serve` CLI (auto-free-port, prints token URL, uvicorn on 127.0.0.1).
+  16 new tests (TestClient: auth/host/origin, lifecycle, conflict 409, delete, WS auth+close codes; async
+  broadcaster) → 62 pass; ruff + `mypy --strict` clean. **Smoke-tested the real server**: boots, 401 without token,
+  200 paginated list with token, 400 on non-loopback Host. Uncommitted on `main`.
+- **2026-06-26** **Phase 1 increment 1 (DB foundation) done.** Async SQLAlchemy 2.0 layer: `db/engine.py`
+  (`create_engine` with SQLite WAL + `busy_timeout=5000` + `foreign_keys=ON` via a connect listener, explicit
+  pool size/overflow/timeout/pre-ping), `db/session.py` (`create_sessionmaker`, `expire_on_commit=False`), and a
+  `Database` holder (`db/__init__.py`) bundling engine+sessionmaker for DI/tests. Models: `models/base.py` (UUID PK
+  + `created_at`/`updated_at` on the declarative `Base`; portable `str_enum()` = `VARCHAR`+CHECK storing StrEnum
+  *values*), `Meeting` + `Segment` (FK `ON DELETE CASCADE`, composite index `ix_segments_meeting_start`,
+  relationship `order_by=start_s`). Alembic wired (async `env.py`, `render_as_batch` for SQLite; `alembic.ini` with
+  URL supplied from Settings at runtime); autogenerated frozen baseline `7e2c0680d390`; `alembic check` reports zero
+  drift vs the models. Added `MeetingStatus` StrEnum. `tests/conftest.py` gives SAVEPOINT-isolated async sessions
+  (external transaction + `join_transaction_mode="create_savepoint"`, plus the SQLite `isolation_level=None` +
+  manual `BEGIN` listeners required to make pysqlite respect it). 5 new tests (round-trip, ordering, enum-values,
+  DB-level cascade, migration runner) → 34 pass; ruff + `mypy --strict` clean. Migrations excluded from mypy/ruff
+  (generated code). Uncommitted on `main`.
 - **2026-06-26** **PHASE 0 COMPLETE.** On-device recovery re-test passed: a stress run with ~8 forced output device/
   rate changes saw both streams recover every time (`tap_health: recovered` ×many, `mic_health: recovered` ×3); "Me"
   captured the full 60 s (was dying at 21 s before the mic watchdog). All three exit criteria met — separation, drift
@@ -164,11 +248,11 @@ Done — **Task 7: Python capture-debug reader** (`src/hearsay/helper/`):
 
 ## Phase 1 — MVP: capture → live transcript → markdown → minimal UI
 
-- [ ] Core skeleton: FastAPI app, settings DI, `MeetingSession`, supervisor, media/control channels.
-- [ ] DB: SQLAlchemy async engine + session, `meetings`/`segments` models (UUID PK + timestamps), Alembic baseline.
-- [ ] VAD segmentation (Silero or whisper.cpp built-in) + sliding window per stream.
-- [ ] ASR backend `whispercpp` (`large-v3-turbo`, Metal+CoreML) behind `ASRBackend` protocol.
-- [ ] `transcript.md` live append (single writer, complete blocks, Me/Them by channel) + meeting folder + `meeting.json`.
+- [x] Core skeleton: FastAPI app, settings DI, `MeetingSession`, supervisor, media/control channels.
+- [x] DB: SQLAlchemy async engine + session, `meetings`/`segments` models (UUID PK + timestamps), Alembic baseline.
+- [x] VAD segmentation (Silero via onnxruntime, torch-free) + sliding-window Segmenter (partial/final) per stream.
+- [x] ASR backend `whispercpp` (`large-v3-turbo`, Metal+CoreML) behind `ASRBackend` protocol (+ opt-in `mlx` backend).
+- [x] `transcript.md` live append (single writer, complete blocks, Me/Them by channel) + meeting folder + `meeting.json`.
 - [ ] WebSocket: partial+final segments to a minimal React UI (start/stop, live transcript); loopback + per-session token.
 - [ ] OpenAPI → TS codegen wired (`make codegen` extended); thin routers + `services/`.
 - [ ] Verify: finals in UI < ~2–3 s; `transcript.md` matches UI; Me/Them correct; reopening a past meeting loads from DB.

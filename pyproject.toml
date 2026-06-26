@@ -16,8 +16,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-asr = ["pywhispercpp>=1.5"]
-diarization = ["pyannote-audio>=4.0", "onnxruntime>=1.20"]
+# Default transcription path: whisper.cpp ASR + Silero VAD on onnxruntime (torch-free).
+asr = ["pywhispercpp>=1.5", "onnxruntime>=1.27", "numpy>=2.2"]
+diarization = ["pyannote-audio>=4.0", "onnxruntime>=1.27"]
 accel = ["mlx-whisper>=0.4"]
 bedrock = ["boto3>=1.35"]
 
@@ -45,10 +46,15 @@ dev = [
 [tool.ruff]
 line-length = 100
 src = ["src", "tests"]
+# Alembic-generated migrations follow Alembic's own style, not ours.
+extend-exclude = ["src/hearsay/db/migrations/versions"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM", "PL", "RUF"]
 ignore = ["PLR2004"]
+
+[tool.ruff.lint.pylint]
+max-args = 8
 
 [tool.mypy]
 python_version = "3.14"
@@ -56,6 +62,8 @@ strict = true
 plugins = ["pydantic.mypy"]
 mypy_path = "src"
 warn_unused_ignores = true
+# Alembic's op/context are dynamically typed; migration scripts are generated.
+exclude = ["src/hearsay/db/migrations/"]
 
 [[tool.mypy.overrides]]
 module = [
@@ -64,6 +72,7 @@ module = [
     "onnxruntime.*",
     "mlx_whisper.*",
     "silero_vad.*",
+    "numpy.*",
 ]
 ignore_missing_imports = true
 

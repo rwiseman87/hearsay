@@ -28,3 +28,9 @@ node_modules/
 output/
 capture-debug/
 *.wav
+
+# scratch / local verification artifacts
+outputs/
+
+# editor
+.vscode/

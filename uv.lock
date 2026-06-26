@@ -702,6 +702,8 @@ accel = [
     { name = "mlx-whisper" },
 ]
 asr = [
+    { name = "numpy" },
+    { name = "onnxruntime" },
     { name = "pywhispercpp" },
 ]
 bedrock = [
@@ -731,7 +733,9 @@ requires-dist = [
     { name = "click", specifier = ">=8.1" },
     { name = "fastapi", specifier = ">=0.115" },
     { name = "mlx-whisper", marker = "extra == 'accel'", specifier = ">=0.4" },
-    { name = "onnxruntime", marker = "extra == 'diarization'", specifier = ">=1.20" },
+    { name = "numpy", marker = "extra == 'asr'", specifier = ">=2.2" },
+    { name = "onnxruntime", marker = "extra == 'asr'", specifier = ">=1.27" },
+    { name = "onnxruntime", marker = "extra == 'diarization'", specifier = ">=1.27" },
     { name = "pyannote-audio", marker = "extra == 'diarization'", specifier = ">=4.0" },
     { name = "pydantic", specifier = ">=2.9" },
     { name = "pydantic-settings", specifier = ">=2.5" },

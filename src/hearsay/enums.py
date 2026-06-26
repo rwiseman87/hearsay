@@ -23,6 +23,20 @@ class Stream(StrEnum):
     THEM = "them"  # system audio output (remote participants)
 
 
+class MeetingStatus(StrEnum):
+    """Lifecycle state of a meeting row."""
+
+    RECORDING = "recording"
+    FINALIZED = "finalized"
+
+
+class ASRBackendKind(StrEnum):
+    """Which ASR implementation transcribes audio (selected in settings)."""
+
+    WHISPERCPP = "whispercpp"  # pywhispercpp (default; torch-free, Metal+CoreML)
+    MLX = "mlx"  # mlx-whisper (opt-in; needs the `accel` extra, pulls torch)
+
+
 class SampleFormat(StrEnum):
     INT16 = "int16"
     FLOAT32 = "float32"

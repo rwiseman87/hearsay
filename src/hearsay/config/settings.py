@@ -4,10 +4,31 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from pydantic import AliasChoices, Field, model_validator
+from pydantic import AliasChoices, BaseModel, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from hearsay.enums import Environment
+from hearsay.enums import ASRBackendKind, Environment
+
+
+class ASRSettings(BaseModel):
+    """ASR backend + model selection (swappable at runtime; see model store)."""
+
+    backend: ASRBackendKind = ASRBackendKind.WHISPERCPP
+    # A known model name (e.g. ``large-v3-turbo``) the backend resolves/downloads,
+    # or an absolute path to a local model file.
+    model: str = "large-v3-turbo"
+    language: str | None = None  # None = auto-detect
+
+
+class VADSettings(BaseModel):
+    """Silero VAD thresholds + segmentation hysteresis."""
+
+    threshold: float = 0.5
+    min_speech_ms: int = 250
+    min_silence_ms: int = 600
+    # Cadence for live partial transcripts during ongoing speech (0 disables partials).
+    partial_ms: int = 800
+    model_path: Path | None = None  # default: <models_dir>/silero_vad.onnx
 
 
 class Settings(BaseSettings):
@@ -32,6 +53,9 @@ class Settings(BaseSettings):
         default_factory=lambda: Path.home() / "Library" / "Application Support" / "hearsay"
     )
     output_dir: Path = Field(default_factory=lambda: Path.home() / "Documents" / "hearsay")
+    models_dir: Path | None = None  # default: <app_support_dir>/models
+    asr: ASRSettings = Field(default_factory=ASRSettings)
+    vad: VADSettings = Field(default_factory=VADSettings)
     helper_path: Path = Field(
         default_factory=lambda: (
             Path(__file__).resolve().parents[3] / "helper" / ".build" / "debug" / "hearsay-helper"
@@ -45,7 +69,11 @@ class Settings(BaseSettings):
     server_port: int = 0  # 0 -> auto-pick a free port
 
     @model_validator(mode="after")
-    def _default_database_url(self) -> Settings:
+    def _fill_derived_paths(self) -> Settings:
         if self.database_url is None:
             self.database_url = f"sqlite+aiosqlite:///{self.app_support_dir / 'hearsay.db'}"
+        if self.models_dir is None:
+            self.models_dir = self.app_support_dir / "models"
+        if self.vad.model_path is None:
+            self.vad.model_path = self.models_dir / "silero_vad.onnx"
         return self
