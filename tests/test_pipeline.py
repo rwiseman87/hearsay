@@ -244,3 +244,58 @@ async def test_pipeline_without_diarizer_keeps_them_generic(tmp_path: Path) -> N
     them = [s for s in segments if s.stream is Stream.THEM]
     assert len(them) == 1 and them[0].speaker_label == "Them" and them[0].cluster_id is None
     assert clusters == []
+
+
+async def test_finalized_transcript_bakes_in_renamed_speaker(tmp_path: Path) -> None:
+    database = _make_db(tmp_path)
+    async with database.session() as session:
+        meeting = await MeetingService(session).create(
+            title="T", folder="mtg", started_at=datetime.now(UTC)
+        )
+
+    me_queue: asyncio.Queue[AudioChunk | None] = asyncio.Queue()
+    them_queue: asyncio.Queue[AudioChunk | None] = asyncio.Queue()
+    me_queue.put_nowait(None)
+    them_queue.put_nowait(
+        AudioChunk(host_ts=0, samples=tuple(_silence(2) + _level(5, 0.5) + _silence(5)))
+    )
+    them_queue.put_nowait(None)
+    media = SimpleNamespace(queues={Stream.ME: me_queue, Stream.THEM: them_queue})
+
+    diarizer = MeetingDiarizer(
+        meeting_id=meeting.id,
+        database=database,
+        embedder=StubEmbedder(),
+        threshold=0.5,
+        min_embed_ms=0,
+    )
+    pipeline = TranscriptionPipeline(
+        meeting_id=meeting.id,
+        database=database,
+        sink=LocalMarkdownSink(),
+        broadcaster=Broadcaster(),
+        asr=FakeASR(),
+        vad_factory=StubVAD,
+        vad=VADSettings(min_speech_ms=20, min_silence_ms=40, partial_ms=0),
+        diarizer=diarizer,
+    )
+    meta = MeetingMeta(
+        id=meeting.id, title="T", started_at=datetime.now(UTC), folder=tmp_path / "mtg"
+    )
+
+    await pipeline.open(media, meta)  # type: ignore[arg-type]
+    await asyncio.sleep(0.3)  # the Them utterance becomes a "Speaker 1" segment
+
+    # Rename the speaker mid-meeting, then finalize.
+    async with database.session() as session:
+        service = SpeakerService(session)
+        clusters = await service.list_clusters(meeting.id)
+        assert len(clusters) == 1
+        await service.bind_cluster(clusters[0].id, display_name="Alice")
+
+    await pipeline.close(ended_at=datetime.now(UTC))
+    await database.dispose()
+
+    transcript = (tmp_path / "mtg" / "transcript.md").read_text(encoding="utf-8")
+    assert "Alice" in transcript  # finalize rewrite re-reads the (relabeled) segments
+    assert "Speaker 1" not in transcript

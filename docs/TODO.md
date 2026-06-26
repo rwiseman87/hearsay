@@ -7,19 +7,22 @@ Conventions: `CLAUDE.md`.
 ## How to resume
 
 **Status (2026-06-26):** Phases 0 + **Phase 1 MVP** are **complete** (merged to `main`, validated on a real
-meeting). **Phase 2 (diarization) is in progress** on `feat/phase-2-diarization`; **increments 1–5 are done**
-(1–5a committed `de3d1c6`…; 5b uncommitted). Backend (inc 1–4): `identities`/`clusters`/`segments.cluster_id` +
-`SpeakerService`; torch-free `OnnxSpeakerEmbedder` (wespeaker CAM++_LM, CC-BY-4.0, ungated, sha256-pinned;
-real-speech validated cos 0.84 vs 0.22–0.33); pure-stdlib `OnlineSpeakerClusterer`; `MeetingDiarizer` wired into
-the pipeline (Them embedded→clustered→"Speaker N"/identity→`cluster_id`; Me channel-labeled; graceful degrade).
-Inc 5 (API + UI): `GET /speakers` + `PUT /speakers/{id}` rename (binds + locks + retroactively relabels segments +
-propagates to the live clusterer) + `GET /identities`; React `SpeakerPanel` (rename control with identity-suggestion
-datalist; invalidates transcript on success). **116 tests; full `make ci` + web tsc/build/codegen green.**
+meeting). **Phase 2 (diarization) is CODE-COMPLETE** (increments 1–6) on `feat/phase-2-diarization`, all committed;
+the **on-device multi-person verify is the only remaining item — it needs the user.** Backend (inc 1–4):
+`identities`/`clusters`/`segments.cluster_id` + `SpeakerService`; torch-free `OnnxSpeakerEmbedder` (wespeaker
+CAM++_LM, CC-BY-4.0, ungated, sha256-pinned; real-speech validated cos 0.84 vs 0.22–0.33); pure-stdlib
+`OnlineSpeakerClusterer`; `MeetingDiarizer` wired into the pipeline (Them embedded→clustered→"Speaker N"/identity→
+`cluster_id`; Me channel-labeled; graceful degrade with no model). Inc 5 (API + UI): `GET /speakers` + `PUT
+/speakers/{id}` rename (binds + locks + retroactively relabels segments + propagates to the live clusterer) +
+`GET /identities`; React `SpeakerPanel`. Inc 6 (finalize): the finalize rewrite re-reads the relabeled segments, so
+a mid-meeting rename **bakes resolved names into `transcript.md`** (end-to-end test proves it). **117 tests; full
+`make ci` + web tsc/build/codegen green.**
 
-**Pick up here → Phase 2 increment 6 (finalize + on-device verify).** Increments 1–5 are done + green. Next:
-finalize rewrite of `transcript.md` with **resolved names** (re-derive each Them line's label from its cluster→identity
-binding at finalize, so a late rename bakes in), then the **on-device multi-person verify (needs the user)**: a real
-call, name a speaker, confirm it persists + is suggested next meeting. See the Phase 2 breakdown under "Phase 2".
+**Pick up here → Phase 2 on-device verify (needs the user), then Phase 3.** All Phase 2 code is done + green. The
+remaining exit step is a **real multi-person call**: run the served UI (`uv run hearsay fetch-models` once for the
+embedding model, then `hearsay serve`), confirm stable Speaker 1..N on Them with Me separate, **rename a speaker and
+confirm it persists + is suggested next meeting**. After that, Phase 2 closes and Phase 3 (calendar roster + OCR
+active-speaker) is next. See the Phase 2 breakdown below.
 (Optional Phase 1 belt-and-suspenders still open: a both-speakers run to watch Me/Them interleave live.)
 
 Docs: `README.md` + `docs/{architecture,pipeline,api,development}.md`. Design: the plan. IPC: `shared/protocol/ipc.md`.
@@ -76,6 +79,13 @@ uv run hearsay live --model base --seconds 60   # real pipeline -> live transcri
 
 ## Progress log
 
+- **2026-06-26** **Phase 2 increment 6 (finalize) done — resolved names bake into the final transcript; only the
+  on-device verify remains (needs the user).** Confirmed (rather than rebuilt) the finalize behavior: `bind_cluster`
+  retroactively relabels a speaker's segments (inc 5a) and the finalize path (`_ordered_lines` → atomic
+  `sink.finalize`, temp + os.replace) re-reads the DB, so a mid-meeting rename bakes the name into the final
+  `transcript.md`. New end-to-end test: rename "Speaker 1" → "Alice" mid-meeting, finalize, assert the transcript
+  contains "Alice" and not "Speaker 1". **117 pass; full `make ci` green.** **Phase 2 is code-complete (inc 1–6);
+  the multi-person on-device verify is the user's step.**
 - **2026-06-26** **Phase 2 increment 5b (UI rename) done.** React `SpeakerPanel` in the transcript view: lists the
   meeting's diarized speakers (`useSpeakers`, polled) each with an inline rename input backed by an
   identity-suggestion `<datalist>` (`useIdentities`); `useRenameSpeaker` PUTs the name and invalidates the meetings +
@@ -450,8 +460,10 @@ rename persists, locks the binding, and is suggested next meeting. Diarization i
 - [x] **Inc 5 — API + UI**: `GET /speakers` + `PUT /speakers/{id}` rename (binds/locks + retroactively relabels
       segments + propagates to the live clusterer) + `GET /identities`; `SegmentRead.cluster_id`; React `SpeakerPanel`
       rename control with identity-suggestion datalist; OpenAPI→TS regenerated. **Done.** (5a backend / 5b UI.)
-- [ ] **Inc 6 — Finalize + verify**: atomic `transcript.md` rewrite with resolved names; on-device multi-person
-      verify (no HF token needed on the default path).
+- [x] **Inc 6a — Finalize**: the atomic `transcript.md` rewrite re-reads the (relabeled) segments, so a mid-meeting
+      rename bakes resolved names into the final transcript (end-to-end test). **Done.**
+- [ ] **Inc 6b — On-device verify (NEEDS THE USER)**: real multi-person call → stable Speaker 1..N (Them) with Me
+      separate; rename a speaker, confirm it persists + is suggested next meeting. (Default path: no HF token.)
 
 ## Phase 3 — Calendar roster + OCR active-speaker fusion
 
