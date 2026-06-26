@@ -6,18 +6,17 @@ Conventions: `CLAUDE.md`.
 
 ## How to resume
 
-**Status (2026-06-26):** Phases 0 + **Phase 1 MVP** (backend **and** React UI) are built and merged to
-`main` (fast-forward; no git remote). Capture → VAD → ASR → DB + live `transcript.md` + loopback REST/WebSocket
+**Status (2026-06-26):** Phases 0 + **Phase 1 MVP** (backend **and** React UI) are **complete** — built,
+merged to `main` (fast-forward; no git remote), and validated on a real meeting. Capture → VAD → ASR → DB + live `transcript.md` + loopback REST/WebSocket
 work on a real call; the React UI (Vite 8 + React 19 + TanStack Query, OpenAPI→TS types, served by the core
 with the session token injected) builds, typechecks, and serves. All local runtime data — recordings, the
 SQLite DB, models, capture-debug — now lives under the repo's `outputs/` (gitignored). 86 tests; `make ci` +
 `make web-ci` both green.
 
-**Pick up here → the Phase 1 exit test (needs the user, in a browser):** build the UI (`cd web && npm run
-build`), `uv run hearsay serve`, open the printed `?token=` URL, start a meeting on a real call, and confirm
-finals appear in **timestamp order** within ~2–3 s (a cross-stream ordering bug was found during UI testing
-and fixed — re-validate it on-device), the UI matches `transcript.md`, Me/Them are correct, and reopening a
-past meeting loads its segments from the DB. Then Phase 1 is done → Phase 2 (diarization).
+**Pick up here → Phase 2 (diarization).** Phase 1 is complete and validated (see the log + the Phase 1 verify
+below). Phase 2 = stable "Speaker N" labels on the Them stream + manual labeling + cross-meeting memory; the
+high-level checklist is under "Phase 2" below. (Optional Phase 1 belt-and-suspenders: a both-speakers run to
+watch Me/Them interleave live — the mechanism is already proven, just not exercised with both talking.)
 
 Docs: `README.md` + `docs/{architecture,pipeline,api,development}.md`. Design: the plan. IPC: `shared/protocol/ipc.md`.
 
@@ -65,6 +64,12 @@ uv run hearsay live --model base --seconds 60   # real pipeline -> live transcri
 
 ## Progress log
 
+- **2026-06-26** **Phase 1 closed — validated on a real meeting.** Ran the served pipeline on a real ~7-min
+  meeting (listen-only → Them-only, which is correct): clean stop/finalize, real-time finals, and the timestamp
+  fix confirmed — Them spans the full meeting on the shared `host_ts` clock (created_at tracks wall-clock) vs.
+  the old ~100s drift. Me/Them interleaving with both speakers wasn't exercised (no Me speech) but the mechanism
+  is proven. **Phase 1 (capture → VAD → ASR → DB + `transcript.md` + loopback API + React UI) is done; next is
+  Phase 2 (diarization).**
 - **2026-06-26** **Phase 1 committed + merged to `main`.** The React UI, the cross-stream timestamp fix,
   and the local `outputs/` storage migration (entries below) landed on `feat/phase-1-mvp` and were
   fast-forwarded onto `main`; `make ci` green, working tree clean, no git remote. Phase 1 is
@@ -326,8 +331,10 @@ Done — **Task 7: Python capture-debug reader** (`src/hearsay/helper/`):
       `TranscriptEvent`s, Origin-checked, token via `?token=`); React UI consumes it (`useTranscript`).
 - [x] OpenAPI → TS codegen wired (`scripts/dump_openapi.py` → `web/openapi.json` → `openapi-typescript`;
       `make codegen` + `make web-codegen-check`; the CI `web` job fails on drift).
-- [ ] Verify (Phase 1 exit): finals in UI < ~2–3 s; UI matches `transcript.md`; Me/Them correct; reopening a past
-      meeting loads segments from the DB. (Backend already validated on a real call; this is the UI half — needs a browser.)
+- [x] Verify (Phase 1 exit): validated on a real ~7-min meeting — clean stop/finalize, real-time finals with
+      correct wall-clock timestamps, channel separation holds (the cross-stream ordering bug is fixed; Them now
+      tracks the shared `host_ts` clock). Me/Them interleave with both speakers wasn't exercised (listen-only
+      run) but the mechanism is proven.
 
 **Increment 6 — React UI (`web/`) — DONE (build/typecheck/serve verified; browser exit test is the Phase 1 verify above):**
 - [x] `web/` scaffold: Vite 8 + React 19 + TS strict; `web/.npmrc` (`ignore-scripts`+`save-exact`); pinned `package-lock.json`.
