@@ -21,8 +21,10 @@ def test_migrations_upgrade_creates_schema(tmp_path: Path) -> None:
         inspector = inspect(engine)
         tables = set(inspector.get_table_names())
         segment_indexes = {ix["name"] for ix in inspector.get_indexes("segments")}
+        segment_columns = {col["name"] for col in inspector.get_columns("segments")}
     finally:
         engine.dispose()
 
-    assert {"meetings", "segments"}.issubset(tables)
+    assert {"meetings", "segments", "clusters", "identities"}.issubset(tables)
     assert "ix_segments_meeting_start" in segment_indexes
+    assert "cluster_id" in segment_columns

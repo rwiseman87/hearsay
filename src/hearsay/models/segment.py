@@ -17,6 +17,7 @@ from hearsay.enums import Stream
 from hearsay.models.base import Base, str_enum
 
 if TYPE_CHECKING:
+    from hearsay.models.cluster import Cluster
     from hearsay.models.meeting import Meeting
 
 
@@ -28,11 +29,18 @@ class Segment(Base):
         Uuid(), ForeignKey("meetings.id", ondelete="CASCADE")
     )
     stream: Mapped[Stream] = mapped_column(str_enum(Stream))
-    # Resolved display name for the speaker ("Me" / "Them" in Phase 1; "Speaker N"
-    # and real identities arrive with diarization + fusion in later phases).
+    # Resolved display name for the speaker ("Me" by channel; "Speaker N" or a bound
+    # identity name for Them). Kept in sync with the cluster binding by fusion and
+    # recomputed on the finalize rewrite; cluster_id is the structured source.
     speaker_label: Mapped[str] = mapped_column(String(64))
+    # Set by fusion for Them segments once diarization assigns a cluster; NULL for Me
+    # and for Them before a cluster is known. SET NULL keeps segments if a cluster goes.
+    cluster_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid(), ForeignKey("clusters.id", ondelete="SET NULL"), default=None
+    )
     text: Mapped[str] = mapped_column(Text)
     start_s: Mapped[float] = mapped_column(Float)
     end_s: Mapped[float] = mapped_column(Float)
 
     meeting: Mapped[Meeting] = relationship(back_populates="segments")
+    cluster: Mapped[Cluster | None] = relationship()

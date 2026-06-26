@@ -9,6 +9,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from hearsay.enums import MeetingStatus
 from hearsay.models.base import Base, _utcnow, str_enum
+from hearsay.models.cluster import Cluster
 from hearsay.models.segment import Segment
 
 
@@ -29,5 +30,11 @@ class Meeting(Base):
         back_populates="meeting",
         cascade="all, delete-orphan",
         order_by="Segment.start_s",
+        passive_deletes=True,
+    )
+    clusters: Mapped[list[Cluster]] = relationship(
+        back_populates="meeting",
+        cascade="all, delete-orphan",
+        order_by="Cluster.ordinal",
         passive_deletes=True,
     )
