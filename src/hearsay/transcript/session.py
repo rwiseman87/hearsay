@@ -18,20 +18,26 @@ from uuid import UUID
 from hearsay.asr import ASRBackend, build_asr
 from hearsay.config.settings import Settings
 from hearsay.db import Database
+from hearsay.diarization import SpeakerEmbedder, build_embedder
 from hearsay.export import LocalMarkdownSink, MeetingMeta, TranscriptSink
+from hearsay.log import get_logger
 from hearsay.models import Meeting
 from hearsay.schemas import TranscriptEvent
 from hearsay.services import MeetingService, meeting_folder_name
 from hearsay.transcript.broadcast import Broadcaster
 from hearsay.transcript.capture import Capture, HelperCapture
+from hearsay.transcript.diarizer import MeetingDiarizer
 from hearsay.transcript.pipeline import TranscriptionPipeline
 from hearsay.vad import VAD
 from hearsay.vad.silero import SileroVAD
+
+_log = get_logger("hearsay.session")
 
 CaptureFactory = Callable[[], Capture]
 ASRFactory = Callable[[], ASRBackend]
 VADFactory = Callable[[], VAD]
 SinkFactory = Callable[[], TranscriptSink]
+EmbedderFactory = Callable[[], SpeakerEmbedder | None]
 PipelineFactory = Callable[[], TranscriptionPipeline]
 
 
@@ -99,6 +105,20 @@ def _default_vad_factory(settings: Settings) -> VADFactory:
     return make
 
 
+def _default_embedder_factory(settings: Settings) -> EmbedderFactory:
+    def make() -> SpeakerEmbedder | None:
+        if not settings.diarization.enabled:
+            return None
+        try:
+            return build_embedder(settings)
+        except FileNotFoundError as exc:
+            # No model yet -> degrade to channel labels (Them) until `fetch-models` runs.
+            _log.warning("speaker embedder unavailable; diarization off (%s)", exc)
+            return None
+
+    return make
+
+
 def _default_title(when: datetime) -> str:
     return f"Meeting {when:%Y-%m-%d %H:%M}"
 
@@ -113,6 +133,7 @@ class SessionManager:
         asr_factory: ASRFactory | None = None,
         vad_factory: VADFactory | None = None,
         sink_factory: SinkFactory | None = None,
+        embedder_factory: EmbedderFactory | None = None,
     ) -> None:
         self._db = database
         self._settings = settings
@@ -120,6 +141,7 @@ class SessionManager:
         self._asr_factory = asr_factory or _default_asr_factory(settings)
         self._vad_factory = vad_factory or _default_vad_factory(settings)
         self._sink_factory = sink_factory or LocalMarkdownSink
+        self._embedder_factory = embedder_factory or _default_embedder_factory(settings)
         self._active: MeetingSession | None = None
         self._lock = asyncio.Lock()
 
@@ -129,6 +151,18 @@ class SessionManager:
 
     def _make_pipeline_factory(self, meeting_id: UUID, broadcaster: Broadcaster) -> PipelineFactory:
         def make() -> TranscriptionPipeline:
+            embedder = self._embedder_factory()
+            diarizer = (
+                MeetingDiarizer(
+                    meeting_id=meeting_id,
+                    database=self._db,
+                    embedder=embedder,
+                    threshold=self._settings.diarization.cluster_threshold,
+                    min_embed_ms=self._settings.diarization.min_embed_ms,
+                )
+                if embedder is not None
+                else None
+            )
             return TranscriptionPipeline(
                 meeting_id=meeting_id,
                 database=self._db,
@@ -137,6 +171,7 @@ class SessionManager:
                 asr=self._asr_factory(),
                 vad_factory=self._vad_factory,
                 vad=self._settings.vad,
+                diarizer=diarizer,
                 language=self._settings.asr.language,
             )
 

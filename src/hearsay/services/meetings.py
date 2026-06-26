@@ -78,6 +78,7 @@ class MeetingService:
         text: str,
         start_s: float,
         end_s: float,
+        cluster_id: UUID | None = None,
     ) -> Segment:
         segment = Segment(
             meeting_id=meeting_id,
@@ -86,6 +87,7 @@ class MeetingService:
             text=text,
             start_s=start_s,
             end_s=end_s,
+            cluster_id=cluster_id,
         )
         self._session.add(segment)
         await self._session.commit()

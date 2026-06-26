@@ -16,8 +16,8 @@ from hearsay.enums import Stream
 from hearsay.export import LocalMarkdownSink, MeetingMeta
 from hearsay.helper.media_channel import AudioChunk
 from hearsay.models import Base
-from hearsay.services import MeetingService
-from hearsay.transcript import Broadcaster, TranscriptionPipeline
+from hearsay.services import MeetingService, SpeakerService
+from hearsay.transcript import Broadcaster, MeetingDiarizer, TranscriptionPipeline
 from hearsay.transcript.pipeline import _clean_text
 
 FRAME = 160
@@ -45,8 +45,24 @@ class FakeASR:
         return [ASRSegment(text="hello world", start_s=0.0, end_s=1.0)]
 
 
+class StubEmbedder:
+    """Maps an utterance's sample level to a distinct one-hot vector, so different
+    'speakers' (positive vs negative level) cluster apart without a real model."""
+
+    dim = 4
+    model_id = "stub"
+
+    def embed(self, samples: Sequence[float]) -> list[float]:
+        level = next((s for s in samples if s != 0.0), 0.0)
+        return [1.0, 0.0, 0.0, 0.0] if level >= 0.0 else [0.0, 1.0, 0.0, 0.0]
+
+
 def _speech(frames: int) -> list[float]:
     return [0.5] * (frames * FRAME)
+
+
+def _level(frames: int, value: float) -> list[float]:
+    return [value] * (frames * FRAME)
 
 
 def _silence(frames: int) -> list[float]:
@@ -125,3 +141,106 @@ async def test_pipeline_transcribes_persists_and_broadcasts(tmp_path: Path) -> N
     assert len(finals) == 1
     assert finals[0]["text"] == "hello world"
     assert finals[0]["stream"] == "me"
+
+
+async def test_pipeline_diarizes_them_and_labels_me_by_channel(tmp_path: Path) -> None:
+    database = _make_db(tmp_path)
+    async with database.session() as session:
+        meeting = await MeetingService(session).create(
+            title="T", folder="mtg", started_at=datetime.now(UTC)
+        )
+
+    me_queue: asyncio.Queue[AudioChunk | None] = asyncio.Queue()
+    them_queue: asyncio.Queue[AudioChunk | None] = asyncio.Queue()
+    me_queue.put_nowait(
+        AudioChunk(host_ts=0, samples=tuple(_silence(2) + _level(5, 0.5) + _silence(5)))
+    )
+    me_queue.put_nowait(None)
+    # Two distinct Them speakers (positive vs negative level), one second apart.
+    them_queue.put_nowait(
+        AudioChunk(host_ts=0, samples=tuple(_silence(2) + _level(5, 0.5) + _silence(5)))
+    )
+    them_queue.put_nowait(AudioChunk(host_ts=10**9, samples=tuple(_level(5, -0.5) + _silence(5))))
+    them_queue.put_nowait(None)
+    media = SimpleNamespace(queues={Stream.ME: me_queue, Stream.THEM: them_queue})
+
+    diarizer = MeetingDiarizer(
+        meeting_id=meeting.id,
+        database=database,
+        embedder=StubEmbedder(),
+        threshold=0.5,
+        min_embed_ms=0,
+    )
+    pipeline = TranscriptionPipeline(
+        meeting_id=meeting.id,
+        database=database,
+        sink=LocalMarkdownSink(),
+        broadcaster=Broadcaster(),
+        asr=FakeASR(),
+        vad_factory=StubVAD,
+        vad=VADSettings(min_speech_ms=20, min_silence_ms=40, partial_ms=0),
+        diarizer=diarizer,
+    )
+    meta = MeetingMeta(
+        id=meeting.id, title="T", started_at=datetime.now(UTC), folder=tmp_path / "mtg"
+    )
+
+    await pipeline.open(media, meta)  # type: ignore[arg-type]
+    await asyncio.sleep(0.3)
+    await pipeline.close(ended_at=datetime.now(UTC))
+
+    async with database.session() as session:
+        segments, _ = await MeetingService(session).list_segments(meeting.id, page=1, page_size=10)
+        clusters = await SpeakerService(session).list_clusters(meeting.id)
+    await database.dispose()
+
+    me = [s for s in segments if s.stream is Stream.ME]
+    them = [s for s in segments if s.stream is Stream.THEM]
+    assert len(me) == 1 and me[0].speaker_label == "Me" and me[0].cluster_id is None
+    assert len(them) == 2
+    assert {s.speaker_label for s in them} == {"Speaker 1", "Speaker 2"}
+    assert all(s.cluster_id is not None for s in them)
+    assert sorted(c.ordinal for c in clusters) == [1, 2]
+
+
+async def test_pipeline_without_diarizer_keeps_them_generic(tmp_path: Path) -> None:
+    database = _make_db(tmp_path)
+    async with database.session() as session:
+        meeting = await MeetingService(session).create(
+            title="T", folder="mtg", started_at=datetime.now(UTC)
+        )
+
+    me_queue: asyncio.Queue[AudioChunk | None] = asyncio.Queue()
+    them_queue: asyncio.Queue[AudioChunk | None] = asyncio.Queue()
+    me_queue.put_nowait(None)
+    them_queue.put_nowait(
+        AudioChunk(host_ts=0, samples=tuple(_silence(2) + _level(5, 0.5) + _silence(5)))
+    )
+    them_queue.put_nowait(None)
+    media = SimpleNamespace(queues={Stream.ME: me_queue, Stream.THEM: them_queue})
+
+    pipeline = TranscriptionPipeline(  # no diarizer -> graceful degradation to "Them"
+        meeting_id=meeting.id,
+        database=database,
+        sink=LocalMarkdownSink(),
+        broadcaster=Broadcaster(),
+        asr=FakeASR(),
+        vad_factory=StubVAD,
+        vad=VADSettings(min_speech_ms=20, min_silence_ms=40, partial_ms=0),
+    )
+    meta = MeetingMeta(
+        id=meeting.id, title="T", started_at=datetime.now(UTC), folder=tmp_path / "mtg"
+    )
+
+    await pipeline.open(media, meta)  # type: ignore[arg-type]
+    await asyncio.sleep(0.3)
+    await pipeline.close(ended_at=datetime.now(UTC))
+
+    async with database.session() as session:
+        segments, _ = await MeetingService(session).list_segments(meeting.id, page=1, page_size=10)
+        clusters = await SpeakerService(session).list_clusters(meeting.id)
+    await database.dispose()
+
+    them = [s for s in segments if s.stream is Stream.THEM]
+    assert len(them) == 1 and them[0].speaker_label == "Them" and them[0].cluster_id is None
+    assert clusters == []

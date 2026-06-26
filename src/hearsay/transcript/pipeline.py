@@ -14,6 +14,7 @@ import contextlib
 import re
 from collections.abc import Callable, Sequence
 from datetime import datetime
+from typing import TYPE_CHECKING
 from uuid import UUID
 
 from hearsay.asr import ASRBackend
@@ -27,6 +28,9 @@ from hearsay.schemas import TranscriptEvent
 from hearsay.services import MeetingService
 from hearsay.transcript.broadcast import Broadcaster
 from hearsay.vad import VAD, Segmenter, Utterance
+
+if TYPE_CHECKING:
+    from hearsay.transcript.diarizer import MeetingDiarizer
 
 _log = get_logger("hearsay.pipeline")
 
@@ -42,7 +46,7 @@ def _clean_text(text: str) -> str:
 
 
 class TranscriptionPipeline:
-    def __init__(
+    def __init__(  # noqa: PLR0913 (dependency-injection seam; each arg is a distinct dep)
         self,
         *,
         meeting_id: UUID,
@@ -52,6 +56,7 @@ class TranscriptionPipeline:
         asr: ASRBackend,
         vad_factory: Callable[[], VAD],
         vad: VADSettings,
+        diarizer: MeetingDiarizer | None = None,
         language: str | None = None,
     ) -> None:
         self._meeting_id = meeting_id
@@ -59,6 +64,7 @@ class TranscriptionPipeline:
         self._sink = sink
         self._broadcaster = broadcaster
         self._asr = asr
+        self._diarizer = diarizer
         self._language = language
         self._asr_lock = asyncio.Lock()
         self._tasks: list[asyncio.Task[None]] = []
@@ -112,7 +118,12 @@ class TranscriptionPipeline:
         text = await self._transcribe(utterance.samples)
         if not text:
             return
-        speaker = _SPEAKER[stream]
+        # Only finals are clustered + persisted; partials are ephemeral, so they keep the
+        # cheap channel label (Me/Them) rather than spending an embedding on a fragment.
+        if utterance.is_final:
+            speaker, cluster_id = await self._resolve_speaker(stream, utterance)
+        else:
+            speaker, cluster_id = _SPEAKER[stream], None
         event = TranscriptEvent(
             kind="final" if utterance.is_final else "partial",
             stream=stream,
@@ -123,7 +134,18 @@ class TranscriptionPipeline:
         )
         self._broadcaster.publish(event.model_dump_json())
         if utterance.is_final:
-            await self._persist(stream, speaker, text, utterance.start_s, utterance.end_s)
+            await self._persist(
+                stream, speaker, text, utterance.start_s, utterance.end_s, cluster_id
+            )
+
+    async def _resolve_speaker(
+        self, stream: Stream, utterance: Utterance
+    ) -> tuple[str, UUID | None]:
+        # Me is the mic channel and is never diarized; Them clusters into "Speaker N"
+        # when a diarizer is present, else degrades to the generic "Them" label.
+        if stream is Stream.THEM and self._diarizer is not None:
+            return await self._diarizer.resolve(utterance)
+        return _SPEAKER[stream], None
 
     async def _transcribe(self, samples: Sequence[float]) -> str:
         async with self._asr_lock:
@@ -133,7 +155,13 @@ class TranscriptionPipeline:
         return _clean_text(" ".join(segment.text for segment in segments))
 
     async def _persist(
-        self, stream: Stream, speaker: str, text: str, start_s: float, end_s: float
+        self,
+        stream: Stream,
+        speaker: str,
+        text: str,
+        start_s: float,
+        end_s: float,
+        cluster_id: UUID | None,
     ) -> None:
         async with self._db.session() as session:
             await MeetingService(session).add_segment(
@@ -143,6 +171,7 @@ class TranscriptionPipeline:
                 text=text,
                 start_s=start_s,
                 end_s=end_s,
+                cluster_id=cluster_id,
             )
         await self._sink.append(
             TranscriptLine(speaker_label=speaker, text=text, start_s=start_s, end_s=end_s)

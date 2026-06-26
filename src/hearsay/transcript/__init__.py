@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from hearsay.transcript.broadcast import Broadcaster
 from hearsay.transcript.capture import Capture, HelperCapture
+from hearsay.transcript.diarizer import MeetingDiarizer
 from hearsay.transcript.pipeline import TranscriptionPipeline
 from hearsay.transcript.session import (
     MeetingSession,
@@ -15,6 +16,7 @@ __all__ = [
     "Broadcaster",
     "Capture",
     "HelperCapture",
+    "MeetingDiarizer",
     "MeetingSession",
     "SessionBusyError",
     "SessionManager",

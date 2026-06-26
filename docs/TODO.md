@@ -7,22 +7,21 @@ Conventions: `CLAUDE.md`.
 ## How to resume
 
 **Status (2026-06-26):** Phases 0 + **Phase 1 MVP** are **complete** (merged to `main`, validated on a real
-meeting). **Phase 2 (diarization) is in progress** on `feat/phase-2-diarization`; **increments 1–3 are done**
-(1–2 committed `de3d1c6`/`f1a7771`, 3 uncommitted). Inc 1 (DB): `identities` + `clusters` (`ordinal`→"Speaker N",
-nullable `identity_id`, manual-lock, `centroid` voiceprint BLOB) + `segments.cluster_id`; migration `a69ee62a795b`;
-`SpeakerService`. Inc 2 (embedding seam): torch-free `OnnxSpeakerEmbedder` (onnxruntime + kaldi-native-fbank
-reference features); default **wespeaker CAM++_LM** (CC-BY-4.0, ungated, 512-d, sha256-pinned); validated on real
-speech (same-speaker cos 0.84 vs different 0.22–0.33). Inc 3 (fusion): `fusion/` = pure-stdlib `OnlineSpeakerClusterer`
-(cosine + running centroid + threshold; first-appearance "Speaker N" ordinals; manual-lock `bind`; cross-meeting
-voiceprint `add_seed` pre-bind). End-to-end real-speech test: embedder + clusterer group JFK's 3 chunks → 1 speaker,
-other speaker separate. **110 tests; `mypy --strict` + ruff clean.**
+meeting). **Phase 2 (diarization) is in progress** on `feat/phase-2-diarization`; **increments 1–4 are done**
+(1–3 committed `de3d1c6`/`f1a7771`/`7f0e2e7`, 4 uncommitted). Inc 1 (DB): `identities` + `clusters` + `segments.cluster_id`;
+`SpeakerService`. Inc 2 (embedding seam): torch-free `OnnxSpeakerEmbedder` (onnxruntime + kaldi-native-fbank); default
+**wespeaker CAM++_LM** (CC-BY-4.0, ungated, 512-d, sha256-pinned); real-speech validated (cos 0.84 vs 0.22–0.33).
+Inc 3 (fusion): pure-stdlib `OnlineSpeakerClusterer` (cosine + centroid + threshold → "Speaker N"; `bind` lock; `add_seed`).
+Inc 4 (pipeline): `MeetingDiarizer` (one per meeting) wired into `TranscriptionPipeline` — each finalized **Them**
+utterance is embedded → clustered → labeled (`Speaker N`/identity) → persisted with a `cluster_id`; `clusters` rows
+created on first appearance; Me stays channel-labeled; **graceful degrade to "Them" when no embedder model** (`SessionManager`
+catches it). **112 tests; full `make ci` green.**
 
-**Pick up here → Phase 2 increment 4 (pipeline integration).** Increments 1–3 are done + green. Next: wire the
-embedder + clusterer into `TranscriptionPipeline` — embed each finalized **Them** utterance (skip < `min_embed_ms`),
-`clusterer.assign` → resolve label (identity name or "Speaker N"), persist `clusters` rows + `segments.cluster_id`,
-and broadcast retroactive label upgrades over the WS. Me stays channel-labeled (never diarized). See the Phase 2
-increment breakdown under "Phase 2". (Optional Phase 1 belt-and-suspenders still open: a both-speakers run to watch
-Me/Them interleave live — mechanism proven, not yet exercised with both talking.)
+**Pick up here → Phase 2 increment 5 (API + UI).** Increments 1–4 are done + green. Next: expose clusters/speakers
+(list endpoint + `SegmentRead.cluster_id`), a **rename "Speaker N" → Identity** endpoint (locks the binding via
+`SpeakerService.bind_cluster`), suggest known identities, and the UI rename control; regen OpenAPI→TS. Then inc 6
+(finalize rewrite with resolved names + on-device multi-person verify). See the Phase 2 breakdown under "Phase 2".
+(Optional Phase 1 belt-and-suspenders still open: a both-speakers run to watch Me/Them interleave live.)
 
 Docs: `README.md` + `docs/{architecture,pipeline,api,development}.md`. Design: the plan. IPC: `shared/protocol/ipc.md`.
 
@@ -78,6 +77,18 @@ uv run hearsay live --model base --seconds 60   # real pipeline -> live transcri
 
 ## Progress log
 
+- **2026-06-26** **Phase 2 increment 4 (pipeline integration) done — diarization live in the pipeline.** New
+  `transcript/MeetingDiarizer` (one per meeting) wraps embedder + `OnlineSpeakerClusterer` + cluster-row persistence
+  behind one async `resolve(utterance)`; the `TranscriptionPipeline` calls it for finalized **Them** utterances
+  (`_resolve_speaker`) — embed off-loop (`to_thread`) → `assign` → label (`identity` or "Speaker N") → persist
+  `segments.cluster_id` (added to `MeetingService.add_segment`) + broadcast the resolved label. Me stays
+  channel-labeled; partials keep the cheap channel label (only finals are embedded/clustered); short utterances
+  (< `min_embed_ms`) stay generic "Them". `SessionManager` builds the diarizer via an injected `embedder_factory`
+  that **degrades gracefully** (no model → `None` → "Them"), so a missing `fetch-models` never breaks capture.
+  (Kept the pipeline constructor a clean DI seam: bundled the diarization deps into `MeetingDiarizer` rather than
+  growing the arg list; one `# noqa: PLR0913`.) +2 pipeline tests (two distinct Them speakers → Speaker 1/2 with
+  cluster_ids + Me by channel; no-diarizer degradation) → 112 pass; full `make ci` green. On
+  `feat/phase-2-diarization`, uncommitted. Next: inc 5 (API + UI rename).
 - **2026-06-26** **Phase 2 increment 3 (fusion engine) done — pure online speaker clustering.** Built `fusion/`:
   `OnlineSpeakerClusterer` (**pure stdlib, no numpy**, so it's dependency-free + fully CI-tested). Each Them
   utterance embedding matches the nearest existing speaker by cosine to a running centroid; at/above `threshold`
@@ -417,8 +428,10 @@ rename persists, locks the binding, and is suggested next meeting. Diarization i
       threshold → stable first-appearance "Speaker N"; `bind` (manual lock) + `add_seed` (cross-meeting voiceprint
       pre-bind). 11 pure unit tests + an end-to-end real-speech clustering test. **Done.** (segment→cluster
       *persistence* + the channel split live in inc 4's pipeline wiring.)
-- [ ] **Inc 4 — Pipeline integration**: embed each finalized Them utterance → fusion → retroactive label
-      upgrades over the WS + `segments.cluster_id`/`speaker_label` updated. Me never diarized (channel = identity).
+- [x] **Inc 4 — Pipeline integration**: `MeetingDiarizer` wired into `TranscriptionPipeline` — each finalized Them
+      utterance embedded → clustered → labeled ("Speaker N"/identity) → persisted with `segments.cluster_id`;
+      `clusters` rows created on first appearance; Me channel-labeled; graceful degrade to "Them" with no model.
+      +2 pipeline tests. **Done.** (Mid-meeting *retroactive* WS relabeling on manual rename is inc 5.)
 - [ ] **Inc 5 — API + UI**: list speakers/clusters; rename "Speaker N" → Identity (locks the binding); suggest
       known identities; UI rename control; OpenAPI→TS regen.
 - [ ] **Inc 6 — Finalize + verify**: atomic `transcript.md` rewrite with resolved names; on-device multi-person
