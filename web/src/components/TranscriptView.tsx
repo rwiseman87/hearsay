@@ -1,6 +1,7 @@
 import { useStopMeeting } from "../api/hooks";
 import type { MeetingRead } from "../api/types";
 import { useTranscript } from "../hooks/useTranscript";
+import { SpeakerPanel } from "./SpeakerPanel";
 
 function formatTime(seconds: number): string {
   const whole = Math.max(0, Math.floor(seconds));
@@ -41,6 +42,7 @@ export function TranscriptView({ meeting }: Props) {
           <span className="badge badge--finalized">finalized</span>
         )}
       </header>
+      <SpeakerPanel meetingId={meeting.id} />
       <ol className="transcript__lines">
         {lines.map((line) => (
           <li

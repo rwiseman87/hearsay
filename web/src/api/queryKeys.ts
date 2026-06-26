@@ -6,6 +6,11 @@ export const queryKeys = {
     list: (page: number, pageSize: number) => ["meetings", "list", page, pageSize] as const,
     segments: (id: string, page: number, pageSize: number) =>
       ["meetings", "segments", id, page, pageSize] as const,
+    speakers: (id: string) => ["meetings", "speakers", id] as const,
+  },
+  identities: {
+    all: ["identities"] as const,
+    list: (page: number, pageSize: number) => ["identities", "list", page, pageSize] as const,
   },
   asr: {
     status: ["asr", "status"] as const,

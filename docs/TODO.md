@@ -7,20 +7,19 @@ Conventions: `CLAUDE.md`.
 ## How to resume
 
 **Status (2026-06-26):** Phases 0 + **Phase 1 MVP** are **complete** (merged to `main`, validated on a real
-meeting). **Phase 2 (diarization) is in progress** on `feat/phase-2-diarization`; **increments 1–4 are done**
-(1–3 committed `de3d1c6`/`f1a7771`/`7f0e2e7`, 4 uncommitted). Inc 1 (DB): `identities` + `clusters` + `segments.cluster_id`;
-`SpeakerService`. Inc 2 (embedding seam): torch-free `OnnxSpeakerEmbedder` (onnxruntime + kaldi-native-fbank); default
-**wespeaker CAM++_LM** (CC-BY-4.0, ungated, 512-d, sha256-pinned); real-speech validated (cos 0.84 vs 0.22–0.33).
-Inc 3 (fusion): pure-stdlib `OnlineSpeakerClusterer` (cosine + centroid + threshold → "Speaker N"; `bind` lock; `add_seed`).
-Inc 4 (pipeline): `MeetingDiarizer` (one per meeting) wired into `TranscriptionPipeline` — each finalized **Them**
-utterance is embedded → clustered → labeled (`Speaker N`/identity) → persisted with a `cluster_id`; `clusters` rows
-created on first appearance; Me stays channel-labeled; **graceful degrade to "Them" when no embedder model** (`SessionManager`
-catches it). **112 tests; full `make ci` green.**
+meeting). **Phase 2 (diarization) is in progress** on `feat/phase-2-diarization`; **increments 1–5 are done**
+(1–5a committed `de3d1c6`…; 5b uncommitted). Backend (inc 1–4): `identities`/`clusters`/`segments.cluster_id` +
+`SpeakerService`; torch-free `OnnxSpeakerEmbedder` (wespeaker CAM++_LM, CC-BY-4.0, ungated, sha256-pinned;
+real-speech validated cos 0.84 vs 0.22–0.33); pure-stdlib `OnlineSpeakerClusterer`; `MeetingDiarizer` wired into
+the pipeline (Them embedded→clustered→"Speaker N"/identity→`cluster_id`; Me channel-labeled; graceful degrade).
+Inc 5 (API + UI): `GET /speakers` + `PUT /speakers/{id}` rename (binds + locks + retroactively relabels segments +
+propagates to the live clusterer) + `GET /identities`; React `SpeakerPanel` (rename control with identity-suggestion
+datalist; invalidates transcript on success). **116 tests; full `make ci` + web tsc/build/codegen green.**
 
-**Pick up here → Phase 2 increment 5 (API + UI).** Increments 1–4 are done + green. Next: expose clusters/speakers
-(list endpoint + `SegmentRead.cluster_id`), a **rename "Speaker N" → Identity** endpoint (locks the binding via
-`SpeakerService.bind_cluster`), suggest known identities, and the UI rename control; regen OpenAPI→TS. Then inc 6
-(finalize rewrite with resolved names + on-device multi-person verify). See the Phase 2 breakdown under "Phase 2".
+**Pick up here → Phase 2 increment 6 (finalize + on-device verify).** Increments 1–5 are done + green. Next:
+finalize rewrite of `transcript.md` with **resolved names** (re-derive each Them line's label from its cluster→identity
+binding at finalize, so a late rename bakes in), then the **on-device multi-person verify (needs the user)**: a real
+call, name a speaker, confirm it persists + is suggested next meeting. See the Phase 2 breakdown under "Phase 2".
 (Optional Phase 1 belt-and-suspenders still open: a both-speakers run to watch Me/Them interleave live.)
 
 Docs: `README.md` + `docs/{architecture,pipeline,api,development}.md`. Design: the plan. IPC: `shared/protocol/ipc.md`.
@@ -77,6 +76,12 @@ uv run hearsay live --model base --seconds 60   # real pipeline -> live transcri
 
 ## Progress log
 
+- **2026-06-26** **Phase 2 increment 5b (UI rename) done.** React `SpeakerPanel` in the transcript view: lists the
+  meeting's diarized speakers (`useSpeakers`, polled) each with an inline rename input backed by an
+  identity-suggestion `<datalist>` (`useIdentities`); `useRenameSpeaker` PUTs the name and invalidates the meetings +
+  identities query trees so the transcript relabels and suggestions refresh. Typed query-key factory + `api/types`
+  aliases extended (SpeakerRead/IdentityRead/PageSpeaker/PageIdentity); theme-matched CSS. web tsc + vite build green;
+  codegen unchanged (5a regenerated the contract). On `feat/phase-2-diarization`, uncommitted. Next: inc 6 (finalize + verify).
 - **2026-06-26** **Phase 2 increment 5a (speaker API) done.** Backend for naming speakers: `GET
   /api/meetings/{id}/speakers` (clusters with resolved label = identity or "Speaker N"; identity eager-loaded),
   `PUT .../speakers/{cluster_id}` (rename → `SpeakerService.bind_cluster`: get-or-create identity, lock,
@@ -442,8 +447,9 @@ rename persists, locks the binding, and is suggested next meeting. Diarization i
       utterance embedded → clustered → labeled ("Speaker N"/identity) → persisted with `segments.cluster_id`;
       `clusters` rows created on first appearance; Me channel-labeled; graceful degrade to "Them" with no model.
       +2 pipeline tests. **Done.** (Mid-meeting *retroactive* WS relabeling on manual rename is inc 5.)
-- [ ] **Inc 5 — API + UI**: list speakers/clusters; rename "Speaker N" → Identity (locks the binding); suggest
-      known identities; UI rename control; OpenAPI→TS regen.
+- [x] **Inc 5 — API + UI**: `GET /speakers` + `PUT /speakers/{id}` rename (binds/locks + retroactively relabels
+      segments + propagates to the live clusterer) + `GET /identities`; `SegmentRead.cluster_id`; React `SpeakerPanel`
+      rename control with identity-suggestion datalist; OpenAPI→TS regenerated. **Done.** (5a backend / 5b UI.)
 - [ ] **Inc 6 — Finalize + verify**: atomic `transcript.md` rewrite with resolved names; on-device multi-person
       verify (no HF token needed on the default path).
 

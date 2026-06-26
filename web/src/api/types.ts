@@ -14,3 +14,7 @@ export type ASRSelect = Schemas["ASRSelect"];
 export type ModelInfoRead = Schemas["ModelInfoRead"];
 export type PageMeeting = Schemas["Page_MeetingRead_"];
 export type PageSegment = Schemas["Page_SegmentRead_"];
+export type SpeakerRead = Schemas["SpeakerRead"];
+export type IdentityRead = Schemas["IdentityRead"];
+export type PageSpeaker = Schemas["Page_SpeakerRead_"];
+export type PageIdentity = Schemas["Page_IdentityRead_"];
