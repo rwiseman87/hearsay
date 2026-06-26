@@ -37,6 +37,13 @@ class ASRBackendKind(StrEnum):
     MLX = "mlx"  # mlx-whisper (opt-in; needs the `accel` extra, pulls torch)
 
 
+class DiarizationBackendKind(StrEnum):
+    """Which speaker-embedding implementation diarizes the Them stream."""
+
+    ONNX = "onnx"  # torch-free ONNX embeddings on onnxruntime (default)
+    PYANNOTE = "pyannote"  # opt-in; pulls torch + a gated HF model (see docs)
+
+
 class SampleFormat(StrEnum):
     INT16 = "int16"
     FLOAT32 = "float32"

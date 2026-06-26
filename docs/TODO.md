@@ -6,17 +6,21 @@ Conventions: `CLAUDE.md`.
 
 ## How to resume
 
-**Status (2026-06-26):** Phases 0 + **Phase 1 MVP** (backend **and** React UI) are **complete** — built,
-merged to `main` (fast-forward; no git remote), and validated on a real meeting. Capture → VAD → ASR → DB + live `transcript.md` + loopback REST/WebSocket
-work on a real call; the React UI (Vite 8 + React 19 + TanStack Query, OpenAPI→TS types, served by the core
-with the session token injected) builds, typechecks, and serves. All local runtime data — recordings, the
-SQLite DB, models, capture-debug — now lives under the repo's `outputs/` (gitignored). 86 tests; `make ci` +
-`make web-ci` both green.
+**Status (2026-06-26):** Phases 0 + **Phase 1 MVP** are **complete** (merged to `main`, validated on a real
+meeting). **Phase 2 (diarization) is in progress** on `feat/phase-2-diarization`; **increments 1–2 are done**
+(uncommitted). Inc 1 (DB): `identities` + `clusters` (`ordinal`→"Speaker N", nullable `identity_id`, manual-lock,
+`centroid` voiceprint BLOB) + `segments.cluster_id`; migration `a69ee62a795b` (real DB migrated, zero drift);
+`SpeakerService`. Inc 2 (embedding seam): `diarization/` = `SpeakerEmbedder` protocol + torch-free
+`OnnxSpeakerEmbedder` (onnxruntime + kaldi-native-fbank reference features) + model registry/fetch; default
+model **wespeaker CAM++_LM** (CC-BY-4.0, ungated, 29 MB, 512-d) pinned by sha256; `DiarizationSettings`. Validated
+on real speech: **same-speaker cos 0.84 vs different-speaker 0.22–0.33** (clean separation). **98 tests; full
+`make ci` green** (licenses + audit clean: kaldi-native-fbank Apache-2.0).
 
-**Pick up here → Phase 2 (diarization).** Phase 1 is complete and validated (see the log + the Phase 1 verify
-below). Phase 2 = stable "Speaker N" labels on the Them stream + manual labeling + cross-meeting memory; the
-high-level checklist is under "Phase 2" below. (Optional Phase 1 belt-and-suspenders: a both-speakers run to
-watch Me/Them interleave live — the mechanism is already proven, just not exercised with both talking.)
+**Pick up here → Phase 2 increment 3 (fusion engine, `fusion/`).** Increments 1–2 are done + green. Next: pure
+online clustering of Them embeddings into stable "Speaker N" (cosine + running centroid + threshold ~0.5;
+manual-lock binding; cross-meeting pre-bind by voiceprint), then inc 4 wires it into the pipeline. See the
+Phase 2 increment breakdown under "Phase 2". (Optional Phase 1 belt-and-suspenders still open: a both-speakers
+run to watch Me/Them interleave live — mechanism proven, not yet exercised with both talking.)
 
 Docs: `README.md` + `docs/{architecture,pipeline,api,development}.md`. Design: the plan. IPC: `shared/protocol/ipc.md`.
 
@@ -51,7 +55,15 @@ uv run hearsay live --model base --seconds 60   # real pipeline -> live transcri
   left-context per 512-frame. Model is pinned + sha256-checked, fetched by `hearsay fetch-models`.
 - **Dependency policy (2026-06-26):** vet every new dep **live** (latest version, no CVEs, permissive license MIT/BSD/
   Apache) before adding. Verified clean: pywhispercpp 1.5.0, onnxruntime 1.27.0, numpy 2.4.6, silero/mlx/pyannote.
-- **Diarization:** `pyannote.audio` 4.0 community-1, rolling window over the **Them** stream only.
+- **Diarization (CHANGED 2026-06-26 — was `pyannote.audio` 4.0 community-1):** **torch-free + ungated by
+  default** — a speaker-embedding ONNX model on the onnxruntime we already use (e.g. wespeaker / 3d-speaker;
+  vet live in inc 2) + our own **online clustering** over the **Them** VAD utterances, behind a `Diarizer`
+  seam. **pyannote 4.0 community-1 is now opt-in** (accuracy-max; pulls torch + needs an HF token + license
+  accept). Reason: hearsay must ship as a **distributable package for non-technical users on low-spec machines**
+  — pyannote's HF-token gating (can't ask non-tech users for an HF account) and ~2 GB torch bundle fail that;
+  CC-BY-4.0 / Apache ONNX weights are redistributable + bundle-able, lighter, and faster. Bonus: per-utterance
+  embeddings double as the **cross-meeting voiceprint** (recognize recurring people). (Supersedes the plan's
+  pyannote-primary design; the plan file is unchanged.)
 - **LLM:** OpenAI-compatible client (Ollama/LM Studio/llama.cpp) by default; Bedrock Converse configurable.
 - **Speaker ID layers:** channel (Me/Them) + calendar roster + live diarization + manual labeling w/ memory
   + active-speaker. **Active-speaker = OCR-primary** (ScreenCaptureKit+Vision), Zoom Accessibility opt-in.
@@ -64,6 +76,33 @@ uv run hearsay live --model base --seconds 60   # real pipeline -> live transcri
 
 ## Progress log
 
+- **2026-06-26** **Phase 2 increment 2 (embedding seam) done — torch-free, validated on real speech.** Vetted the
+  diarization stack live: **sherpa-onnx's macOS PyPI wheels are broken** (ship no onnxruntime dylib, cp313 +
+  cp314 alike), so the torch-free path is **onnxruntime-direct**: a CC-BY-4.0 ONNX speaker embedder + **kaldi-native-fbank**
+  (Apache-2.0 — the exact reference features, so no hand-rolled fbank risk) on the onnxruntime we already use.
+  Built `diarization/`: `SpeakerEmbedder` protocol, `compute_fbank` (knf 80-dim Kaldi fbank + CMN),
+  `OnnxSpeakerEmbedder` (lazy onnxruntime, fbank→`[1,T,80]`→`[1,512]`), `manager` (pinned + sha256 model registry +
+  `download_embedding_model` + `build_embedder`). Default model **wespeaker CAM++_LM** (512-d, 29 MB, ungated,
+  redistributable → bundle-able). `DiarizationSettings` + `DiarizationBackendKind` enum; `hearsay fetch-models`
+  pulls it. pyproject: `diarization` = onnxruntime+numpy+kaldi-native-fbank; pyannote → opt-in `diarization-pyannote`.
+  **Real validation:** the embedder separates speakers — JFK-halves cos **0.84** vs JFK-vs-other **0.22–0.33**.
+  +5 tests (registry/path/checksum need no heavy deps; guarded embedder unit-norm/determinism + speaker
+  discrimination) → **98 pass; `make ci` + licenses + audit green**. On `feat/phase-2-diarization`, uncommitted.
+  Considered the torch route w/ the user: gating is bundle-able (CC-BY-4.0) and torch is only ~0.5 GB on Mac, so
+  the real reason to stay torch-free is **low-spec RAM/compute** — user chose "keep light". Next: inc 3 (fusion).
+- **2026-06-26** **Phase 2 increment 1 (DB foundation) done + diarization approach pivoted.** With the user:
+  diarization moves **off pyannote** to a **torch-free, ungated** default (ONNX speaker embeddings on the
+  onnxruntime we already use + our own online clustering over Them VAD utterances; `Diarizer` seam, pyannote
+  kept opt-in) — driven by the product goal of a **distributable package for non-technical users on low-spec
+  machines** (no HF-token gating, no ~2 GB torch, smaller/faster, redistributable weights; embeddings double as
+  the cross-meeting voiceprint). DB foundation built (diarizer-agnostic, so not wasted by the pivot): `Identity`
+  + `Cluster` models (`clusters` = `ordinal`→"Speaker N", nullable `identity_id` ON DELETE SET NULL, `locked`
+  manual-lock, `centroid` voiceprint BLOB, unique `(meeting_id, ordinal)`) + `segments.cluster_id` (SET NULL);
+  `SpeakerService` (create/list clusters, assign segment→cluster, bind cluster→identity get-or-create + lock,
+  list identities). Migration `a69ee62a795b` — had to **name the batch FK** (SQLite batch ALTER requires it);
+  the real DB was `create_all`'d + never alembic-stamped, so stamped baseline then upgraded (data intact: 1
+  meeting / 34 segments; `alembic check` zero drift on real + fresh DBs). +7 tests → 93 pass; `mypy --strict` +
+  ruff clean. On `feat/phase-2-diarization`, uncommitted. Next: inc 2 (vet the ONNX embedder live + build the seam).
 - **2026-06-26** **Phase 1 closed — validated on a real meeting.** Ran the served pipeline on a real ~7-min
   meeting (listen-only → Them-only, which is correct): clean stop/finalize, real-time finals, and the timestamp
   fix confirmed — Them spans the full meeting on the shared `host_ts` clock (created_at tracks wall-clock) vs.
@@ -351,11 +390,26 @@ Done — **Task 7: Python capture-debug reader** (`src/hearsay/helper/`):
 
 ## Phase 2 — Diarization (Them) + manual labeling + memory
 
-- [ ] pyannote 4.0 community-1 rolling window over Them; cluster stabilization (embedding centroid → stable id).
-- [ ] Fusion engine v1 (`fusion/`): channel + clusters → "Speaker N"; provisional/confidence.
-- [ ] UI rename "Speaker N" → Identity; manual-override lock; cross-meeting `identities`/`speaker_memory`.
-- [ ] Finalize: one atomic `transcript.md` rewrite with resolved names.
-- [ ] Verify: stable Speaker 1..N for Them with Me separate; rename persists + is suggested next meeting.
+**Verify (phase exit):** a multi-person call shows stable Speaker 1..N for Them with Me separate; a manual
+rename persists, locks the binding, and is suggested next meeting. Diarization is **torch-free ONNX embeddings
++ online clustering** by default (see the changed Decision above), pyannote opt-in.
+
+- [x] **Inc 1 — DB foundation** (diarizer-agnostic): `identities` + `clusters` (`ordinal`/`identity_id`/`locked`/
+      `centroid`) + `segments.cluster_id`; migration `a69ee62a795b`; `SpeakerService`; +7 tests. **Done.**
+- [x] **Inc 2 — Diarization/embedding seam** (`diarization/`): `SpeakerEmbedder` protocol + torch-free
+      `OnnxSpeakerEmbedder` (onnxruntime + kaldi-native-fbank reference features) + pinned + sha256 model
+      registry/fetch; default **wespeaker CAM++_LM** (CC-BY-4.0, ungated). Validated on real speech:
+      same-speaker cos 0.84 vs different 0.22–0.33. **Done.** (Deferred: a deterministic stub embedder lands
+      with the inc-3 fusion tests; the pyannote opt-in backend is unbuilt — `diarization-pyannote` extra reserved.)
+- [ ] **Inc 3 — Fusion engine** (`fusion/`): online clustering of Them embeddings → stable "Speaker N"
+      (cosine + running centroid + threshold); segment→cluster assignment; manual-lock binding; cross-meeting
+      pre-bind by voiceprint. Pure logic — unit-tested heavily with synthetic embeddings/timelines.
+- [ ] **Inc 4 — Pipeline integration**: embed each finalized Them utterance → fusion → retroactive label
+      upgrades over the WS + `segments.cluster_id`/`speaker_label` updated. Me never diarized (channel = identity).
+- [ ] **Inc 5 — API + UI**: list speakers/clusters; rename "Speaker N" → Identity (locks the binding); suggest
+      known identities; UI rename control; OpenAPI→TS regen.
+- [ ] **Inc 6 — Finalize + verify**: atomic `transcript.md` rewrite with resolved names; on-device multi-person
+      verify (no HF token needed on the default path).
 
 ## Phase 3 — Calendar roster + OCR active-speaker fusion
 

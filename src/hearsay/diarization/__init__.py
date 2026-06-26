@@ -1,0 +1,32 @@
+"""Speaker diarization: torch-free speaker embeddings + (Phase 3) online clustering.
+
+The :class:`SpeakerEmbedder` seam turns one Them utterance into a fixed-dimension
+voiceprint. The default backend runs a license-clean ONNX model (wespeaker CAM++) on
+the onnxruntime we already use for VAD, with kaldi-native-fbank for the exact reference
+features -- no torch, no gated model. The fusion engine clusters these embeddings into
+stable "Speaker N" identities (next increment).
+"""
+
+from __future__ import annotations
+
+from hearsay.diarization.base import SpeakerEmbedder
+from hearsay.diarization.manager import (
+    KNOWN_EMBEDDING_MODELS,
+    EmbeddingModel,
+    build_embedder,
+    download_embedding_model,
+    embedding_model_path,
+    resolve_embedding_model,
+)
+from hearsay.diarization.onnx_embedder import OnnxSpeakerEmbedder
+
+__all__ = [
+    "KNOWN_EMBEDDING_MODELS",
+    "EmbeddingModel",
+    "OnnxSpeakerEmbedder",
+    "SpeakerEmbedder",
+    "build_embedder",
+    "download_embedding_model",
+    "embedding_model_path",
+    "resolve_embedding_model",
+]

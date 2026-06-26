@@ -7,7 +7,7 @@ from pathlib import Path
 from pydantic import AliasChoices, BaseModel, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from hearsay.enums import ASRBackendKind, Environment
+from hearsay.enums import ASRBackendKind, DiarizationBackendKind, Environment
 
 # Local-first run-from-source layout: recordings, the SQLite DB, and models all live
 # under the repo's outputs/ (gitignored). Packaging (Phase 5) can repoint these.
@@ -22,6 +22,18 @@ class ASRSettings(BaseModel):
     # or an absolute path to a local model file.
     model: str = "large-v3-turbo"
     language: str | None = None  # None = auto-detect
+
+
+class DiarizationSettings(BaseModel):
+    """Speaker diarization: torch-free ONNX embeddings + online clustering (Them only)."""
+
+    enabled: bool = True
+    backend: DiarizationBackendKind = DiarizationBackendKind.ONNX
+    # A curated model name (see the embedding-model registry) or an absolute .onnx path.
+    model: str = "wespeaker-cam++-lm"
+    model_path: Path | None = None  # default: <models_dir>/<model filename>
+    # Skip embedding utterances shorter than this (too little signal -> noisy voiceprint).
+    min_embed_ms: int = 500
 
 
 class VADSettings(BaseModel):
@@ -58,6 +70,7 @@ class Settings(BaseSettings):
     models_dir: Path | None = None  # default: <outputs>/models
     asr: ASRSettings = Field(default_factory=ASRSettings)
     vad: VADSettings = Field(default_factory=VADSettings)
+    diarization: DiarizationSettings = Field(default_factory=DiarizationSettings)
     helper_path: Path = Field(
         default_factory=lambda: (
             Path(__file__).resolve().parents[3] / "helper" / ".build" / "debug" / "hearsay-helper"

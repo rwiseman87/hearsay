@@ -18,7 +18,12 @@ dependencies = [
 [project.optional-dependencies]
 # Default transcription path: whisper.cpp ASR + Silero VAD on onnxruntime (torch-free).
 asr = ["pywhispercpp>=1.5", "onnxruntime>=1.27", "numpy>=2.2"]
-diarization = ["pyannote-audio>=4.0", "onnxruntime>=1.27"]
+# Default diarization: torch-free + ungated -- a speaker-embedding ONNX model run on the
+# onnxruntime we already use (Silero VAD), with kaldi-native-fbank for the exact reference
+# features the model expects (no torch), + our own online clustering. All Apache/CC-BY.
+diarization = ["onnxruntime>=1.27", "numpy>=2.2", "kaldi-native-fbank>=1.22"]
+# Opt-in max-accuracy diarizer: pulls torch + needs a gated HF model/token (see docs).
+diarization-pyannote = ["pyannote-audio>=4.0"]
 accel = ["mlx-whisper>=0.4"]
 bedrock = ["boto3>=1.35"]
 
@@ -70,6 +75,7 @@ module = [
     "pywhispercpp.*",
     "pyannote.*",
     "onnxruntime.*",
+    "kaldi_native_fbank.*",
     "mlx_whisper.*",
     "silero_vad.*",
     "numpy.*",

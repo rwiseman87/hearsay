@@ -15,6 +15,7 @@ from hearsay import __version__
 from hearsay.api import create_app
 from hearsay.config.settings import Settings
 from hearsay.db import Database
+from hearsay.diarization import download_embedding_model, resolve_embedding_model
 from hearsay.helper import capture_debug as cd
 from hearsay.models import Base
 from hearsay.transcript import Broadcaster, HelperCapture, SessionManager
@@ -35,12 +36,24 @@ def version() -> None:
 
 @main.command("fetch-models")
 def fetch_models() -> None:
-    """Download the Silero VAD model (whisper.cpp models auto-download on first use)."""
+    """Download the Silero VAD + speaker-embedding models (whisper.cpp auto-downloads)."""
     settings = Settings()
     model_path = settings.vad.model_path
     assert model_path is not None  # filled by Settings' validator
     path = download_silero_model(model_path)
     click.echo(f"Silero VAD model ready at {path}")
+
+    embedding_model = resolve_embedding_model(settings.diarization.model)
+    if embedding_model is not None:
+        assert settings.models_dir is not None
+        emb_path = download_embedding_model(embedding_model, settings.models_dir)
+        click.echo(
+            f"speaker-embedding model '{embedding_model.name}' "
+            f"({embedding_model.license}) ready at {emb_path}"
+        )
+    else:
+        click.echo(f"speaker-embedding model '{settings.diarization.model}': custom; skipped.")
+
     click.echo(
         f"whisper.cpp model '{settings.asr.model}' auto-downloads to "
         f"{settings.models_dir} on first transcription."
