@@ -23,7 +23,7 @@ swift-build: ## Build the Swift helper
 swift-test: ## Run the Swift cross-language self-test against the golden fixtures
 	swift run --package-path $(PKG) hearsay-helper selftest $(FIXTURES)
 
-test: pytest swift-test ## Run all tests (Python + Swift)
+test: swift-build pytest swift-test ## Run all tests (Python + Swift; build first so the integration test runs)
 
 typecheck: ## Type-check (mypy --strict)
 	uv run mypy src scripts

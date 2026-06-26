@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
+import struct
 from pathlib import Path
 
 import pytest
 
+from hearsay.enums import FrameType, SampleFormat, Stream
 from hearsay.helper import protocol
 from hearsay.helper.protocol import MediaFrame, canonical_frames, decode, encode
 
@@ -31,6 +33,34 @@ def test_decode_rejects_truncated_payload() -> None:
     full = encode(canonical_frames()[1][1])  # audio frame with payload
     with pytest.raises(protocol.ProtocolError):
         decode(full[:-2])
+
+
+def test_expected_payload_len_audio() -> None:
+    encoded = encode(canonical_frames()[1][1])  # audio_them_int16: 4 int16 samples
+    assert protocol.expected_payload_len(encoded[: protocol.HEADER_SIZE]) == 8
+
+
+def test_expected_payload_len_non_audio() -> None:
+    encoded = encode(canonical_frames()[0][1])  # hello frame
+    assert protocol.expected_payload_len(encoded) == 0
+
+
+def test_audio_samples_float32() -> None:
+    frame = MediaFrame(
+        FrameType.AUDIO, Stream.ME, SampleFormat.FLOAT32, 0, 0, struct.pack("<3f", 0.5, -0.5, 1.0)
+    )
+    assert protocol.audio_samples(frame) == pytest.approx((0.5, -0.5, 1.0))
+
+
+def test_audio_samples_int16_normalized() -> None:
+    frame = MediaFrame(
+        FrameType.AUDIO, Stream.THEM, SampleFormat.INT16, 0, 0, struct.pack("<2h", 16384, -32768)
+    )
+    assert protocol.audio_samples(frame) == pytest.approx((0.5, -1.0), abs=1e-4)
+
+
+def test_audio_samples_empty_for_non_audio() -> None:
+    assert protocol.audio_samples(canonical_frames()[0][1]) == ()
 
 
 def test_committed_fixtures_match() -> None:

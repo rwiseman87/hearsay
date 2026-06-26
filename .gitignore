@@ -23,3 +23,8 @@ node_modules/
 
 # macOS
 .DS_Store
+
+# capture-debug output (recorded audio; never commit — may contain real voice)
+output/
+capture-debug/
+*.wav

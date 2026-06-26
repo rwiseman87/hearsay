@@ -115,6 +115,37 @@ def decode(buf: bytes) -> MediaFrame:
     )
 
 
+def expected_payload_len(header: bytes) -> int:
+    """Payload byte count that follows a 28-byte header (0 for non-audio frames).
+
+    Lets a stream reader size the second read without decoding the whole frame.
+    """
+    if len(header) < HEADER_SIZE:
+        raise ProtocolError("buffer shorter than header")
+    type_code = header[2]
+    fmt_code = header[4]
+    n_samples = int.from_bytes(header[20:24], "little")
+    try:
+        ftype = _TYPE_FROM_CODE[type_code]
+        fmt = _FORMAT_FROM_CODE[fmt_code]
+    except KeyError as exc:
+        raise ProtocolError(f"unknown enum code in header: {exc}") from exc
+    return n_samples * _BYTES_PER_SAMPLE[fmt] if ftype is FrameType.AUDIO else 0
+
+
+def audio_samples(frame: MediaFrame) -> tuple[float, ...]:
+    """Decode an AUDIO frame's payload to float samples in roughly [-1, 1].
+
+    ``int16`` payloads are normalized by 32768; ``float32`` payloads pass through.
+    Non-audio frames yield an empty tuple.
+    """
+    if frame.type is not FrameType.AUDIO:
+        return ()
+    if frame.format is SampleFormat.FLOAT32:
+        return struct.unpack(f"<{frame.n_samples}f", frame.payload)
+    return tuple(v / 32768.0 for v in struct.unpack(f"<{frame.n_samples}h", frame.payload))
+
+
 def canonical_frames() -> list[tuple[str, MediaFrame]]:
     """Canonical frames used to generate the cross-language golden fixtures."""
     them_i16 = struct.pack("<4h", 0, 1, -1, 32767)

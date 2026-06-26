@@ -32,6 +32,11 @@ class Settings(BaseSettings):
         default_factory=lambda: Path.home() / "Library" / "Application Support" / "hearsay"
     )
     output_dir: Path = Field(default_factory=lambda: Path.home() / "Documents" / "hearsay")
+    helper_path: Path = Field(
+        default_factory=lambda: (
+            Path(__file__).resolve().parents[3] / "helper" / ".build" / "debug" / "hearsay-helper"
+        )
+    )
     database_url: str | None = Field(
         default=None,
         validation_alias=AliasChoices("HEARSAY_DATABASE_URL", "DATABASE_URL"),

@@ -38,10 +38,56 @@ private func internalRoundTripChecks() -> Bool {
     return ok
 }
 
+/// Control-channel (NDJSON) encode/decode round-trips, plus a golden wire-format
+/// assertion so the Python core and the Swift helper agree byte-for-byte.
+private func controlRoundTripChecks() -> Bool {
+    var ok = true
+    func check(_ cond: Bool, _ what: String) {
+        if !cond {
+            ok = false
+            warn("  control: \(what)")
+        }
+    }
+    func decodeBody<T>(_ line: Data, _ decode: (Data) throws -> T) throws -> T {
+        try decode(Data(line.dropLast()))  // strip the trailing '\n' as LineReader does
+    }
+    do {
+        let cmd = Command(
+            id: 7, cmd: "start_capture",
+            args: ["tap_mode": .string("global_except_self"), "sample_rate": .int(16000)])
+        check(try decodeBody(ControlCodec.line(cmd), ControlCodec.decodeCommand) == cmd,
+            "command round-trip")
+
+        let ping = try ControlCodec.decodeCommand(Data(#"{"id":1,"cmd":"ping"}"#.utf8))
+        check(ping.args.isEmpty, "absent args decode to empty")
+
+        let okReply = Reply.ok(1, ["pong": true])
+        let okLine = try ControlCodec.line(okReply)
+        check(
+            String(decoding: okLine, as: UTF8.self) == "{\"id\":1,\"ok\":true,\"result\":{\"pong\":true}}\n",
+            "reply golden wire format")
+        check(try decodeBody(okLine, ControlCodec.decodeReply) == okReply, "reply ok round-trip")
+
+        let failReply = Reply.fail(2, code: "no_permission", message: "microphone denied")
+        check(try decodeBody(ControlCodec.line(failReply), ControlCodec.decodeReply) == failReply,
+            "reply fail round-trip")
+
+        let event = Event(
+            event: "tap_health", ts: 123_456_789,
+            data: ["state": .string("recovered"), "action": .string("rebuilt_tap")])
+        check(try decodeBody(ControlCodec.line(event), ControlCodec.decodeEvent) == event,
+            "event round-trip")
+    } catch {
+        ok = false
+        warn("  control check error: \(error)")
+    }
+    return ok
+}
+
 /// Internal round-trip checks plus decoding + re-encoding every committed golden
 /// fixture. This is the Swift side of the cross-language IPC contract check.
 private func runSelfTest(path: String) -> Bool {
-    var ok = internalRoundTripChecks()
+    var ok = internalRoundTripChecks() && controlRoundTripChecks()
     guard let data = FileManager.default.contents(atPath: path),
         let text = String(data: data, encoding: .utf8)
     else {
@@ -84,8 +130,33 @@ private func runSelfTest(path: String) -> Bool {
             warn("  decode error: \(error)")
         }
     }
-    print("swift self-test: internal checks + \(count) fixtures, \(ok ? "PASS" : "FAIL")")
+    print("swift self-test: internal + control checks + \(count) fixtures, \(ok ? "PASS" : "FAIL")")
     return ok
+}
+
+/// Parse `serve --socket-dir DIR [--synthetic]` and run the orchestrator.
+private func runServe(_ args: [String]) -> Never {
+    var dir: String?
+    var synthetic = false
+    var i = 2
+    while i < args.count {
+        switch args[i] {
+        case "--socket-dir":
+            i += 1
+            if i < args.count { dir = args[i] }
+        case "--synthetic":
+            synthetic = true
+        default:
+            warn("serve: ignoring unknown argument \(args[i])")
+        }
+        i += 1
+    }
+    guard let dir else {
+        warn("usage: hearsay-helper serve --socket-dir DIR [--synthetic]")
+        exit(2)
+    }
+    Serve(socketDir: dir, synthetic: synthetic).run()
+    exit(0)  // unreachable: run() exits on shutdown / EOF
 }
 
 let args = CommandLine.arguments
@@ -97,7 +168,9 @@ case "version":
 case "selftest":
     let path = args.count > 2 ? args[2] : "shared/fixtures/frames.jsonl"
     exit(runSelfTest(path: path) ? 0 : 1)
+case "serve":
+    runServe(args)
 default:
-    warn("usage: hearsay-helper [version | selftest <fixtures.jsonl>]")
+    warn("usage: hearsay-helper [version | selftest <fixtures.jsonl> | serve --socket-dir DIR [--synthetic]]")
     exit(2)
 }

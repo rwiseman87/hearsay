@@ -94,6 +94,7 @@ One UTF-8 JSON object per line, terminated by `\n`. Three shapes:
 | `status` | `{"state": "capturing"\|"stopped"\|"degraded", "detail"?: str, "device"?: str}` |
 | `permission` | `{"microphone", "audio_capture", "screen_recording", "accessibility", "calendar": "granted"\|"denied"\|"undetermined"}` |
 | `tap_health` | `{"state": "ok"\|"zero_buffers"\|"recovered", "action"?: "rebuilt_tap"}` |
+| `mic_health` | `{"state": "ok"\|"degraded"\|"recovered", "action"?: "restarted_engine"}` (mic engine restarted after an audio-config change) |
 | `level` | `{"stream": "me"\|"them", "rms": float}` (meter; throttled) |
 | `name_hint` | `{"source": "ocr"\|"ax", "text": str, "confidence": float, "bbox"?: [x,y,w,h]}` |
 | `active_speaker` | `{"tile_bbox"?: [x,y,w,h], "changed": bool}` |
