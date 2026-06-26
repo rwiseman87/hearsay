@@ -147,6 +147,11 @@ class TranscriptionPipeline:
             return await self._diarizer.resolve(utterance)
         return _SPEAKER[stream], None
 
+    def bind_speaker(self, ordinal: int, display_name: str) -> None:
+        """Relay a manual rename to the live diarizer (no-op if diarization is off)."""
+        if self._diarizer is not None:
+            self._diarizer.bind(ordinal, display_name)
+
     async def _transcribe(self, samples: Sequence[float]) -> str:
         async with self._asr_lock:
             segments = await asyncio.to_thread(

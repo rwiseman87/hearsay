@@ -55,6 +55,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/identities": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Identities */
+        get: operations["list_identities_api_identities_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/meetings": {
         parameters: {
             query?: never;
@@ -101,6 +118,40 @@ export interface paths {
         /** List Segments */
         get: operations["list_segments_api_meetings__meeting_id__segments_get"];
         put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/meetings/{meeting_id}/speakers": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Speakers */
+        get: operations["list_speakers_api_meetings__meeting_id__speakers_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/meetings/{meeting_id}/speakers/{cluster_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Rename Speaker */
+        put: operations["rename_speaker_api_meetings__meeting_id__speakers__cluster_id__put"];
         post?: never;
         delete?: never;
         options?: never;
@@ -155,6 +206,21 @@ export interface components {
             detail?: components["schemas"]["ValidationError"][];
         };
         /**
+         * IdentityRead
+         * @description A known cross-meeting person (offered as a rename suggestion).
+         */
+        IdentityRead: {
+            /** Display Name */
+            display_name: string;
+            /** Email */
+            email: string | null;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+        };
+        /**
          * MeetingCreate
          * @description Start a meeting. ``title`` defaults to a timestamp-derived name when omitted.
          */
@@ -207,6 +273,17 @@ export interface components {
             /** Name */
             name: string;
         };
+        /** Page[IdentityRead] */
+        Page_IdentityRead_: {
+            /** Items */
+            items: components["schemas"]["IdentityRead"][];
+            /** Page */
+            page: number;
+            /** Page Size */
+            page_size: number;
+            /** Total */
+            total: number;
+        };
         /** Page[MeetingRead] */
         Page_MeetingRead_: {
             /** Items */
@@ -229,8 +306,21 @@ export interface components {
             /** Total */
             total: number;
         };
+        /** Page[SpeakerRead] */
+        Page_SpeakerRead_: {
+            /** Items */
+            items: components["schemas"]["SpeakerRead"][];
+            /** Page */
+            page: number;
+            /** Page Size */
+            page_size: number;
+            /** Total */
+            total: number;
+        };
         /** SegmentRead */
         SegmentRead: {
+            /** Cluster Id */
+            cluster_id: string | null;
             /** End S */
             end_s: number;
             /**
@@ -245,6 +335,33 @@ export interface components {
             stream: components["schemas"]["Stream"];
             /** Text */
             text: string;
+        };
+        /**
+         * SpeakerRead
+         * @description A diarization cluster within a meeting, with its resolved display label.
+         */
+        SpeakerRead: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Identity Id */
+            identity_id: string | null;
+            /** Label */
+            label: string;
+            /** Locked */
+            locked: boolean;
+            /** Ordinal */
+            ordinal: number;
+        };
+        /**
+         * SpeakerRename
+         * @description Rename a cluster to a person (binds + locks; relabels that speaker's segments).
+         */
+        SpeakerRename: {
+            /** Display Name */
+            display_name: string;
         };
         /**
          * Stream
@@ -343,6 +460,38 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ASRStatus"];
+                };
+            };
+        };
+    };
+    list_identities_api_identities_get: {
+        parameters: {
+            query?: {
+                page?: number;
+                page_size?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Page_IdentityRead_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };
@@ -493,6 +642,73 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Page_SegmentRead_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_speakers_api_meetings__meeting_id__speakers_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                meeting_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Page_SpeakerRead_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    rename_speaker_api_meetings__meeting_id__speakers__cluster_id__put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                meeting_id: string;
+                cluster_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SpeakerRename"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SpeakerRead"];
                 };
             };
             /** @description Validation Error */

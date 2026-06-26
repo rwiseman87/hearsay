@@ -21,9 +21,9 @@ from hearsay.db import Database
 from hearsay.diarization import SpeakerEmbedder, build_embedder
 from hearsay.export import LocalMarkdownSink, MeetingMeta, TranscriptSink
 from hearsay.log import get_logger
-from hearsay.models import Meeting
+from hearsay.models import Cluster, Meeting
 from hearsay.schemas import TranscriptEvent
-from hearsay.services import MeetingService, meeting_folder_name
+from hearsay.services import MeetingService, SpeakerService, meeting_folder_name
 from hearsay.transcript.broadcast import Broadcaster
 from hearsay.transcript.capture import Capture, HelperCapture
 from hearsay.transcript.diarizer import MeetingDiarizer
@@ -79,6 +79,11 @@ class MeetingSession:
     def publish_event(self, event: TranscriptEvent) -> None:
         """Push a transcript event to the live WebSocket stream (used in tests)."""
         self.broadcaster.publish(event.model_dump_json())
+
+    def bind_speaker(self, ordinal: int, display_name: str) -> None:
+        """Relay a manual rename to the live pipeline's diarizer."""
+        if self._pipeline is not None:
+            self._pipeline.bind_speaker(ordinal, display_name)
 
 
 def _default_capture_factory(settings: Settings) -> CaptureFactory:
@@ -229,6 +234,24 @@ class SessionManager:
             await service.delete(meeting_id)
         shutil.rmtree(folder, ignore_errors=True)
         return True
+
+    async def relabel_speaker(
+        self, meeting_id: UUID, cluster_id: UUID, display_name: str
+    ) -> Cluster | None:
+        """Rename a speaker: bind + relabel its segments (DB), then propagate to the
+        live clusterer so the active meeting's future utterances carry the name too."""
+        async with self._db.session() as session:
+            service = SpeakerService(session)
+            cluster = await service.get_cluster(cluster_id)
+            if cluster is None or cluster.meeting_id != meeting_id:
+                return None
+            ordinal = cluster.ordinal
+            bound = await service.bind_cluster(cluster_id, display_name=display_name)
+        async with self._lock:
+            active = self._active
+            if active is not None and active.meeting_id == meeting_id:
+                active.bind_speaker(ordinal, display_name.strip())
+        return bound
 
     async def shutdown(self) -> None:
         async with self._lock:

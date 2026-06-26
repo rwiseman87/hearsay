@@ -14,7 +14,7 @@ from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse
 
 from hearsay import __version__
-from hearsay.api import asr, meetings, ws
+from hearsay.api import asr, meetings, speakers, ws
 from hearsay.api.context import AppContext
 from hearsay.api.security import host_allowed, origin_allowed
 from hearsay.api.web import mount_web
@@ -61,6 +61,7 @@ def create_app(
 
     app.include_router(meetings.router, prefix="/api")
     app.include_router(asr.router, prefix="/api")
+    app.include_router(speakers.router, prefix="/api")
     app.include_router(ws.router)
     mount_web(app, settings.web_dir)
     return app

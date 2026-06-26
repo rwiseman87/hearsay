@@ -98,6 +98,51 @@ async def test_delete_meeting_cascades_clusters(session: AsyncSession) -> None:
     assert (await session.scalars(select(Cluster))).all() == []
 
 
+async def test_bind_cluster_relabels_its_segments(session: AsyncSession) -> None:
+    meeting = await _meeting(session)
+    svc = SpeakerService(session)
+    cluster = await svc.create_cluster(meeting.id, ordinal=1)
+    other = await svc.create_cluster(meeting.id, ordinal=2)
+    s1 = Segment(
+        meeting_id=meeting.id,
+        stream=Stream.THEM,
+        speaker_label="Speaker 1",
+        text="a",
+        start_s=0.0,
+        end_s=1.0,
+        cluster_id=cluster.id,
+    )
+    s2 = Segment(
+        meeting_id=meeting.id,
+        stream=Stream.THEM,
+        speaker_label="Speaker 1",
+        text="b",
+        start_s=1.0,
+        end_s=2.0,
+        cluster_id=cluster.id,
+    )
+    s3 = Segment(
+        meeting_id=meeting.id,
+        stream=Stream.THEM,
+        speaker_label="Speaker 2",
+        text="c",
+        start_s=2.0,
+        end_s=3.0,
+        cluster_id=other.id,
+    )
+    session.add_all([s1, s2, s3])
+    await session.commit()
+
+    bound = await svc.bind_cluster(cluster.id, display_name="Alice")
+    assert bound is not None and bound.identity is not None
+    assert bound.identity.display_name == "Alice"  # eager-loaded for the response
+
+    for segment in (s1, s2, s3):
+        await session.refresh(segment)
+    assert s1.speaker_label == "Alice" and s2.speaker_label == "Alice"
+    assert s3.speaker_label == "Speaker 2"  # a different cluster's segments are untouched
+
+
 async def test_delete_cluster_nulls_segment_fk(session: AsyncSession) -> None:
     meeting = await _meeting(session)
     seg = await _them_segment(session, meeting.id)

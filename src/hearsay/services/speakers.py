@@ -11,6 +11,7 @@ from uuid import UUID
 
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from hearsay.models import Cluster, Identity, Segment
 
@@ -31,7 +32,10 @@ class SpeakerService:
 
     async def list_clusters(self, meeting_id: UUID) -> list[Cluster]:
         rows = await self._session.scalars(
-            select(Cluster).where(Cluster.meeting_id == meeting_id).order_by(Cluster.ordinal)
+            select(Cluster)
+            .where(Cluster.meeting_id == meeting_id)
+            .options(selectinload(Cluster.identity))
+            .order_by(Cluster.ordinal)
         )
         return list(rows)
 
@@ -55,8 +59,12 @@ class SpeakerService:
             await self._session.flush()  # assign identity.id without ending the transaction
         cluster.identity_id = identity.id
         cluster.locked = True
+        # Retroactively relabel this speaker's already-saved segments (one bulk write).
+        await self._session.execute(
+            update(Segment).where(Segment.cluster_id == cluster_id).values(speaker_label=name)
+        )
         await self._session.commit()
-        await self._session.refresh(cluster)
+        await self._session.refresh(cluster, ["identity"])
         return cluster
 
     async def list_identities(self, *, page: int, page_size: int) -> tuple[list[Identity], int]:

@@ -50,6 +50,10 @@ class MeetingDiarizer:
         label = assignment.identity_key or f"Speaker {assignment.ordinal}"
         return label, cluster_id
 
+    def bind(self, ordinal: int, display_name: str) -> None:
+        """Lock a live speaker to a name so its subsequent utterances carry it."""
+        self._clusterer.bind(ordinal, display_name)
+
     async def _cluster_id_for(self, ordinal: int) -> UUID:
         existing = self._cluster_ids.get(ordinal)
         if existing is not None:

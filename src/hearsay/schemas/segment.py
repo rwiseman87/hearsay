@@ -16,6 +16,7 @@ class SegmentRead(BaseModel):
     id: UUID
     stream: Stream
     speaker_label: str
+    cluster_id: UUID | None
     text: str
     start_s: float
     end_s: float

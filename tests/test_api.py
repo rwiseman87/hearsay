@@ -152,3 +152,35 @@ def test_ws_closes_when_meeting_not_active(client: TestClient) -> None:
     with pytest.raises(WebSocketDisconnect) as excinfo, client.websocket_connect(url) as ws:
         ws.receive_text()
     assert excinfo.value.code == 1000
+
+
+def test_speakers_and_identities_empty_for_new_meeting(client: TestClient) -> None:
+    meeting_id = _start(client)["id"]
+    speakers = client.get(f"/api/meetings/{meeting_id}/speakers", headers=AUTH)
+    assert speakers.status_code == 200
+    assert speakers.json()["items"] == []
+    identities = client.get("/api/identities", headers=AUTH)
+    assert identities.status_code == 200
+    assert identities.json() == {"total": 0, "page": 1, "page_size": 50, "items": []}
+
+
+def test_rename_missing_speaker_returns_404(client: TestClient) -> None:
+    meeting_id = _start(client)["id"]
+    missing = "00000000-0000-0000-0000-000000000000"
+    response = client.put(
+        f"/api/meetings/{meeting_id}/speakers/{missing}",
+        json={"display_name": "Alice"},
+        headers=AUTH,
+    )
+    assert response.status_code == 404
+
+
+def test_rename_rejects_blank_name(client: TestClient) -> None:
+    meeting_id = _start(client)["id"]
+    missing = "00000000-0000-0000-0000-000000000000"
+    response = client.put(
+        f"/api/meetings/{meeting_id}/speakers/{missing}",
+        json={"display_name": "   "},  # stripped to empty -> 422 before the handler runs
+        headers=AUTH,
+    )
+    assert response.status_code == 422

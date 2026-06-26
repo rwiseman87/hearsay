@@ -71,6 +71,38 @@
         "title": "HTTPValidationError",
         "type": "object"
       },
+      "IdentityRead": {
+        "description": "A known cross-meeting person (offered as a rename suggestion).",
+        "properties": {
+          "display_name": {
+            "title": "Display Name",
+            "type": "string"
+          },
+          "email": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Email"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "display_name",
+          "email"
+        ],
+        "title": "IdentityRead",
+        "type": "object"
+      },
       "MeetingCreate": {
         "description": "Start a meeting. ``title`` defaults to a timestamp-derived name when omitted.",
         "properties": {
@@ -181,6 +213,37 @@
         "title": "ModelInfoRead",
         "type": "object"
       },
+      "Page_IdentityRead_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/IdentityRead"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "page": {
+            "title": "Page",
+            "type": "integer"
+          },
+          "page_size": {
+            "title": "Page Size",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "total",
+          "page",
+          "page_size",
+          "items"
+        ],
+        "title": "Page[IdentityRead]",
+        "type": "object"
+      },
       "Page_MeetingRead_": {
         "properties": {
           "items": {
@@ -243,8 +306,51 @@
         "title": "Page[SegmentRead]",
         "type": "object"
       },
+      "Page_SpeakerRead_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/SpeakerRead"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "page": {
+            "title": "Page",
+            "type": "integer"
+          },
+          "page_size": {
+            "title": "Page Size",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "total",
+          "page",
+          "page_size",
+          "items"
+        ],
+        "title": "Page[SpeakerRead]",
+        "type": "object"
+      },
       "SegmentRead": {
         "properties": {
+          "cluster_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cluster Id"
+          },
           "end_s": {
             "title": "End S",
             "type": "number"
@@ -274,11 +380,71 @@
           "id",
           "stream",
           "speaker_label",
+          "cluster_id",
           "text",
           "start_s",
           "end_s"
         ],
         "title": "SegmentRead",
+        "type": "object"
+      },
+      "SpeakerRead": {
+        "description": "A diarization cluster within a meeting, with its resolved display label.",
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "identity_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Identity Id"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "locked": {
+            "title": "Locked",
+            "type": "boolean"
+          },
+          "ordinal": {
+            "title": "Ordinal",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "ordinal",
+          "label",
+          "identity_id",
+          "locked"
+        ],
+        "title": "SpeakerRead",
+        "type": "object"
+      },
+      "SpeakerRename": {
+        "description": "Rename a cluster to a person (binds + locks; relabels that speaker's segments).",
+        "properties": {
+          "display_name": {
+            "maxLength": 255,
+            "minLength": 1,
+            "title": "Display Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "display_name"
+        ],
+        "title": "SpeakerRename",
         "type": "object"
       },
       "Stream": {
@@ -415,6 +581,62 @@
         "summary": "List Models",
         "tags": [
           "asr"
+        ]
+      }
+    },
+    "/api/identities": {
+      "get": {
+        "operationId": "list_identities_api_identities_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "minimum": 1,
+              "title": "Page",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page_size",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Page Size",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_IdentityRead_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Identities",
+        "tags": [
+          "speakers"
         ]
       }
     },
@@ -653,6 +875,112 @@
         "summary": "List Segments",
         "tags": [
           "meetings"
+        ]
+      }
+    },
+    "/api/meetings/{meeting_id}/speakers": {
+      "get": {
+        "operationId": "list_speakers_api_meetings__meeting_id__speakers_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "meeting_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Meeting Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_SpeakerRead_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Speakers",
+        "tags": [
+          "speakers"
+        ]
+      }
+    },
+    "/api/meetings/{meeting_id}/speakers/{cluster_id}": {
+      "put": {
+        "operationId": "rename_speaker_api_meetings__meeting_id__speakers__cluster_id__put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "meeting_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Meeting Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "cluster_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Cluster Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SpeakerRename"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SpeakerRead"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Rename Speaker",
+        "tags": [
+          "speakers"
         ]
       }
     },

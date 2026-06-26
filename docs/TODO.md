@@ -77,6 +77,16 @@ uv run hearsay live --model base --seconds 60   # real pipeline -> live transcri
 
 ## Progress log
 
+- **2026-06-26** **Phase 2 increment 5a (speaker API) done.** Backend for naming speakers: `GET
+  /api/meetings/{id}/speakers` (clusters with resolved label = identity or "Speaker N"; identity eager-loaded),
+  `PUT .../speakers/{cluster_id}` (rename → `SpeakerService.bind_cluster`: get-or-create identity, lock,
+  **retroactively relabel that cluster's segments** in one bulk write; `SessionManager.relabel_speaker` also
+  **propagates to the live clusterer** so an active meeting's future utterances carry the name), `GET /api/identities`
+  (paginated suggestions). `SegmentRead` gains `cluster_id`; new schemas `SpeakerRead`/`SpeakerRename`
+  (strip + min_length)/`IdentityRead`. Thin relays `MeetingDiarizer.bind` → `pipeline.bind_speaker` →
+  `MeetingSession.bind_speaker` reach the live clusterer. OpenAPI + web TS types regenerated. +4 tests (relabel
+  service; speakers/identities empty; rename 404 + blank-name 422) → **116 pass; `mypy --strict` + ruff + web
+  tsc/build green** (web-codegen-check passes once committed). On `feat/phase-2-diarization`. Next: inc 5b (UI rename).
 - **2026-06-26** **Phase 2 increment 4 (pipeline integration) done — diarization live in the pipeline.** New
   `transcript/MeetingDiarizer` (one per meeting) wraps embedder + `OnlineSpeakerClusterer` + cluster-row persistence
   behind one async `resolve(utterance)`; the `TranscriptionPipeline` calls it for finalized **Them** utterances
