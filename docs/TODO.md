@@ -6,8 +6,8 @@ Conventions: `CLAUDE.md`.
 
 ## How to resume
 
-**Status (2026-06-26):** Phases 0 + **Phase 1 MVP** (backend **and** React UI) are built (branch
-`feat/phase-1-mvp`, no git remote). Capture → VAD → ASR → DB + live `transcript.md` + loopback REST/WebSocket
+**Status (2026-06-26):** Phases 0 + **Phase 1 MVP** (backend **and** React UI) are built and merged to
+`main` (fast-forward; no git remote). Capture → VAD → ASR → DB + live `transcript.md` + loopback REST/WebSocket
 work on a real call; the React UI (Vite 8 + React 19 + TanStack Query, OpenAPI→TS types, served by the core
 with the session token injected) builds, typechecks, and serves. All local runtime data — recordings, the
 SQLite DB, models, capture-debug — now lives under the repo's `outputs/` (gitignored). 86 tests; `make ci` +
@@ -65,6 +65,10 @@ uv run hearsay live --model base --seconds 60   # real pipeline -> live transcri
 
 ## Progress log
 
+- **2026-06-26** **Phase 1 committed + merged to `main`.** The React UI, the cross-stream timestamp fix,
+  and the local `outputs/` storage migration (entries below) landed on `feat/phase-1-mvp` and were
+  fast-forwarded onto `main`; `make ci` green, working tree clean, no git remote. Phase 1 is
+  feature-complete — only the in-browser exit test remains before Phase 2 (diarization).
 - **2026-06-26** **Local-first storage moved under `outputs/`.** Runtime data now lives in the repo
   (gitignored), not `~/Documents` / `~/Library/Application Support`: `outputs/recordings` (per-meeting
   `transcript.md` + `meeting.json`), `outputs/db/hearsay.db`, `outputs/models`, and `outputs/capture-debug`
@@ -383,4 +387,4 @@ Done — **Task 7: Python capture-debug reader** (`src/hearsay/helper/`):
 
 - Voiceprint enrollment (ECAPA) — seam designed (`fusion/embeddings.py`), not built; revisit if recurring-team auto-labeling is wanted.
 - Browser meeting apps (Meet/Slack) may warrant a browser extension later (more reliable than OCR/AX for web).
-- Commit strategy: foundation currently uncommitted on `main`; branch + commit when ready.
+- Commit strategy: Phases 0–1 are committed and merged to `main`; no git remote yet (local-only).
