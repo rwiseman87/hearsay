@@ -76,9 +76,14 @@ class Segmenter:
         self._speech_since_partial_ms = 0.0
 
     def push(self, samples: Sequence[float], *, t0_s: float) -> list[Utterance]:
-        """Feed contiguous 16 kHz samples starting at meeting time ``t0_s``."""
-        if not self._buffer:
-            self._next_t = t0_s
+        """Feed 16 kHz samples whose first sample was captured at meeting time ``t0_s``.
+
+        The frame clock re-anchors to ``t0_s`` on every chunk (offset by any buffered
+        remainder, which precedes these samples), so timestamps follow the shared
+        ``host_ts`` clock across gaps/drops instead of free-running on sample count.
+        This keeps the two streams aligned (align by timestamp, never by sample index).
+        """
+        self._next_t = t0_s - len(self._buffer) / self._sample_rate
         self._buffer.extend(samples)
         frame_samples = self._vad.frame_samples
         events: list[Utterance] = []

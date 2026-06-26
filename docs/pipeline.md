@@ -61,9 +61,11 @@ pipeline runs **one consumer task per stream** (`Stream.ME`, `Stream.THEM`).
 ### 2. One clock, meeting-relative seconds
 
 The first `AudioChunk` seen on either stream sets `epoch_ns`. Every chunk's time becomes
-`t0_s = (host_ts - epoch_ns) / 1e9`. Because both streams are stamped from the helper's
-*single* monotonic clock, "Me" and "Them" share one timeline — segment times are directly
-comparable across streams without aligning by sample index.
+`t0_s = (host_ts - epoch_ns) / 1e9`, and the `Segmenter` re-anchors its frame clock to that
+`t0_s` on every chunk (not just the first), so utterance times follow `host_ts` even when a
+stream has delivery gaps (e.g. system audio during silence). Because both streams are stamped
+from the helper's *single* monotonic clock, "Me" and "Them" share one timeline — segment times
+are directly comparable across streams, never aligned by sample index.
 
 ### 3. Segmentation (VAD)
 

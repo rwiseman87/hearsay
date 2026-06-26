@@ -83,6 +83,7 @@ class TranscriptionPipeline:
     async def _consume(self, media: MediaChannel, stream: Stream) -> None:
         segmenter = self._segmenters[stream]
         queue = media.queues[stream]
+        logged_first = False
         while True:
             chunk: AudioChunk | None = await queue.get()
             if chunk is None:  # end-of-stream
@@ -93,6 +94,17 @@ class TranscriptionPipeline:
             if self._epoch_ns is None:
                 self._epoch_ns = chunk.host_ts
             t0_s = (chunk.host_ts - self._epoch_ns) / 1e9
+            if not logged_first:
+                logged_first = True
+                # Both streams must anchor to ~the same epoch; a large gap here means
+                # one stream started late (e.g. mic warmup) rather than drifted.
+                _log.info(
+                    "stream %s first chunk: host_ts=%d t0_s=%.3f epoch=%d",
+                    stream.value,
+                    chunk.host_ts,
+                    t0_s,
+                    self._epoch_ns,
+                )
             for utterance in segmenter.push(chunk.samples, t0_s=t0_s):
                 await self._emit(stream, utterance)
 

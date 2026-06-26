@@ -85,3 +85,16 @@ def test_times_track_push_offset() -> None:
     events = seg.push(silence(2) + speech(5) + silence(5), t0_s=12.0)
     assert len(events) == 1
     assert abs(events[0].start_s - 12.02) < 1e-9
+
+
+def test_reanchors_to_host_ts_across_chunks() -> None:
+    # The segmenter must follow each chunk's host_ts (t0_s), not free-run on sample
+    # count: a stream with delivery gaps (e.g. system audio during silence) would
+    # otherwise drift behind the other stream. First chunk leaves an 80-sample
+    # (0.005s) partial frame buffered; the next chunk's clock jumps to 100s.
+    seg = _segmenter()
+    seg.push(silence(2) + speech(5) + silence(5) + [0.0] * 80, t0_s=0.0)
+    events = seg.push(speech(5) + silence(5), t0_s=100.0)
+    assert len(events) == 1
+    # start_s tracks the new host_ts (~100s), not the ~0.13s of samples processed.
+    assert 99.9 < events[0].start_s < 100.1
