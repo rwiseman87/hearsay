@@ -14,7 +14,8 @@ A hybrid, three-process app (Apple Silicon, macOS 14.4+):
   stamped with one monotonic clock. Later phases add calendar + on-screen OCR name hints.
 - **Python core** (`src/hearsay/`) — VAD, ASR, the transcript pipeline, persistence,
   Markdown output, and a loopback FastAPI + WebSocket API. Spawns and supervises the helper.
-- **Web UI in a native window** — a typed React frontend served by the core (not yet built).
+- **Web UI** — a typed React frontend (Vite + React 19 + TanStack Query) served by the core at
+  `/` with the session token injected; the native WKWebView window is a later phase.
 
 The helper and core talk over two Unix sockets; the binary/NDJSON contract is in
 [`shared/protocol/ipc.md`](shared/protocol/ipc.md), pinned by golden fixtures that both
@@ -24,7 +25,7 @@ languages validate in CI.
 flowchart LR
   Helper["Swift helper\nmic + system tap -> 16 kHz mono PCM"]
   Core["Python core\nVAD -> ASR -> DB + transcript.md + WS"]
-  UI["Web UI (later)\nstart/stop + live transcript"]
+  UI["Web UI (React)\nstart/stop + live transcript"]
   Core -- "spawns + supervises" --> Helper
   Helper -- "media.sock (PCM) + control.sock (NDJSON)" --> Core
   Core -- "REST + WebSocket (127.0.0.1 + token)" --> UI
@@ -32,11 +33,12 @@ flowchart LR
 
 ## Status
 
-**Phase 1 backend MVP is complete and validated on-device.** Capture (Me/Them
+**Phase 1 MVP is built; the backend is validated on-device.** Capture (Me/Them
 separation), Silero VAD segmentation, whisper.cpp transcription, SQLite persistence,
 live `transcript.md`, and the loopback REST + WebSocket API all work end to end on a
-real call. The React UI is the remaining Phase 1 piece. See [`docs/TODO.md`](docs/TODO.md)
-for the phase-by-phase tracker.
+real call. The React UI (served by the core, OpenAPI-typed) builds and serves; the
+remaining Phase 1 step is the in-browser exit test on a live call. See
+[`docs/TODO.md`](docs/TODO.md) for the phase-by-phase tracker.
 
 ## Quickstart
 
@@ -47,6 +49,7 @@ make sync                            # create the venv + base deps (Python 3.14)
 uv sync --extra asr                  # transcription stack (whisper.cpp + onnxruntime VAD; torch-free)
 swift build --package-path helper    # build the capture helper
 uv run hearsay fetch-models          # download the Silero VAD model (~2 MB)
+(cd web && npm ci && npm run build)  # build the React UI bundle (web/dist), served by the core
 ```
 
 Run the real pipeline and watch live transcripts (the on-device validation path):
@@ -55,11 +58,15 @@ Run the real pipeline and watch live transcripts (the on-device validation path)
 uv run hearsay live --model base --seconds 60   # join a call first; talk + play remote audio
 ```
 
-Or run the API server (the UI consumes this):
+Or run the API server and open the UI:
 
 ```sh
-uv run hearsay serve                 # prints the loopback URL + per-session token
+uv run hearsay serve                 # prints a loopback URL with the per-session ?token=
 ```
+
+Open the printed `http://127.0.0.1:<port>/?token=...` link — the core serves the built UI with
+the token injected. For frontend dev with hot reload: `cd web && npm run dev` against
+`uv run hearsay serve --port 8137` (Vite proxies `/api` + `/ws`).
 
 ## Documentation
 
@@ -90,6 +97,7 @@ src/hearsay/
   api/         FastAPI app, routers, WebSocket, loopback security, DI
   cli.py       the `hearsay` command (serve, live, fetch-models, capture-debug)
 helper/        SwiftPM: hearsay-helper executable + HearsayIPC library
+web/           React UI (Vite + TS): typed fetch client, TanStack Query, OpenAPI-generated types
 shared/        IPC contract (ipc.md) + golden frame fixtures
 tests/         pytest suite (SAVEPOINT-isolated DB tests; guarded on-device tests)
 ```

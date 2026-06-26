@@ -28,7 +28,7 @@ def test_available_models_lists_curated_and_installed(tmp_path: Path) -> None:
     models_dir = tmp_path / "models"
     models_dir.mkdir()
     (models_dir / "ggml-tiny.bin").write_bytes(b"stub")
-    settings = Settings(app_support_dir=tmp_path, models_dir=models_dir)
+    settings = Settings(models_dir=models_dir)
 
     infos = available_models(settings)
     names = [info.name for info in infos]

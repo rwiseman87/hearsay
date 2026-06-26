@@ -66,7 +66,7 @@ CI, so the two codecs cannot drift.
 ### `config/` — the single configuration source
 
 `settings.py` is one `pydantic-settings` object loaded once and injected via DI. Every
-tunable lives here: paths (`app_support_dir`, `output_dir`, `models_dir`, `helper_path`),
+tunable lives here: paths (`output_dir`, `models_dir`, `helper_path`),
 the database URL, the server host/port, and nested `asr` / `vad` groups. A model validator
 fills derived paths (e.g. the default SQLite URL and the Silero model path) so the rest of
 the code never computes them ad hoc. Reads `HEARSAY_`-prefixed env vars (nested via `__`,

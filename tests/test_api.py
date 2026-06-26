@@ -38,7 +38,7 @@ def client(tmp_path: Path) -> Iterator[TestClient]:
     Base.metadata.create_all(sync_engine)
     sync_engine.dispose()
 
-    settings = Settings(app_support_dir=tmp_path, output_dir=tmp_path / "out")
+    settings = Settings(output_dir=tmp_path / "out")
     database = Database(f"sqlite+aiosqlite:///{db_file}")
     app = create_app(settings, database=database, session_token=TOKEN, capture_factory=FakeCapture)
     with TestClient(app, base_url="http://127.0.0.1:8000") as test_client:

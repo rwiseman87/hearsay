@@ -149,6 +149,6 @@ tests/                 pytest suite
 
 ## Environment Variables
 
-- DATABASE_URL: SQLAlchemy database URL (default local SQLite `sqlite+aiosqlite:///<app-support>/hearsay.db`;
+- DATABASE_URL: SQLAlchemy database URL (default local SQLite `sqlite+aiosqlite:///<repo>/outputs/db/hearsay.db`;
   portable to PostgreSQL for a future central deployment)
 - ENVIRONMENT: development | staging | production

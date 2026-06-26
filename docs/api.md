@@ -11,6 +11,13 @@ open: http://127.0.0.1:8137/?token=<token>
 
 OpenAPI/Swagger is available at `/docs`.
 
+When the web UI is built (`web/dist` present), the core also serves it: `GET /` returns
+`index.html` with the session token injected as `window.__HEARSAY_TOKEN__` (behind a
+per-response CSP nonce), and hashed assets are served from `/assets`. If the bundle is not
+built, the core runs API-only. `GET /` and `/assets` are gated by the Host/Origin checks below
+but not the token (the page delivers the token); a cross-site Origin is rejected, so another
+page cannot read it.
+
 ## Authentication and loopback hardening
 
 Loopback is not a security boundary — other local processes and browser pages can reach

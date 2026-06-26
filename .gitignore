@@ -24,13 +24,24 @@ node_modules/
 # macOS
 .DS_Store
 
-# capture-debug output (recorded audio; never commit — may contain real voice)
-output/
-capture-debug/
+# Defensive catch-all for recorded audio (never commit — may contain real voice);
+# capture-debug writes under outputs/capture-debug/.
 *.wav
 
-# scratch / local verification artifacts
-outputs/
+# scratch / local verification artifacts (everything under outputs/ is ignored ...)
+outputs/*
+
+# ... except the local runtime storage dirs, kept as structure with their data
+# contents ignored: real voice transcripts, the SQLite DB, and downloaded models.
+!outputs/recordings/
+outputs/recordings/*
+!outputs/recordings/.gitkeep
+!outputs/db/
+outputs/db/*
+!outputs/db/.gitkeep
+!outputs/models/
+outputs/models/*
+!outputs/models/.gitkeep
 
 # editor
 .vscode/

@@ -31,10 +31,12 @@ The `Makefile` is the task runner.
 | `make test` | Build the helper, run pytest, then the Swift cross-language self-test. |
 | `make typecheck` | `mypy --strict` over `src` + `scripts`. |
 | `make lint` / `make fmt` | `ruff` check / format. |
-| `make codegen` | Regenerate the golden IPC fixtures from the codec. |
+| `make codegen` | Regenerate the golden IPC fixtures **and** the OpenAPI schema + web TS types. |
 | `make audit` | `pip-audit` CVE scan. |
 | `make licenses` | Fail on any copyleft dependency (permissive-only gate). |
-| `make ci` | The full gate: lint + typecheck + tests + audit + licenses. Must stay green. |
+| `make ci` | The Python + Swift gate: lint + typecheck + tests + audit + licenses. Must stay green. |
+| `make web-ci` | The web gate: `npm ci` + OpenAPI→TS drift check + `tsc` + `vite build`. |
+| `make web-build` / `make web-typecheck` | Build the UI bundle (`web/dist`) / type-check it. |
 
 ## Running
 
@@ -46,7 +48,31 @@ uv run hearsay serve --port 8137
 ```
 
 Binds `127.0.0.1` and prints a bearer token (see [api.md](api.md)). This is what the web UI
-will load.
+loads.
+
+### Web UI (`web/`)
+
+Vite + React + TypeScript (strict). The core serves the built bundle at `/` with the session
+token injected, so the production flow is build-then-serve:
+
+```sh
+cd web && npm ci          # install pinned deps (one time)
+npm run build             # -> web/dist (served by `hearsay serve`)
+```
+
+For frontend development with hot reload, run the core on a fixed port and Vite in front of it
+(Vite proxies `/api` + `/ws` to the core; see `web/vite.config.ts`):
+
+```sh
+uv run hearsay serve --port 8137     # terminal 1
+cd web && npm run dev                 # terminal 2 -> http://localhost:5173/?token=<token>
+```
+
+API TypeScript types are generated from the backend's OpenAPI schema — never hand-edited:
+`make codegen` runs `scripts/dump_openapi.py` (→ `web/openapi.json`) then `openapi-typescript`
+(→ `web/src/api/schema.ts`). `make web-codegen-check` (and the CI `web` job) fail if either
+drifts from the backend. The WebSocket `TranscriptEvent` is not in the OpenAPI schema, so it is
+hand-mirrored in `web/src/api/ws.ts`.
 
 ### `hearsay live` — the validation harness
 
@@ -63,12 +89,13 @@ uv run hearsay live --synthetic --seconds 4     # glue smoke: tone source, no mi
   `large-v3-turbo` is higher quality but ~1.6 GB on first download).
 - `--synthetic` uses the helper's tone source — useful to exercise the wiring without
   capturing real audio.
-- Output lands in `~/Documents/hearsay/<date>_live-validation/transcript.md`. `Ctrl-C` stops early.
+- Output lands in `outputs/recordings/<date>_live-validation/transcript.md`. `Ctrl-C` stops early.
 
 ### `hearsay capture-debug` — raw audio dump
 
 The Phase 0 truth test: captures both streams for N seconds and writes `me.wav` / `them.wav`
-with drift and skew diagnostics. Use `--synthetic` to test the IPC pipe without a mic.
+(default `outputs/capture-debug/`, override with `--out`) plus drift and skew diagnostics. Use
+`--synthetic` to test the IPC pipe without a mic.
 
 ## Models and dependency extras
 
@@ -92,12 +119,15 @@ All config flows through `hearsay.config.Settings`. Common overrides (env vars a
 
 | Setting | Env | Default |
 |---|---|---|
-| Database URL | `DATABASE_URL` | `sqlite+aiosqlite:///<app-support>/hearsay.db` |
-| Output dir | `HEARSAY_OUTPUT_DIR` | `~/Documents/hearsay` |
-| Models dir | `HEARSAY_MODELS_DIR` | `<app-support>/models` |
+| Database URL | `DATABASE_URL` | `sqlite+aiosqlite:///<repo>/outputs/db/hearsay.db` |
+| Output dir | `HEARSAY_OUTPUT_DIR` | `<repo>/outputs/recordings` |
+| Models dir | `HEARSAY_MODELS_DIR` | `<repo>/outputs/models` |
 | ASR model | `HEARSAY_ASR__MODEL` | `large-v3-turbo` |
 | ASR backend | `HEARSAY_ASR__BACKEND` | `whispercpp` |
 | VAD thresholds | `HEARSAY_VAD__THRESHOLD`, `HEARSAY_VAD__MIN_SILENCE_MS`, ... | see `config/settings.py` |
+
+When run from source, all runtime data (recordings, the SQLite DB, downloaded models) lives
+under the repo's `outputs/` (gitignored). Override any path with the env vars above.
 
 ## Testing
 

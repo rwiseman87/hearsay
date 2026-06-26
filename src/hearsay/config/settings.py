@@ -9,6 +9,10 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from hearsay.enums import ASRBackendKind, Environment
 
+# Local-first run-from-source layout: recordings, the SQLite DB, and models all live
+# under the repo's outputs/ (gitignored). Packaging (Phase 5) can repoint these.
+_OUTPUTS_DIR = Path(__file__).resolve().parents[3] / "outputs"
+
 
 class ASRSettings(BaseModel):
     """ASR backend + model selection (swappable at runtime; see model store)."""
@@ -49,17 +53,18 @@ class Settings(BaseSettings):
         default=Environment.DEVELOPMENT,
         validation_alias=AliasChoices("HEARSAY_ENVIRONMENT", "ENVIRONMENT"),
     )
-    app_support_dir: Path = Field(
-        default_factory=lambda: Path.home() / "Library" / "Application Support" / "hearsay"
-    )
-    output_dir: Path = Field(default_factory=lambda: Path.home() / "Documents" / "hearsay")
-    models_dir: Path | None = None  # default: <app_support_dir>/models
+    output_dir: Path = Field(default_factory=lambda: _OUTPUTS_DIR / "recordings")
+    capture_debug_dir: Path = Field(default_factory=lambda: _OUTPUTS_DIR / "capture-debug")
+    models_dir: Path | None = None  # default: <outputs>/models
     asr: ASRSettings = Field(default_factory=ASRSettings)
     vad: VADSettings = Field(default_factory=VADSettings)
     helper_path: Path = Field(
         default_factory=lambda: (
             Path(__file__).resolve().parents[3] / "helper" / ".build" / "debug" / "hearsay-helper"
         )
+    )
+    web_dir: Path = Field(
+        default_factory=lambda: Path(__file__).resolve().parents[3] / "web" / "dist"
     )
     database_url: str | None = Field(
         default=None,
@@ -71,9 +76,9 @@ class Settings(BaseSettings):
     @model_validator(mode="after")
     def _fill_derived_paths(self) -> Settings:
         if self.database_url is None:
-            self.database_url = f"sqlite+aiosqlite:///{self.app_support_dir / 'hearsay.db'}"
+            self.database_url = f"sqlite+aiosqlite:///{_OUTPUTS_DIR / 'db' / 'hearsay.db'}"
         if self.models_dir is None:
-            self.models_dir = self.app_support_dir / "models"
+            self.models_dir = _OUTPUTS_DIR / "models"
         if self.vad.model_path is None:
             self.vad.model_path = self.models_dir / "silero_vad.onnx"
         return self

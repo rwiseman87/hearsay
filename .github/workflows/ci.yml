@@ -33,3 +33,23 @@ jobs:
 
       - name: Open-license gate
         run: make licenses
+
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        run: curl -LsSf https://astral.sh/uv/install.sh | sh
+
+      - name: Sync Python env
+        run: uv sync
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Web CI (install, codegen drift, typecheck, build)
+        run: make web-ci

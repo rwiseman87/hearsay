@@ -149,9 +149,8 @@ def live(seconds: float, model: str | None, synthetic: bool) -> None:
     "--out",
     "out_dir",
     type=click.Path(file_okay=False, path_type=Path),
-    default=Path("capture-debug"),
-    show_default=True,
-    help="Directory for me.wav / them.wav.",
+    default=None,
+    help="Directory for me.wav / them.wav (default: <outputs>/capture-debug).",
 )
 @click.option(
     "--synthetic",
@@ -165,11 +164,15 @@ def live(seconds: float, model: str | None, synthetic: bool) -> None:
     default=None,
     help="Path to hearsay-helper (defaults to the dev build).",
 )
-def capture_debug(seconds: float, out_dir: Path, synthetic: bool, helper_path: Path | None) -> None:
+def capture_debug(
+    seconds: float, out_dir: Path | None, synthetic: bool, helper_path: Path | None
+) -> None:
     """Capture from the helper for a few seconds and write me.wav / them.wav."""
-    helper = helper_path or Settings().helper_path
+    settings = Settings()
+    helper = helper_path or settings.helper_path
+    out = out_dir or settings.capture_debug_dir
     code = asyncio.run(
-        cd.run(helper_path=helper, seconds=seconds, out_dir=out_dir, synthetic=synthetic)
+        cd.run(helper_path=helper, seconds=seconds, out_dir=out, synthetic=synthetic)
     )
     if code != 0:
         raise SystemExit(code)

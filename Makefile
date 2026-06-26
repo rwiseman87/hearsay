@@ -1,4 +1,4 @@
-.PHONY: help install sync dev pytest swift-build swift-test test typecheck lint fmt codegen audit licenses ci build package notarize clean
+.PHONY: help install sync dev pytest swift-build swift-test test typecheck lint fmt codegen web-install web-typecheck web-build web-codegen-check web-ci audit licenses ci build package notarize clean
 
 PKG := helper
 FIXTURES := shared/fixtures/frames.jsonl
@@ -34,8 +34,26 @@ lint: ## Lint (ruff)
 fmt: ## Format (ruff)
 	uv run ruff format
 
-codegen: ## Regenerate the cross-language IPC fixtures
+codegen: ## Regenerate IPC fixtures + OpenAPI schema + web TS types
 	uv run python scripts/gen_fixtures.py
+	uv run python scripts/dump_openapi.py
+	cd web && npm run codegen
+
+web-install: ## Install pinned web deps (npm ci)
+	cd web && npm ci
+
+web-typecheck: ## Type-check the web UI (tsc)
+	cd web && npm run typecheck
+
+web-build: ## Build the web UI bundle (web/dist)
+	cd web && npm run build
+
+web-codegen-check: ## Fail if the OpenAPI schema / web TS types drift from source
+	uv run python scripts/dump_openapi.py
+	cd web && npm run codegen
+	git diff --exit-code -- web/openapi.json web/src/api/schema.ts
+
+web-ci: web-install web-codegen-check web-typecheck web-build ## Web CI gate (install, drift, typecheck, build)
 
 audit: ## Dependency CVE scan (pip-audit)
 	uv run pip-audit

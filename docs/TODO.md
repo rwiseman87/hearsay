@@ -6,15 +6,35 @@ Conventions: `CLAUDE.md`.
 
 ## How to resume
 
+**Status (2026-06-26):** Phases 0 + **Phase 1 MVP** (backend **and** React UI) are built (branch
+`feat/phase-1-mvp`, no git remote). Capture → VAD → ASR → DB + live `transcript.md` + loopback REST/WebSocket
+work on a real call; the React UI (Vite 8 + React 19 + TanStack Query, OpenAPI→TS types, served by the core
+with the session token injected) builds, typechecks, and serves. All local runtime data — recordings, the
+SQLite DB, models, capture-debug — now lives under the repo's `outputs/` (gitignored). 86 tests; `make ci` +
+`make web-ci` both green.
+
+**Pick up here → the Phase 1 exit test (needs the user, in a browser):** build the UI (`cd web && npm run
+build`), `uv run hearsay serve`, open the printed `?token=` URL, start a meeting on a real call, and confirm
+finals appear in **timestamp order** within ~2–3 s (a cross-stream ordering bug was found during UI testing
+and fixed — re-validate it on-device), the UI matches `transcript.md`, Me/Them are correct, and reopening a
+past meeting loads its segments from the DB. Then Phase 1 is done → Phase 2 (diarization).
+
+Docs: `README.md` + `docs/{architecture,pipeline,api,development}.md`. Design: the plan. IPC: `shared/protocol/ipc.md`.
+
 ```sh
-make help     # list targets
-make sync     # venv + deps (Python 3.14)
-make ci       # ruff + mypy --strict + pytest + swift selftest + pip-audit + license gate
-make test     # Python tests + Swift cross-language self-test
-make codegen  # regenerate shared/fixtures from the codec
+make sync                            # venv + base deps (Python 3.14)
+uv sync --extra asr                  # transcription stack (whisper.cpp + onnxruntime VAD; torch-free)
+swift build --package-path helper    # build the capture helper
+uv run hearsay fetch-models          # Silero VAD model (~2 MB)
+make ci                              # ruff + mypy --strict + pytest + swift selftest + audit + licenses
+cd web && npm ci && npm run build && cd ..   # build the React UI bundle (web/dist)
+make web-ci                          # web gate: npm ci + OpenAPI→TS drift + tsc + vite build
+uv run hearsay serve                 # loopback API + WS + the built UI (prints URL + ?token= link)
+uv run hearsay live --model base --seconds 60   # real pipeline -> live transcripts (on-device validation)
 ```
 
-- Python core: `src/hearsay/`  ·  Swift helper: `helper/` (`swift build --package-path helper`)
+- Python core: `src/hearsay/`  ·  Swift helper: `helper/`  ·  web UI: `web/` (Vite + React + TS).
+- Scratch / local artifacts go in `outputs/` (gitignored), not `/tmp`.
 - The session-scoped task list is ephemeral; **this file is the source of truth** for progress.
 
 ## Decisions locked (do not relitigate)
@@ -24,6 +44,14 @@ make codegen  # regenerate shared/fixtures from the codec
   models in `src/hearsay/models/`, migrations in `src/hearsay/db/migrations/`). Portable to Postgres later.
 - **Python 3.14** (locked; full ML stack verified on cp314). Fallback ladder 3.13 → 3.12 only if a dep regresses.
 - **ASR default:** whisper.cpp `large-v3-turbo` via `pywhispercpp` (Metal+CoreML), behind an `ASRBackend` protocol.
+- **ASR backends (2026-06-26):** don't phase-split — ship **both** behind `ASRBackend`, gated by install extra:
+  whisper.cpp default (`asr` extra, torch-free) + **mlx opt-in** (`accel` extra; mlx-whisper pulls torch). Models are
+  **swappable at runtime** via config / `PUT /api/asr/model` (next-meeting effect). pywhispercpp is the only torch-free ASR.
+- **VAD (2026-06-26):** **Silero via `onnxruntime`** (torch-free; the `silero-vad` pip pkg hard-depends on torch).
+  Behind a `VAD` protocol + a pure `Segmenter` (hysteresis, partial/final). Bug found+fixed: Silero needs 64 samples of
+  left-context per 512-frame. Model is pinned + sha256-checked, fetched by `hearsay fetch-models`.
+- **Dependency policy (2026-06-26):** vet every new dep **live** (latest version, no CVEs, permissive license MIT/BSD/
+  Apache) before adding. Verified clean: pywhispercpp 1.5.0, onnxruntime 1.27.0, numpy 2.4.6, silero/mlx/pyannote.
 - **Diarization:** `pyannote.audio` 4.0 community-1, rolling window over the **Them** stream only.
 - **LLM:** OpenAI-compatible client (Ollama/LM Studio/llama.cpp) by default; Bedrock Converse configurable.
 - **Speaker ID layers:** channel (Me/Them) + calendar roster + live diarization + manual labeling w/ memory
@@ -37,6 +65,43 @@ make codegen  # regenerate shared/fixtures from the codec
 
 ## Progress log
 
+- **2026-06-26** **Local-first storage moved under `outputs/`.** Runtime data now lives in the repo
+  (gitignored), not `~/Documents` / `~/Library/Application Support`: `outputs/recordings` (per-meeting
+  `transcript.md` + `meeting.json`), `outputs/db/hearsay.db`, `outputs/models`, and `outputs/capture-debug`
+  (diagnostic `me.wav`/`them.wav`, previously CWD-relative). Settings: dropped `app_support_dir`;
+  `output_dir`/`models_dir`/`database_url` + new `capture_debug_dir` all derive from one `_OUTPUTS_DIR` (still
+  env-overridable). Migrated existing data in place (DB = 1 meeting/11 segments, 1.7G models — no re-download).
+  `.gitignore` restructured: `outputs/*` ignored, the four dirs kept as structure via `.gitkeep` with data
+  contents ignored (verified `git add` stages only the `.gitkeep`s); pruned stale `output/`/`capture-debug/`
+  lines (kept `*.wav`). Tests + docs updated; `make ci` green.
+- **2026-06-26** **Cross-stream transcript ordering bug found + fixed (surfaced by the UI).** The live UI showed
+  every "Them" line above every "Me" line regardless of time. Root cause: `Segmenter` timed utterances by
+  cumulative sample count anchored only at the first chunk, ignoring each chunk's `host_ts` — so system audio
+  (silence ⇒ fewer delivered samples) drifted ~100 s behind the continuous mic, putting the streams on different
+  timelines (violating the "align by timestamp, never by sample index" guardrail). Fix: `Segmenter.push`
+  re-anchors the frame clock to each chunk's `host_ts` (offset by the buffered remainder) so both streams stay on
+  the shared epoch. +1 regression test (cross-chunk re-anchor; the old tests only did single pushes) → 86 pass;
+  added a per-stream first-chunk diagnostic log. Python-only (restart `serve`); existing DB rows keep their old
+  timestamps, so re-validate on a fresh on-device recording.
+- **2026-06-26** **Phase 1 increment 6 (React UI) built — Phase 1 feature-complete pending the browser exit test.**
+  `web/` = Vite 8 + React 19 + TS strict + TanStack Query 5. One canonical typed fetch wrapper (`api/client.ts`,
+  native fetch, `ApiError` from the `{detail}` envelope, `AbortSignal.timeout`) carries the per-session bearer token;
+  typed query-key factory; client-level `QueryCache`/`MutationCache` error handlers. Types are codegen'd from the API:
+  `scripts/dump_openapi.py` writes a deterministic `web/openapi.json`, `openapi-typescript` → `web/src/api/schema.ts`
+  (`TranscriptEvent` is hand-mirrored — the WS isn't in OpenAPI). Single page: start/stop/delete a meeting + ASR model
+  picker; `useTranscript` opens the WS and merges DB finals with live partial/final events keyed by `(stream,start_s)`,
+  replacing each stream's partial with its next final (Me/Them colored). The core serves the built bundle
+  (`api/web.py`): `/assets` via `StaticFiles`, `GET /` injects the token as `window.__HEARSAY_TOKEN__` behind a
+  per-response CSP nonce + security headers; optional (API-only if `web/dist` absent). Token handoff: injected into the
+  served HTML, `?token=` fallback in dev (Vite proxies `/api`+`/ws` to `:8137`). Decisions made live with the user:
+  **one `.npmrc`, moved into `web/`** (npm's local prefix = the nearest dir with package.json, so the repo-root
+  `.npmrc` is bypassed inside `web/` — verified); **package.json stays in `web/`** (mirrors `helper/`; the root is the
+  Python project); **TypeScript pinned to 5.9.3, not latest 6.0.3** (openapi-typescript 7.13 peer-requires `^5.x`; no
+  `--force`). Makefile: `codegen` extended + `web-install`/`web-typecheck`/`web-build`/`web-codegen-check`/`web-ci`; CI
+  gains a `web` job (setup-node + `make web-ci`). 4 web-serving tests (token injection, per-response nonce, asset
+  serving, API-only fallback) → **85 pass**; `make ci` + `make web-ci` green; smoke-served the real bundle (token
+  injected, nonce matches the CSP, cross-site Origin on `/` → 403, API still 401 without a token). Uncommitted on
+  `feat/phase-1-mvp`. **Remaining: the on-device browser exit test (start a meeting in the served UI on a real call).**
 - **2026-06-26** **Docs written + Phase 1 backend MVP committed.** Refreshed `README.md` (status, quickstart,
   layout, docs index) and added `docs/architecture.md` (3-process design + module-by-module tour of the Python
   core — what each piece does + why + the seams table), `docs/pipeline.md` (the capture->VAD->ASR->DB+md+WS data
@@ -253,9 +318,25 @@ Done — **Task 7: Python capture-debug reader** (`src/hearsay/helper/`):
 - [x] VAD segmentation (Silero via onnxruntime, torch-free) + sliding-window Segmenter (partial/final) per stream.
 - [x] ASR backend `whispercpp` (`large-v3-turbo`, Metal+CoreML) behind `ASRBackend` protocol (+ opt-in `mlx` backend).
 - [x] `transcript.md` live append (single writer, complete blocks, Me/Them by channel) + meeting folder + `meeting.json`.
-- [ ] WebSocket: partial+final segments to a minimal React UI (start/stop, live transcript); loopback + per-session token.
-- [ ] OpenAPI → TS codegen wired (`make codegen` extended); thin routers + `services/`.
-- [ ] Verify: finals in UI < ~2–3 s; `transcript.md` matches UI; Me/Them correct; reopening a past meeting loads from DB.
+- [x] WebSocket partial+final + loopback + per-session token (`/ws/meetings/{id}`; pipeline broadcasts
+      `TranscriptEvent`s, Origin-checked, token via `?token=`); React UI consumes it (`useTranscript`).
+- [x] OpenAPI → TS codegen wired (`scripts/dump_openapi.py` → `web/openapi.json` → `openapi-typescript`;
+      `make codegen` + `make web-codegen-check`; the CI `web` job fails on drift).
+- [ ] Verify (Phase 1 exit): finals in UI < ~2–3 s; UI matches `transcript.md`; Me/Them correct; reopening a past
+      meeting loads segments from the DB. (Backend already validated on a real call; this is the UI half — needs a browser.)
+
+**Increment 6 — React UI (`web/`) — DONE (build/typecheck/serve verified; browser exit test is the Phase 1 verify above):**
+- [x] `web/` scaffold: Vite 8 + React 19 + TS strict; `web/.npmrc` (`ignore-scripts`+`save-exact`); pinned `package-lock.json`.
+- [x] One canonical typed fetch wrapper carrying the per-session token (native fetch, no Axios; `ApiError` from the
+      `{detail}` envelope, `AbortSignal.timeout`); TanStack Query + typed query-key factory + client-level
+      (`QueryCache`/`MutationCache`) error handlers.
+- [x] `openapi-typescript` codegen: `scripts/dump_openapi.py` → `web/openapi.json` → `web/src/api/schema.ts`; wired into
+      `make codegen`; `make web-codegen-check` + the CI `web` job fail on drift.
+- [x] Minimal single page: start/stop/delete a meeting; live transcript over the WS (`useTranscript` merges DB finals +
+      WS events, keyed by `(stream, start_s)`, partial replaced by its final); ASR model picker (`GET`/`PUT /api/asr/model`).
+- [x] Core serves the built bundle (`api/web.py`: `StaticFiles` for `/assets` + `GET /` injecting the token as
+      `window.__HEARSAY_TOKEN__` behind a per-response nonce) with a minimal CSP + security headers (API-only if unbuilt).
+- [x] Token delivery: served `index.html` gets the nonce'd inline token script; dev (Vite proxy) falls back to `?token=`.
 
 ## Phase 2 — Diarization (Them) + manual labeling + memory
 
