@@ -34,6 +34,9 @@ class DiarizationSettings(BaseModel):
     model_path: Path | None = None  # default: <models_dir>/<model filename>
     # Skip embedding utterances shorter than this (too little signal -> noisy voiceprint).
     min_embed_ms: int = 500
+    # Cosine similarity at/above which an utterance joins an existing speaker vs starting
+    # a new one (validated: same-speaker ~0.84, different ~0.2-0.33, so ~0.5 separates).
+    cluster_threshold: float = 0.5
 
 
 class VADSettings(BaseModel):

@@ -26,6 +26,7 @@ from hearsay.diarization import (
     resolve_embedding_model,
 )
 from hearsay.diarization import manager as diar_manager
+from hearsay.fusion import OnlineSpeakerClusterer
 
 _HAS_DEPS = (
     importlib.util.find_spec("onnxruntime") is not None
@@ -127,3 +128,22 @@ def test_embedder_discriminates_speakers(models_dir: Path, tmp_path: Path) -> No
     diff = float(np.dot(embedder.embed(jfk[:half]), embedder.embed(other)))
     assert same > 0.6  # same speaker (JFK halves) -- observed ~0.84
     assert same - diff > 0.2  # clearly separated from a different speaker (observed diff ~0.33)
+
+
+@needs_deps
+def test_clusterer_groups_real_speakers(models_dir: Path, tmp_path: Path) -> None:
+    """End-to-end: the embedder + online clusterer group real speech by speaker."""
+    embedder = build_embedder(Settings(models_dir=models_dir))
+    jfk = _load_wav(_JFK_URL, tmp_path / "jfk.wav")
+    other = _load_wav(_SPEAKER_B_URL, tmp_path / "english.wav")
+
+    clusterer = OnlineSpeakerClusterer(threshold=0.5)
+    third = len(jfk) // 3
+    for chunk in (jfk[:third], jfk[third : 2 * third], jfk[2 * third :]):
+        clusterer.assign(embedder.embed(chunk))
+    clusterer.assign(embedder.embed(other))
+
+    # JFK's three chunks collapse into one speaker; the other speaker stays separate.
+    assert len(clusterer.speakers) == 2
+    assert sorted(s.count for s in clusterer.speakers) == [1, 3]
+

@@ -7,20 +7,22 @@ Conventions: `CLAUDE.md`.
 ## How to resume
 
 **Status (2026-06-26):** Phases 0 + **Phase 1 MVP** are **complete** (merged to `main`, validated on a real
-meeting). **Phase 2 (diarization) is in progress** on `feat/phase-2-diarization`; **increments 1–2 are done**
-(uncommitted). Inc 1 (DB): `identities` + `clusters` (`ordinal`→"Speaker N", nullable `identity_id`, manual-lock,
-`centroid` voiceprint BLOB) + `segments.cluster_id`; migration `a69ee62a795b` (real DB migrated, zero drift);
-`SpeakerService`. Inc 2 (embedding seam): `diarization/` = `SpeakerEmbedder` protocol + torch-free
-`OnnxSpeakerEmbedder` (onnxruntime + kaldi-native-fbank reference features) + model registry/fetch; default
-model **wespeaker CAM++_LM** (CC-BY-4.0, ungated, 29 MB, 512-d) pinned by sha256; `DiarizationSettings`. Validated
-on real speech: **same-speaker cos 0.84 vs different-speaker 0.22–0.33** (clean separation). **98 tests; full
-`make ci` green** (licenses + audit clean: kaldi-native-fbank Apache-2.0).
+meeting). **Phase 2 (diarization) is in progress** on `feat/phase-2-diarization`; **increments 1–3 are done**
+(1–2 committed `de3d1c6`/`f1a7771`, 3 uncommitted). Inc 1 (DB): `identities` + `clusters` (`ordinal`→"Speaker N",
+nullable `identity_id`, manual-lock, `centroid` voiceprint BLOB) + `segments.cluster_id`; migration `a69ee62a795b`;
+`SpeakerService`. Inc 2 (embedding seam): torch-free `OnnxSpeakerEmbedder` (onnxruntime + kaldi-native-fbank
+reference features); default **wespeaker CAM++_LM** (CC-BY-4.0, ungated, 512-d, sha256-pinned); validated on real
+speech (same-speaker cos 0.84 vs different 0.22–0.33). Inc 3 (fusion): `fusion/` = pure-stdlib `OnlineSpeakerClusterer`
+(cosine + running centroid + threshold; first-appearance "Speaker N" ordinals; manual-lock `bind`; cross-meeting
+voiceprint `add_seed` pre-bind). End-to-end real-speech test: embedder + clusterer group JFK's 3 chunks → 1 speaker,
+other speaker separate. **110 tests; `mypy --strict` + ruff clean.**
 
-**Pick up here → Phase 2 increment 3 (fusion engine, `fusion/`).** Increments 1–2 are done + green. Next: pure
-online clustering of Them embeddings into stable "Speaker N" (cosine + running centroid + threshold ~0.5;
-manual-lock binding; cross-meeting pre-bind by voiceprint), then inc 4 wires it into the pipeline. See the
-Phase 2 increment breakdown under "Phase 2". (Optional Phase 1 belt-and-suspenders still open: a both-speakers
-run to watch Me/Them interleave live — mechanism proven, not yet exercised with both talking.)
+**Pick up here → Phase 2 increment 4 (pipeline integration).** Increments 1–3 are done + green. Next: wire the
+embedder + clusterer into `TranscriptionPipeline` — embed each finalized **Them** utterance (skip < `min_embed_ms`),
+`clusterer.assign` → resolve label (identity name or "Speaker N"), persist `clusters` rows + `segments.cluster_id`,
+and broadcast retroactive label upgrades over the WS. Me stays channel-labeled (never diarized). See the Phase 2
+increment breakdown under "Phase 2". (Optional Phase 1 belt-and-suspenders still open: a both-speakers run to watch
+Me/Them interleave live — mechanism proven, not yet exercised with both talking.)
 
 Docs: `README.md` + `docs/{architecture,pipeline,api,development}.md`. Design: the plan. IPC: `shared/protocol/ipc.md`.
 
@@ -76,6 +78,16 @@ uv run hearsay live --model base --seconds 60   # real pipeline -> live transcri
 
 ## Progress log
 
+- **2026-06-26** **Phase 2 increment 3 (fusion engine) done — pure online speaker clustering.** Built `fusion/`:
+  `OnlineSpeakerClusterer` (**pure stdlib, no numpy**, so it's dependency-free + fully CI-tested). Each Them
+  utterance embedding matches the nearest existing speaker by cosine to a running centroid; at/above `threshold`
+  (default 0.5, configurable via `DiarizationSettings.cluster_threshold`) it joins + updates the centroid, else
+  starts a new speaker. "Speaker N" ordinals by first appearance; `add_seed(identity, centroid)` recognizes a
+  returning person from a prior meeting (provisional naming on first utterance; an active speaker beats a seed);
+  `bind(ordinal, name)` manually labels + locks. +11 pure unit tests (distinct/same voices, threshold edges,
+  ordinals, centroid mean, seed pre-bind, lock) + a guarded **end-to-end real-speech test** (embedder + clusterer
+  group JFK's 3 chunks → 1 speaker, a different speaker stays separate → 2 speakers, counts [1, 3]). **110 pass;
+  `mypy --strict` + ruff clean.** On `feat/phase-2-diarization`, uncommitted. Next: inc 4 (wire into the pipeline).
 - **2026-06-26** **Phase 2 increment 2 (embedding seam) done — torch-free, validated on real speech.** Vetted the
   diarization stack live: **sherpa-onnx's macOS PyPI wheels are broken** (ship no onnxruntime dylib, cp313 +
   cp314 alike), so the torch-free path is **onnxruntime-direct**: a CC-BY-4.0 ONNX speaker embedder + **kaldi-native-fbank**
@@ -401,9 +413,10 @@ rename persists, locks the binding, and is suggested next meeting. Diarization i
       registry/fetch; default **wespeaker CAM++_LM** (CC-BY-4.0, ungated). Validated on real speech:
       same-speaker cos 0.84 vs different 0.22–0.33. **Done.** (Deferred: a deterministic stub embedder lands
       with the inc-3 fusion tests; the pyannote opt-in backend is unbuilt — `diarization-pyannote` extra reserved.)
-- [ ] **Inc 3 — Fusion engine** (`fusion/`): online clustering of Them embeddings → stable "Speaker N"
-      (cosine + running centroid + threshold); segment→cluster assignment; manual-lock binding; cross-meeting
-      pre-bind by voiceprint. Pure logic — unit-tested heavily with synthetic embeddings/timelines.
+- [x] **Inc 3 — Fusion engine** (`fusion/`): pure-stdlib `OnlineSpeakerClusterer` — cosine + running centroid +
+      threshold → stable first-appearance "Speaker N"; `bind` (manual lock) + `add_seed` (cross-meeting voiceprint
+      pre-bind). 11 pure unit tests + an end-to-end real-speech clustering test. **Done.** (segment→cluster
+      *persistence* + the channel split live in inc 4's pipeline wiring.)
 - [ ] **Inc 4 — Pipeline integration**: embed each finalized Them utterance → fusion → retroactive label
       upgrades over the WS + `segments.cluster_id`/`speaker_label` updated. Me never diarized (channel = identity).
 - [ ] **Inc 5 — API + UI**: list speakers/clusters; rename "Speaker N" → Identity (locks the binding); suggest
