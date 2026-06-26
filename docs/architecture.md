@@ -1,9 +1,9 @@
 # Architecture
 
-This document explains the implementation that exists today (the Phase 0 capture spike
-and the Phase 1 backend MVP): the process boundaries, why the system is split the way it
-is, and what each Python package does. For the real-time data flow see
-[pipeline.md](pipeline.md); for the HTTP/WebSocket surface see [api.md](api.md).
+This document explains the implementation that exists today (the Phase 0 capture spike, the
+Phase 1 backend MVP, and the Phase 2 diarization layer): the process boundaries, why the
+system is split the way it is, and what each Python package does. For the real-time data flow
+see [pipeline.md](pipeline.md); for the HTTP/WebSocket surface see [api.md](api.md).
 
 ## Why three processes
 
@@ -27,8 +27,8 @@ flowchart TB
   end
   subgraph Core["Python core (src/hearsay/)"]
     Sup["helper/ supervisor + channels"]
-    Pipe["transcript/ pipeline\nVAD -> ASR"]
-    DB[("SQLite\nmeetings + segments")]
+    Pipe["transcript/ pipeline\nVAD -> ASR (+ diarize Them)"]
+    DB[("SQLite\nmeetings + segments\n+ clusters + identities")]
     MD["transcript.md\n+ meeting.json"]
     API["api/ FastAPI + WebSocket\n127.0.0.1 + token"]
     Sup --> Pipe --> DB
@@ -67,10 +67,10 @@ CI, so the two codecs cannot drift.
 
 `settings.py` is one `pydantic-settings` object loaded once and injected via DI. Every
 tunable lives here: paths (`output_dir`, `models_dir`, `helper_path`),
-the database URL, the server host/port, and nested `asr` / `vad` groups. A model validator
-fills derived paths (e.g. the default SQLite URL and the Silero model path) so the rest of
-the code never computes them ad hoc. Reads `HEARSAY_`-prefixed env vars (nested via `__`,
-e.g. `HEARSAY_ASR__MODEL`).
+the database URL, the server host/port, and nested `asr` / `vad` / `diarization` groups. A
+model validator fills derived paths (e.g. the default SQLite URL and the Silero model path) so
+the rest of the code never computes them ad hoc. Reads `HEARSAY_`-prefixed env vars (nested via
+`__`, e.g. `HEARSAY_ASR__MODEL`, `HEARSAY_DIARIZATION__CLUSTER_THRESHOLD`).
 
 ### `enums.py`, `log.py` — shared primitives
 
@@ -112,23 +112,32 @@ PostgreSQL by swapping the URL.
   `created_at` / `updated_at`. `str_enum()` renders a `StrEnum` as a portable
   `VARCHAR` + `CHECK` storing the member *values*.
 - `models/meeting.py`, `models/segment.py` — `Meeting` (title, folder, status, started/ended)
-  and `Segment` (stream, speaker label, text, `start_s`/`end_s` meeting-relative seconds),
-  linked by a `meeting_id` FK with `ON DELETE CASCADE` and a `(meeting_id, start_s)` index.
-- `db/migrations/` — Alembic (async `env.py`, `render_as_batch` for SQLite). The baseline
-  revision is frozen; `alembic check` is run to confirm the models match it.
+  and `Segment` (stream, speaker label, text, `start_s`/`end_s` meeting-relative seconds, nullable
+  `cluster_id`), linked by a `meeting_id` FK with `ON DELETE CASCADE` and a `(meeting_id, start_s)`
+  index.
+- `models/cluster.py`, `models/identity.py` — `Cluster` (one diarized Them speaker per meeting:
+  `ordinal` → "Speaker N", optional `identity_id`, a manual-lock flag, a `centroid` voiceprint
+  BLOB, unique `(meeting_id, ordinal)`) and `Identity` (a cross-meeting person, unique
+  `display_name`). Binding a cluster relabels its segments and the identity is suggested next time.
+- `db/migrations/` — Alembic (async `env.py`, `render_as_batch` for SQLite; batch FK constraints
+  are named). `alembic check` confirms the models match the latest revision.
 
 ### `schemas/` — the API boundary
 
 Pydantic request/response models, kept separate from ORM models so the HTTP surface is
-validated and decoupled from storage: `MeetingCreate`/`MeetingRead`, `SegmentRead`, the
-generic paginated `Page[T]`, the `TranscriptEvent` (the WebSocket payload), and the ASR
-picker schemas (`ASRStatus`, `ASRSelect`).
+validated and decoupled from storage: `MeetingCreate`/`MeetingRead`, `SegmentRead` (carries the
+resolved `speaker_label` + its `cluster_id`), the generic paginated `Page[T]`, the
+`TranscriptEvent` (the WebSocket payload), the ASR picker schemas (`ASRStatus`, `ASRSelect`),
+and the speaker schemas (`SpeakerRead`, `SpeakerRename`, `IdentityRead`).
 
 ### `services/` — business logic
 
 `MeetingService` is the only place that reads/writes meetings + segments (routers call it and
 stay thin): create, get, paginated list, add-segment, finalize, cascade delete, plus the
 meeting-folder slug helper. Each method is a single logical write with one commit.
+`SpeakerService` owns clusters + identities: create/list clusters (identity eager-loaded),
+assign a segment to a cluster, `bind_cluster` (rename → get-or-create the identity, lock it, and
+bulk-relabel that cluster's segments), and list identities for suggestions.
 
 ### `transcript/` — orchestration
 
@@ -138,14 +147,19 @@ The heart of a running meeting.
   wraps `HelperSupervisor`: spawn the helper, send `start_capture`, expose the media channel,
   and tear down. The protocol is the seam that lets tests run the lifecycle without a helper.
 - `pipeline.py` — `TranscriptionPipeline`: one consumer task per stream that segments audio
-  (VAD), transcribes utterances off the event loop, and fans results out to DB +
-  `transcript.md` + WebSocket. See [pipeline.md](pipeline.md).
+  (VAD), transcribes utterances off the event loop, diarizes finalized **Them** utterances, and
+  fans results out to DB + `transcript.md` + WebSocket. See [pipeline.md](pipeline.md).
+- `diarizer.py` — `MeetingDiarizer` (one per meeting): wraps the speaker embedder + the online
+  clusterer + cluster-row persistence behind one async `resolve(utterance)` the pipeline calls
+  for Them finals (embed off-loop → assign → label → `cluster_id`); `bind(ordinal, name)` relays
+  a live rename. Me is never diarized.
 - `broadcast.py` — `Broadcaster`, an in-process pub/sub that fans JSON event strings to
   active WebSocket subscribers.
 - `session.py` — `MeetingSession` (one meeting: capture + pipeline + broadcaster) and
-  `SessionManager` (owns the single active session; lock-guarded start/stop/delete). The
-  manager injects the ASR/VAD/sink factories, so the real ML stack is built on demand and
-  tests inject fakes.
+  `SessionManager` (owns the single active session; lock-guarded start/stop/delete +
+  `relabel_speaker`, which binds in the DB and propagates the name to the live clusterer). The
+  manager injects the ASR/VAD/sink/embedder factories, so the real ML stack is built on demand
+  (the embedder factory degrades to `None` when no model is installed) and tests inject fakes.
 
 ### `vad/` — voice activity detection
 
@@ -166,6 +180,29 @@ The heart of a running meeting.
   friendly name (`large-v3-turbo`) to a backend-specific identifier (a GGML name vs an MLX
   Hugging Face repo); `available_models()` powers the picker.
 
+### `diarization/` — speaker embeddings (Them voiceprints)
+
+Torch-free by design, reusing the `onnxruntime` already vendored for VAD.
+
+- `base.py` — the `SpeakerEmbedder` protocol (`embed(samples) -> L2-normalized vector`) plus
+  `dim` / `model_id` (the model id tags stored centroids so a model change is detected).
+- `features.py` — `compute_fbank()`: 80-dim Kaldi filterbank via `kaldi-native-fbank` (the same
+  C++ extractor the models were trained with, so features are bit-identical — no torch) + the
+  per-utterance mean normalization the models expect.
+- `onnx_embedder.py` — `OnnxSpeakerEmbedder`: runs the embedding ONNX model on the CPU execution
+  provider (fbank `[1, T, 80]` in, a `[1, dim]` voiceprint out).
+- `manager.py` — the curated, license-vetted model registry (default **wespeaker CAM++_LM**,
+  CC-BY-4.0, ungated, 512-d), pinned + sha256-checked downloads, and `build_embedder()`. pyannote
+  stays an opt-in alternative behind the `diarization-pyannote` extra (pulls torch + a gated model).
+
+### `fusion/` — speaker clustering
+
+- `clustering.py` — `OnlineSpeakerClusterer`: **pure stdlib (no numpy)**, so it is dependency-free
+  and exhaustively unit-tested. Each Them voiceprint is matched to the nearest speaker by cosine
+  to a running centroid; at/above `threshold` it joins (updating the centroid), else it starts a
+  new speaker. "Speaker N" ordinals follow first appearance; `bind()` manually names + locks a
+  speaker; `add_seed()` recognizes a returning person from a prior meeting's voiceprint.
+
 ### `export/` — output sink
 
 - `base.py` — the `TranscriptSink` protocol (`open`/`append`/`finalize`) plus the
@@ -181,14 +218,15 @@ The heart of a running meeting.
   and the routers.
 - `security.py` / `deps.py` — Host + Origin allowlist, bearer-token checks, and Annotated DI
   dependencies (session, manager, token).
-- `meetings.py`, `asr.py`, `ws.py` — the meetings CRUD router, the ASR model picker, and the
+- `meetings.py`, `asr.py`, `speakers.py`, `ws.py` — the meetings CRUD router, the ASR model
+  picker, the speakers router (list speakers + rename → identity + list identities), and the
   live-transcript WebSocket.
 
 ### `cli.py` — the `hearsay` command
 
 `serve` (run the API), `live` (run the real pipeline and print transcripts — the on-device
-validation harness), `fetch-models` (download the Silero model), and `capture-debug` (the
-Phase 0 raw-audio dump).
+validation harness), `fetch-models` (download the Silero VAD + speaker-embedding models), and
+`capture-debug` (the Phase 0 raw-audio dump).
 
 ## Seams (build one, defer the rest)
 
@@ -200,6 +238,7 @@ This is what keeps the MVP small while the plausible futures stay cheap.
 | Capture | `transcript.capture.Capture` | `HelperCapture` (Swift helper) | test fakes |
 | VAD | `vad.base.VAD` | `SileroVAD` (onnxruntime) | whisper.cpp built-in VAD |
 | ASR | `asr.base.ASRBackend` | `WhisperCppBackend` | `MlxBackend` (built, opt-in), SpeechAnalyzer |
+| Embedder | `diarization.base.SpeakerEmbedder` | `OnnxSpeakerEmbedder` (onnxruntime) | pyannote (opt-in extra), voiceprint enrollment |
 | Output | `export.base.TranscriptSink` | `LocalMarkdownSink` | central API / object store |
 
 ## The Swift helper (summary)

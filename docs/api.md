@@ -94,8 +94,8 @@ Paginated, ordered by `start_s`. This is how a past meeting reloads from the DB.
 {
   "total": 2, "page": 1, "page_size": 200,
   "items": [
-    { "id": "a1...", "stream": "me",   "speaker_label": "Me",   "text": "What is this about?", "start_s": 8.0, "end_s": 9.1 },
-    { "id": "b2...", "stream": "them", "speaker_label": "Them", "text": "Your car is on its way.", "start_s": 28.4, "end_s": 30.0 }
+    { "id": "a1...", "stream": "me",   "speaker_label": "Me",       "cluster_id": null,    "text": "What is this about?", "start_s": 8.0, "end_s": 9.1 },
+    { "id": "b2...", "stream": "them", "speaker_label": "Speaker 1", "cluster_id": "c9...", "text": "Your car is on its way.", "start_s": 28.4, "end_s": 30.0 }
   ]
 }
 ```
@@ -142,6 +142,49 @@ curl -X PUT http://127.0.0.1:8137/api/asr/model \
 Body: `{ "model": "<name|path|repo>", "backend": "whispercpp" | "mlx" (optional) }`. Returns
 the updated `ASRStatus`.
 
+## Speakers and identities
+
+A diarized **Them** speaker is a *cluster*; renaming it binds the cluster to a cross-meeting
+*identity*. **Me** is the mic channel and is not a cluster.
+
+### `GET /api/meetings/{id}/speakers` — list a meeting's speakers
+
+Paginated. Each item is the cluster's resolved `label` (a bound name, else `Speaker N`).
+
+```json
+// 200 OK
+{
+  "total": 2, "page": 1, "page_size": 2,
+  "items": [
+    { "id": "c9...", "ordinal": 1, "label": "Alice",     "identity_id": "i7...", "locked": true },
+    { "id": "ca...", "ordinal": 2, "label": "Speaker 2", "identity_id": null,    "locked": false }
+  ]
+}
+```
+
+### `PUT /api/meetings/{id}/speakers/{cluster_id}` — rename a speaker
+
+Binds the cluster to an identity (get-or-create by name), **locks** it, and relabels that
+speaker's segments. If the meeting is active, the name also propagates to the live clusterer so
+subsequent utterances carry it. Returns the updated `SpeakerRead`; `404` if the cluster is not in
+the meeting, `422` if the name is blank.
+
+```sh
+curl -X PUT http://127.0.0.1:8137/api/meetings/$MID/speakers/$CID \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"display_name": "Alice"}'
+```
+
+### `GET /api/identities` — known people (rename suggestions)
+
+Paginated, most-recently-updated first. Powers the rename autocomplete — a name from one meeting
+is offered in the next.
+
+```json
+// 200 OK
+{ "total": 1, "page": 1, "page_size": 50, "items": [ { "id": "i7...", "display_name": "Alice", "email": null } ] }
+```
+
 ## WebSocket: live transcript
 
 ```
@@ -153,10 +196,12 @@ bad token or non-loopback Origin; connecting to a non-active meeting accepts the
 (`1000`). While connected, the server pushes one JSON `TranscriptEvent` per text frame:
 
 ```json
-{ "kind": "partial", "stream": "them", "speaker_label": "Them", "text": "your car is on its", "start_s": 28.4, "end_s": 29.2 }
-{ "kind": "final",   "stream": "them", "speaker_label": "Them", "text": "Your car is on its way.", "start_s": 28.4, "end_s": 30.0 }
+{ "kind": "partial", "stream": "them", "speaker_label": "Them",      "text": "your car is on its", "start_s": 28.4, "end_s": 29.2 }
+{ "kind": "final",   "stream": "them", "speaker_label": "Speaker 1", "text": "Your car is on its way.", "start_s": 28.4, "end_s": 30.0 }
 ```
 
 `partial` events stream during ongoing speech and are not persisted; `final` events are also
-written to the DB and `transcript.md`. Clients should render by `(stream, start_s)` and
-replace a stream's partial with the next final.
+written to the DB and `transcript.md`. Clients should render by `(stream, start_s)` and replace
+a stream's partial with the next final. **Me** is always `"Me"`; **Them** partials are the generic
+`"Them"`, while finals carry the diarized label (`Speaker N` or a bound name). After a rename,
+re-fetch `…/speakers` and `…/segments` to pick up the new labels.

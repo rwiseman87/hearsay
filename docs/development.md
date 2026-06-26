@@ -12,14 +12,14 @@ How to set up, build, run, test, and troubleshoot the project from source.
 ## Setup
 
 ```sh
-make sync                            # venv + base deps
-uv sync --extra asr                  # transcription stack: whisper.cpp + onnxruntime VAD (torch-free)
-swift build --package-path helper    # build hearsay-helper
-uv run hearsay fetch-models          # download the Silero VAD model into models_dir
+make sync                                  # venv + base deps
+uv sync --extra asr --extra diarization    # transcription + diarization (torch-free)
+swift build --package-path helper          # build hearsay-helper
+uv run hearsay fetch-models                # Silero VAD + the speaker-embedding model into models_dir
 ```
 
-The base install (no extras) is enough for the API and the test suite; the `asr` extra adds
-the ML stack needed to actually transcribe.
+The base install (no extras) is enough for the API and the test suite; the `asr` + `diarization`
+extras add the ML stack needed to transcribe and diarize.
 
 ## Make targets
 
@@ -103,7 +103,8 @@ The Phase 0 truth test: captures both streams for N seconds and writes `me.wav` 
 |---|---|---|
 | `asr` | pywhispercpp, onnxruntime, numpy (torch-free) | the default transcription path |
 | `accel` | mlx-whisper (pulls torch) | the opt-in MLX ASR backend |
-| `diarization` | pyannote-audio, onnxruntime | Phase 2 (Them diarization) |
+| `diarization` | onnxruntime, numpy, kaldi-native-fbank (torch-free) | Them speaker embeddings + clustering |
+| `diarization-pyannote` | pyannote-audio (pulls torch + a gated HF model) | opt-in max-accuracy diarizer |
 | `bedrock` | boto3 | Phase 4 (cloud LLM, lazy-imported) |
 
 **Swapping models.** ASR is swappable at runtime via config or the API. Set `asr.backend`
@@ -111,6 +112,13 @@ The Phase 0 truth test: captures both streams for N seconds and writes `me.wav` 
 (`large-v3-turbo`, `large-v3`, `base`), an absolute path to a GGML file, or a backend-specific
 identifier; `asr.manager.resolve_model()` maps curated names to the right form per backend.
 whisper.cpp models auto-download to `models_dir` on first use. See `GET/PUT /api/asr/model`.
+
+**Diarization.** The Them stream is clustered into Speaker 1..N from a torch-free ONNX voiceprint
+model (default `wespeaker-cam++-lm`, CC-BY-4.0, downloaded by `fetch-models`). Rename a speaker in
+the UI (or `PUT /api/meetings/{id}/speakers/{cluster_id}`) to bind a name that persists and is
+suggested next meeting. Tune merging with `HEARSAY_DIARIZATION__CLUSTER_THRESHOLD` (default `0.5`;
+higher = stricter), or turn it off with `HEARSAY_DIARIZATION__ENABLED=false` (Them stays a single
+label). pyannote is available as an opt-in backend via the `diarization-pyannote` extra.
 
 ## Configuration
 
@@ -125,6 +133,8 @@ All config flows through `hearsay.config.Settings`. Common overrides (env vars a
 | ASR model | `HEARSAY_ASR__MODEL` | `large-v3-turbo` |
 | ASR backend | `HEARSAY_ASR__BACKEND` | `whispercpp` |
 | VAD thresholds | `HEARSAY_VAD__THRESHOLD`, `HEARSAY_VAD__MIN_SILENCE_MS`, ... | see `config/settings.py` |
+| Diarization on/off | `HEARSAY_DIARIZATION__ENABLED` | `true` |
+| Speaker merge threshold | `HEARSAY_DIARIZATION__CLUSTER_THRESHOLD` | `0.5` |
 
 When run from source, all runtime data (recordings, the SQLite DB, downloaded models) lives
 under the repo's `outputs/` (gitignored). Override any path with the env vars above.
@@ -142,9 +152,11 @@ make test                 # Python + Swift cross-language self-test
 - The `Segmenter` and `MeetingService` are pure/in-memory and unit-tested directly.
 - API tests use Starlette's `TestClient` with a temp DB and a fake capture (no helper).
 - The pipeline is tested end to end with fakes (fake media + stub VAD + fake ASR).
-- Tests that need the real ML stack are **guarded**: the Silero tests skip unless
-  `onnxruntime` is installed (so they run after `uv sync --extra asr`); the helper
-  integration test skips unless the Swift binary is built.
+- The `fusion` clusterer is pure stdlib and unit-tested directly (no ML deps).
+- Tests that need the real ML stack are **guarded**: the Silero VAD and speaker-embedder tests
+  (incl. a real-speech speaker-discrimination test) skip unless `onnxruntime` + `kaldi-native-fbank`
+  are installed (they run after `uv sync --extra asr --extra diarization`); the helper integration
+  test skips unless the Swift binary is built.
 
 ## Troubleshooting
 
@@ -157,4 +169,8 @@ make test                 # Python + Swift cross-language self-test
   `--model`.
 - **"helper binary not found".** Build it: `swift build --package-path helper`. The default
   path is `helper/.build/debug/hearsay-helper` (override via `HEARSAY_HELPER_PATH`).
-- **Silero "model not found".** Run `uv run hearsay fetch-models`.
+- **Silero / speaker-embedding "model not found".** Run `uv run hearsay fetch-models`. Without the
+  embedding model, diarization degrades to a single `Them` label (capture still works).
+- **Speakers over- or under-merge.** Adjust `HEARSAY_DIARIZATION__CLUSTER_THRESHOLD` (default
+  `0.5`): raise it if distinct people collapse into one speaker, lower it if one person splits
+  into several.

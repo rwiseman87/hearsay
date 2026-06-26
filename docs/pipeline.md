@@ -2,7 +2,8 @@
 
 This document traces a single meeting from audio frames to a finished `transcript.md`. The
 orchestration lives in `transcript/` (`SessionManager` -> `MeetingSession` ->
-`TranscriptionPipeline`); the stages it drives live in `vad/`, `asr/`, `export/`, and `db/`.
+`TranscriptionPipeline`); the stages it drives live in `vad/`, `asr/`, `diarization/`,
+`fusion/`, `export/`, and `db/`.
 
 ## End-to-end flow
 
@@ -16,13 +17,16 @@ flowchart LR
     Seg["Segmenter (VAD)\nhysteresis -> utterances"]
     ASR["ASRBackend.transcribe\n(off-loop, serialized by a lock)"]
     Clean["_clean_text\ndrop [BLANK_AUDIO]/[Music]"]
+    Diar["MeetingDiarizer (Them finals)\nembed -> cluster -> Speaker N / name"]
     Seg --> ASR --> Clean
+    Clean -->|"final (Them)"| Diar
   end
   Cap -- media.sock --> MC --> Seg
-  Clean -->|final| DB[("DB: segments")]
+  Clean -->|"final (Me = channel label)"| DB[("DB: segments + clusters")]
+  Diar -->|"label + cluster_id"| DB
   Clean -->|final| MD["transcript.md (append)"]
   Clean -->|partial + final| WS["WebSocket broadcaster"]
-  DB -. "at stop: sorted rewrite" .-> MD
+  DB -. "at stop: sorted rewrite\n(resolved names)" .-> MD
 ```
 
 ## Lifecycle
@@ -92,22 +96,36 @@ Each emitted utterance is transcribed by the configured `ASRBackend`. Two import
 The joined text is passed through `_clean_text`, which drops clips whisper renders as a lone
 non-speech marker (`[BLANK_AUDIO]`, `[Music]`, `(buzzing)`).
 
-### 5. Fan-out: final vs partial
+### 5. Speaker attribution (Them)
+
+Me is the mic channel — labeled `Me`, never diarized. For a finalized **Them** utterance the
+`MeetingDiarizer` (one per meeting) resolves a speaker:
+
+- embed the utterance off the event loop (`SpeakerEmbedder`, a torch-free ONNX voiceprint),
+- `OnlineSpeakerClusterer.assign` matches it to the nearest speaker by cosine to a running
+  centroid (≥ `cluster_threshold` joins and updates the centroid, else it starts a new speaker;
+  ordinals follow first appearance), creating a `Cluster` row on first appearance,
+- the label becomes the bound identity's name, else `Speaker N`.
+
+Utterances shorter than `min_embed_ms` stay the generic `Them`; with no embedding model
+installed the pipeline degrades to `Them` for everything, so capture is never blocked.
+
+### 6. Fan-out: final vs partial
 
 - **Partial** (speech in progress): broadcast to the WebSocket only. Partials are a live,
-  best-effort preview; they are never persisted.
-- **Final** (utterance closed): broadcast to the WebSocket, persisted as a `Segment` row
-  (DB), and appended to `transcript.md`. The speaker label is `Me`/`Them` by channel in
-  Phase 1 (diarization of "Them" arrives in Phase 2).
+  best-effort preview; they are never persisted (and not embedded).
+- **Final** (utterance closed): broadcast to the WebSocket with its resolved label, persisted
+  as a `Segment` row (DB, with `cluster_id`), and appended to `transcript.md`.
 
-### 6. Finalize: ordered rewrite
+### 7. Finalize: ordered rewrite
 
 The live `transcript.md` is appended in **ASR-completion order**, which interleaves the two
 streams (a longer "Them" utterance can finish after a later "Me" one). At stop, the pipeline
 reads every segment back from the DB sorted by `start_s` and the sink **atomically rewrites**
 `transcript.md` in timestamp order (temp file + `os.replace`), grouping consecutive
-same-speaker segments under one `### HH:MM:SS — Speaker` header. The DB is the source of truth;
-the file is a durable projection of it.
+same-speaker segments under one `### HH:MM:SS — Speaker` header. Because renaming a speaker
+relabels that cluster's segments in the DB, this re-read **bakes resolved names** into the final
+file. The DB is the source of truth; the file is a durable projection of it.
 
 ## Design rationale
 
@@ -121,8 +139,8 @@ the file is a durable projection of it.
   finals keeps `transcript.md` corruption-free (complete, newline-terminated blocks) and the
   DB clean; the UI gets the live feel from the WebSocket.
 - **Why rewrite at finalize?** Live append cannot reorder past writes, but a meeting-relative
-  sort produces a readable final document. The same rewrite seam is where resolved speaker
-  names will be baked in once diarization lands.
+  sort produces a readable final document, and the re-read from the DB bakes in any speaker
+  names resolved (or renamed) during the meeting.
 
 ## Validation
 
@@ -130,4 +148,8 @@ The wiring is unit-tested end to end with a fake media channel + stub VAD + fake
 (`tests/test_pipeline.py`), asserting the segment persists, `transcript.md` contains it, and a
 final WebSocket event fires. The real stack is exercised on-device via `hearsay live` (see
 [development.md](development.md)); a real call confirmed Me/Them separation, ~1-2 s finals,
-and a correct `transcript.md`.
+and a correct `transcript.md`. Diarization is unit-tested too: a stub embedder drives two
+distinct Them speakers into `Speaker 1`/`Speaker 2` (Me stays by channel), an end-to-end test
+confirms a mid-meeting rename bakes into the finalized transcript, and the real embedder +
+clusterer are validated on actual speech (same-speaker cosine ~0.84 vs ~0.3 for a different
+speaker, so they cluster correctly).

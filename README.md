@@ -12,8 +12,9 @@ A hybrid, three-process app (Apple Silicon, macOS 14.4+):
 - **Swift helper** (`helper/`) — the only process touching guarded native APIs: a Core
   Audio process tap (system audio) + `AVAudioEngine` (mic), resampled to 16 kHz mono and
   stamped with one monotonic clock. Later phases add calendar + on-screen OCR name hints.
-- **Python core** (`src/hearsay/`) — VAD, ASR, the transcript pipeline, persistence,
-  Markdown output, and a loopback FastAPI + WebSocket API. Spawns and supervises the helper.
+- **Python core** (`src/hearsay/`) — VAD, ASR, diarization (speaker clustering), the transcript
+  pipeline, persistence, Markdown output, and a loopback FastAPI + WebSocket API. Spawns and
+  supervises the helper.
 - **Web UI** — a typed React frontend (Vite + React 19 + TanStack Query) served by the core at
   `/` with the session token injected; the native WKWebView window is a later phase.
 
@@ -24,8 +25,8 @@ languages validate in CI.
 ```mermaid
 flowchart LR
   Helper["Swift helper\nmic + system tap -> 16 kHz mono PCM"]
-  Core["Python core\nVAD -> ASR -> DB + transcript.md + WS"]
-  UI["Web UI (React)\nstart/stop + live transcript"]
+  Core["Python core\nVAD -> ASR + diarization -> DB + transcript.md + WS"]
+  UI["Web UI (React)\nstart/stop + live transcript + rename speakers"]
   Core -- "spawns + supervises" --> Helper
   Helper -- "media.sock (PCM) + control.sock (NDJSON)" --> Core
   Core -- "REST + WebSocket (127.0.0.1 + token)" --> UI
@@ -33,23 +34,25 @@ flowchart LR
 
 ## Status
 
-**Phase 1 MVP is built; the backend is validated on-device.** Capture (Me/Them
-separation), Silero VAD segmentation, whisper.cpp transcription, SQLite persistence,
-live `transcript.md`, and the loopback REST + WebSocket API all work end to end on a
-real call. The React UI (served by the core, OpenAPI-typed) builds and serves; the
-remaining Phase 1 step is the in-browser exit test on a live call. See
-[`docs/TODO.md`](docs/TODO.md) for the phase-by-phase tracker.
+**Phase 1 (MVP) is complete and validated on-device; Phase 2 (diarization) is
+code-complete.** Capture (Me/Them separation) → Silero VAD → whisper.cpp ASR → SQLite +
+live `transcript.md` + the loopback REST/WebSocket API + the React UI all work end to end.
+Phase 2 adds **speaker diarization of the Them stream**: each remote utterance is embedded
+(a torch-free ONNX voiceprint) and online-clustered into stable **Speaker 1..N**, which you
+can **rename to real people** in the UI — names persist and are suggested in later meetings.
+Me is the mic channel and is never diarized. The remaining Phase 2 step is the multi-person
+on-device verify. See [`docs/TODO.md`](docs/TODO.md) for the phase-by-phase tracker.
 
 ## Quickstart
 
 Prereqs: [`uv`](https://docs.astral.sh/uv/) and Swift (Command Line Tools is enough).
 
 ```sh
-make sync                            # create the venv + base deps (Python 3.14)
-uv sync --extra asr                  # transcription stack (whisper.cpp + onnxruntime VAD; torch-free)
-swift build --package-path helper    # build the capture helper
-uv run hearsay fetch-models          # download the Silero VAD model (~2 MB)
-(cd web && npm ci && npm run build)  # build the React UI bundle (web/dist), served by the core
+make sync                                  # create the venv + base deps (Python 3.14)
+uv sync --extra asr --extra diarization    # transcription + diarization stack (torch-free)
+swift build --package-path helper          # build the capture helper
+uv run hearsay fetch-models                # Silero VAD (~2 MB) + the speaker-embedding model (~30 MB)
+(cd web && npm ci && npm run build)        # build the React UI bundle (web/dist), served by the core
 ```
 
 Run the real pipeline and watch live transcripts (the on-device validation path):
@@ -90,9 +93,11 @@ src/hearsay/
   db/ models/  async SQLAlchemy engine/session + ORM models + Alembic migrations
   schemas/     Pydantic request/response models (the API boundary)
   services/    business logic (routers stay thin)
-  transcript/  orchestration: MeetingSession, capture seam, the transcription pipeline, broadcaster
+  transcript/  orchestration: MeetingSession, capture seam, pipeline, MeetingDiarizer, broadcaster
   vad/         VAD seam + streaming Segmenter + Silero (onnxruntime) backend
   asr/         ASRBackend seam + whisper.cpp / mlx backends + model manager
+  diarization/ speaker-embedding seam + ONNX backend (onnxruntime + kaldi-native-fbank) + model registry
+  fusion/      online speaker clustering (pure stdlib): voiceprints -> stable "Speaker N"
   export/      output Sink seam + local Markdown writer
   api/         FastAPI app, routers, WebSocket, loopback security, DI
   cli.py       the `hearsay` command (serve, live, fetch-models, capture-debug)
