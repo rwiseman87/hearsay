@@ -39,6 +39,10 @@ class DiarizationSettings(BaseModel):
     # new one. Clean-speech reference: same-speaker ~0.84, different ~0.2-0.33. Real-call
     # audio compresses that margin -- tune from the per-utterance cosines the diarizer logs.
     cluster_threshold: float = 0.5
+    # Post-meeting re-diarization (pyannote opt-in). When on, the Them track is recorded to
+    # <folder>/them.wav so `hearsay rediarize` can relabel speakers offline. Off by default
+    # (raw audio is otherwise not retained); needs the `diarization-pyannote` extra + an HF token.
+    refine: bool = False
 
 
 class VADSettings(BaseModel):

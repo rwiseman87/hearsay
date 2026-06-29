@@ -27,6 +27,7 @@ from hearsay.log import get_logger
 from hearsay.schemas import TranscriptEvent
 from hearsay.services import MeetingService
 from hearsay.transcript.broadcast import Broadcaster
+from hearsay.transcript.recorder import ThemAudioRecorder
 from hearsay.vad import VAD, Segmenter, Utterance
 
 if TYPE_CHECKING:
@@ -57,6 +58,7 @@ class TranscriptionPipeline:
         vad_factory: Callable[[], VAD],
         vad: VADSettings,
         diarizer: MeetingDiarizer | None = None,
+        them_recorder: ThemAudioRecorder | None = None,
         language: str | None = None,
     ) -> None:
         self._meeting_id = meeting_id
@@ -65,6 +67,7 @@ class TranscriptionPipeline:
         self._broadcaster = broadcaster
         self._asr = asr
         self._diarizer = diarizer
+        self._them_recorder = them_recorder
         self._language = language
         self._asr_lock = asyncio.Lock()
         self._tasks: list[asyncio.Task[None]] = []
@@ -111,6 +114,8 @@ class TranscriptionPipeline:
                     t0_s,
                     self._epoch_ns,
                 )
+            if stream is Stream.THEM and self._them_recorder is not None:
+                self._them_recorder.write(chunk.samples, t0_s=t0_s)
             for utterance in segmenter.push(chunk.samples, t0_s=t0_s):
                 await self._emit(stream, utterance)
 
@@ -194,6 +199,8 @@ class TranscriptionPipeline:
             final = segmenter.flush()
             if final is not None:
                 await self._emit(stream, final)
+        if self._them_recorder is not None:
+            self._them_recorder.close()
         # The live transcript was appended in ASR-completion order across two streams;
         # rewrite it once in timestamp order for the final, readable file.
         lines = await self._ordered_lines()

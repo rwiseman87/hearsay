@@ -17,7 +17,12 @@ from hearsay.export import LocalMarkdownSink, MeetingMeta
 from hearsay.helper.media_channel import AudioChunk
 from hearsay.models import Base
 from hearsay.services import MeetingService, SpeakerService
-from hearsay.transcript import Broadcaster, MeetingDiarizer, TranscriptionPipeline
+from hearsay.transcript import (
+    Broadcaster,
+    MeetingDiarizer,
+    ThemAudioRecorder,
+    TranscriptionPipeline,
+)
 from hearsay.transcript.pipeline import _clean_text
 
 FRAME = 160
@@ -171,6 +176,7 @@ async def test_pipeline_diarizes_them_and_labels_me_by_channel(tmp_path: Path) -
         threshold=0.5,
         min_embed_ms=0,
     )
+    recorder = ThemAudioRecorder(tmp_path / "mtg" / "them.wav")
     pipeline = TranscriptionPipeline(
         meeting_id=meeting.id,
         database=database,
@@ -180,6 +186,7 @@ async def test_pipeline_diarizes_them_and_labels_me_by_channel(tmp_path: Path) -
         vad_factory=StubVAD,
         vad=VADSettings(min_speech_ms=20, min_silence_ms=40, partial_ms=0),
         diarizer=diarizer,
+        them_recorder=recorder,
     )
     meta = MeetingMeta(
         id=meeting.id, title="T", started_at=datetime.now(UTC), folder=tmp_path / "mtg"
@@ -201,6 +208,9 @@ async def test_pipeline_diarizes_them_and_labels_me_by_channel(tmp_path: Path) -
     assert {s.speaker_label for s in them} == {"Speaker 1", "Speaker 2"}
     assert all(s.cluster_id is not None for s in them)
     assert sorted(c.ordinal for c in clusters) == [1, 2]
+    # The Them track was recorded for re-diarization (Me is never recorded).
+    assert recorder.path.exists() and recorder.start_offset_s == 0.0
+    assert not (tmp_path / "mtg" / "me.wav").exists()
 
 
 async def test_pipeline_without_diarizer_keeps_them_generic(tmp_path: Path) -> None:

@@ -6,6 +6,7 @@ from hearsay.transcript.broadcast import Broadcaster
 from hearsay.transcript.capture import Capture, HelperCapture
 from hearsay.transcript.diarizer import MeetingDiarizer
 from hearsay.transcript.pipeline import TranscriptionPipeline
+from hearsay.transcript.recorder import ThemAudioRecorder
 from hearsay.transcript.session import (
     MeetingSession,
     SessionBusyError,
@@ -20,5 +21,6 @@ __all__ = [
     "MeetingSession",
     "SessionBusyError",
     "SessionManager",
+    "ThemAudioRecorder",
     "TranscriptionPipeline",
 ]

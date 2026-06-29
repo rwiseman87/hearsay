@@ -13,6 +13,7 @@ import asyncio
 import shutil
 from collections.abc import Callable
 from datetime import UTC, datetime
+from pathlib import Path
 from uuid import UUID
 
 from hearsay.asr import ASRBackend, build_asr
@@ -28,6 +29,7 @@ from hearsay.transcript.broadcast import Broadcaster
 from hearsay.transcript.capture import Capture, HelperCapture
 from hearsay.transcript.diarizer import MeetingDiarizer
 from hearsay.transcript.pipeline import TranscriptionPipeline
+from hearsay.transcript.recorder import ThemAudioRecorder
 from hearsay.vad import VAD
 from hearsay.vad.silero import SileroVAD
 
@@ -154,7 +156,9 @@ class SessionManager:
     def active(self) -> MeetingSession | None:
         return self._active
 
-    def _make_pipeline_factory(self, meeting_id: UUID, broadcaster: Broadcaster) -> PipelineFactory:
+    def _make_pipeline_factory(
+        self, meeting_id: UUID, broadcaster: Broadcaster, folder: Path
+    ) -> PipelineFactory:
         def make() -> TranscriptionPipeline:
             embedder = self._embedder_factory()
             diarizer = (
@@ -168,6 +172,11 @@ class SessionManager:
                 if embedder is not None
                 else None
             )
+            them_recorder = (
+                ThemAudioRecorder(folder / "them.wav")
+                if self._settings.diarization.refine
+                else None
+            )
             return TranscriptionPipeline(
                 meeting_id=meeting_id,
                 database=self._db,
@@ -177,6 +186,7 @@ class SessionManager:
                 vad_factory=self._vad_factory,
                 vad=self._settings.vad,
                 diarizer=diarizer,
+                them_recorder=them_recorder,
                 language=self._settings.asr.language,
             )
 
@@ -204,7 +214,7 @@ class SessionManager:
                 meta=meta,
                 capture=self._capture_factory(),
                 broadcaster=broadcaster,
-                pipeline_factory=self._make_pipeline_factory(meeting.id, broadcaster),
+                pipeline_factory=self._make_pipeline_factory(meeting.id, broadcaster, meta.folder),
             )
             await session_obj.start()
             self._active = session_obj
