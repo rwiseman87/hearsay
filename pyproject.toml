@@ -74,6 +74,7 @@ exclude = ["src/hearsay/db/migrations/"]
 module = [
     "pywhispercpp.*",
     "pyannote.*",
+    "torch.*",
     "onnxruntime.*",
     "kaldi_native_fbank.*",
     "mlx_whisper.*",

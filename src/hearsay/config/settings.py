@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from pydantic import AliasChoices, BaseModel, Field, model_validator
+from pydantic import AliasChoices, BaseModel, Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from hearsay.enums import ASRBackendKind, DiarizationBackendKind, Environment
@@ -43,6 +43,12 @@ class DiarizationSettings(BaseModel):
     # <folder>/them.wav so `hearsay rediarize` can relabel speakers offline. Off by default
     # (raw audio is otherwise not retained); needs the `diarization-pyannote` extra + an HF token.
     refine: bool = False
+    # pyannote pipeline + auth for the refine pass (used only when `refine` is on and the
+    # `diarization-pyannote` extra is installed). hf_token defaults to None -> use the
+    # huggingface CLI login; device "cpu" is safe on Apple Silicon ("mps" is faster, opt-in).
+    pyannote_model: str = "pyannote/speaker-diarization-community-1"
+    hf_token: SecretStr | None = None
+    refine_device: str = "cpu"
 
 
 class VADSettings(BaseModel):

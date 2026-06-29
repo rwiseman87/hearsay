@@ -7,6 +7,7 @@ import json
 import secrets
 import socket
 from pathlib import Path
+from uuid import UUID
 
 import click
 import uvicorn
@@ -18,7 +19,14 @@ from hearsay.db import Database
 from hearsay.diarization import download_embedding_model, resolve_embedding_model
 from hearsay.helper import capture_debug as cd
 from hearsay.models import Base
-from hearsay.transcript import Broadcaster, HelperCapture, SessionManager
+from hearsay.services import MeetingService
+from hearsay.transcript import (
+    Broadcaster,
+    HelperCapture,
+    RefineError,
+    SessionManager,
+    rediarize_meeting,
+)
 from hearsay.transcript.capture import Capture
 from hearsay.vad.silero import download_silero_model
 
@@ -152,6 +160,58 @@ def live(seconds: float, model: str | None, synthetic: bool) -> None:
         code = asyncio.run(_run_live(settings, seconds, synthetic=synthetic))
     except KeyboardInterrupt:
         code = 0
+    if code != 0:
+        raise SystemExit(code)
+
+
+async def _resolve_meeting_id(database: Database, meeting_ref: str) -> UUID | None:
+    if meeting_ref == "latest":
+        async with database.session() as session:
+            meetings, _ = await MeetingService(session).list_meetings(page=1, page_size=1)
+        return meetings[0].id if meetings else None
+    return UUID(meeting_ref)  # format already validated by the command
+
+
+async def _run_rediarize(settings: Settings, meeting_ref: str) -> int:
+    database_url = settings.database_url
+    assert database_url is not None
+    database = Database(database_url)
+    try:
+        meeting_id = await _resolve_meeting_id(database, meeting_ref)
+        if meeting_id is None:
+            click.echo("no meetings found to rediarize", err=True)
+            return 1
+        result = await rediarize_meeting(meeting_id, database=database, settings=settings)
+    except RefineError as exc:
+        click.echo(f"rediarize failed: {exc}", err=True)
+        return 1
+    finally:
+        await database.dispose()
+    click.echo(
+        f"rediarized {result.meeting_id}: {result.speaker_count} speakers, "
+        f"{result.segments_relabeled} Them segments relabeled"
+    )
+    return 0
+
+
+@main.command()
+@click.argument("meeting_id")
+@click.option("--device", default=None, help="Override the pyannote device (cpu / mps).")
+def rediarize(meeting_id: str, device: str | None) -> None:
+    """Re-diarize a recorded meeting's Them track with pyannote and relabel its speakers.
+
+    MEETING_ID is a meeting UUID or the literal "latest" for the most recent meeting.
+    """
+    settings = Settings()
+    if device:
+        settings.diarization.refine_device = device
+    if meeting_id != "latest":
+        try:
+            UUID(meeting_id)
+        except ValueError:
+            click.echo(f"not a valid meeting id: {meeting_id}", err=True)
+            raise SystemExit(1) from None
+    code = asyncio.run(_run_rediarize(settings, meeting_id))
     if code != 0:
         raise SystemExit(code)
 

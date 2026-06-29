@@ -18,15 +18,29 @@ from hearsay.diarization.manager import (
     embedding_model_path,
     resolve_embedding_model,
 )
+from hearsay.diarization.offline import (
+    OfflineDiarizer,
+    PyannoteDiarizer,
+    SpeakerTurn,
+    assign_segment_speaker,
+    build_offline_diarizer,
+    order_speakers,
+)
 from hearsay.diarization.onnx_embedder import OnnxSpeakerEmbedder
 
 __all__ = [
     "KNOWN_EMBEDDING_MODELS",
     "EmbeddingModel",
+    "OfflineDiarizer",
     "OnnxSpeakerEmbedder",
+    "PyannoteDiarizer",
     "SpeakerEmbedder",
+    "SpeakerTurn",
+    "assign_segment_speaker",
     "build_embedder",
+    "build_offline_diarizer",
     "download_embedding_model",
     "embedding_model_path",
+    "order_speakers",
     "resolve_embedding_model",
 ]
