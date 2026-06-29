@@ -32,10 +32,12 @@ class DiarizationSettings(BaseModel):
     # A curated model name (see the embedding-model registry) or an absolute .onnx path.
     model: str = "wespeaker-cam++-lm"
     model_path: Path | None = None  # default: <models_dir>/<model filename>
-    # Skip embedding utterances shorter than this (too little signal -> noisy voiceprint).
-    min_embed_ms: int = 500
-    # Cosine similarity at/above which an utterance joins an existing speaker vs starting
-    # a new one (validated: same-speaker ~0.84, different ~0.2-0.33, so ~0.5 separates).
+    # Skip embedding utterances shorter than this: sub-second turns carry too little signal
+    # for a reliable voiceprint, so they stay generic "Them" rather than risk mis-attribution.
+    min_embed_ms: int = 1000
+    # Cosine similarity at/above which an utterance joins an existing speaker vs starting a
+    # new one. Clean-speech reference: same-speaker ~0.84, different ~0.2-0.33. Real-call
+    # audio compresses that margin -- tune from the per-utterance cosines the diarizer logs.
     cluster_threshold: float = 0.5
 
 

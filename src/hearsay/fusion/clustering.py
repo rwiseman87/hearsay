@@ -9,7 +9,9 @@ speaker's identity; cross-meeting voiceprints can pre-seed a speaker so a return
 person is recognized (provisionally) on their first utterance.
 
 Embeddings are plain ``Sequence[float]`` (the ONNX embedder's numpy vectors satisfy
-this), kept as the running sum so the centroid is the exact mean direction.
+this), kept as a duration-weighted running sum so the centroid is the weighted mean
+direction -- longer utterances carry more signal and a short noisy clip cannot tilt a
+speaker's voiceprint as much as a long clean one.
 """
 
 from __future__ import annotations
@@ -87,13 +89,15 @@ class OnlineSpeakerClusterer:
         """Register a known voiceprint so a returning speaker is recognized on first speech."""
         self._seeds.append(Seed(identity_key=identity_key, centroid=_unit(centroid)))
 
-    def assign(self, embedding: Sequence[float]) -> Assignment:
+    def assign(self, embedding: Sequence[float], *, weight: float = 1.0) -> Assignment:
+        # ``weight`` (the utterance duration in seconds) scales this embedding's pull on
+        # the centroid, so a long clean turn outweighs a short noisy one.
         # 1. Nearest established speaker wins if it clears the threshold.
         index, similarity = self._nearest(embedding, [s.centroid for s in self._speakers])
         if index >= 0 and similarity >= self.threshold:
             speaker = self._speakers[index]
             for i, value in enumerate(embedding):
-                speaker.sum_vec[i] += value
+                speaker.sum_vec[i] += weight * value
             speaker.count += 1
             return Assignment(speaker.ordinal, speaker.identity_key, False, similarity)
 
@@ -107,7 +111,7 @@ class OnlineSpeakerClusterer:
         speaker = Speaker(
             ordinal=self._next_ordinal,
             count=1,
-            sum_vec=list(embedding),
+            sum_vec=[weight * value for value in embedding],
             identity_key=identity,
         )
         self._next_ordinal += 1

@@ -61,6 +61,18 @@ def test_centroid_tracks_member_mean() -> None:
     assert abs(sum(x * x for x in centroid) - 1.0) < 1e-9  # unit-normalized
 
 
+def test_centroid_is_duration_weighted() -> None:
+    # MID_A joins A (cos 0.70 >= 0.5); a heavier MID_A pulls the centroid further toward it.
+    light = OnlineSpeakerClusterer(threshold=0.5)
+    light.assign(A, weight=1.0)
+    light.assign(MID_A, weight=1.0)
+    heavy = OnlineSpeakerClusterer(threshold=0.5)
+    heavy.assign(A, weight=1.0)
+    heavy.assign(MID_A, weight=5.0)
+    assert len(heavy.speakers) == 1
+    assert heavy.speakers[0].centroid[1] > light.speakers[0].centroid[1]
+
+
 def test_threshold_is_configurable() -> None:
     strict = OnlineSpeakerClusterer(threshold=0.8)
     strict.assign(A)

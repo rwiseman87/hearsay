@@ -14,11 +14,14 @@ from uuid import UUID
 
 from hearsay.db import Database
 from hearsay.fusion import OnlineSpeakerClusterer
+from hearsay.log import get_logger
 from hearsay.services import SpeakerService
 from hearsay.vad import Utterance
 
 if TYPE_CHECKING:
     from hearsay.diarization import SpeakerEmbedder
+
+_log = get_logger("hearsay.diarization")
 
 
 class MeetingDiarizer:
@@ -45,9 +48,20 @@ class MeetingDiarizer:
             return "Them", None  # too short to attribute a speaker reliably
         embedding = await asyncio.to_thread(self._embedder.embed, utterance.samples)
         # The clusterer is numpy-free; hand it plain floats (works for ndarray or list).
-        assignment = self._clusterer.assign([float(value) for value in embedding])
+        assignment = self._clusterer.assign(
+            [float(value) for value in embedding], weight=duration_ms / 1000.0
+        )
         cluster_id = await self._cluster_id_for(assignment.ordinal)
         label = assignment.identity_key or f"Speaker {assignment.ordinal}"
+        # One line per Them final: the cosine + new/joined verdict to tune cluster_threshold from.
+        _log.info(
+            "them diarized: dur=%.2fs speaker=%d new=%s cos=%.3f total_speakers=%d",
+            duration_ms / 1000.0,
+            assignment.ordinal,
+            assignment.is_new,
+            assignment.similarity,
+            len(self._clusterer.speakers),
+        )
         return label, cluster_id
 
     def bind(self, ordinal: int, display_name: str) -> None:
