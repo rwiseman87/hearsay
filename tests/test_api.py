@@ -117,6 +117,19 @@ def test_get_missing_meeting_404(client: TestClient) -> None:
     assert client.get(f"/api/meetings/{missing}", headers=AUTH).status_code == 404
 
 
+def test_rediarize_missing_meeting_404(client: TestClient) -> None:
+    missing = "00000000-0000-0000-0000-000000000000"
+    assert client.post(f"/api/meetings/{missing}/rediarize", headers=AUTH).status_code == 404
+
+
+def test_rediarize_without_recording_409(client: TestClient) -> None:
+    meeting_id = _start(client)["id"]
+    client.post(f"/api/meetings/{meeting_id}/stop", headers=AUTH)
+    # No them.wav was recorded (diarization.refine off), so re-diarize has nothing to read.
+    response = client.post(f"/api/meetings/{meeting_id}/rediarize", headers=AUTH)
+    assert response.status_code == 409
+
+
 def test_asr_models_lists_curated_with_default(client: TestClient) -> None:
     body = client.get("/api/asr/models", headers=AUTH).json()
     assert body["backend"] == "whispercpp"

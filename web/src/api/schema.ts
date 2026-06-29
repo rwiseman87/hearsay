@@ -108,6 +108,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/meetings/{meeting_id}/rediarize": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Rediarize
+         * @description Re-diarize the recorded Them track with pyannote and return the new speakers.
+         *
+         *     Slow (loads + runs pyannote); the heavy work is off-loop. 404 if the meeting is
+         *     unknown, 409 if it has no recorded ``them.wav`` (diarization.refine was off).
+         */
+        post: operations["rediarize_api_meetings__meeting_id__rediarize_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/meetings/{meeting_id}/segments": {
         parameters: {
             query?: never;
@@ -609,6 +632,37 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    rediarize_api_meetings__meeting_id__rediarize_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                meeting_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Page_SpeakerRead_"];
+                };
             };
             /** @description Validation Error */
             422: {

@@ -86,6 +86,24 @@ export function useRenameSpeaker(meetingId: string) {
   });
 }
 
+// Post-meeting pyannote re-diarization. Slow, so it gets a long timeout; on success
+// the transcript + speaker labels are rewritten server-side, so refresh both trees.
+const REDIARIZE_TIMEOUT_MS = 600_000;
+
+export function useRediarize(meetingId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () =>
+      api.post<PageSpeaker>(`/api/meetings/${meetingId}/rediarize`, undefined, {
+        timeoutMs: REDIARIZE_TIMEOUT_MS,
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: queryKeys.meetings.all });
+      qc.invalidateQueries({ queryKey: queryKeys.identities.all });
+    },
+  });
+}
+
 export function useAsrStatus() {
   return useQuery({
     queryKey: queryKeys.asr.status,

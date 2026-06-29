@@ -562,9 +562,12 @@ rename persists, locks the binding, and is suggested next meeting. Diarization i
         offset sidecar → diarize off-thread → map → relabel → rewrite `transcript.md` via the finalize path); recorder
         now writes a `them.json` offset sidecar for out-of-process runs. CLI `hearsay rediarize <id|latest>`. +7 tests
         (mapping + end-to-end relabel with a stub diarizer + sidecar). **130 pass; full `make ci` green.**
-  - [ ] **7d — API endpoint + UI button** (deferred): `POST /meetings/{id}/rediarize` + a "Refine speakers" button so
-        the whole flow runs in the browser. (The CLI already enables on-device validation.) Also TBD: them.wav
-        retention/cleanup policy (kept for now so refine is re-runnable; `delete-meeting` removes the folder).
+  - [x] **7d — API endpoint + UI button** — **Done.** `POST /api/meetings/{id}/rediarize` (thin: 404 unknown / 409 no
+        them.wav / returns the new `Page[SpeakerRead]`; heavy pyannote work stays off-loop) + a "Refine speakers" button
+        on the finalized transcript header (`useRediarize`, 10-min client timeout, inline error, invalidates the
+        meetings + identities query trees). OpenAPI→TS regenerated; +2 API tests (404/409). web tsc + vite build green.
+        Still TBD: them.wav retention/cleanup policy (kept for now so refine is re-runnable; `delete-meeting` removes
+        the folder).
   - [ ] **7e — On-device validation (NEEDS THE USER)**: capture a real meeting with `HEARSAY_DIARIZATION__REFINE=true`,
         run `hearsay rediarize latest`, confirm the transcript's Them speakers are cleanly separated.
 

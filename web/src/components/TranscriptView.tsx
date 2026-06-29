@@ -1,4 +1,4 @@
-import { useStopMeeting } from "../api/hooks";
+import { useRediarize, useStopMeeting } from "../api/hooks";
 import type { MeetingRead } from "../api/types";
 import { useTranscript } from "../hooks/useTranscript";
 import { SpeakerPanel } from "./SpeakerPanel";
@@ -18,6 +18,7 @@ interface Props {
 
 export function TranscriptView({ meeting }: Props) {
   const stop = useStopMeeting();
+  const rediarize = useRediarize(meeting?.id ?? "");
   const lines = useTranscript(meeting);
 
   if (!meeting) {
@@ -39,9 +40,19 @@ export function TranscriptView({ meeting }: Props) {
             {stop.isPending ? "Stopping…" : "Stop"}
           </button>
         ) : (
-          <span className="badge badge--finalized">finalized</span>
+          <div className="transcript__actions">
+            <span className="badge badge--finalized">finalized</span>
+            <button type="button" onClick={() => rediarize.mutate()} disabled={rediarize.isPending}>
+              {rediarize.isPending ? "Refining…" : "Refine speakers"}
+            </button>
+          </div>
         )}
       </header>
+      {rediarize.isError ? (
+        <p className="transcript__error" role="alert">
+          {(rediarize.error as Error).message}
+        </p>
+      ) : null}
       <SpeakerPanel meetingId={meeting.id} />
       <ol className="transcript__lines">
         {lines.map((line) => (

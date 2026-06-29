@@ -62,7 +62,8 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
 
 export const api = {
   get: <T>(path: string, signal?: AbortSignal): Promise<T> => request<T>(path, { signal }),
-  post: <T>(path: string, body?: unknown): Promise<T> => request<T>(path, { method: "POST", body }),
+  post: <T>(path: string, body?: unknown, opts?: { timeoutMs?: number }): Promise<T> =>
+    request<T>(path, { method: "POST", body, timeoutMs: opts?.timeoutMs }),
   put: <T>(path: string, body?: unknown): Promise<T> => request<T>(path, { method: "PUT", body }),
   delete: <T>(path: string): Promise<T> => request<T>(path, { method: "DELETE" }),
 };

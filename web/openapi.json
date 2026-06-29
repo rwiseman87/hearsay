@@ -812,6 +812,50 @@
         ]
       }
     },
+    "/api/meetings/{meeting_id}/rediarize": {
+      "post": {
+        "description": "Re-diarize the recorded Them track with pyannote and return the new speakers.\n\nSlow (loads + runs pyannote); the heavy work is off-loop. 404 if the meeting is\nunknown, 409 if it has no recorded ``them.wav`` (diarization.refine was off).",
+        "operationId": "rediarize_api_meetings__meeting_id__rediarize_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "meeting_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Meeting Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_SpeakerRead_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Rediarize",
+        "tags": [
+          "speakers"
+        ]
+      }
+    },
     "/api/meetings/{meeting_id}/segments": {
       "get": {
         "operationId": "list_segments_api_meetings__meeting_id__segments_get",
