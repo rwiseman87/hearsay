@@ -72,6 +72,20 @@ class SpeakerService:
         await self._session.refresh(cluster, ["identity"])
         return cluster
 
+    async def known_voiceprints(self, *, exclude_meeting_id: UUID) -> list[tuple[str, bytes]]:
+        """(name, centroid) for every person named + locked in another meeting with a stored
+        voiceprint -- the candidates a refine matches a returning speaker against."""
+        rows = await self._session.execute(
+            select(Identity.display_name, Cluster.centroid)
+            .join(Cluster, Cluster.identity_id == Identity.id)
+            .where(
+                Cluster.locked.is_(True),
+                Cluster.centroid.is_not(None),
+                Cluster.meeting_id != exclude_meeting_id,
+            )
+        )
+        return [(name, centroid) for name, centroid in rows if centroid is not None]
+
     async def apply_diarization(
         self,
         meeting_id: UUID,
@@ -79,15 +93,24 @@ class SpeakerService:
         segment_ordinals: dict[UUID, int | None],
         speaker_count: int,
         ordinal_names: dict[int, str] | None = None,
+        ordinal_centroids: dict[int, bytes] | None = None,
+        recognized: dict[int, str] | None = None,
     ) -> None:
         """Replace a meeting's clusters with a fresh "Speaker 1..N" set and relabel its Them
-        segments (one transaction). Used by the post-meeting pyannote refine. ``ordinal_names``
-        carries manual renames forward: a named ordinal keeps that locked identity + label
-        instead of "Speaker N", so a re-diarize never overrides a manual binding (a guardrail)."""
+        segments (one transaction). Used by the post-meeting pyannote refine.
+
+        ``ordinal_names`` carries manual renames forward (locked, so a re-diarize never
+        overrides a manual binding -- a guardrail). ``recognized`` auto-names a speaker whose
+        voiceprint matched a person from a prior meeting, bound but *not* locked (a manual
+        rename can still override). ``ordinal_centroids`` stores each speaker's voiceprint so
+        a later meeting can recognize them. Precedence: manual name > recognized > "Speaker N"."""
         names = ordinal_names or {}
+        autos = {o: n for o, n in (recognized or {}).items() if o not in names}
+        centroids = ordinal_centroids or {}
         await self._session.execute(delete(Cluster).where(Cluster.meeting_id == meeting_id))
         clusters = {
-            n: Cluster(meeting_id=meeting_id, ordinal=n) for n in range(1, speaker_count + 1)
+            n: Cluster(meeting_id=meeting_id, ordinal=n, centroid=centroids.get(n))
+            for n in range(1, speaker_count + 1)
         }
         self._session.add_all(clusters.values())
         await self._session.flush()  # assign cluster ids without ending the transaction
@@ -95,16 +118,17 @@ class SpeakerService:
             identity = await self._get_or_create_identity(name)
             clusters[named_ordinal].identity_id = identity.id
             clusters[named_ordinal].locked = True
+        for auto_ordinal, name in autos.items():
+            identity = await self._get_or_create_identity(name)
+            clusters[auto_ordinal].identity_id = identity.id  # provisional: leave unlocked
         await self._session.flush()
         for segment_id, ordinal in segment_ordinals.items():
             values: dict[str, str | UUID | None]
             if ordinal is None:
                 values = {"speaker_label": "Them", "cluster_id": None}
             else:
-                values = {
-                    "speaker_label": names.get(ordinal) or f"Speaker {ordinal}",
-                    "cluster_id": clusters[ordinal].id,
-                }
+                label = names.get(ordinal) or autos.get(ordinal) or f"Speaker {ordinal}"
+                values = {"speaker_label": label, "cluster_id": clusters[ordinal].id}
             await self._session.execute(
                 update(Segment).where(Segment.id == segment_id).values(**values)
             )

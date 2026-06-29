@@ -49,6 +49,9 @@ class DiarizationSettings(BaseModel):
     pyannote_model: str = "pyannote/speaker-diarization-community-1"
     hf_token: SecretStr | None = None
     refine_device: str = "cpu"
+    # Cosine at/above which a refined speaker's voiceprint is auto-matched to a person named
+    # in a previous meeting. Conservative (a wrong cross-meeting match is worse than none).
+    recognition_threshold: float = 0.6
 
 
 class VADSettings(BaseModel):

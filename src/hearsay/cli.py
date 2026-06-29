@@ -25,6 +25,7 @@ from hearsay.transcript import (
     HelperCapture,
     RefineError,
     SessionManager,
+    build_recognition_embedder,
     rediarize_meeting,
 )
 from hearsay.transcript.capture import Capture
@@ -181,7 +182,10 @@ async def _run_rediarize(settings: Settings, meeting_ref: str) -> int:
         if meeting_id is None:
             click.echo("no meetings found to rediarize", err=True)
             return 1
-        result = await rediarize_meeting(meeting_id, database=database, settings=settings)
+        embedder = build_recognition_embedder(settings)
+        result = await rediarize_meeting(
+            meeting_id, database=database, settings=settings, embedder=embedder
+        )
     except RefineError as exc:
         click.echo(f"rediarize failed: {exc}", err=True)
         return 1

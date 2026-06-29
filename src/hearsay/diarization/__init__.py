@@ -27,6 +27,11 @@ from hearsay.diarization.offline import (
     order_speakers,
 )
 from hearsay.diarization.onnx_embedder import OnnxSpeakerEmbedder
+from hearsay.diarization.voiceprint import (
+    centroid_from_bytes,
+    centroid_to_bytes,
+    match_identity,
+)
 
 __all__ = [
     "KNOWN_EMBEDDING_MODELS",
@@ -39,8 +44,11 @@ __all__ = [
     "assign_segment_speaker",
     "build_embedder",
     "build_offline_diarizer",
+    "centroid_from_bytes",
+    "centroid_to_bytes",
     "download_embedding_model",
     "embedding_model_path",
+    "match_identity",
     "order_speakers",
     "resolve_embedding_model",
 ]

@@ -7,7 +7,12 @@ from hearsay.transcript.capture import Capture, HelperCapture
 from hearsay.transcript.diarizer import MeetingDiarizer
 from hearsay.transcript.pipeline import TranscriptionPipeline
 from hearsay.transcript.recorder import ThemAudioRecorder
-from hearsay.transcript.refine import RefineError, RefineResult, rediarize_meeting
+from hearsay.transcript.refine import (
+    RefineError,
+    RefineResult,
+    build_recognition_embedder,
+    rediarize_meeting,
+)
 from hearsay.transcript.session import (
     MeetingSession,
     SessionBusyError,
@@ -26,5 +31,6 @@ __all__ = [
     "SessionManager",
     "ThemAudioRecorder",
     "TranscriptionPipeline",
+    "build_recognition_embedder",
     "rediarize_meeting",
 ]

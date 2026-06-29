@@ -91,6 +91,18 @@ uv run hearsay live --model base --seconds 60   # real pipeline -> live transcri
 
 ## Progress log
 
+- **2026-06-29** **Cross-meeting voiceprint recognition — a returning person is auto-named from their voiceprint.**
+  Closes the diarization vision ("embeddings double as the cross-meeting voiceprint"). No migration — reuses the
+  existing `clusters.centroid` BLOB. New pure-stdlib `diarization/voiceprint.py` (float32 (de)serialize +
+  cosine `match_identity`, fully CI-tested). `rediarize_meeting` gains an injected `embedder`: it embeds each pyannote
+  speaker's concatenated audio (`OnnxSpeakerEmbedder`, off-loop, capped 12 s), stores the centroid on the cluster, and
+  matches against `SpeakerService.known_voiceprints` (locked+named clusters from *other* meetings) at
+  `recognition_threshold` (0.6, conservative). `apply_diarization` stores centroids + auto-binds a recognized speaker
+  **provisionally (not locked)** so a manual rename still wins, and only **locked** (manually confirmed) voiceprints
+  seed future recognition (no auto-recognition drift). CLI + API build the embedder and pass it (graceful `None` when
+  the model is absent → recognition off, current behavior). +5 tests (4 pure + an end-to-end "name Alice in M1 →
+  auto-recognized in M2, provisional/unlocked"). **138 pass; full `make ci` green.** Uncommitted on
+  `feat/phase-2-diarization`.
 - **2026-06-29** **Re-diarize now preserves manual renames (guardrail fix).** On-device, `rediarize` relabeled a real
   multi-person clip "more or less correctly"; the user asked how a manual rename survives a re-run. It didn't —
   `apply_diarization` deleted all clusters and recreated plain "Speaker N", wiping locked identities (violates the

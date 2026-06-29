@@ -11,11 +11,17 @@ from array import array
 from datetime import UTC, datetime
 from pathlib import Path
 
+import numpy as np
 from sqlalchemy import create_engine as create_sync_engine
 
 from hearsay.config.settings import Settings
 from hearsay.db import Database
-from hearsay.diarization import SpeakerTurn, assign_segment_speaker, order_speakers
+from hearsay.diarization import (
+    SpeakerTurn,
+    assign_segment_speaker,
+    centroid_to_bytes,
+    order_speakers,
+)
 from hearsay.enums import Stream
 from hearsay.models import Base
 from hearsay.services import MeetingService, SpeakerService
@@ -168,3 +174,71 @@ async def test_rediarize_preserves_manual_rename(tmp_path: Path) -> None:
     alice_cluster = next(c for c in clusters if c.ordinal == 1)
     assert alice_cluster.locked and alice_cluster.identity is not None
     assert alice_cluster.identity.display_name == "Alice"
+
+
+class StubEmbedder:
+    """Maps a clip to [1,0] or [0,1] by the sign of its mean, so regions are separable."""
+
+    dim = 2
+    model_id = "stub"
+
+    def embed(self, samples: object) -> object:
+        mean = float(np.mean(samples)) if len(samples) else 0.0  # type: ignore[arg-type]
+        return np.array([1.0, 0.0] if mean >= 0.0 else [0.0, 1.0], dtype="float32")
+
+
+def _write_two_region_wav(path: Path) -> None:
+    # 0-4s at +0.5 (speaker x), 4-6s at -0.5 (speaker y) -> the StubEmbedder separates them.
+    a = np.full(4 * 16_000, 0.5, dtype="float32")
+    b = np.full(2 * 16_000, -0.5, dtype="float32")
+    pcm = (np.concatenate([a, b]) * 32_767).astype("int16")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with wave.open(str(path), "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(16_000)
+        wav.writeframes(pcm.tobytes())
+
+
+async def test_rediarize_recognizes_returning_speaker(tmp_path: Path) -> None:
+    database = _make_db(tmp_path)
+    settings = Settings()
+    settings.output_dir = tmp_path
+
+    # Meeting 1: "Alice" was named, with a stored voiceprint of [1, 0].
+    async with database.session() as session:
+        speakers = SpeakerService(session)
+        m1 = await MeetingService(session).create(
+            title="M1", folder="m1", started_at=datetime.now(UTC)
+        )
+        cluster = await speakers.create_cluster(m1.id, ordinal=1)
+        await speakers.bind_cluster(cluster.id, display_name="Alice")
+        cluster.centroid = centroid_to_bytes([1.0, 0.0])
+        await session.commit()
+
+    # Meeting 2: a fresh recording whose first speaker (region +0.5) is really Alice.
+    async with database.session() as session:
+        meetings = MeetingService(session)
+        m2 = await meetings.create(title="M2", folder="m2", started_at=datetime.now(UTC))
+        for start, end in [(0.0, 4.0), (4.0, 6.0)]:
+            await meetings.add_segment(
+                m2.id, stream=Stream.THEM, speaker_label="Them", text="x", start_s=start, end_s=end
+            )
+    _write_two_region_wav(tmp_path / "m2" / "them.wav")
+    stub = StubDiarizer([SpeakerTurn("SPEAKER_x", 0.0, 4.0), SpeakerTurn("SPEAKER_y", 4.0, 6.0)])
+
+    await rediarize_meeting(
+        m2.id, database=database, settings=settings, diarizer=stub, embedder=StubEmbedder()
+    )
+
+    async with database.session() as session:
+        segments, _ = await MeetingService(session).list_segments(m2.id, page=1, page_size=100)
+        clusters = await SpeakerService(session).list_clusters(m2.id)
+    await database.dispose()
+
+    them = sorted(segments, key=lambda s: s.start_s)
+    assert them[0].speaker_label == "Alice"  # recognized across meetings by voiceprint
+    assert them[1].speaker_label == "Speaker 2"  # the other speaker is unknown
+    alice = next(c for c in clusters if c.ordinal == 1)
+    assert alice.identity is not None and alice.identity.display_name == "Alice"
+    assert not alice.locked  # auto-recognition is provisional; a manual rename still wins
