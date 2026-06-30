@@ -11,6 +11,11 @@ let infoPlistPath = URL(fileURLWithPath: #filePath)
 let package = Package(
     name: "hearsay-helper",
     platforms: [.macOS("14.4")],
+    dependencies: [
+        // On-device AI on the Apple Neural Engine (Apache-2.0). Used only by the
+        // batch `hearsay-diarize` tool; the capture executable stays dependency-free.
+        .package(url: "https://github.com/FluidInference/FluidAudio.git", exact: "0.15.4")
+    ],
     targets: [
         .target(name: "HearsayIPC"),
         .executableTarget(
@@ -37,5 +42,15 @@ let package = Package(
         ),
         // Unit + cross-language checks run via `hearsay-helper selftest` (works with
         // Command Line Tools; `swift test`/XCTest needs full Xcode).
+        //
+        // Post-meeting offline diarization on the ANE (FluidAudio's pyannote
+        // community-1 CoreML pipeline). A one-shot batch tool: reads a wav, prints
+        // JSON speaker turns, exits. The Python core invokes it as a subprocess for
+        // `hearsay rediarize` (replaces the torch/pyannote refine). Kept a separate
+        // target so the heavy CoreML dep never touches the lean capture binary.
+        .executableTarget(
+            name: "hearsay-diarize",
+            dependencies: [.product(name: "FluidAudio", package: "FluidAudio")]
+        ),
     ]
 )

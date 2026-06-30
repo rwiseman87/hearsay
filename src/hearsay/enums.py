@@ -44,6 +44,16 @@ class DiarizationBackendKind(StrEnum):
     PYANNOTE = "pyannote"  # opt-in; pulls torch + a gated HF model (see docs)
 
 
+class OfflineDiarizerKind(StrEnum):
+    """Which offline (post-meeting) diarizer relabels the recorded Them track."""
+
+    # FluidAudio pyannote community-1 CoreML, run on the ANE via the hearsay-diarize
+    # helper (default; torch-free, ungated -- no HF token).
+    FLUIDAUDIO = "fluidaudio"
+    # In-process pyannote (opt-in; pulls torch + needs a gated HF model).
+    PYANNOTE = "pyannote"
+
+
 class SampleFormat(StrEnum):
     INT16 = "int16"
     FLOAT32 = "float32"

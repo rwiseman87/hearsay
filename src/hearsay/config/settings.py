@@ -7,7 +7,12 @@ from pathlib import Path
 from pydantic import AliasChoices, BaseModel, Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from hearsay.enums import ASRBackendKind, DiarizationBackendKind, Environment
+from hearsay.enums import (
+    ASRBackendKind,
+    DiarizationBackendKind,
+    Environment,
+    OfflineDiarizerKind,
+)
 
 # Local-first run-from-source layout: recordings, the SQLite DB, and models all live
 # under the repo's outputs/ (gitignored). Packaging (Phase 5) can repoint these.
@@ -54,9 +59,15 @@ class DiarizationSettings(BaseModel):
     # Privacy tradeoff: this retains raw audio by default -- set False to opt out (delete-meeting
     # also removes the folder).
     refine: bool = True
-    # pyannote pipeline + auth for the refine pass (used only when `refine` is on and the
-    # `diarization-pyannote` extra is installed). hf_token defaults to None -> use the
-    # huggingface CLI login; device "cpu" is safe on Apple Silicon ("mps" is faster, opt-in).
+    # Which offline diarizer runs the refine. Default `fluidaudio` runs FluidAudio's
+    # pyannote community-1 CoreML on the ANE via the `hearsay-diarize` helper (torch-free,
+    # ungated -- no HF token). `pyannote` is the in-process torch path (needs the
+    # `diarization-pyannote` extra + an HF login; the `pyannote_model`/`hf_token`/
+    # `refine_device` fields below apply only to it).
+    offline_backend: OfflineDiarizerKind = OfflineDiarizerKind.FLUIDAUDIO
+    # pyannote pipeline + auth for the refine pass (used only when `offline_backend` is
+    # `pyannote` and the `diarization-pyannote` extra is installed). hf_token defaults to None
+    # -> use the huggingface CLI login; device "cpu" is safe on Apple Silicon ("mps" opt-in).
     pyannote_model: str = "pyannote/speaker-diarization-community-1"
     hf_token: SecretStr | None = None
     refine_device: str = "cpu"

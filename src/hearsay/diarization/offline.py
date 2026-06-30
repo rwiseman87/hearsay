@@ -10,11 +10,17 @@ the refine orchestration be unit-tested with a stub.
 
 from __future__ import annotations
 
+import json
+import subprocess
+import tempfile
 import warnings
+import wave
 from collections.abc import Sequence
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
+from hearsay.enums import OfflineDiarizerKind
 from hearsay.log import get_logger
 
 if TYPE_CHECKING:
@@ -125,9 +131,68 @@ class PyannoteDiarizer:
         return turns
 
 
+class FluidAudioDiarizer:
+    """FluidAudio's pyannote community-1 CoreML diarizer, run on the ANE via the helper.
+
+    Offline inference lives in the Swift ``hearsay-diarize`` tool (it owns the CoreML/ANE
+    work + auto-downloads ungated models); this adapter runs it as a subprocess and parses
+    its JSON speaker turns. Torch-free and ungated -- no HF token, no ~2 GB torch. FluidAudio's
+    loader is file-based, so the samples are written to a temporary WAV for the tool to read.
+    """
+
+    def __init__(self, *, binary_path: Path) -> None:
+        self._binary_path = binary_path
+
+    def diarize(self, samples: Sequence[float], *, sample_rate: int) -> list[SpeakerTurn]:
+        import numpy as np  # noqa: PLC0415 (optional dep; only present when refining)
+
+        if not self._binary_path.exists():
+            raise RuntimeError(
+                f"hearsay-diarize not found at {self._binary_path}; build it with "
+                "`swift build --package-path helper`"
+            )
+        pcm = (np.clip(np.asarray(samples, dtype=np.float32), -1.0, 1.0) * 32767.0).astype(np.int16)
+        with tempfile.TemporaryDirectory() as tmp:
+            wav_path = Path(tmp) / "them.wav"
+            with wave.open(str(wav_path), "wb") as wav:
+                wav.setnchannels(1)
+                wav.setsampwidth(2)
+                wav.setframerate(sample_rate)
+                wav.writeframes(pcm.tobytes())
+            # Fixed argv (no shell); the tool prints JSON to stdout, diagnostics to stderr.
+            proc = subprocess.run(
+                [str(self._binary_path), str(wav_path)], capture_output=True, check=False
+            )
+        if proc.returncode != 0:
+            tail = proc.stderr.decode("utf-8", "replace").strip().splitlines()
+            raise RuntimeError(
+                f"hearsay-diarize failed ({proc.returncode}): {tail[-1] if tail else ''}"
+            )
+        data = json.loads(proc.stdout)
+        turns = [
+            SpeakerTurn(
+                speaker=str(turn["speaker"]),
+                start_s=float(turn["start_s"]),
+                end_s=float(turn["end_s"]),
+            )
+            for turn in data["turns"]
+        ]
+        _log.info(
+            "fluidaudio diarized: %d turns, %d speakers", len(turns), data.get("speaker_count", 0)
+        )
+        return turns
+
+
+def diarize_helper_path(settings: Settings) -> Path:
+    """The ``hearsay-diarize`` binary (a sibling of the capture helper in the same build dir)."""
+    return settings.helper_path.with_name("hearsay-diarize")
+
+
 def build_offline_diarizer(settings: Settings) -> OfflineDiarizer:
-    """Construct the configured offline diarizer (pyannote; pipeline loads lazily)."""
+    """Construct the configured offline diarizer (FluidAudio default; pyannote opt-in)."""
     diarization = settings.diarization
+    if diarization.offline_backend is OfflineDiarizerKind.FLUIDAUDIO:
+        return FluidAudioDiarizer(binary_path=diarize_helper_path(settings))
     token = diarization.hf_token.get_secret_value() if diarization.hf_token is not None else None
     return PyannoteDiarizer(
         model=diarization.pyannote_model, token=token, device=diarization.refine_device

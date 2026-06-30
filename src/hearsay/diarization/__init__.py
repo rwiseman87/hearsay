@@ -19,11 +19,13 @@ from hearsay.diarization.manager import (
     resolve_embedding_model,
 )
 from hearsay.diarization.offline import (
+    FluidAudioDiarizer,
     OfflineDiarizer,
     PyannoteDiarizer,
     SpeakerTurn,
     assign_segment_speaker,
     build_offline_diarizer,
+    diarize_helper_path,
     order_speakers,
 )
 from hearsay.diarization.onnx_embedder import OnnxSpeakerEmbedder
@@ -36,6 +38,7 @@ from hearsay.diarization.voiceprint import (
 __all__ = [
     "KNOWN_EMBEDDING_MODELS",
     "EmbeddingModel",
+    "FluidAudioDiarizer",
     "OfflineDiarizer",
     "OnnxSpeakerEmbedder",
     "PyannoteDiarizer",
@@ -44,6 +47,7 @@ __all__ = [
     "assign_segment_speaker",
     "build_embedder",
     "build_offline_diarizer",
+    "diarize_helper_path",
     "centroid_from_bytes",
     "centroid_to_bytes",
     "download_embedding_model",
