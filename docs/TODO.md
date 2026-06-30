@@ -197,6 +197,18 @@ uv run hearsay live --model base --seconds 60   # real pipeline -> live transcri
 
 ## Progress log
 
+- **2026-06-30 (eve, F2 validated live + step 4 done; steps 2-3 remain).** User confirmed F2 works on a real meeting
+  ("seems fine"). Then did the fully-Swift **step 4 — dropped whisper.cpp**: deleted `WhisperCppBackend` + `pywhispercpp`
+  (pruned from the venv + the `asr` extra), `build_asr` is Parakeet-only, `ASRBackendKind` reduced to `PARAKEET`, the
+  model picker is now informational (one model). OpenAPI->TS regenerated; **web typechecks; 153 pass; ruff + mypy
+  --strict (69 files) green.** Commit `3950ba1`. **Remaining fully-Swift steps (NEXT, documented for a clean
+  continuation — see [[hearsay-swift-pivot-direction]]):** (2) **voiceprints from FluidAudio** — `TimedSpeakerSegment`
+  carries an `embedding: [Float]`, so have `hearsay-diarize` emit per-speaker embeddings + the refine use them, then
+  delete the ONNX embedder + kaldi (note: invalidates existing stored centroids — a different vector space). (3)
+  **Me -> Swift** — a `hearsay-me` sidecar (FluidAudio streaming VAD + Parakeet → "Me" segments; the VAD streaming API
+  is `makeStreamState`/`processStreamingChunk`), then drop Silero + the online clusterer/`MeetingDiarizer`/`vad/` (the
+  whole VAD path) so the live pipeline is pure-sidecar. After (2)+(3) Python has zero ML deps (numpy stays only to pack
+  PCM). Both need their own build + on-device validation; deferred this session for context.
 - **2026-06-30 (eve, F2 — turn-driven live Them in Swift, code-complete; needs live validation).** With the user,
   committed to the **full fully-Swift end state** (all audio-AI in Swift/ANE, Python = ML-free backend) via
   **architecture B** (lean capture binary stays a PCM streamer; AI in sidecars the core feeds; Python relays bytes but
