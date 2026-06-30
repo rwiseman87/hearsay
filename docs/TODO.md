@@ -197,6 +197,23 @@ uv run hearsay live --model base --seconds 60   # real pipeline -> live transcri
 
 ## Progress log
 
+- **2026-06-30 (eve, F2 — turn-driven live Them in Swift, code-complete; needs live validation).** With the user,
+  committed to the **full fully-Swift end state** (all audio-AI in Swift/ANE, Python = ML-free backend) via
+  **architecture B** (lean capture binary stays a PCM streamer; AI in sidecars the core feeds; Python relays bytes but
+  runs no models). Built F2 = turn-driven live Them, **no Python fusion** (the diarizer's turns ARE the segments, like
+  the refine): new Swift **`hearsay-live`** sidecar (FluidAudio LS-EEND streaming diarizer + Parakeet) — Them PCM in →
+  as each turn finalizes, transcribe it → emit `{speaker,text,start_s,end_s}`. **Validated standalone** on a recorded
+  clip (20 turns, 2 speakers, accurate text, caught the back-and-forth). Python **`LiveThemProcessor`** owns the
+  sidecar, feeds Them audio (offset-corrected), persists + broadcasts the turns (speaker→Speaker N + cluster); wired
+  into the pipeline (Them skips VAD/ASR/clusterer) + session, behind `diarization.live_streaming` (default **on**). Me
+  stays VAD+Parakeet. Online clusterer kept as the **off-fallback** (delete after on-device validation). Also fixed a
+  latent CI bug: a bare `swift build` pulled in FluidAudio's broken CLI target — Makefile now builds explicit products.
+  **154 pass; ruff + mypy --strict (70 files) + swift build + selftest green.** Commits `c5a39c4` (sidecar) `9b35e2d`
+  (build fix) `60c138e` (wiring) on `feat/fluidaudio-pivot`. **NEXT (needs the user): restart serve + run a real
+  meeting to validate live turn labels** (expect a few seconds of latency, correct speakers; refine still perfects at
+  finalize). **Then the remaining fully-Swift steps:** (2) voiceprints from FluidAudio's embeddings → drop the ONNX
+  embedder + kaldi; (3) Me → a Swift streaming-ASR sidecar → drop Silero; (4) drop whisper.cpp (Parakeet-only). After
+  (4) Python has zero audio/ML deps. See [[hearsay-swift-pivot-direction]].
 - **2026-06-30 (eve, F4 part 1 — torch removed).** With the validated FluidAudio path the default everywhere, deleted
   the torch-heavy fallbacks: the in-process **pyannote** offline diarizer (`PyannoteDiarizer` + the `offline_backend`/
   `pyannote_model`/`hf_token`/`refine_device` settings + `OfflineDiarizerKind` + the `diarization-pyannote` extra) and
