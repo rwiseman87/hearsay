@@ -242,3 +242,36 @@ async def test_rediarize_recognizes_returning_speaker(tmp_path: Path) -> None:
     alice = next(c for c in clusters if c.ordinal == 1)
     assert alice.identity is not None and alice.identity.display_name == "Alice"
     assert not alice.locked  # auto-recognition is provisional; a manual rename still wins
+
+
+class _BoomDiarizer:
+    def diarize(self, samples: object, *, sample_rate: int) -> list[SpeakerTurn]:
+        raise AssertionError("diarizer must not run when there are no Them segments")
+
+
+async def test_rediarize_skips_when_no_them_segments(tmp_path: Path) -> None:
+    # An ASR failure (e.g. whisper Metal dies mid-meeting) leaves the meeting with no Them
+    # segments; the refine must no-op rather than diarize an empty meeting + mint a phantom speaker.
+    database = _make_db(tmp_path)
+    settings = Settings()
+    settings.output_dir = tmp_path
+
+    async with database.session() as session:
+        meeting = await MeetingService(session).create(
+            title="T", folder="mtg", started_at=datetime.now(UTC)
+        )
+        await MeetingService(session).add_segment(
+            meeting.id, stream=Stream.ME, speaker_label="Me", text="mine", start_s=0.0, end_s=2.0
+        )
+    _write_silent_wav(tmp_path / "mtg" / "them.wav")
+
+    result = await rediarize_meeting(
+        meeting.id, database=database, settings=settings, diarizer=_BoomDiarizer()
+    )
+
+    assert result.speaker_count == 0
+    assert result.segments_relabeled == 0
+    async with database.session() as session:
+        clusters = await SpeakerService(session).list_clusters(meeting.id)
+    await database.dispose()
+    assert clusters == []  # no phantom "Speaker 1" minted on an empty meeting

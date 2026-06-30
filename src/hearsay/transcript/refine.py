@@ -145,24 +145,30 @@ async def rediarize_meeting(
             f"no them.wav for meeting {meeting_id}; enable diarization.refine before capturing"
         )
 
+    async with database.session() as session:
+        segments, _ = await MeetingService(session).list_segments(
+            meeting_id, page=1, page_size=100_000
+        )
+        clusters = await SpeakerService(session).list_clusters(meeting_id)
+    them = [segment for segment in segments if segment.stream is Stream.THEM]
+    if not them:
+        # Nothing transcribed for Them (e.g. an ASR failure left the meeting empty) -> don't
+        # diarize the recording or create a phantom "Speaker 1" with no segments to label.
+        _log.info("rediarize: meeting %s has no Them segments; nothing to refine", meeting_id)
+        return RefineResult(meeting_id=meeting_id, speaker_count=0, segments_relabeled=0)
+
     samples, sample_rate = _read_wav(wav_path)
     offset_s = read_offset_s(wav_path)
     diarizer = diarizer or build_offline_diarizer(settings)
     turns = await asyncio.to_thread(diarizer.diarize, samples, sample_rate=sample_rate)
     label_to_ordinal = order_speakers(turns)
 
-    async with database.session() as session:
-        segments, _ = await MeetingService(session).list_segments(
-            meeting_id, page=1, page_size=100_000
-        )
-        clusters = await SpeakerService(session).list_clusters(meeting_id)
     # Manual renames (locked clusters) to carry forward so re-diarization never drops a name.
     prior_name_by_cluster = {
         cluster.id: cluster.identity.display_name
         for cluster in clusters
         if cluster.locked and cluster.identity is not None
     }
-    them = [segment for segment in segments if segment.stream is Stream.THEM]
 
     segment_ordinals: dict[UUID, int | None] = {}
     name_votes: Counter[tuple[int, str]] = Counter()

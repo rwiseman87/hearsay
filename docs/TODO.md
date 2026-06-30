@@ -193,6 +193,19 @@ uv run hearsay live --model base --seconds 60   # real pipeline -> live transcri
 
 ## Progress log
 
+- **2026-06-30 (eve, on-device auto-refine test → whisper-Metal failure diagnosed + a guard added).** User ran a real
+  meeting (`hot_ones_vaughn`) via `serve`, hit stop, saw "1 speaker / no Them turn". **Diagnosis (not an auto-refine
+  bug):** capture worked (them.wav = 54.7 s real audio, RMS 0.031) but the meeting had **0 transcribed segments** — in
+  the long-running serve process **whisper.cpp's Metal backend hit a transient `command buffer failed (status 3)` and
+  entered an unrecoverable error state** ("recreate the backend to recover"); whisper.cpp doesn't auto-recreate, so the
+  whole meeting produced no finals. Confirmed whisper itself is fine: transcribing the *same* them.wav offline returned
+  the correct Vince Vaughn intro. Auto-refine then ran on the empty meeting and minted a phantom "Speaker 1" (the "1
+  speaker" seen). **Fix:** `rediarize_meeting` now **skips when there are 0 Them segments** (no diarize, no phantom
+  cluster) — reordered to read segments first + early-return; +1 test (`test_rediarize_skips_when_no_them_segments`);
+  **149 pass; ruff + mypy green.** Short-term workaround: restart `serve` to recreate the whisper backend. **This is
+  exactly the whisper.cpp/Metal fragility the pivot's F3 (Parakeet ASR on the ANE) eliminates — strong evidence to
+  prioritize F3.** (The user's `hot_ones_vaughn` meeting row is empty + has a phantom cluster; safe to delete in the UI.)
+  Uncommitted-then-committed on `feat/fluidaudio-pivot`.
 - **2026-06-30 (eve, latest)** **Auto-refine at finalize built (the quick win F1 unlocked).** With the user, chose to
   do this before the heavier live-streaming F2: now that the default offline diarizer is FluidAudio on the ANE
   (~seconds, not 30s+ of torch), the refine runs **inline when a meeting stops** instead of only via the manual "Refine
