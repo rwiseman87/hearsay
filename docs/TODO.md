@@ -8,23 +8,25 @@ Conventions: `CLAUDE.md`.
 
 **Status (2026-06-30):** Phases 0 + **Phase 1 MVP** complete (merged to `main`, validated on a real meeting).
 **Phase 2 (diarization) is CODE-COMPLETE and merged to `main`** (2026-06-30, fast-forward `5e8c74e..156944b`; Inc 1–7d
-+ cross-meeting voiceprint recognition). The torch-free ONNX-embeddings + online-clustering path is the
-distributable default; pyannote `speaker-diarization-community-1` post-meeting refine is the accuracy-max opt-in
-(`diarization-pyannote` extra + `HEARSAY_DIARIZATION__REFINE=true`, run from source). Built: identities/clusters/
++ cross-meeting voiceprint recognition). **Diarization default flipped (2026-06-30): pyannote
+`speaker-diarization-community-1` post-meeting refine is now the default** (`diarization.refine` defaults on, records
+`them.wav`); the torch-free online clusterer is the live labeler + bundle-able fallback (torch-free rescoped to a
+deferred Phase-5/distribution concern). **ASR default → `large-v3`** (was turbo; chosen by an on-device A/B). Built:
+identities/clusters/
 `segments.cluster_id` + `SpeakerService`; torch-free `OnnxSpeakerEmbedder` (wespeaker CAM++_LM); pure-stdlib
 `OnlineSpeakerClusterer`; `MeetingDiarizer` in the pipeline; `GET/PUT /speakers` rename (binds + locks + retroactively
 relabels) + React `SpeakerPanel`; finalize bakes resolved names into `transcript.md`; `ThemAudioRecorder` (records
 `them.wav` only when refine is on); `PyannoteDiarizer` + `rediarize_meeting` + `hearsay rediarize <id|latest>` +
 `POST /meetings/{id}/rediarize` + "Refine speakers" UI button; cross-meeting voiceprint auto-recognition (a returning,
-manually-locked speaker is auto-named provisionally). **138 tests; full `make ci` + web tsc/build/codegen green.**
+manually-locked speaker is auto-named provisionally). **139 tests; full `make ci` + web tsc/build/codegen green.**
 
-**Pick up here → Phase 2 code is merged to `main`; the next coding work is Phase 3** (calendar roster + OCR
-active-speaker fusion). Two on-device validations remain outstanding (deferred to real hardware; the user chose to merge
-without gating on them): **(7e)** capture a real multi-person meeting with `HEARSAY_DIARIZATION__REFINE=true`, run
-`hearsay rediarize latest`, and confirm the Them speakers separate cleanly in the rewritten `transcript.md` (the
-torch-free online path already failed the multi-person bar — Inc 6b — which is why the pyannote refine exists); and a
-both-speakers run to watch Me/Them interleave live. HF prereq is cleared (user `crwiseman`; gated model accepted;
-`hf auth login` done).
+**Pick up here → Phase 2 is done (Inc 7e passed on-device 2026-06-30: the online path said 7 speakers, the pyannote
+refine corrected it to 2); the next coding work is Phase 3** (calendar roster + OCR active-speaker fusion). Near-term
+diarization follow-up: **auto-refine-at-finalize** — pyannote is the default but is still triggered explicitly (the
+"Refine speakers" button / `hearsay rediarize`); auto-running it needs a background task + the served-vs-CLI lifecycle
+handled. ASR follow-up if desired: a full-episode WER A/B to settle whether beam/context add anything. Optional Phase 1
+belt-and-suspenders still open: a both-speakers run to watch Me/Them interleave live. HF prereq is cleared (user
+`crwiseman`; gated model accepted; `hf auth login` done).
 
 **Minor teardown note (2026-06-29):** a real `serve` log showed whisper.cpp Metal errors (`command buffer 0 failed
 with status 3` → `failed to encode`/`decode`) **immediately before `ggml_metal_free: deallocating` + a meeting DELETE**
@@ -59,7 +61,11 @@ uv run hearsay live --model base --seconds 60   # real pipeline -> live transcri
 - **Persistence:** local-first **SQLite** via async **SQLAlchemy 2.0** + **Alembic** (no raw SQL;
   models in `src/hearsay/models/`, migrations in `src/hearsay/db/migrations/`). Portable to Postgres later.
 - **Python 3.14** (locked; full ML stack verified on cp314). Fallback ladder 3.13 → 3.12 only if a dep regresses.
-- **ASR default:** whisper.cpp `large-v3-turbo` via `pywhispercpp` (Metal+CoreML), behind an `ASRBackend` protocol.
+- **ASR default (UPDATED 2026-06-30 — was `large-v3-turbo`):** whisper.cpp **`large-v3`** via `pywhispercpp`
+  (Metal+CoreML), behind an `ASRBackend` protocol. An on-device A/B (Bill Murray Hot Ones, known content, via
+  `scripts/transcribe_eval.py`) showed the **model**, not decoding params, drives accuracy: turbo/greedy heard
+  "tongue" as "tone" at 1:02, beam+context didn't fix it, **large-v3 did**. Turbo stays the speed option; beam-search
+  + context-carryover are implemented behind `ASRSettings` but **off by default** (kept for a future WER A/B).
 - **ASR backends (2026-06-26):** don't phase-split — ship **both** behind `ASRBackend`, gated by install extra:
   whisper.cpp default (`asr` extra, torch-free) + **mlx opt-in** (`accel` extra; mlx-whisper pulls torch). Models are
   **swappable at runtime** via config / `PUT /api/asr/model` (next-meeting effect). pywhispercpp is the only torch-free ASR.
@@ -77,6 +83,17 @@ uv run hearsay live --model base --seconds 60   # real pipeline -> live transcri
   CC-BY-4.0 / Apache ONNX weights are redistributable + bundle-able, lighter, and faster. Bonus: per-utterance
   embeddings double as the **cross-meeting voiceprint** (recognize recurring people). (Supersedes the plan's
   pyannote-primary design; the plan file is unchanged.)
+- **Diarization (RE-CHANGED 2026-06-30 — pyannote is now the DEFAULT):** with the user, "torch-free" is rescoped as a
+  **Phase-5/distribution** concern (deferred), not a present rule — for internal run-from-source use, a couple GB of
+  torch is an acceptable trade for accuracy + ecosystem support, and 2026-06-30 research confirmed **no torch-free
+  diarizer is competitive** (pyannote/NeMo/DiariZen all lead and are torch). On-device (Inc 7e, 2026-06-30): the
+  torch-free online clusterer reported **7 speakers** on a real 2-person call; the pyannote refine corrected it to
+  **2**. So **pyannote `speaker-diarization-community-1` is the default diarization** (post-meeting refine;
+  `diarization.refine` now defaults **on**, recording `them.wav`); the torch-free online clusterer stays the **live**
+  labeler + the bundle-able fallback. **Privacy tradeoff:** raw `them.wav` is retained by default now (was off);
+  configurable off, and delete-meeting removes the folder. Trigger stays explicit (the "Refine speakers" button /
+  `hearsay rediarize`); **auto-refine-at-finalize is a noted follow-up** (heavy torch shouldn't silently block every
+  stop; needs background exec + the served-vs-CLI lifecycle handled).
 - **LLM:** OpenAI-compatible client (Ollama/LM Studio/llama.cpp) by default; Bedrock Converse configurable.
 - **Speaker ID layers:** channel (Me/Them) + calendar roster + live diarization + manual labeling w/ memory
   + active-speaker. **Active-speaker = OCR-primary** (ScreenCaptureKit+Vision), Zoom Accessibility opt-in.
@@ -89,6 +106,20 @@ uv run hearsay live --model base --seconds 60   # real pipeline -> live transcri
 
 ## Progress log
 
+- **2026-06-30** **ASR default → large-v3 (measured) + pyannote promoted to the default diarization; Inc 7e validated.**
+  **ASR:** built `scripts/transcribe_eval.py` (offline VAD+ASR eval, mirrors the live pipeline) and ran a real A/B on a
+  recorded clip (Bill Murray Hot Ones, known content). At 1:02: baseline turbo/greedy → "tone"; turbo+beam+context →
+  still "tone"; **large-v3 → "tongue"**. So the model — not decoding params — drives accuracy → defaulted to
+  `large-v3` (turbo stays the speed option). Beam-search + per-stream context-carryover are implemented behind
+  `ASRSettings` (`beam_size`/`condition_on_previous_text`, `prompt` threaded through `ASRBackend`) but **off by
+  default** (neutral on the test; beam slows live). The eval caught a real bug — whisper.cpp's `beam_search` struct
+  needs both `beam_size` AND `patience` (`KeyError` otherwise; would have broken live the moment beam ran). +1 test.
+  **Diarization:** with the user, torch-free is rescoped to a Phase-5/distribution concern (deferred), so **pyannote is
+  now the default** — `diarization.refine` defaults **on** (records `them.wav`); the online clusterer stays the live
+  labeler + fallback. **Inc 7e passed on-device**: the online path reported 7 speakers on a real 2-person call, the
+  pyannote refine corrected it to 2. Privacy tradeoff logged (raw audio retained by default; configurable off; trigger
+  stays the explicit "Refine speakers" button / `hearsay rediarize`, auto-at-finalize deferred). Full `make ci` green
+  (139 tests). Merged `feat/asr-accuracy` to `main` (`f84a3f1`); this diarization flip on `feat/pyannote-default`.
 - **2026-06-29** **Cross-meeting voiceprint recognition — a returning person is auto-named from their voiceprint.**
   Closes the diarization vision ("embeddings double as the cross-meeting voiceprint"). No migration — reuses the
   existing `clusters.centroid` BLOB. New pure-stdlib `diarization/voiceprint.py` (float32 (de)serialize +
@@ -578,8 +609,10 @@ rename persists, locks the binding, and is suggested next meeting. Diarization i
         meetings + identities query trees). OpenAPI→TS regenerated; +2 API tests (404/409). web tsc + vite build green.
         Still TBD: them.wav retention/cleanup policy (kept for now so refine is re-runnable; `delete-meeting` removes
         the folder).
-  - [ ] **7e — On-device validation (NEEDS THE USER)**: capture a real meeting with `HEARSAY_DIARIZATION__REFINE=true`,
-        run `hearsay rediarize latest`, confirm the transcript's Them speakers are cleanly separated.
+  - [x] **7e — On-device validation — PASSED (2026-06-30)**: on a real 2-person call the torch-free online path
+        reported **7 speakers**; `hearsay rediarize` (pyannote) corrected the transcript to **2**. This drove the
+        decision to make pyannote the default diarization (`diarization.refine` now defaults on). Follow-up:
+        auto-refine-at-finalize (currently triggered explicitly via the button / CLI).
 
 ## Phase 3 — Calendar roster + OCR active-speaker fusion
 

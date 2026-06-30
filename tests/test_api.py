@@ -125,7 +125,7 @@ def test_rediarize_missing_meeting_404(client: TestClient) -> None:
 def test_rediarize_without_recording_409(client: TestClient) -> None:
     meeting_id = _start(client)["id"]
     client.post(f"/api/meetings/{meeting_id}/stop", headers=AUTH)
-    # No them.wav was recorded (diarization.refine off), so re-diarize has nothing to read.
+    # No audio was captured in this test, so no them.wav exists for re-diarize to read.
     response = client.post(f"/api/meetings/{meeting_id}/rediarize", headers=AUTH)
     assert response.status_code == 409
 

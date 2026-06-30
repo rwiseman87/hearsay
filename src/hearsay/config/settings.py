@@ -47,10 +47,13 @@ class DiarizationSettings(BaseModel):
     # new one. Clean-speech reference: same-speaker ~0.84, different ~0.2-0.33. Real-call
     # audio compresses that margin -- tune from the per-utterance cosines the diarizer logs.
     cluster_threshold: float = 0.5
-    # Post-meeting re-diarization (pyannote opt-in). When on, the Them track is recorded to
-    # <folder>/them.wav so `hearsay rediarize` can relabel speakers offline. Off by default
-    # (raw audio is otherwise not retained); needs the `diarization-pyannote` extra + an HF token.
-    refine: bool = False
+    # Post-meeting re-diarization is the DEFAULT speaker path (2026-06-30): pyannote relabels the
+    # Them track far better than the live online clusterer (on-device: 7 phantom speakers -> 2).
+    # When on, the Them track is recorded to <folder>/them.wav so `hearsay rediarize` / the "Refine
+    # speakers" button can run pyannote offline; needs the `diarization-pyannote` extra + HF login.
+    # Privacy tradeoff: this retains raw audio by default -- set False to opt out (delete-meeting
+    # also removes the folder).
+    refine: bool = True
     # pyannote pipeline + auth for the refine pass (used only when `refine` is on and the
     # `diarization-pyannote` extra is installed). hf_token defaults to None -> use the
     # huggingface CLI login; device "cpu" is safe on Apple Silicon ("mps" is faster, opt-in).
