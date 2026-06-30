@@ -13,9 +13,9 @@ How to set up, build, run, test, and troubleshoot the project from source.
 
 ```sh
 make sync                                  # venv + base deps
-uv sync --extra asr --extra diarization    # transcription + diarization (torch-free)
-swift build --package-path helper          # build hearsay-helper
-uv run hearsay fetch-models                # Silero VAD + the speaker-embedding model into models_dir
+uv sync --extra asr                        # Silero VAD (onnxruntime) + numpy for PCM packing
+make swift-build                           # build hearsay-helper + ASR/diarization sidecars
+uv run hearsay fetch-models                # Silero VAD into models_dir (Swift sidecar models auto-download)
 ```
 
 The base install (no extras) is enough for the API and the test suite; the `asr` + `diarization`
@@ -152,10 +152,10 @@ make test                 # Python + Swift cross-language self-test
 - The `Segmenter` and `MeetingService` are pure/in-memory and unit-tested directly.
 - API tests use Starlette's `TestClient` with a temp DB and a fake capture (no helper).
 - The pipeline is tested end to end with fakes (fake media + stub VAD + fake ASR).
-- The `fusion` clusterer is pure stdlib and unit-tested directly (no ML deps).
-- Tests that need the real ML stack are **guarded**: the Silero VAD and speaker-embedder tests
-  (incl. a real-speech speaker-discrimination test) skip unless `onnxruntime` + `kaldi-native-fbank`
-  are installed (they run after `uv sync --extra asr --extra diarization`); the helper integration
+- The offline diarizer + refine are tested with a stub diarizer (no ML deps): the Swift
+  `hearsay-diarize` JSON parsing, turn->segment mapping, and cross-meeting voiceprint match.
+- Tests that need the real ML stack are **guarded**: the Silero VAD tests skip unless
+  `onnxruntime` is installed (it runs after `uv sync --extra asr`); the helper integration
   test skips unless the Swift binary is built.
 
 ## Troubleshooting

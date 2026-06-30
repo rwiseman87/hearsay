@@ -31,7 +31,6 @@ from hearsay.transcript.recorder import ThemAudioRecorder
 from hearsay.vad import VAD, Segmenter, Utterance
 
 if TYPE_CHECKING:
-    from hearsay.transcript.diarizer import MeetingDiarizer
     from hearsay.transcript.live import LiveThemProcessor
 
 _log = get_logger("hearsay.pipeline")
@@ -58,7 +57,6 @@ class TranscriptionPipeline:
         asr: ASRBackend,
         vad_factory: Callable[[], VAD],
         vad: VADSettings,
-        diarizer: MeetingDiarizer | None = None,
         them_recorder: ThemAudioRecorder | None = None,
         them_processor: LiveThemProcessor | None = None,
         language: str | None = None,
@@ -70,10 +68,9 @@ class TranscriptionPipeline:
         self._sink = sink
         self._broadcaster = broadcaster
         self._asr = asr
-        self._diarizer = diarizer
         self._them_recorder = them_recorder
-        # When set, Them is handled by the live sidecar (diar+ASR+turns); the VAD/online
-        # clusterer path below runs only for Me (and Them when streaming is off).
+        # When set, Them is handled by the live sidecar (diar+ASR+turns); the VAD path
+        # below runs only for Me (and Them in tests without a live sidecar).
         self._them_processor = them_processor
         self._language = language
         self._condition = condition_on_previous_text
@@ -143,12 +140,9 @@ class TranscriptionPipeline:
         text = await self._transcribe(utterance.samples, prompt=prompt)
         if not text:
             return
-        # Only finals are clustered + persisted; partials are ephemeral, so they keep the
-        # cheap channel label (Me/Them) rather than spending an embedding on a fragment.
-        if utterance.is_final:
-            speaker, cluster_id = await self._resolve_speaker(stream, utterance)
-        else:
-            speaker, cluster_id = _SPEAKER[stream], None
+        # This path handles Me (always the mic channel) and, in tests without a live sidecar,
+        # Them as the generic channel label. Live Them speakers come from the sidecar.
+        speaker, cluster_id = _SPEAKER[stream], None
         event = TranscriptEvent(
             kind="final" if utterance.is_final else "partial",
             stream=stream,
@@ -174,20 +168,6 @@ class TranscriptionPipeline:
         if utterance.start_s - self._context_end_s[stream] > self._context_reset_gap_s:
             return None
         return self._context[stream] or None
-
-    async def _resolve_speaker(
-        self, stream: Stream, utterance: Utterance
-    ) -> tuple[str, UUID | None]:
-        # Me is the mic channel and is never diarized; Them clusters into "Speaker N"
-        # when a diarizer is present, else degrades to the generic "Them" label.
-        if stream is Stream.THEM and self._diarizer is not None:
-            return await self._diarizer.resolve(utterance)
-        return _SPEAKER[stream], None
-
-    def bind_speaker(self, ordinal: int, display_name: str) -> None:
-        """Relay a manual rename to the live diarizer (no-op if diarization is off)."""
-        if self._diarizer is not None:
-            self._diarizer.bind(ordinal, display_name)
 
     async def _transcribe(self, samples: Sequence[float], *, prompt: str | None = None) -> str:
         async with self._asr_lock:

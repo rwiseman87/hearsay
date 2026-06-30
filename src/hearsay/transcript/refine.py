@@ -1,14 +1,16 @@
 """Post-meeting re-diarization: relabel a meeting's speakers from the recorded Them track.
 
-The online clusterer labels Them per-utterance live, which fails on overlapping/continuous
-audio (the VAD hands it multi-speaker utterances). This runs an offline diarizer (pyannote)
-over the whole ``them.wav``, maps its speaker turns onto the saved segments by time overlap,
-replaces the clusters + segment labels, and regenerates ``transcript.md``.
+The live sidecar labels Them turn-by-turn, but a whole-track pass is more accurate (global
+clustering + overlap handling). This runs the offline diarizer (FluidAudio on the ANE) over
+the whole ``them.wav``, re-transcribes each speaker turn, replaces the clusters + segments,
+and regenerates ``transcript.md``. The diarizer also returns each speaker's voiceprint, which
+is stored on the cluster and matched against people named in prior meetings.
 """
 
 from __future__ import annotations
 
 import asyncio
+import math
 import wave
 from collections import Counter
 from collections.abc import Sequence
@@ -22,10 +24,8 @@ from hearsay.config.settings import Settings
 from hearsay.db import Database
 from hearsay.diarization import (
     OfflineDiarizer,
-    SpeakerEmbedder,
     SpeakerTurn,
     assign_segment_speaker,
-    build_embedder,
     build_offline_diarizer,
     centroid_from_bytes,
     centroid_to_bytes,
@@ -53,15 +53,6 @@ class RefineResult:
     segments_relabeled: int
 
 
-def build_recognition_embedder(settings: Settings) -> SpeakerEmbedder | None:
-    """The ONNX embedder for cross-meeting voiceprints, or ``None`` if the model is absent."""
-    try:
-        return build_embedder(settings)
-    except FileNotFoundError as exc:
-        _log.warning("speaker embedder unavailable; cross-meeting recognition off (%s)", exc)
-        return None
-
-
 def _read_wav(path: Path) -> tuple[Any, int]:
     import numpy as np  # noqa: PLC0415 (optional dep; only present when refining)
 
@@ -72,49 +63,36 @@ def _read_wav(path: Path) -> tuple[Any, int]:
     return samples, sample_rate
 
 
-def _gather_speaker_audio(
-    samples: Any, sample_rate: int, turns: Sequence[SpeakerTurn], label_to_ordinal: dict[str, int]
-) -> dict[int, Any]:
-    """Concatenate each speaker's turn audio (capped) for one voiceprint embedding per speaker."""
-    import numpy as np  # noqa: PLC0415
-
-    cap = int(12.0 * sample_rate)  # enough signal for a stable voiceprint, bounded cost
-    chunks: dict[int, list[Any]] = {}
-    for turn in turns:
-        ordinal = label_to_ordinal.get(turn.speaker)
-        if ordinal is None:
-            continue
-        start = max(0, int(turn.start_s * sample_rate))
-        end = min(len(samples), int(turn.end_s * sample_rate))
-        if end > start:
-            chunks.setdefault(ordinal, []).append(samples[start:end])
-    return {ordinal: np.concatenate(parts)[:cap] for ordinal, parts in chunks.items() if parts}
+def _l2_normalize(vector: Sequence[float]) -> list[float]:
+    """Unit-length the voiceprint so stored centroids match the cosine convention."""
+    norm = math.sqrt(sum(value * value for value in vector))
+    return [value / norm for value in vector] if norm > 0.0 else [float(value) for value in vector]
 
 
-async def _recognize_speakers(  # noqa: PLR0913 (a cohesive step; each arg is a distinct input)
+async def _recognize_speakers(
     *,
     database: Database,
     settings: Settings,
-    embedder: SpeakerEmbedder | None,
     meeting_id: UUID,
-    samples: Any,
-    sample_rate: int,
-    turns: Sequence[SpeakerTurn],
+    embeddings: dict[str, list[float]],
     label_to_ordinal: dict[str, int],
     manual: dict[int, str],
 ) -> tuple[dict[int, bytes], dict[int, str]]:
+    """Store each speaker's voiceprint (from the diarizer) and auto-name a returning person
+    by matching it against people named in prior meetings (a manual carry-forward wins)."""
     ordinal_centroids: dict[int, bytes] = {}
     recognized: dict[int, str] = {}
-    if embedder is None or not turns:
+    if not embeddings:
         return ordinal_centroids, recognized
     async with database.session() as session:
         known_bytes = await SpeakerService(session).known_voiceprints(exclude_meeting_id=meeting_id)
     known = [(name, centroid_from_bytes(blob)) for name, blob in known_bytes]
     threshold = settings.diarization.recognition_threshold
-    audio_by_ordinal = _gather_speaker_audio(samples, sample_rate, turns, label_to_ordinal)
-    for ordinal, audio in audio_by_ordinal.items():
-        embedding = await asyncio.to_thread(embedder.embed, audio)
-        centroid = [float(value) for value in embedding]
+    for label, ordinal in label_to_ordinal.items():
+        vector = embeddings.get(label)
+        if not vector:
+            continue
+        centroid = _l2_normalize(vector)
         ordinal_centroids[ordinal] = centroid_to_bytes(centroid)
         if ordinal not in manual:  # a manual carry-forward name wins over auto-recognition
             name = match_identity(centroid, known, threshold=threshold)
@@ -198,15 +176,14 @@ async def rediarize_meeting(
     database: Database,
     settings: Settings,
     diarizer: OfflineDiarizer | None = None,
-    embedder: SpeakerEmbedder | None = None,
     asr: ASRBackend | None = None,
 ) -> RefineResult:
     """Re-diarize ``them.wav`` offline and rebuild the Them transcript per speaker turn.
 
     Each diarizer turn's audio is re-transcribed (FluidAudio Parakeet by default) so the
-    transcript splits the multi-speaker utterances the live VAD merged. With an ``embedder``,
-    each speaker's voiceprint is stored and matched against people named in prior meetings, so
-    a returning person is auto-named (provisionally)."""
+    transcript splits the multi-speaker utterances the live VAD merged. The diarizer also
+    returns each speaker's voiceprint, which is stored and matched against people named in
+    prior meetings, so a returning person is auto-named (provisionally)."""
     async with database.session() as session:
         meeting = await MeetingService(session).get(meeting_id)
     if meeting is None:
@@ -233,7 +210,8 @@ async def rediarize_meeting(
     samples, sample_rate = _read_wav(wav_path)
     offset_s = read_offset_s(wav_path)
     diarizer = diarizer or build_offline_diarizer(settings)
-    turns = await asyncio.to_thread(diarizer.diarize, samples, sample_rate=sample_rate)
+    diarization = await asyncio.to_thread(diarizer.diarize, samples, sample_rate=sample_rate)
+    turns = diarization.turns
     label_to_ordinal = order_speakers(turns)
 
     # Rebuild the Them transcript from the turns: re-transcribe each turn's audio (default
@@ -257,16 +235,13 @@ async def rediarize_meeting(
     # Carry manual renames forward onto the new turn ordinals (never drop a manual binding).
     ordinal_names = _carry_forward_names(them, turns, clusters, label_to_ordinal, offset_s)
 
-    # Voiceprints: embed each speaker, store its centroid, and auto-name a returning person
-    # by matching against people named in prior meetings (manual carry-forward wins).
+    # Voiceprints: store each speaker's centroid (from the diarizer) and auto-name a returning
+    # person by matching against people named in prior meetings (manual carry-forward wins).
     ordinal_centroids, recognized = await _recognize_speakers(
         database=database,
         settings=settings,
-        embedder=embedder,
         meeting_id=meeting_id,
-        samples=samples,
-        sample_rate=sample_rate,
-        turns=turns,
+        embeddings=diarization.embeddings,
         label_to_ordinal=label_to_ordinal,
         manual=ordinal_names,
     )

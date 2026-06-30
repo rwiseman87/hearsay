@@ -49,9 +49,9 @@ Prereqs: [`uv`](https://docs.astral.sh/uv/) and Swift (Command Line Tools is eno
 
 ```sh
 make sync                                  # create the venv + base deps (Python 3.14)
-uv sync --extra asr --extra diarization    # transcription + diarization stack (torch-free)
-swift build --package-path helper          # build the capture helper
-uv run hearsay fetch-models                # Silero VAD (~2 MB) + the speaker-embedding model (~30 MB)
+uv sync --extra asr                        # Silero VAD (onnxruntime) + numpy for PCM packing
+make swift-build                           # build the capture helper + ASR/diarization sidecars
+uv run hearsay fetch-models                # Silero VAD (~2 MB); the Swift ASR/diarizer models auto-download
 (cd web && npm ci && npm run build)        # build the React UI bundle (web/dist), served by the core
 ```
 
@@ -93,15 +93,14 @@ src/hearsay/
   db/ models/  async SQLAlchemy engine/session + ORM models + Alembic migrations
   schemas/     Pydantic request/response models (the API boundary)
   services/    business logic (routers stay thin)
-  transcript/  orchestration: MeetingSession, capture seam, pipeline, MeetingDiarizer, broadcaster
-  vad/         VAD seam + streaming Segmenter + Silero (onnxruntime) backend
-  asr/         ASRBackend seam + whisper.cpp / mlx backends + model manager
-  diarization/ speaker-embedding seam + ONNX backend (onnxruntime + kaldi-native-fbank) + model registry
-  fusion/      online speaker clustering (pure stdlib): voiceprints -> stable "Speaker N"
+  transcript/  orchestration: MeetingSession, capture seam, pipeline, live Them sidecar, refine
+  vad/         VAD seam + streaming Segmenter + Silero (onnxruntime) backend (Me only)
+  asr/         ASRBackend seam + Parakeet sidecar backend (FluidAudio on the ANE)
+  diarization/ offline diarizer seam (Swift hearsay-diarize) + cross-meeting voiceprints
   export/      output Sink seam + local Markdown writer
   api/         FastAPI app, routers, WebSocket, loopback security, DI
   cli.py       the `hearsay` command (serve, live, fetch-models, capture-debug)
-helper/        SwiftPM: hearsay-helper executable + HearsayIPC library
+helper/        SwiftPM: hearsay-{helper,diarize,asr,live} executables + HearsayIPC library
 web/           React UI (Vite + TS): typed fetch client, TanStack Query, OpenAPI-generated types
 shared/        IPC contract (ipc.md) + golden frame fixtures
 tests/         pytest suite (SAVEPOINT-isolated DB tests; guarded on-device tests)

@@ -11,13 +11,13 @@ from array import array
 from datetime import UTC, datetime
 from pathlib import Path
 
-import numpy as np
 from sqlalchemy import create_engine as create_sync_engine
 
 from hearsay.asr import ASRSegment
 from hearsay.config.settings import Settings
 from hearsay.db import Database
 from hearsay.diarization import (
+    DiarizationResult,
     SpeakerTurn,
     assign_segment_speaker,
     centroid_to_bytes,
@@ -58,11 +58,14 @@ def test_assign_segment_speaker_no_overlap_is_none() -> None:
 
 
 class StubDiarizer:
-    def __init__(self, turns: list[SpeakerTurn]) -> None:
+    def __init__(
+        self, turns: list[SpeakerTurn], embeddings: dict[str, list[float]] | None = None
+    ) -> None:
         self._turns = turns
+        self._embeddings = embeddings or {}
 
-    def diarize(self, samples: object, *, sample_rate: int) -> list[SpeakerTurn]:
-        return self._turns
+    def diarize(self, samples: object, *, sample_rate: int) -> DiarizationResult:
+        return DiarizationResult(turns=self._turns, embeddings=self._embeddings)
 
 
 class StubASR:
@@ -201,30 +204,6 @@ async def test_rediarize_preserves_manual_rename(tmp_path: Path) -> None:
     assert alice_cluster.identity.display_name == "Alice"
 
 
-class StubEmbedder:
-    """Maps a clip to [1,0] or [0,1] by the sign of its mean, so regions are separable."""
-
-    dim = 2
-    model_id = "stub"
-
-    def embed(self, samples: object) -> object:
-        mean = float(np.mean(samples)) if len(samples) else 0.0  # type: ignore[arg-type]
-        return np.array([1.0, 0.0] if mean >= 0.0 else [0.0, 1.0], dtype="float32")
-
-
-def _write_two_region_wav(path: Path) -> None:
-    # 0-4s at +0.5 (speaker x), 4-6s at -0.5 (speaker y) -> the StubEmbedder separates them.
-    a = np.full(4 * 16_000, 0.5, dtype="float32")
-    b = np.full(2 * 16_000, -0.5, dtype="float32")
-    pcm = (np.concatenate([a, b]) * 32_767).astype("int16")
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with wave.open(str(path), "wb") as wav:
-        wav.setnchannels(1)
-        wav.setsampwidth(2)
-        wav.setframerate(16_000)
-        wav.writeframes(pcm.tobytes())
-
-
 async def test_rediarize_recognizes_returning_speaker(tmp_path: Path) -> None:
     database = _make_db(tmp_path)
     settings = Settings()
@@ -241,7 +220,7 @@ async def test_rediarize_recognizes_returning_speaker(tmp_path: Path) -> None:
         cluster.centroid = centroid_to_bytes([1.0, 0.0])
         await session.commit()
 
-    # Meeting 2: a fresh recording whose first speaker (region +0.5) is really Alice.
+    # Meeting 2: a fresh recording whose first speaker's voiceprint matches Alice's.
     async with database.session() as session:
         meetings = MeetingService(session)
         m2 = await meetings.create(title="M2", folder="m2", started_at=datetime.now(UTC))
@@ -249,15 +228,18 @@ async def test_rediarize_recognizes_returning_speaker(tmp_path: Path) -> None:
             await meetings.add_segment(
                 m2.id, stream=Stream.THEM, speaker_label="Them", text="x", start_s=start, end_s=end
             )
-    _write_two_region_wav(tmp_path / "m2" / "them.wav")
-    stub = StubDiarizer([SpeakerTurn("SPEAKER_x", 0.0, 4.0), SpeakerTurn("SPEAKER_y", 4.0, 6.0)])
+    _write_silent_wav(tmp_path / "m2" / "them.wav")
+    # The diarizer returns a voiceprint per speaker; SPEAKER_x's matches Alice's [1, 0].
+    stub = StubDiarizer(
+        [SpeakerTurn("SPEAKER_x", 0.0, 4.0), SpeakerTurn("SPEAKER_y", 4.0, 6.0)],
+        embeddings={"SPEAKER_x": [1.0, 0.0], "SPEAKER_y": [0.0, 1.0]},
+    )
 
     await rediarize_meeting(
         m2.id,
         database=database,
         settings=settings,
         diarizer=stub,
-        embedder=StubEmbedder(),
         asr=StubASR(),
     )
 
@@ -275,7 +257,7 @@ async def test_rediarize_recognizes_returning_speaker(tmp_path: Path) -> None:
 
 
 class _BoomDiarizer:
-    def diarize(self, samples: object, *, sample_rate: int) -> list[SpeakerTurn]:
+    def diarize(self, samples: object, *, sample_rate: int) -> DiarizationResult:
         raise AssertionError("diarizer must not run when there are no Them segments")
 
 

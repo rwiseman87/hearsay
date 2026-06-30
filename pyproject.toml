@@ -16,13 +16,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Live ASR is FluidAudio Parakeet on the ANE (the Swift hearsay-asr helper, no Python dep).
-# This extra is now just Silero VAD (onnxruntime) + numpy for packing PCM for the sidecars.
+# ASR (Parakeet) + diarization (pyannote community-1) + voiceprints all run in the Swift
+# helpers on the ANE -- no Python ML dep. This extra is just Silero VAD (onnxruntime) + numpy
+# for packing PCM for the sidecars. (Both are removed once Me moves to a Swift sidecar too.)
 asr = ["onnxruntime>=1.27", "numpy>=2.2"]
-# Offline diarization is FluidAudio on the ANE (the Swift hearsay-diarize helper). This extra
-# is only the cross-meeting voiceprint embedder: a torch-free ONNX speaker model on the
-# onnxruntime we already use for VAD, with kaldi-native-fbank for the reference features.
-diarization = ["onnxruntime>=1.27", "numpy>=2.2", "kaldi-native-fbank>=1.22"]
 bedrock = ["boto3>=1.35"]
 
 [project.scripts]
@@ -71,7 +68,6 @@ exclude = ["src/hearsay/db/migrations/"]
 [[tool.mypy.overrides]]
 module = [
     "onnxruntime.*",
-    "kaldi_native_fbank.*",
     "silero_vad.*",
     "numpy.*",
 ]

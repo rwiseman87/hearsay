@@ -1,11 +1,12 @@
 """Offline (post-meeting) diarization: whole-track speaker-turn segmentation.
 
-Unlike the online :class:`~hearsay.fusion.OnlineSpeakerClusterer` (one embedding per
-VAD utterance), an offline diarizer runs over the *entire* Them track at once, so it can
-do sliding-window segmentation + global clustering + overlap handling -- which is what
-the online path cannot do when the VAD hands it multi-speaker utterances. The default
-backend wraps pyannote (the accuracy-max opt-in); the seam keeps it swappable and lets
-the refine orchestration be unit-tested with a stub.
+Unlike the live sidecar's streaming labels, an offline diarizer runs over the *entire* Them
+track at once, so it can do sliding-window segmentation + global clustering + overlap
+handling -- which the streaming path cannot do as well in real time. The backend
+wraps FluidAudio's pyannote community-1 CoreML diarizer (run on the ANE in the Swift
+helper); the seam keeps it swappable and lets the refine orchestration be unit-tested
+with a stub. Each run also returns a per-speaker voiceprint (FluidAudio's mean-of-segments
+speaker embedding) the refine stores + matches across meetings.
 """
 
 from __future__ import annotations
@@ -34,6 +35,19 @@ class SpeakerTurn:
     speaker: str
     start_s: float
     end_s: float
+
+
+@dataclass(frozen=True, slots=True)
+class DiarizationResult:
+    """A whole-track diarization: speaker turns + each speaker's voiceprint.
+
+    ``embeddings`` maps a diarizer speaker label (the same label used in ``turns``) to its
+    mean speaker embedding; it may be empty (a stub, or a model that exposes no embeddings),
+    in which case cross-meeting recognition is simply skipped.
+    """
+
+    turns: list[SpeakerTurn]
+    embeddings: dict[str, list[float]]
 
 
 def order_speakers(turns: Sequence[SpeakerTurn]) -> dict[str, int]:
@@ -65,8 +79,8 @@ def assign_segment_speaker(
 
 @runtime_checkable
 class OfflineDiarizer(Protocol):
-    def diarize(self, samples: Sequence[float], *, sample_rate: int) -> list[SpeakerTurn]:
-        """Return speaker turns over ``samples`` (mono float in [-1, 1])."""
+    def diarize(self, samples: Sequence[float], *, sample_rate: int) -> DiarizationResult:
+        """Speaker turns + per-speaker voiceprints over ``samples`` (mono float in [-1, 1])."""
         ...
 
 
@@ -82,7 +96,7 @@ class FluidAudioDiarizer:
     def __init__(self, *, binary_path: Path) -> None:
         self._binary_path = binary_path
 
-    def diarize(self, samples: Sequence[float], *, sample_rate: int) -> list[SpeakerTurn]:
+    def diarize(self, samples: Sequence[float], *, sample_rate: int) -> DiarizationResult:
         import numpy as np  # noqa: PLC0415 (optional dep; only present when refining)
 
         if not self._binary_path.exists():
@@ -116,10 +130,14 @@ class FluidAudioDiarizer:
             )
             for turn in data["turns"]
         ]
+        embeddings = {
+            str(entry["speaker"]): [float(value) for value in entry["embedding"]]
+            for entry in data.get("speakers", [])
+        }
         _log.info(
             "fluidaudio diarized: %d turns, %d speakers", len(turns), data.get("speaker_count", 0)
         )
-        return turns
+        return DiarizationResult(turns=turns, embeddings=embeddings)
 
 
 def diarize_helper_path(settings: Settings) -> Path:

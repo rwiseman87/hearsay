@@ -19,8 +19,6 @@ from hearsay.models import Base
 from hearsay.services import MeetingService, SpeakerService
 from hearsay.transcript import (
     Broadcaster,
-    MeetingDiarizer,
-    ThemAudioRecorder,
     TranscriptionPipeline,
 )
 from hearsay.transcript.pipeline import _clean_text
@@ -72,18 +70,6 @@ class RecordingASR:
 
     def close(self) -> None:
         return None
-
-
-class StubEmbedder:
-    """Maps an utterance's sample level to a distinct one-hot vector, so different
-    'speakers' (positive vs negative level) cluster apart without a real model."""
-
-    dim = 4
-    model_id = "stub"
-
-    def embed(self, samples: Sequence[float]) -> list[float]:
-        level = next((s for s in samples if s != 0.0), 0.0)
-        return [1.0, 0.0, 0.0, 0.0] if level >= 0.0 else [0.0, 1.0, 0.0, 0.0]
 
 
 def _speech(frames: int) -> list[float]:
@@ -212,71 +198,6 @@ async def test_pipeline_carries_previous_final_as_prompt(tmp_path: Path) -> None
     assert asr.prompts == [None, "turn1"]
 
 
-async def test_pipeline_diarizes_them_and_labels_me_by_channel(tmp_path: Path) -> None:
-    database = _make_db(tmp_path)
-    async with database.session() as session:
-        meeting = await MeetingService(session).create(
-            title="T", folder="mtg", started_at=datetime.now(UTC)
-        )
-
-    me_queue: asyncio.Queue[AudioChunk | None] = asyncio.Queue()
-    them_queue: asyncio.Queue[AudioChunk | None] = asyncio.Queue()
-    me_queue.put_nowait(
-        AudioChunk(host_ts=0, samples=tuple(_silence(2) + _level(5, 0.5) + _silence(5)))
-    )
-    me_queue.put_nowait(None)
-    # Two distinct Them speakers (positive vs negative level), one second apart.
-    them_queue.put_nowait(
-        AudioChunk(host_ts=0, samples=tuple(_silence(2) + _level(5, 0.5) + _silence(5)))
-    )
-    them_queue.put_nowait(AudioChunk(host_ts=10**9, samples=tuple(_level(5, -0.5) + _silence(5))))
-    them_queue.put_nowait(None)
-    media = SimpleNamespace(queues={Stream.ME: me_queue, Stream.THEM: them_queue})
-
-    diarizer = MeetingDiarizer(
-        meeting_id=meeting.id,
-        database=database,
-        embedder=StubEmbedder(),
-        threshold=0.5,
-        min_embed_ms=0,
-    )
-    recorder = ThemAudioRecorder(tmp_path / "mtg" / "them.wav")
-    pipeline = TranscriptionPipeline(
-        meeting_id=meeting.id,
-        database=database,
-        sink=LocalMarkdownSink(),
-        broadcaster=Broadcaster(),
-        asr=FakeASR(),
-        vad_factory=StubVAD,
-        vad=VADSettings(min_speech_ms=20, min_silence_ms=40, partial_ms=0),
-        diarizer=diarizer,
-        them_recorder=recorder,
-    )
-    meta = MeetingMeta(
-        id=meeting.id, title="T", started_at=datetime.now(UTC), folder=tmp_path / "mtg"
-    )
-
-    await pipeline.open(media, meta)  # type: ignore[arg-type]
-    await asyncio.sleep(0.3)
-    await pipeline.close(ended_at=datetime.now(UTC))
-
-    async with database.session() as session:
-        segments, _ = await MeetingService(session).list_segments(meeting.id, page=1, page_size=10)
-        clusters = await SpeakerService(session).list_clusters(meeting.id)
-    await database.dispose()
-
-    me = [s for s in segments if s.stream is Stream.ME]
-    them = [s for s in segments if s.stream is Stream.THEM]
-    assert len(me) == 1 and me[0].speaker_label == "Me" and me[0].cluster_id is None
-    assert len(them) == 2
-    assert {s.speaker_label for s in them} == {"Speaker 1", "Speaker 2"}
-    assert all(s.cluster_id is not None for s in them)
-    assert sorted(c.ordinal for c in clusters) == [1, 2]
-    # The Them track was recorded for re-diarization (Me is never recorded).
-    assert recorder.path.exists() and recorder.start_offset_s == 0.0
-    assert not (tmp_path / "mtg" / "me.wav").exists()
-
-
 async def test_pipeline_without_diarizer_keeps_them_generic(tmp_path: Path) -> None:
     database = _make_db(tmp_path)
     async with database.session() as session:
@@ -318,58 +239,3 @@ async def test_pipeline_without_diarizer_keeps_them_generic(tmp_path: Path) -> N
     them = [s for s in segments if s.stream is Stream.THEM]
     assert len(them) == 1 and them[0].speaker_label == "Them" and them[0].cluster_id is None
     assert clusters == []
-
-
-async def test_finalized_transcript_bakes_in_renamed_speaker(tmp_path: Path) -> None:
-    database = _make_db(tmp_path)
-    async with database.session() as session:
-        meeting = await MeetingService(session).create(
-            title="T", folder="mtg", started_at=datetime.now(UTC)
-        )
-
-    me_queue: asyncio.Queue[AudioChunk | None] = asyncio.Queue()
-    them_queue: asyncio.Queue[AudioChunk | None] = asyncio.Queue()
-    me_queue.put_nowait(None)
-    them_queue.put_nowait(
-        AudioChunk(host_ts=0, samples=tuple(_silence(2) + _level(5, 0.5) + _silence(5)))
-    )
-    them_queue.put_nowait(None)
-    media = SimpleNamespace(queues={Stream.ME: me_queue, Stream.THEM: them_queue})
-
-    diarizer = MeetingDiarizer(
-        meeting_id=meeting.id,
-        database=database,
-        embedder=StubEmbedder(),
-        threshold=0.5,
-        min_embed_ms=0,
-    )
-    pipeline = TranscriptionPipeline(
-        meeting_id=meeting.id,
-        database=database,
-        sink=LocalMarkdownSink(),
-        broadcaster=Broadcaster(),
-        asr=FakeASR(),
-        vad_factory=StubVAD,
-        vad=VADSettings(min_speech_ms=20, min_silence_ms=40, partial_ms=0),
-        diarizer=diarizer,
-    )
-    meta = MeetingMeta(
-        id=meeting.id, title="T", started_at=datetime.now(UTC), folder=tmp_path / "mtg"
-    )
-
-    await pipeline.open(media, meta)  # type: ignore[arg-type]
-    await asyncio.sleep(0.3)  # the Them utterance becomes a "Speaker 1" segment
-
-    # Rename the speaker mid-meeting, then finalize.
-    async with database.session() as session:
-        service = SpeakerService(session)
-        clusters = await service.list_clusters(meeting.id)
-        assert len(clusters) == 1
-        await service.bind_cluster(clusters[0].id, display_name="Alice")
-
-    await pipeline.close(ended_at=datetime.now(UTC))
-    await database.dispose()
-
-    transcript = (tmp_path / "mtg" / "transcript.md").read_text(encoding="utf-8")
-    assert "Alice" in transcript  # finalize rewrite re-reads the (relabeled) segments
-    assert "Speaker 1" not in transcript

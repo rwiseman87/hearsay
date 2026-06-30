@@ -5,14 +5,17 @@ import Foundation
 //
 // Reads a 16 kHz mono WAV (the recorded "Them" track), runs FluidAudio's
 // OfflineDiarizerManager (pyannote community-1, CoreML), and writes the speaker
-// turns as a single JSON object to stdout:
+// turns + per-speaker voiceprints as a single JSON object to stdout:
 //
 //   {"sample_rate":16000,"duration_s":291.9,"speaker_count":2,
-//    "turns":[{"speaker":"S1","start_s":1.2,"end_s":4.5}, ...]}
+//    "turns":[{"speaker":"S1","start_s":1.2,"end_s":4.5}, ...],
+//    "speakers":[{"speaker":"S1","embedding":[0.01, ...]}, ...]}
 //
-// All FluidAudio diagnostics go to stderr, so stdout is clean JSON. The Python
-// core (`hearsay rediarize`) invokes this as a subprocess. CoreML models
-// auto-download from public HuggingFace repos on first run.
+// The per-speaker embeddings (FluidAudio's mean-of-segments speaker database) are
+// the cross-meeting voiceprints the Python refine stores + matches, so no separate
+// ONNX embedder is needed. All FluidAudio diagnostics go to stderr, so stdout is
+// clean JSON. The Python core (`hearsay rediarize`) invokes this as a subprocess.
+// CoreML models auto-download from public HuggingFace repos on first run.
 
 struct Turn: Codable {
     let speaker: String
@@ -20,11 +23,17 @@ struct Turn: Codable {
     let endS: Double
 }
 
+struct SpeakerEmbedding: Codable {
+    let speaker: String
+    let embedding: [Float]
+}
+
 struct Output: Codable {
     let sampleRate: Int
     let durationS: Double
     let speakerCount: Int
     let turns: [Turn]
+    let speakers: [SpeakerEmbedding]
 }
 
 func emitErrorAndExit(_ message: String) -> Never {
@@ -58,8 +67,14 @@ do {
         Turn(speaker: $0.speakerId, startS: Double($0.startTimeSeconds), endS: Double($0.endTimeSeconds))
     }
     let speakerCount = Set(result.segments.map { $0.speakerId }).count
+    // The offline pipeline populates a per-speaker mean embedding (the voiceprint);
+    // emit it so the Python refine can store + match it across meetings.
+    let speakers = (result.speakerDatabase ?? [:]).map {
+        SpeakerEmbedding(speaker: $0.key, embedding: $0.value)
+    }
     let output = Output(
-        sampleRate: 16_000, durationS: durationS, speakerCount: speakerCount, turns: turns)
+        sampleRate: 16_000, durationS: durationS, speakerCount: speakerCount, turns: turns,
+        speakers: speakers)
 
     let encoder = JSONEncoder()
     encoder.keyEncodingStrategy = .convertToSnakeCase

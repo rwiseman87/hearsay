@@ -11,7 +11,7 @@ from hearsay.api.deps import ContextDep, ManagerDep, SessionDep, require_token
 from hearsay.models import Cluster
 from hearsay.schemas import IdentityRead, Page, SpeakerRead, SpeakerRename
 from hearsay.services import MeetingService, SpeakerService
-from hearsay.transcript import RefineError, build_recognition_embedder, rediarize_meeting
+from hearsay.transcript import RefineError, rediarize_meeting
 
 router = APIRouter(tags=["speakers"], dependencies=[Depends(require_token)])
 
@@ -61,9 +61,8 @@ async def rediarize(meeting_id: UUID, context: ContextDep) -> Page[SpeakerRead]:
         if await MeetingService(session).get(meeting_id) is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="meeting not found")
     try:
-        embedder = build_recognition_embedder(context.settings)
         await rediarize_meeting(
-            meeting_id, database=context.database, settings=context.settings, embedder=embedder
+            meeting_id, database=context.database, settings=context.settings
         )
     except RefineError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc

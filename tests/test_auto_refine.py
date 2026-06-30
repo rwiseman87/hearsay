@@ -67,7 +67,7 @@ async def _finalized_candidate(
 
 def _record_calls(calls: list[UUID]) -> object:
     async def fake_rediarize(
-        meeting_id: UUID, *, database: Database, settings: Settings, embedder: object = None
+        meeting_id: UUID, *, database: Database, settings: Settings
     ) -> RefineResult:
         calls.append(meeting_id)
         return RefineResult(meeting_id=meeting_id, speaker_count=2, segments_relabeled=4)
@@ -82,7 +82,6 @@ async def test_auto_refine_runs_at_finalize(
     meeting = await _finalized_candidate(database, settings)
     calls: list[UUID] = []
     monkeypatch.setattr(session_mod, "rediarize_meeting", _record_calls(calls))
-    monkeypatch.setattr(session_mod, "build_recognition_embedder", lambda _s: None)
 
     manager = SessionManager(database=database, settings=settings, capture_factory=_FakeCapture)
     result = await manager.stop_meeting(meeting.id)
@@ -99,7 +98,6 @@ async def test_auto_refine_disabled_does_not_run(
     meeting = await _finalized_candidate(database, settings)
     calls: list[UUID] = []
     monkeypatch.setattr(session_mod, "rediarize_meeting", _record_calls(calls))
-    monkeypatch.setattr(session_mod, "build_recognition_embedder", lambda _s: None)
 
     manager = SessionManager(database=database, settings=settings, capture_factory=_FakeCapture)
     await manager.stop_meeting(meeting.id)
@@ -114,7 +112,6 @@ async def test_auto_refine_skips_without_recording(
     meeting = await _finalized_candidate(database, settings, them=False)
     calls: list[UUID] = []
     monkeypatch.setattr(session_mod, "rediarize_meeting", _record_calls(calls))
-    monkeypatch.setattr(session_mod, "build_recognition_embedder", lambda _s: None)
 
     manager = SessionManager(database=database, settings=settings, capture_factory=_FakeCapture)
     await manager.stop_meeting(meeting.id)
@@ -129,12 +126,11 @@ async def test_auto_refine_error_does_not_break_stop(
     meeting = await _finalized_candidate(database, settings)
 
     async def boom(
-        meeting_id: UUID, *, database: Database, settings: Settings, embedder: object
+        meeting_id: UUID, *, database: Database, settings: Settings
     ) -> RefineResult:
         raise RuntimeError("diarizer exploded")
 
     monkeypatch.setattr(session_mod, "rediarize_meeting", boom)
-    monkeypatch.setattr(session_mod, "build_recognition_embedder", lambda _s: None)
 
     manager = SessionManager(database=database, settings=settings, capture_factory=_FakeCapture)
     result = await manager.stop_meeting(meeting.id)

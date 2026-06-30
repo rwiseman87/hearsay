@@ -38,12 +38,6 @@ class ASRBackendKind(StrEnum):
     PARAKEET = "parakeet"
 
 
-class DiarizationBackendKind(StrEnum):
-    """Which speaker-embedding implementation produces voiceprints for cross-meeting recall."""
-
-    ONNX = "onnx"  # torch-free ONNX embeddings on onnxruntime
-
-
 class SampleFormat(StrEnum):
     INT16 = "int16"
     FLOAT32 = "float32"

@@ -24,7 +24,9 @@ from hearsay.diarization import (
 _JSON = (
     b'{"sample_rate":16000,"duration_s":2.0,"speaker_count":2,'
     b'"turns":[{"speaker":"S1","start_s":0.0,"end_s":1.0},'
-    b'{"speaker":"S2","start_s":1.0,"end_s":2.0}]}'
+    b'{"speaker":"S2","start_s":1.0,"end_s":2.0}],'
+    b'"speakers":[{"speaker":"S1","embedding":[1.0,0.0]},'
+    b'{"speaker":"S2","embedding":[0.0,1.0]}]}'
 )
 
 
@@ -51,8 +53,9 @@ def test_fluidaudio_diarizer_parses_helper_json(
         return subprocess.CompletedProcess(args, 0, stdout=_JSON, stderr=b"")
 
     monkeypatch.setattr(subprocess, "run", fake_run)
-    turns = FluidAudioDiarizer(binary_path=binary).diarize([0.1, -0.1, 0.2], sample_rate=16000)
-    assert turns == [SpeakerTurn("S1", 0.0, 1.0), SpeakerTurn("S2", 1.0, 2.0)]
+    result = FluidAudioDiarizer(binary_path=binary).diarize([0.1, -0.1, 0.2], sample_rate=16000)
+    assert result.turns == [SpeakerTurn("S1", 0.0, 1.0), SpeakerTurn("S2", 1.0, 2.0)]
+    assert result.embeddings == {"S1": [1.0, 0.0], "S2": [0.0, 1.0]}
 
 
 def test_fluidaudio_diarizer_raises_on_helper_failure(
