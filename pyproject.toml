@@ -16,15 +16,13 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Default transcription path: whisper.cpp ASR + Silero VAD on onnxruntime (torch-free).
+# Live ASR is FluidAudio Parakeet on the ANE (the Swift hearsay-asr helper, no Python dep).
+# whisper.cpp stays as a torch-free fallback (HEARSAY_ASR__BACKEND=whispercpp) + Silero VAD.
 asr = ["pywhispercpp>=1.5", "onnxruntime>=1.27", "numpy>=2.2"]
-# Default diarization: torch-free + ungated -- a speaker-embedding ONNX model run on the
-# onnxruntime we already use (Silero VAD), with kaldi-native-fbank for the exact reference
-# features the model expects (no torch), + our own online clustering. All Apache/CC-BY.
+# Offline diarization is FluidAudio on the ANE (the Swift hearsay-diarize helper). This extra
+# is only the cross-meeting voiceprint embedder: a torch-free ONNX speaker model on the
+# onnxruntime we already use for VAD, with kaldi-native-fbank for the reference features.
 diarization = ["onnxruntime>=1.27", "numpy>=2.2", "kaldi-native-fbank>=1.22"]
-# Opt-in max-accuracy diarizer: pulls torch + needs a gated HF model/token (see docs).
-diarization-pyannote = ["pyannote-audio>=4.0"]
-accel = ["mlx-whisper>=0.4"]
 bedrock = ["boto3>=1.35"]
 
 [project.scripts]
@@ -73,11 +71,8 @@ exclude = ["src/hearsay/db/migrations/"]
 [[tool.mypy.overrides]]
 module = [
     "pywhispercpp.*",
-    "pyannote.*",
-    "torch.*",
     "onnxruntime.*",
     "kaldi_native_fbank.*",
-    "mlx_whisper.*",
     "silero_vad.*",
     "numpy.*",
 ]

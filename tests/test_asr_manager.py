@@ -7,17 +7,12 @@ from hearsay.config.settings import Settings
 from hearsay.enums import ASRBackendKind
 
 
-def test_resolve_known_model_per_backend() -> None:
+def test_resolve_known_model() -> None:
     assert resolve_model(ASRBackendKind.WHISPERCPP, "large-v3-turbo") == "large-v3-turbo"
-    assert (
-        resolve_model(ASRBackendKind.MLX, "large-v3-turbo")
-        == "mlx-community/whisper-large-v3-turbo"
-    )
 
 
 def test_resolve_unknown_passes_through() -> None:
     assert resolve_model(ASRBackendKind.WHISPERCPP, "/models/custom.bin") == "/models/custom.bin"
-    assert resolve_model(ASRBackendKind.MLX, "some-org/some-repo") == "some-org/some-repo"
 
 
 def test_default_model_is_curated() -> None:

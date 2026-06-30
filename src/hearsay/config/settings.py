@@ -4,15 +4,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from pydantic import AliasChoices, BaseModel, Field, SecretStr, model_validator
+from pydantic import AliasChoices, BaseModel, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from hearsay.enums import (
-    ASRBackendKind,
-    DiarizationBackendKind,
-    Environment,
-    OfflineDiarizerKind,
-)
+from hearsay.enums import ASRBackendKind, DiarizationBackendKind, Environment
 
 # Local-first run-from-source layout: recordings, the SQLite DB, and models all live
 # under the repo's outputs/ (gitignored). Packaging (Phase 5) can repoint these.
@@ -62,22 +57,10 @@ class DiarizationSettings(BaseModel):
     # also removes the folder).
     refine: bool = True
     # Run the offline refine automatically when a meeting finalizes (vs. only on the manual
-    # "Refine speakers" button / `hearsay rediarize`). Cheap now that the default diarizer is
-    # FluidAudio on the ANE (~seconds), so every meeting ends with accurate labels. Gated on
-    # `refine` (needs them.wav); a missing recording or a diarizer error never blocks the stop.
+    # "Refine speakers" button / `hearsay rediarize`). Cheap now that the diarizer is FluidAudio
+    # on the ANE (~seconds), so every meeting ends with accurate labels. Gated on `refine`
+    # (needs them.wav); a missing recording or a diarizer error never blocks the stop.
     auto_refine: bool = True
-    # Which offline diarizer runs the refine. Default `fluidaudio` runs FluidAudio's
-    # pyannote community-1 CoreML on the ANE via the `hearsay-diarize` helper (torch-free,
-    # ungated -- no HF token). `pyannote` is the in-process torch path (needs the
-    # `diarization-pyannote` extra + an HF login; the `pyannote_model`/`hf_token`/
-    # `refine_device` fields below apply only to it).
-    offline_backend: OfflineDiarizerKind = OfflineDiarizerKind.FLUIDAUDIO
-    # pyannote pipeline + auth for the refine pass (used only when `offline_backend` is
-    # `pyannote` and the `diarization-pyannote` extra is installed). hf_token defaults to None
-    # -> use the huggingface CLI login; device "cpu" is safe on Apple Silicon ("mps" opt-in).
-    pyannote_model: str = "pyannote/speaker-diarization-community-1"
-    hf_token: SecretStr | None = None
-    refine_device: str = "cpu"
     # Cosine at/above which a refined speaker's voiceprint is auto-matched to a person named
     # in a previous meeting. Conservative (a wrong cross-meeting match is worse than none).
     recognition_threshold: float = 0.6

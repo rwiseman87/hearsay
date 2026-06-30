@@ -200,15 +200,12 @@ async def _run_rediarize(settings: Settings, meeting_ref: str) -> int:
 
 @main.command()
 @click.argument("meeting_id")
-@click.option("--device", default=None, help="Override the pyannote device (cpu / mps).")
-def rediarize(meeting_id: str, device: str | None) -> None:
-    """Re-diarize a recorded meeting's Them track with pyannote and relabel its speakers.
+def rediarize(meeting_id: str) -> None:
+    """Re-diarize a recorded meeting's Them track (FluidAudio on the ANE) and relabel speakers.
 
     MEETING_ID is a meeting UUID or the literal "latest" for the most recent meeting.
     """
     settings = Settings()
-    if device:
-        settings.diarization.refine_device = device
     if meeting_id != "latest":
         try:
             UUID(meeting_id)

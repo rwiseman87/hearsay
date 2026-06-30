@@ -21,7 +21,6 @@ from hearsay.diarization.manager import (
 from hearsay.diarization.offline import (
     FluidAudioDiarizer,
     OfflineDiarizer,
-    PyannoteDiarizer,
     SpeakerTurn,
     assign_segment_speaker,
     build_offline_diarizer,
@@ -41,7 +40,6 @@ __all__ = [
     "FluidAudioDiarizer",
     "OfflineDiarizer",
     "OnnxSpeakerEmbedder",
-    "PyannoteDiarizer",
     "SpeakerEmbedder",
     "SpeakerTurn",
     "assign_segment_speaker",

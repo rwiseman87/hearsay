@@ -1,9 +1,8 @@
-"""Offline diarizer seam -- FluidAudio (default) parses the helper JSON; pyannote loads lazily.
+"""Offline diarizer seam -- FluidAudio parses the helper JSON.
 
 Real diarization is validated on-device (a recorded meeting), not here. FluidAudio's inference
 lives in the Swift ``hearsay-diarize`` tool, so the unit suite mocks the subprocess and covers
-the JSON parsing + failure handling; the opt-in pyannote path is just seam wiring (no torch
-import / model load on construction).
+the JSON parsing + failure handling.
 """
 
 from __future__ import annotations
@@ -12,18 +11,15 @@ import subprocess
 from pathlib import Path
 
 import pytest
-from pydantic import SecretStr
 
 from hearsay.config.settings import Settings
 from hearsay.diarization import (
     FluidAudioDiarizer,
     OfflineDiarizer,
-    PyannoteDiarizer,
     SpeakerTurn,
     build_offline_diarizer,
     diarize_helper_path,
 )
-from hearsay.enums import OfflineDiarizerKind
 
 _JSON = (
     b'{"sample_rate":16000,"duration_s":2.0,"speaker_count":2,'
@@ -76,31 +72,3 @@ def test_fluidaudio_diarizer_raises_on_helper_failure(
 def test_fluidaudio_diarizer_raises_when_binary_missing(tmp_path: Path) -> None:
     with pytest.raises(RuntimeError, match="not found"):
         FluidAudioDiarizer(binary_path=tmp_path / "nope").diarize([0.0], sample_rate=16000)
-
-
-def test_pyannote_backend_is_lazy_and_conforms() -> None:
-    settings = Settings()
-    settings.diarization.offline_backend = OfflineDiarizerKind.PYANNOTE
-    diarizer = build_offline_diarizer(settings)
-    assert isinstance(diarizer, PyannoteDiarizer)
-    assert isinstance(diarizer, OfflineDiarizer)  # runtime-checkable protocol
-    assert diarizer._pipeline is None  # no torch import / model load on construction
-
-
-def test_pyannote_backend_carries_model_and_token() -> None:
-    settings = Settings()
-    settings.diarization.offline_backend = OfflineDiarizerKind.PYANNOTE
-    settings.diarization.pyannote_model = "pyannote/custom-pipeline"
-    settings.diarization.hf_token = SecretStr("hf_secret")
-    diarizer = build_offline_diarizer(settings)
-    assert isinstance(diarizer, PyannoteDiarizer)
-    assert diarizer._model == "pyannote/custom-pipeline"
-    assert diarizer._token == "hf_secret"  # SecretStr unwrapped for the HF API
-
-
-def test_pyannote_backend_token_defaults_to_cli_login() -> None:
-    settings = Settings()
-    settings.diarization.offline_backend = OfflineDiarizerKind.PYANNOTE
-    diarizer = build_offline_diarizer(settings)
-    assert isinstance(diarizer, PyannoteDiarizer)
-    assert diarizer._token is None  # None -> huggingface_hub falls back to the CLI login

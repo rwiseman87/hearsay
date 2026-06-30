@@ -36,25 +36,13 @@ class ASRBackendKind(StrEnum):
     # FluidAudio Parakeet TDT on the ANE via the hearsay-asr sidecar (default; no Metal,
     # so it dodges whisper.cpp's unrecoverable Metal command-buffer failures).
     PARAKEET = "parakeet"
-    WHISPERCPP = "whispercpp"  # pywhispercpp (Metal+CoreML; torch-free)
-    MLX = "mlx"  # mlx-whisper (opt-in; needs the `accel` extra, pulls torch)
+    WHISPERCPP = "whispercpp"  # pywhispercpp (Metal+CoreML; torch-free fallback)
 
 
 class DiarizationBackendKind(StrEnum):
-    """Which speaker-embedding implementation diarizes the Them stream."""
+    """Which speaker-embedding implementation produces voiceprints for cross-meeting recall."""
 
-    ONNX = "onnx"  # torch-free ONNX embeddings on onnxruntime (default)
-    PYANNOTE = "pyannote"  # opt-in; pulls torch + a gated HF model (see docs)
-
-
-class OfflineDiarizerKind(StrEnum):
-    """Which offline (post-meeting) diarizer relabels the recorded Them track."""
-
-    # FluidAudio pyannote community-1 CoreML, run on the ANE via the hearsay-diarize
-    # helper (default; torch-free, ungated -- no HF token).
-    FLUIDAUDIO = "fluidaudio"
-    # In-process pyannote (opt-in; pulls torch + needs a gated HF model).
-    PYANNOTE = "pyannote"
+    ONNX = "onnx"  # torch-free ONNX embeddings on onnxruntime
 
 
 class SampleFormat(StrEnum):

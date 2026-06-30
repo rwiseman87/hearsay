@@ -53,9 +53,9 @@ async def rename_speaker(
 
 @router.post("/meetings/{meeting_id}/rediarize", response_model=Page[SpeakerRead])
 async def rediarize(meeting_id: UUID, context: ContextDep) -> Page[SpeakerRead]:
-    """Re-diarize the recorded Them track with pyannote and return the new speakers.
+    """Re-diarize the recorded Them track (FluidAudio on the ANE) and return the new speakers.
 
-    Slow (loads + runs pyannote); the heavy work is off-loop. 404 if the meeting is
+    The heavy diarization runs in the helper, off-loop. 404 if the meeting is
     unknown, 409 if it has no recorded ``them.wav`` (diarization.refine was off)."""
     async with context.database.session() as session:
         if await MeetingService(session).get(meeting_id) is None:

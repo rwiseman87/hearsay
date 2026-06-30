@@ -197,6 +197,19 @@ uv run hearsay live --model base --seconds 60   # real pipeline -> live transcri
 
 ## Progress log
 
+- **2026-06-30 (eve, F4 part 1 — torch removed).** With the validated FluidAudio path the default everywhere, deleted
+  the torch-heavy fallbacks: the in-process **pyannote** offline diarizer (`PyannoteDiarizer` + the `offline_backend`/
+  `pyannote_model`/`hf_token`/`refine_device` settings + `OfflineDiarizerKind` + the `diarization-pyannote` extra) and
+  the **mlx** ASR backend (`MlxBackend` + the `accel` extra + the mlx model-resolution). `build_offline_diarizer` is now
+  always FluidAudio; `build_asr` is Parakeet (default) or whisper.cpp. Dropped the `pyannote`/`torch`/`mlx_whisper` mypy
+  overrides; `hearsay rediarize` lost its pyannote `--device` flag. **`uv lock` + `uv sync` pruned the whole torch tree
+  (~2 GB: torch, torchaudio, torchcodec, triton, …) — `torch`/`pyannote` confirmed gone from the venv.** This kills the
+  biggest distribution blocker (a 2 GB bundle). **153 pass; ruff + mypy --strict (69 files) + licenses + pip-audit
+  green** (the torchcodec UNKNOWN-license noise is gone too). Kept on purpose: **whisper.cpp** as a torch-free ASR
+  fallback (`HEARSAY_ASR__BACKEND=whispercpp`) + its model picker; **Silero VAD** (live chunking) + the **ONNX voiceprint
+  embedder** (cross-meeting recall) — both onnxruntime, no torch, still used. Remaining F4: optionally drop whisper.cpp +
+  the picker for a pure-FluidAudio build (user's call); a docs/CLAUDE.md sweep (still say pyannote/torch). Committed on
+  `feat/fluidaudio-pivot`. **Next: F2 (live diarization in Swift).**
 - **2026-06-30 (eve, turn-accurate refine — splits overlapping/quick-turn-taking talkers).** On-device, Parakeet
   accuracy + quick finalization were great, but slightly-overlapping talkers weren't split. **Diagnosed:** the Silero
   VAD (no max-duration cap, still Python) merged a full back-and-forth into one 56 s utterance, so the diarizer's fine

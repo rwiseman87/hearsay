@@ -13,14 +13,12 @@ from __future__ import annotations
 import json
 import subprocess
 import tempfile
-import warnings
 import wave
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
-from hearsay.enums import OfflineDiarizerKind
 from hearsay.log import get_logger
 
 if TYPE_CHECKING:
@@ -70,65 +68,6 @@ class OfflineDiarizer(Protocol):
     def diarize(self, samples: Sequence[float], *, sample_rate: int) -> list[SpeakerTurn]:
         """Return speaker turns over ``samples`` (mono float in [-1, 1])."""
         ...
-
-
-class PyannoteDiarizer:
-    """pyannote ``speaker-diarization-community-1`` over an in-memory waveform.
-
-    The pipeline (heavy: torch) loads lazily on first :meth:`diarize`. pyannote is fed a
-    torch tensor rather than a file path, so it never touches torchcodec/ffmpeg decoding.
-    """
-
-    def __init__(self, *, model: str, token: str | None = None, device: str = "cpu") -> None:
-        self._model = model
-        self._token = token
-        self._device = device
-        self._pipeline: Any | None = None
-
-    def _ensure_pipeline(self) -> Any:
-        if self._pipeline is None:
-            import logging  # noqa: PLC0415
-
-            import torch  # noqa: PLC0415 (optional dep; only when refining)
-
-            # huggingface_hub logs every model-file HEAD over httpx at INFO; quiet it.
-            logging.getLogger("httpx").setLevel(logging.WARNING)
-
-            # torchcodec fails to load without ffmpeg and warns loudly (a multi-line traceback)
-            # at import; we feed an in-memory tensor (never decode a file), so it's pure noise.
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore")
-                from pyannote.audio import Pipeline  # noqa: PLC0415
-
-            pipeline = Pipeline.from_pretrained(self._model, token=self._token)
-            if pipeline is None:
-                raise RuntimeError(
-                    f"could not load pyannote pipeline '{self._model}'; check the "
-                    "diarization-pyannote extra, the HF login, and gated-model access"
-                )
-            self._pipeline = pipeline.to(torch.device(self._device))
-        return self._pipeline
-
-    def diarize(self, samples: Sequence[float], *, sample_rate: int) -> list[SpeakerTurn]:
-        import torch  # noqa: PLC0415
-
-        pipeline = self._ensure_pipeline()
-        waveform = torch.tensor(samples, dtype=torch.float32).unsqueeze(0)  # (1, num_samples)
-        with warnings.catch_warnings():
-            # pyannote's pooling warns "std(): degrees of freedom <= 0" on very short frames.
-            warnings.filterwarnings("ignore", message=".*degrees of freedom.*")
-            output = pipeline({"waveform": waveform, "sample_rate": sample_rate})
-        # Exclusive diarization assigns each instant to at most one speaker, which maps
-        # cleanly onto transcript segments (overlap regions are split, not double-labelled).
-        annotation = output.exclusive_speaker_diarization
-        turns = [
-            SpeakerTurn(speaker=str(label), start_s=float(segment.start), end_s=float(segment.end))
-            for segment, _, label in annotation.itertracks(yield_label=True)
-        ]
-        _log.info(
-            "pyannote diarized: %d turns, %d speakers", len(turns), len({t.speaker for t in turns})
-        )
-        return turns
 
 
 class FluidAudioDiarizer:
@@ -189,11 +128,5 @@ def diarize_helper_path(settings: Settings) -> Path:
 
 
 def build_offline_diarizer(settings: Settings) -> OfflineDiarizer:
-    """Construct the configured offline diarizer (FluidAudio default; pyannote opt-in)."""
-    diarization = settings.diarization
-    if diarization.offline_backend is OfflineDiarizerKind.FLUIDAUDIO:
-        return FluidAudioDiarizer(binary_path=diarize_helper_path(settings))
-    token = diarization.hf_token.get_secret_value() if diarization.hf_token is not None else None
-    return PyannoteDiarizer(
-        model=diarization.pyannote_model, token=token, device=diarization.refine_device
-    )
+    """Construct the offline diarizer (FluidAudio pyannote community-1 CoreML on the ANE)."""
+    return FluidAudioDiarizer(binary_path=diarize_helper_path(settings))

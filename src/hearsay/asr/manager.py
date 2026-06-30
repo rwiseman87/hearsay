@@ -12,7 +12,6 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from hearsay.asr.base import ASRBackend
-from hearsay.asr.mlx_backend import MlxBackend
 from hearsay.asr.parakeet_backend import ParakeetBackend
 from hearsay.asr.whispercpp_backend import WhisperCppBackend
 from hearsay.config.settings import Settings
@@ -24,16 +23,13 @@ class KnownModel:
     name: str
     label: str
     whispercpp: str  # GGML name pywhispercpp downloads
-    mlx: str  # MLX-format Hugging Face repo (verified to exist)
 
 
-# Curated, verified models for the picker; any other name/path/repo passes through.
+# Curated, verified whisper.cpp models for the picker; any other name/path passes through.
 KNOWN_MODELS: tuple[KnownModel, ...] = (
-    KnownModel(
-        "large-v3-turbo", "Large v3 Turbo", "large-v3-turbo", "mlx-community/whisper-large-v3-turbo"
-    ),
-    KnownModel("large-v3", "Large v3", "large-v3", "mlx-community/whisper-large-v3-mlx"),
-    KnownModel("base", "Base (fast)", "base", "mlx-community/whisper-base-mlx"),
+    KnownModel("large-v3-turbo", "Large v3 Turbo", "large-v3-turbo"),
+    KnownModel("large-v3", "Large v3", "large-v3"),
+    KnownModel("base", "Base (fast)", "base"),
 )
 _BY_NAME = {model.name: model for model in KNOWN_MODELS}
 
@@ -49,7 +45,7 @@ def resolve_model(kind: ASRBackendKind, model: str) -> str:
     known = _BY_NAME.get(model)
     if known is None:
         return model  # path, or a backend-specific id the user supplied directly
-    return known.whispercpp if kind is ASRBackendKind.WHISPERCPP else known.mlx
+    return known.whispercpp
 
 
 def asr_helper_path(settings: Settings) -> Path:
@@ -62,13 +58,11 @@ def build_asr(settings: Settings) -> ASRBackend:
     if kind is ASRBackendKind.PARAKEET:
         # Parakeet uses its own bundled model; the whisper-centric `model` field doesn't apply.
         return ParakeetBackend(binary_path=asr_helper_path(settings))
-    model = resolve_model(kind, settings.asr.model)
     if kind is ASRBackendKind.WHISPERCPP:
+        model = resolve_model(kind, settings.asr.model)
         return WhisperCppBackend(
             model, models_dir=settings.models_dir, beam_size=settings.asr.beam_size
         )
-    if kind is ASRBackendKind.MLX:
-        return MlxBackend(model)
     raise ValueError(f"unknown ASR backend: {kind}")
 
 
