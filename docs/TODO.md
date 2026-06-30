@@ -77,6 +77,11 @@ all-Swift would delete the "bundle + notarize CPython" step, the roadmap's harde
   FluidAudio's *own* tree (a stray `benchmark.md` unhandled file) — third-party, build still exits clean. Uncommitted
   on `main` (no branch/commit yet — awaiting the user). (Batch/one-shot → subcommand + JSON stdout, not the live IPC;
   live streaming is F2.)
+- **F1b — Auto-refine at finalize. DONE (2026-06-30 eve).** The refine now runs automatically when a meeting stops
+  (inline in `SessionManager.stop_meeting` → `_maybe_auto_refine`), not just via the manual button — cheap now that F1
+  put the diarizer on the ANE. New `diarization.auto_refine` setting (default on); gated on `refine` + `them.wav`;
+  best-effort (never breaks the stop). Both stop paths (API + CLI `hearsay live`) covered. +4 tests; 148 pass; ruff +
+  mypy green. Real trigger validates on the next live meeting.
 - **F2 — Live diarizer over IPC.** Add FluidAudio online/streaming diarization to the capture helper; stream speaker
   labels over `control.sock` live; Python fuses them onto live segments. Replaces the torch-free online clusterer.
 - **F3 — Parakeet ASR in the helper.** Move ASR to FluidAudio Parakeet (ANE); retire whisper.cpp/Silero from the live
@@ -188,6 +193,18 @@ uv run hearsay live --model base --seconds 60   # real pipeline -> live transcri
 
 ## Progress log
 
+- **2026-06-30 (eve, latest)** **Auto-refine at finalize built (the quick win F1 unlocked).** With the user, chose to
+  do this before the heavier live-streaming F2: now that the default offline diarizer is FluidAudio on the ANE
+  (~seconds, not 30s+ of torch), the refine runs **inline when a meeting stops** instead of only via the manual "Refine
+  speakers" button. Single hook in `SessionManager.stop_meeting` → `_maybe_auto_refine(meeting)`: gated on
+  `diarization.refine && diarization.auto_refine` (new setting, default **on**) + `them.wav` existing; best-effort
+  (a missing recording or a diarizer error is logged, **never** breaks the stop). Both stop paths (API
+  `POST /meetings/{id}/stop` + CLI `hearsay live`) funnel through `stop_meeting`, so both get it. Inline-await (not a
+  background task) sidesteps the served-vs-CLI lifecycle problem the TODO flagged — viable only because F1 made the
+  refine fast. +4 tests (runs / disabled / no-recording / error-tolerant) → **148 pass; ruff + mypy --strict (69 files)
+  green** (also fixed an `__all__` sort RUF022 that F1's targeted lint missed). Real stop→refine validates on the next
+  live meeting (now automatic). Uncommitted on `feat/fluidaudio-pivot`. **Next: F2 (live diarizer over IPC), still
+  open.**
 - **2026-06-30 (eve, later)** **Phased pivot chosen + increment F1 built — FluidAudio offline diarizer in the Swift
   helper, replacing the default Python pyannote refine.** With the user (after the licensing questions resolved
   all-clean — FluidAudio Apache-2.0; diarization + Parakeet models both CC-BY-4.0 + ungated), chose the **phased**

@@ -59,6 +59,11 @@ class DiarizationSettings(BaseModel):
     # Privacy tradeoff: this retains raw audio by default -- set False to opt out (delete-meeting
     # also removes the folder).
     refine: bool = True
+    # Run the offline refine automatically when a meeting finalizes (vs. only on the manual
+    # "Refine speakers" button / `hearsay rediarize`). Cheap now that the default diarizer is
+    # FluidAudio on the ANE (~seconds), so every meeting ends with accurate labels. Gated on
+    # `refine` (needs them.wav); a missing recording or a diarizer error never blocks the stop.
+    auto_refine: bool = True
     # Which offline diarizer runs the refine. Default `fluidaudio` runs FluidAudio's
     # pyannote community-1 CoreML on the ANE via the `hearsay-diarize` helper (torch-free,
     # ungated -- no HF token). `pyannote` is the in-process torch path (needs the

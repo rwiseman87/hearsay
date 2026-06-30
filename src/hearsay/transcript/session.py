@@ -30,6 +30,11 @@ from hearsay.transcript.capture import Capture, HelperCapture
 from hearsay.transcript.diarizer import MeetingDiarizer
 from hearsay.transcript.pipeline import TranscriptionPipeline
 from hearsay.transcript.recorder import ThemAudioRecorder
+from hearsay.transcript.refine import (
+    RefineError,
+    build_recognition_embedder,
+    rediarize_meeting,
+)
 from hearsay.vad import VAD
 from hearsay.vad.silero import SileroVAD
 
@@ -229,7 +234,36 @@ class SessionManager:
                 await active.stop()
                 self._active = None
         async with self._db.session() as session:
-            return await MeetingService(session).finalize(meeting_id)
+            meeting = await MeetingService(session).finalize(meeting_id)
+        if meeting is not None:
+            await self._maybe_auto_refine(meeting)
+        return meeting
+
+    async def _maybe_auto_refine(self, meeting: Meeting) -> None:
+        """Re-diarize the just-finalized meeting (FluidAudio on the ANE; ~seconds), so it ends
+        with accurate speaker labels without the manual button. Best-effort: a missing
+        recording or a diarizer failure is logged, never raised -- the stop already succeeded."""
+        diarization = self._settings.diarization
+        if not (diarization.refine and diarization.auto_refine):
+            return
+        them_wav = self._settings.output_dir / meeting.folder / "them.wav"
+        if not them_wav.exists():
+            return
+        try:
+            embedder = build_recognition_embedder(self._settings)
+            result = await rediarize_meeting(
+                meeting.id, database=self._db, settings=self._settings, embedder=embedder
+            )
+            _log.info(
+                "auto-refined meeting %s at finalize: %d speakers, %d segments relabeled",
+                meeting.id,
+                result.speaker_count,
+                result.segments_relabeled,
+            )
+        except RefineError as exc:
+            _log.info("auto-refine skipped for meeting %s: %s", meeting.id, exc)
+        except Exception:
+            _log.exception("auto-refine at finalize failed for meeting %s", meeting.id)
 
     async def delete_meeting(self, meeting_id: UUID) -> bool:
         async with self._lock:
