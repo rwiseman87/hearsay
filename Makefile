@@ -1,4 +1,4 @@
-.PHONY: help install sync dev pytest swift-build swift-test test typecheck lint fmt codegen web-install web-typecheck web-build web-codegen-check web-ci audit licenses ci build package notarize clean
+.PHONY: help install sync dev pytest swift-build swift-test test typecheck lint fmt codegen web-install web-typecheck web-build web-codegen-check web-ci audit licenses ci build package notarize clean serve
 
 PKG := helper
 FIXTURES := shared/fixtures/frames.jsonl
@@ -68,3 +68,6 @@ build package notarize: ## Distribution targets (Phase 5; deferred for internal 
 
 clean: ## Remove build artifacts
 	rm -rf $(PKG)/.build
+
+serve: ## Serve the application
+	uv run hearsay serve

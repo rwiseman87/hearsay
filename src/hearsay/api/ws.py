@@ -8,6 +8,7 @@ transcript events for the active meeting as JSON text frames.
 
 from __future__ import annotations
 
+import asyncio
 from uuid import UUID
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
@@ -44,4 +45,9 @@ async def meeting_ws(websocket: WebSocket, meeting_id: UUID) -> None:
             while True:
                 await websocket.send_text(await queue.get())
         except WebSocketDisconnect:
+            pass
+        except asyncio.CancelledError:
+            # Server shutdown cancels this task; the broadcaster unsubscribe runs as the
+            # context manager unwinds. Swallow so a clean stop is not logged by uvicorn
+            # as an ASGI error (it logs any BaseException that escapes the endpoint).
             pass

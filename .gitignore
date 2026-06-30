@@ -28,6 +28,9 @@ node_modules/
 # capture-debug writes under outputs/capture-debug/.
 *.wav
 
+# Local log files (e.g. a redirected `make serve` run).
+*.log
+
 # scratch / local verification artifacts (everything under outputs/ is ignored ...)
 outputs/*
 

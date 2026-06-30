@@ -15,7 +15,7 @@ export function App() {
   return (
     <div className="app">
       <header className="app__bar">
-        <h1 className="app__title">hearsay</h1>
+        <h1 className="app__title">hearsay - It's what happened, probably</h1>
         <ModelPicker />
       </header>
       <main className="app__main">

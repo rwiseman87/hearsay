@@ -6,36 +6,25 @@ Conventions: `CLAUDE.md`.
 
 ## How to resume
 
-**Status (2026-06-26):** Phases 0 + **Phase 1 MVP** are **complete** (merged to `main`, validated on a real
-meeting). **Phase 2 (diarization) is CODE-COMPLETE** (increments 1–6) on `feat/phase-2-diarization`, all committed;
-the **on-device multi-person verify is the only remaining item — it needs the user.** Backend (inc 1–4):
-`identities`/`clusters`/`segments.cluster_id` + `SpeakerService`; torch-free `OnnxSpeakerEmbedder` (wespeaker
-CAM++_LM, CC-BY-4.0, ungated, sha256-pinned; real-speech validated cos 0.84 vs 0.22–0.33); pure-stdlib
-`OnlineSpeakerClusterer`; `MeetingDiarizer` wired into the pipeline (Them embedded→clustered→"Speaker N"/identity→
-`cluster_id`; Me channel-labeled; graceful degrade with no model). Inc 5 (API + UI): `GET /speakers` + `PUT
-/speakers/{id}` rename (binds + locks + retroactively relabels segments + propagates to the live clusterer) +
-`GET /identities`; React `SpeakerPanel`. Inc 6 (finalize): the finalize rewrite re-reads the relabeled segments, so
-a mid-meeting rename **bakes resolved names into `transcript.md`** (end-to-end test proves it). **117 tests; full
-`make ci` + web tsc/build/codegen green.**
+**Status (2026-06-30):** Phases 0 + **Phase 1 MVP** complete (merged to `main`, validated on a real meeting).
+**Phase 2 (diarization) is CODE-COMPLETE and committed** on `feat/phase-2-diarization` (Inc 1–7d + cross-meeting
+voiceprint recognition; latest commit `1c2b4c8`). The torch-free ONNX-embeddings + online-clustering path is the
+distributable default; pyannote `speaker-diarization-community-1` post-meeting refine is the accuracy-max opt-in
+(`diarization-pyannote` extra + `HEARSAY_DIARIZATION__REFINE=true`, run from source). Built: identities/clusters/
+`segments.cluster_id` + `SpeakerService`; torch-free `OnnxSpeakerEmbedder` (wespeaker CAM++_LM); pure-stdlib
+`OnlineSpeakerClusterer`; `MeetingDiarizer` in the pipeline; `GET/PUT /speakers` rename (binds + locks + retroactively
+relabels) + React `SpeakerPanel`; finalize bakes resolved names into `transcript.md`; `ThemAudioRecorder` (records
+`them.wav` only when refine is on); `PyannoteDiarizer` + `rediarize_meeting` + `hearsay rediarize <id|latest>` +
+`POST /meetings/{id}/rediarize` + "Refine speakers" UI button; cross-meeting voiceprint auto-recognition (a returning,
+manually-locked speaker is auto-named provisionally). **138 tests; full `make ci` + web tsc/build/codegen green.**
 
-**Pick up here → build the pyannote post-meeting refine (Inc 7); needs the user's HF token for inc 7b/c.** Two
-on-device verifies (2026-06-29) showed the torch-free online diarizer is **not good enough** on real multi-person
-audio: even after a tuning pass (duration-weighted centroids + `min_embed_ms` 500→1000 + per-utterance cosine logging),
-it jumbles multiple people into one labeled block. Root cause (transcript-confirmed): with `min_silence_ms=600` and no
-max-duration cap, a lively/overlapping conversation makes the VAD emit 20–30 s utterances that **already span several
-speakers**, so a single blended embedding is both unassignable and centroid-poisoning — a segmentation ceiling no
-threshold fixes. **Decision (with the user): pyannote post-meeting refine.** pyannote `speaker-diarization-community-1`
-(pyannote-audio 4.0.6, CC-BY-4.0, mono-16k, has `exclusive_speaker_diarization` for transcript reconciliation) runs at
-finalize over the recorded Them track and relabels the whole transcript. It's the reserved accuracy-max opt-in; the
-torch-free path stays the distributable default (the user opts in, running from source). **Inc 7a (Them recorder) is
-done + green** (`ThemAudioRecorder` streams `<folder>/them.wav` when `diarization.refine` is on, off by default; records
-the meeting-time offset for turn→segment mapping). **User prerequisite for 7b/c:** create a free HF account, accept the
-gated model at huggingface.co/pyannote/speaker-diarization-community-1, make a read token, provide it as
-`HEARSAY_DIARIZATION__HF_TOKEN`. **Next (7b):** install the `diarization-pyannote` extra (pulls torch — vet
-`make licenses`/`audit`), build `OfflineDiarizer` + `PyannoteDiarizer` (lazy import, in-memory waveform tensor to skip
-torchcodec). **Then (7c):** pure turn→segment overlap mapping + relabel + transcript rewrite, triggered by a manual
-`hearsay rediarize <meeting>` CLI + `POST /meetings/{id}/rediarize` (recommended over auto-on-stop for v1).
-(Optional Phase 1 belt-and-suspenders still open: a both-speakers run to watch Me/Them interleave live.)
+**Pick up here → the only item left in Phase 2 is the on-device verify (Inc 7e), and it needs the user.** Capture a real
+multi-person meeting with `HEARSAY_DIARIZATION__REFINE=true`, run `hearsay rediarize latest`, and confirm the Them
+speakers separate cleanly in the rewritten `transcript.md`. (The torch-free online path already failed the multi-person
+bar — Inc 6b — which is why the pyannote refine exists; 7e validates that refine path end-to-end on device.) HF prereq is
+already cleared (user `crwiseman`; gated model accepted; `hf auth login` done). Once 7e passes, **Phase 2 closes and
+merges to `main`**, then Phase 3 (calendar roster + OCR active-speaker fusion). (Optional Phase 1 belt-and-suspenders
+still open: a both-speakers run to watch Me/Them interleave live.)
 
 Docs: `README.md` + `docs/{architecture,pipeline,api,development}.md`. Design: the plan. IPC: `shared/protocol/ipc.md`.
 
