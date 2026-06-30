@@ -20,8 +20,16 @@ class ASRSettings(BaseModel):
     backend: ASRBackendKind = ASRBackendKind.WHISPERCPP
     # A known model name (e.g. ``large-v3-turbo``) the backend resolves/downloads,
     # or an absolute path to a local model file.
-    model: str = "large-v3-turbo"
+    model: str = "large-v3"
     language: str | None = None  # None = auto-detect
+    # Optional decoding knobs (whisper.cpp), off by default: an on-device A/B showed the model
+    # choice -- not these -- drove accuracy, and beam search slows live transcription. Kept
+    # config-gated for future tuning. beam_size > 1 enables beam search (1 = greedy).
+    beam_size: int = 1
+    # When on, feed the previous final's text as a decoding prompt so names/terms stay consistent
+    # across utterances; reset after a silence gap so a wrong prompt cannot snowball.
+    condition_on_previous_text: bool = False
+    context_reset_gap_s: float = 8.0
 
 
 class DiarizationSettings(BaseModel):

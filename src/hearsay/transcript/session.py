@@ -188,6 +188,8 @@ class SessionManager:
                 diarizer=diarizer,
                 them_recorder=them_recorder,
                 language=self._settings.asr.language,
+                condition_on_previous_text=self._settings.asr.condition_on_previous_text,
+                context_reset_gap_s=self._settings.asr.context_reset_gap_s,
             )
 
         return make

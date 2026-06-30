@@ -33,7 +33,11 @@ class ASRBackend(Protocol):
     def model(self) -> str: ...
 
     def transcribe(
-        self, samples: Sequence[float], *, language: str | None = None
+        self, samples: Sequence[float], *, language: str | None = None, prompt: str | None = None
     ) -> list[ASRSegment]:
-        """Transcribe 16 kHz mono float samples in [-1, 1] into ordered segments."""
+        """Transcribe 16 kHz mono float samples in [-1, 1] into ordered segments.
+
+        ``prompt`` is optional preceding text used as a decoding hint for cross-utterance
+        continuity (names/terms); backends without prompt support ignore it.
+        """
         ...

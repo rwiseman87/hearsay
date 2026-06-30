@@ -26,14 +26,17 @@ class MlxBackend:
         return self._model
 
     def transcribe(
-        self, samples: Sequence[float], *, language: str | None = None
+        self, samples: Sequence[float], *, language: str | None = None, prompt: str | None = None
     ) -> list[ASRSegment]:
         import mlx_whisper  # noqa: PLC0415 (optional dep)
         import numpy as np  # noqa: PLC0415 (optional dep)
 
         audio = np.asarray(samples, dtype=np.float32)
+        options: dict[str, object] = {"word_timestamps": False}
+        if prompt:
+            options["initial_prompt"] = prompt  # standard whisper decoding hint
         result = mlx_whisper.transcribe(
-            audio, path_or_hf_repo=self._model, language=language, word_timestamps=False
+            audio, path_or_hf_repo=self._model, language=language, **options
         )
         return [
             ASRSegment(

@@ -45,9 +45,27 @@ class FakeASR:
     model = "fake"
 
     def transcribe(
-        self, samples: Sequence[float], *, language: str | None = None
+        self, samples: Sequence[float], *, language: str | None = None, prompt: str | None = None
     ) -> list[ASRSegment]:
         return [ASRSegment(text="hello world", start_s=0.0, end_s=1.0)]
+
+
+class RecordingASR:
+    """Records the decoding prompt of each call and returns distinct text per call."""
+
+    name = "rec"
+    model = "rec"
+
+    def __init__(self) -> None:
+        self.prompts: list[str | None] = []
+        self._n = 0
+
+    def transcribe(
+        self, samples: Sequence[float], *, language: str | None = None, prompt: str | None = None
+    ) -> list[ASRSegment]:
+        self.prompts.append(prompt)
+        self._n += 1
+        return [ASRSegment(text=f"turn{self._n}", start_s=0.0, end_s=1.0)]
 
 
 class StubEmbedder:
@@ -146,6 +164,46 @@ async def test_pipeline_transcribes_persists_and_broadcasts(tmp_path: Path) -> N
     assert len(finals) == 1
     assert finals[0]["text"] == "hello world"
     assert finals[0]["stream"] == "me"
+
+
+async def test_pipeline_carries_previous_final_as_prompt(tmp_path: Path) -> None:
+    database = _make_db(tmp_path)
+    async with database.session() as session:
+        meeting = await MeetingService(session).create(
+            title="T", folder="mtg", started_at=datetime.now(UTC)
+        )
+
+    me_queue: asyncio.Queue[AudioChunk | None] = asyncio.Queue()
+    them_queue: asyncio.Queue[AudioChunk | None] = asyncio.Queue()
+    # Two speech bursts -> two finals, close together (gap well under the reset window).
+    samples = _silence(2) + _speech(5) + _silence(5) + _speech(5) + _silence(5)
+    me_queue.put_nowait(AudioChunk(host_ts=0, samples=tuple(samples)))
+    me_queue.put_nowait(None)
+    them_queue.put_nowait(None)
+    media = SimpleNamespace(queues={Stream.ME: me_queue, Stream.THEM: them_queue})
+
+    asr = RecordingASR()
+    pipeline = TranscriptionPipeline(
+        meeting_id=meeting.id,
+        database=database,
+        sink=LocalMarkdownSink(),
+        broadcaster=Broadcaster(),
+        asr=asr,
+        vad_factory=StubVAD,
+        vad=VADSettings(min_speech_ms=20, min_silence_ms=40, partial_ms=0),
+        condition_on_previous_text=True,
+    )
+    meta = MeetingMeta(
+        id=meeting.id, title="T", started_at=datetime.now(UTC), folder=tmp_path / "mtg"
+    )
+
+    await pipeline.open(media, meta)  # type: ignore[arg-type]
+    await asyncio.sleep(0.2)
+    await pipeline.close(ended_at=datetime.now(UTC))
+    await database.dispose()
+
+    # First final has no prior context; the second is prompted with the first final's text.
+    assert asr.prompts == [None, "turn1"]
 
 
 async def test_pipeline_diarizes_them_and_labels_me_by_channel(tmp_path: Path) -> None:

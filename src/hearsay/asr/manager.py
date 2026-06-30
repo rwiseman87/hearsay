@@ -54,7 +54,9 @@ def build_asr(settings: Settings) -> ASRBackend:
     kind = settings.asr.backend
     model = resolve_model(kind, settings.asr.model)
     if kind is ASRBackendKind.WHISPERCPP:
-        return WhisperCppBackend(model, models_dir=settings.models_dir)
+        return WhisperCppBackend(
+            model, models_dir=settings.models_dir, beam_size=settings.asr.beam_size
+        )
     if kind is ASRBackendKind.MLX:
         return MlxBackend(model)
     raise ValueError(f"unknown ASR backend: {kind}")

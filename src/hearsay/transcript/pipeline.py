@@ -60,6 +60,8 @@ class TranscriptionPipeline:
         diarizer: MeetingDiarizer | None = None,
         them_recorder: ThemAudioRecorder | None = None,
         language: str | None = None,
+        condition_on_previous_text: bool = False,
+        context_reset_gap_s: float = 8.0,
     ) -> None:
         self._meeting_id = meeting_id
         self._db = database
@@ -69,6 +71,11 @@ class TranscriptionPipeline:
         self._diarizer = diarizer
         self._them_recorder = them_recorder
         self._language = language
+        self._condition = condition_on_previous_text
+        self._context_reset_gap_s = context_reset_gap_s
+        # Per-stream rolling decoding context: the last final's text + when it ended.
+        self._context: dict[Stream, str] = {Stream.ME: "", Stream.THEM: ""}
+        self._context_end_s: dict[Stream, float] = {Stream.ME: 0.0, Stream.THEM: 0.0}
         self._asr_lock = asyncio.Lock()
         self._tasks: list[asyncio.Task[None]] = []
         self._epoch_ns: int | None = None
@@ -120,7 +127,9 @@ class TranscriptionPipeline:
                 await self._emit(stream, utterance)
 
     async def _emit(self, stream: Stream, utterance: Utterance) -> None:
-        text = await self._transcribe(utterance.samples)
+        # Only finals carry decoding context; partials stay context-free (fast + drift-safe).
+        prompt = self._context_prompt(stream, utterance) if utterance.is_final else None
+        text = await self._transcribe(utterance.samples, prompt=prompt)
         if not text:
             return
         # Only finals are clustered + persisted; partials are ephemeral, so they keep the
@@ -142,6 +151,18 @@ class TranscriptionPipeline:
             await self._persist(
                 stream, speaker, text, utterance.start_s, utterance.end_s, cluster_id
             )
+            if self._condition:
+                self._context[stream] = text
+                self._context_end_s[stream] = utterance.end_s
+
+    def _context_prompt(self, stream: Stream, utterance: Utterance) -> str | None:
+        # Carry the previous final's text as a decoding hint, but drop it after a long
+        # silence so a stale/wrong prompt cannot snowball into the next utterance.
+        if not self._condition:
+            return None
+        if utterance.start_s - self._context_end_s[stream] > self._context_reset_gap_s:
+            return None
+        return self._context[stream] or None
 
     async def _resolve_speaker(
         self, stream: Stream, utterance: Utterance
@@ -157,10 +178,10 @@ class TranscriptionPipeline:
         if self._diarizer is not None:
             self._diarizer.bind(ordinal, display_name)
 
-    async def _transcribe(self, samples: Sequence[float]) -> str:
+    async def _transcribe(self, samples: Sequence[float], *, prompt: str | None = None) -> str:
         async with self._asr_lock:
             segments = await asyncio.to_thread(
-                self._asr.transcribe, samples, language=self._language
+                self._asr.transcribe, samples, language=self._language, prompt=prompt
             )
         return _clean_text(" ".join(segment.text for segment in segments))
 
