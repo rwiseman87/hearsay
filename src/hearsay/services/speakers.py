@@ -7,13 +7,25 @@ cluster at it) wrapped in one commit.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from uuid import UUID
 
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from hearsay.enums import Stream
 from hearsay.models import Cluster, Identity, Segment
+
+
+@dataclass(frozen=True, slots=True)
+class TurnSegment:
+    """One diarizer turn to persist as a Them segment: speaker ordinal + re-transcribed text."""
+
+    ordinal: int
+    text: str
+    start_s: float
+    end_s: float
 
 
 class SpeakerService:
@@ -86,18 +98,20 @@ class SpeakerService:
         )
         return [(name, centroid) for name, centroid in rows if centroid is not None]
 
-    async def apply_diarization(
+    async def apply_turn_diarization(
         self,
         meeting_id: UUID,
         *,
-        segment_ordinals: dict[UUID, int | None],
+        turn_segments: list[TurnSegment],
         speaker_count: int,
         ordinal_names: dict[int, str] | None = None,
         ordinal_centroids: dict[int, bytes] | None = None,
         recognized: dict[int, str] | None = None,
     ) -> None:
-        """Replace a meeting's clusters with a fresh "Speaker 1..N" set and relabel its Them
-        segments (one transaction). Used by the post-meeting pyannote refine.
+        """Rebuild a meeting's Them transcript from diarizer turns (one transaction): drop the
+        old VAD-segmented Them segments + clusters, create a fresh "Speaker 1..N" set, and
+        insert one segment per turn (Me segments untouched). Used by the post-meeting refine --
+        the turns follow speaker changes that the VAD's silence-based utterances merged.
 
         ``ordinal_names`` carries manual renames forward (locked, so a re-diarize never
         overrides a manual binding -- a guardrail). ``recognized`` auto-names a speaker whose
@@ -107,6 +121,9 @@ class SpeakerService:
         names = ordinal_names or {}
         autos = {o: n for o, n in (recognized or {}).items() if o not in names}
         centroids = ordinal_centroids or {}
+        await self._session.execute(
+            delete(Segment).where(Segment.meeting_id == meeting_id, Segment.stream == Stream.THEM)
+        )
         await self._session.execute(delete(Cluster).where(Cluster.meeting_id == meeting_id))
         clusters = {
             n: Cluster(meeting_id=meeting_id, ordinal=n, centroid=centroids.get(n))
@@ -122,15 +139,18 @@ class SpeakerService:
             identity = await self._get_or_create_identity(name)
             clusters[auto_ordinal].identity_id = identity.id  # provisional: leave unlocked
         await self._session.flush()
-        for segment_id, ordinal in segment_ordinals.items():
-            values: dict[str, str | UUID | None]
-            if ordinal is None:
-                values = {"speaker_label": "Them", "cluster_id": None}
-            else:
-                label = names.get(ordinal) or autos.get(ordinal) or f"Speaker {ordinal}"
-                values = {"speaker_label": label, "cluster_id": clusters[ordinal].id}
-            await self._session.execute(
-                update(Segment).where(Segment.id == segment_id).values(**values)
+        for turn in turn_segments:
+            label = names.get(turn.ordinal) or autos.get(turn.ordinal) or f"Speaker {turn.ordinal}"
+            self._session.add(
+                Segment(
+                    meeting_id=meeting_id,
+                    stream=Stream.THEM,
+                    speaker_label=label,
+                    text=turn.text,
+                    start_s=turn.start_s,
+                    end_s=turn.end_s,
+                    cluster_id=clusters[turn.ordinal].id,
+                )
             )
         await self._session.commit()
 

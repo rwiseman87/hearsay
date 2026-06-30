@@ -197,6 +197,22 @@ uv run hearsay live --model base --seconds 60   # real pipeline -> live transcri
 
 ## Progress log
 
+- **2026-06-30 (eve, turn-accurate refine — splits overlapping/quick-turn-taking talkers).** On-device, Parakeet
+  accuracy + quick finalization were great, but slightly-overlapping talkers weren't split. **Diagnosed:** the Silero
+  VAD (no max-duration cap, still Python) merged a full back-and-forth into one 56 s utterance, so the diarizer's fine
+  turns (S1/S2/S1) collapsed to the dominant speaker at the segment level — the Phase-2 "segmentation ceiling." Any VAD
+  splits on silence, not speaker change, so the fix isn't a different VAD: **segment by the diarizer's turns.** Rebuilt
+  the refine — `rediarize_meeting` now, for each FluidAudio turn, slices that turn's audio and **re-transcribes it with
+  Parakeet** (the sidecar from F3), emitting one correctly-labeled segment per turn. New `SpeakerService.apply_turn_
+  diarization` (replaces `apply_diarization`): drops the coarse Them segments + clusters, creates Speaker 1..N, inserts
+  one segment per turn (Me untouched). Manual-rename carry-forward + voiceprint recognition preserved (factored
+  `_carry_forward_names`); a no-turns result leaves the transcript intact (no wipe). **The finalized transcript is now
+  fully FluidAudio/ANE-driven — Silero no longer shapes it** (it remains only the live chunker feeding Parakeet during
+  the meeting). **Validated on the real 2019 hot-ones-vaughn meeting**: the 56 s "Speaker 1" block became S1[1.7-28.7]/
+  S2[28.7-40.6]/S1[40.6-57.1], each with its own text. +3 tests rewritten (turn-rebuild) → **156 pass; ruff + mypy
+  --strict (70 files) green.** Cost: auto-refine now re-transcribes every turn (a 2nd short-lived Parakeet sidecar at
+  finalize) — still a few seconds. Committed on `feat/fluidaudio-pivot`. (Honest state: VAD + live-diar still Python;
+  F2 would move live diar to Swift. The *finalized* path is now Swift end-to-end.)
 - **2026-06-30 (eve, F3 built — Parakeet ASR on the ANE replaces whisper.cpp/Metal in the live path).** Directly fixes
   the whisper Metal failure above. New persistent Swift sidecar **`hearsay-asr`** (FluidAudio Parakeet TDT v3): loads the
   model once, then serves a stdio request/response loop — request `<uint32 LE n><n float32 LE>` (one VAD utterance) →

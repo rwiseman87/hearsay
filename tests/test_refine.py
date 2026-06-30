@@ -14,6 +14,7 @@ from pathlib import Path
 import numpy as np
 from sqlalchemy import create_engine as create_sync_engine
 
+from hearsay.asr import ASRSegment
 from hearsay.config.settings import Settings
 from hearsay.db import Database
 from hearsay.diarization import (
@@ -64,6 +65,26 @@ class StubDiarizer:
         return self._turns
 
 
+class StubASR:
+    """Returns a distinct marker per call (t0, t1, ...) so each turn's text is identifiable."""
+
+    name = "stub"
+    model = "stub"
+
+    def __init__(self) -> None:
+        self._n = 0
+
+    def transcribe(
+        self, samples: object, *, language: str | None = None, prompt: str | None = None
+    ) -> list[ASRSegment]:
+        text = f"t{self._n}"
+        self._n += 1
+        return [ASRSegment(text=text, start_s=0.0, end_s=1.0)]
+
+    def close(self) -> None:
+        return None
+
+
 def _make_db(tmp_path: Path) -> Database:
     db_file = tmp_path / "refine.db"
     engine = create_sync_engine(f"sqlite:///{db_file}")
@@ -107,15 +128,15 @@ async def test_rediarize_relabels_segments_and_transcript(tmp_path: Path) -> Non
         await SpeakerService(session).create_cluster(meeting.id, ordinal=1)
 
     _write_silent_wav(tmp_path / "mtg" / "them.wav")
-    # A spans [0,2.5], B spans [2.5,6] -> seg1=A, seg2/seg3=B.
+    # Two turns -> the coarse Them segments are rebuilt as one re-transcribed segment per turn.
     stub = StubDiarizer([SpeakerTurn("SPEAKER_x", 0.0, 2.5), SpeakerTurn("SPEAKER_y", 2.5, 6.0)])
 
     result = await rediarize_meeting(
-        meeting.id, database=database, settings=settings, diarizer=stub
+        meeting.id, database=database, settings=settings, diarizer=stub, asr=StubASR()
     )
 
     assert result.speaker_count == 2
-    assert result.segments_relabeled == 3
+    assert result.segments_relabeled == 2  # one segment per turn (re-transcribed), not the 3 coarse
     async with database.session() as session:
         segments, _ = await MeetingService(session).list_segments(meeting.id, page=1, page_size=100)
         clusters = await SpeakerService(session).list_clusters(meeting.id)
@@ -123,8 +144,9 @@ async def test_rediarize_relabels_segments_and_transcript(tmp_path: Path) -> Non
 
     me = [s for s in segments if s.stream is Stream.ME]
     them = sorted((s for s in segments if s.stream is Stream.THEM), key=lambda s: s.start_s)
-    assert me[0].speaker_label == "Me" and me[0].cluster_id is None  # Me never re-diarized
-    assert [s.speaker_label for s in them] == ["Speaker 1", "Speaker 2", "Speaker 2"]
+    assert me[0].speaker_label == "Me" and me[0].text == "mine"  # Me untouched
+    # Each turn is re-transcribed (StubASR -> t0, t1) and labeled by its speaker ordinal.
+    assert [(s.speaker_label, s.text) for s in them] == [("Speaker 1", "t0"), ("Speaker 2", "t1")]
     assert all(s.cluster_id is not None for s in them)
     assert sorted(c.ordinal for c in clusters) == [1, 2]  # stale cluster replaced, not appended
 
@@ -162,7 +184,9 @@ async def test_rediarize_preserves_manual_rename(tmp_path: Path) -> None:
     # pyannote re-clusters: x covers Alice's segs [0,4], y is the other speaker [4,6].
     stub = StubDiarizer([SpeakerTurn("SPEAKER_x", 0.0, 4.0), SpeakerTurn("SPEAKER_y", 4.0, 6.0)])
 
-    await rediarize_meeting(meeting.id, database=database, settings=settings, diarizer=stub)
+    await rediarize_meeting(
+        meeting.id, database=database, settings=settings, diarizer=stub, asr=StubASR()
+    )
 
     async with database.session() as session:
         segments, _ = await MeetingService(session).list_segments(meeting.id, page=1, page_size=100)
@@ -170,7 +194,8 @@ async def test_rediarize_preserves_manual_rename(tmp_path: Path) -> None:
     await database.dispose()
 
     them = sorted(segments, key=lambda s: s.start_s)
-    assert [s.speaker_label for s in them] == ["Alice", "Alice", "Speaker 2"]  # rename survived
+    # Alice's old segments overlapped turn x -> the manual name carries onto that turn's segment.
+    assert [s.speaker_label for s in them] == ["Alice", "Speaker 2"]  # rename survived the rebuild
     alice_cluster = next(c for c in clusters if c.ordinal == 1)
     assert alice_cluster.locked and alice_cluster.identity is not None
     assert alice_cluster.identity.display_name == "Alice"
@@ -228,7 +253,12 @@ async def test_rediarize_recognizes_returning_speaker(tmp_path: Path) -> None:
     stub = StubDiarizer([SpeakerTurn("SPEAKER_x", 0.0, 4.0), SpeakerTurn("SPEAKER_y", 4.0, 6.0)])
 
     await rediarize_meeting(
-        m2.id, database=database, settings=settings, diarizer=stub, embedder=StubEmbedder()
+        m2.id,
+        database=database,
+        settings=settings,
+        diarizer=stub,
+        embedder=StubEmbedder(),
+        asr=StubASR(),
     )
 
     async with database.session() as session:

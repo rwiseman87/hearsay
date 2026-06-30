@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 from uuid import UUID
 
+from hearsay.asr import ASRBackend, build_asr
 from hearsay.config.settings import Settings
 from hearsay.db import Database
 from hearsay.diarization import (
@@ -34,8 +35,8 @@ from hearsay.diarization import (
 from hearsay.enums import MeetingStatus, Stream
 from hearsay.export import LocalMarkdownSink, MeetingMeta, TranscriptLine
 from hearsay.log import get_logger
-from hearsay.models import Meeting
-from hearsay.services import MeetingService, SpeakerService
+from hearsay.models import Cluster, Meeting, Segment
+from hearsay.services import MeetingService, SpeakerService, TurnSegment
 from hearsay.transcript.recorder import read_offset_s
 
 _log = get_logger("hearsay.refine")
@@ -122,6 +123,75 @@ async def _recognize_speakers(  # noqa: PLR0913 (a cohesive step; each arg is a 
     return ordinal_centroids, recognized
 
 
+def _carry_forward_names(
+    them: Sequence[Segment],
+    turns: Sequence[SpeakerTurn],
+    clusters: Sequence[Cluster],
+    label_to_ordinal: dict[str, int],
+    offset_s: float,
+) -> dict[int, str]:
+    """Vote each prior locked name onto the turn ordinal its old segments most overlap, so a
+    re-diarize never drops a manual binding (one name <-> one ordinal)."""
+    prior_name_by_cluster = {
+        cluster.id: cluster.identity.display_name
+        for cluster in clusters
+        if cluster.locked and cluster.identity is not None
+    }
+    name_votes: Counter[tuple[int, str]] = Counter()
+    for segment in them:
+        if segment.cluster_id is None:
+            continue
+        prior_name = prior_name_by_cluster.get(segment.cluster_id)
+        if prior_name is None:
+            continue
+        label = assign_segment_speaker(segment.start_s, segment.end_s, turns, offset_s=offset_s)
+        ordinal = label_to_ordinal.get(label) if label is not None else None
+        if ordinal is not None:
+            name_votes[(ordinal, prior_name)] += 1
+    ordinal_names: dict[int, str] = {}
+    used_names: set[str] = set()
+    for (ordinal, name), _votes in name_votes.most_common():
+        if ordinal not in ordinal_names and name not in used_names:
+            ordinal_names[ordinal] = name
+            used_names.add(name)
+    return ordinal_names
+
+
+async def _transcribe_turns(
+    asr: ASRBackend,
+    samples: Any,
+    sample_rate: int,
+    turns: Sequence[SpeakerTurn],
+    label_to_ordinal: dict[str, int],
+    offset_s: float,
+) -> list[TurnSegment]:
+    """Re-transcribe each diarizer turn's audio span so the Them transcript follows speaker
+    changes (the live VAD merges back-and-forth exchanges into one multi-speaker utterance).
+    Returns turn segments in meeting time (turn times are WAV-relative; ``offset_s`` shifts)."""
+    result: list[TurnSegment] = []
+    for turn in sorted(turns, key=lambda t: t.start_s):
+        ordinal = label_to_ordinal.get(turn.speaker)
+        if ordinal is None:
+            continue
+        start = max(0, int(turn.start_s * sample_rate))
+        end = min(len(samples), int(turn.end_s * sample_rate))
+        if end <= start:
+            continue
+        segments = await asyncio.to_thread(asr.transcribe, samples[start:end])
+        text = " ".join(segment.text for segment in segments).strip()
+        if not text:
+            continue
+        result.append(
+            TurnSegment(
+                ordinal=ordinal,
+                text=text,
+                start_s=turn.start_s + offset_s,
+                end_s=turn.end_s + offset_s,
+            )
+        )
+    return result
+
+
 async def rediarize_meeting(
     meeting_id: UUID,
     *,
@@ -129,11 +199,14 @@ async def rediarize_meeting(
     settings: Settings,
     diarizer: OfflineDiarizer | None = None,
     embedder: SpeakerEmbedder | None = None,
+    asr: ASRBackend | None = None,
 ) -> RefineResult:
-    """Re-diarize ``them.wav`` offline and bake the result into the DB + transcript.
+    """Re-diarize ``them.wav`` offline and rebuild the Them transcript per speaker turn.
 
-    With an ``embedder``, each speaker's voiceprint is stored and matched against people
-    named in prior meetings, so a returning person is auto-named (provisionally)."""
+    Each diarizer turn's audio is re-transcribed (FluidAudio Parakeet by default) so the
+    transcript splits the multi-speaker utterances the live VAD merged. With an ``embedder``,
+    each speaker's voiceprint is stored and matched against people named in prior meetings, so
+    a returning person is auto-named (provisionally)."""
     async with database.session() as session:
         meeting = await MeetingService(session).get(meeting_id)
     if meeting is None:
@@ -163,33 +236,26 @@ async def rediarize_meeting(
     turns = await asyncio.to_thread(diarizer.diarize, samples, sample_rate=sample_rate)
     label_to_ordinal = order_speakers(turns)
 
-    # Manual renames (locked clusters) to carry forward so re-diarization never drops a name.
-    prior_name_by_cluster = {
-        cluster.id: cluster.identity.display_name
-        for cluster in clusters
-        if cluster.locked and cluster.identity is not None
-    }
+    # Rebuild the Them transcript from the turns: re-transcribe each turn's audio (default
+    # Parakeet). Owns the ASR backend it builds, so it tears the sidecar down afterwards.
+    owns_asr = asr is None
+    asr = asr or build_asr(settings)
+    try:
+        turn_segments = await _transcribe_turns(
+            asr, samples, sample_rate, turns, label_to_ordinal, offset_s
+        )
+    finally:
+        if owns_asr:
+            await asyncio.to_thread(asr.close)
+    if not turn_segments:
+        # The diarizer/ASR produced nothing -> keep the existing transcript rather than wipe it.
+        _log.info("rediarize: meeting %s produced no turns; leaving transcript as-is", meeting_id)
+        return RefineResult(
+            meeting_id=meeting_id, speaker_count=len(label_to_ordinal), segments_relabeled=0
+        )
 
-    segment_ordinals: dict[UUID, int | None] = {}
-    name_votes: Counter[tuple[int, str]] = Counter()
-    relabeled = 0
-    for segment in them:
-        label = assign_segment_speaker(segment.start_s, segment.end_s, turns, offset_s=offset_s)
-        ordinal = label_to_ordinal.get(label) if label is not None else None
-        segment_ordinals[segment.id] = ordinal
-        if ordinal is not None:
-            relabeled += 1
-            if segment.cluster_id is not None:
-                prior_name = prior_name_by_cluster.get(segment.cluster_id)
-                if prior_name is not None:
-                    name_votes[(ordinal, prior_name)] += 1
-    # Bind each manual name to the new ordinal it most dominates (one name <-> one ordinal).
-    ordinal_names: dict[int, str] = {}
-    used_names: set[str] = set()
-    for (ordinal, name), _votes in name_votes.most_common():
-        if ordinal not in ordinal_names and name not in used_names:
-            ordinal_names[ordinal] = name
-            used_names.add(name)
+    # Carry manual renames forward onto the new turn ordinals (never drop a manual binding).
+    ordinal_names = _carry_forward_names(them, turns, clusters, label_to_ordinal, offset_s)
 
     # Voiceprints: embed each speaker, store its centroid, and auto-name a returning person
     # by matching against people named in prior meetings (manual carry-forward wins).
@@ -206,9 +272,9 @@ async def rediarize_meeting(
     )
 
     async with database.session() as session:
-        await SpeakerService(session).apply_diarization(
+        await SpeakerService(session).apply_turn_diarization(
             meeting_id,
-            segment_ordinals=segment_ordinals,
+            turn_segments=turn_segments,
             speaker_count=len(label_to_ordinal),
             ordinal_names=ordinal_names,
             ordinal_centroids=ordinal_centroids,
@@ -217,16 +283,17 @@ async def rediarize_meeting(
     await _rewrite_transcript(meeting_id, meeting=meeting, folder=folder, database=database)
 
     _log.info(
-        "rediarized meeting %s: %d speakers, %d/%d Them labeled, %d names kept, %d recognized",
+        "rediarized meeting %s: %d speakers, %d turn segments, %d names kept, %d recognized",
         meeting_id,
         len(label_to_ordinal),
-        relabeled,
-        len(them),
+        len(turn_segments),
         len(ordinal_names),
         len(recognized),
     )
     return RefineResult(
-        meeting_id=meeting_id, speaker_count=len(label_to_ordinal), segments_relabeled=relabeled
+        meeting_id=meeting_id,
+        speaker_count=len(label_to_ordinal),
+        segments_relabeled=len(turn_segments),
     )
 
 
