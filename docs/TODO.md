@@ -7,8 +7,8 @@ Conventions: `CLAUDE.md`.
 ## How to resume
 
 **Status (2026-06-30):** Phases 0 + **Phase 1 MVP** complete (merged to `main`, validated on a real meeting).
-**Phase 2 (diarization) is CODE-COMPLETE and committed** on `feat/phase-2-diarization` (Inc 1–7d + cross-meeting
-voiceprint recognition; latest commit `1c2b4c8`). The torch-free ONNX-embeddings + online-clustering path is the
+**Phase 2 (diarization) is CODE-COMPLETE and merged to `main`** (2026-06-30, fast-forward `5e8c74e..156944b`; Inc 1–7d
++ cross-meeting voiceprint recognition). The torch-free ONNX-embeddings + online-clustering path is the
 distributable default; pyannote `speaker-diarization-community-1` post-meeting refine is the accuracy-max opt-in
 (`diarization-pyannote` extra + `HEARSAY_DIARIZATION__REFINE=true`, run from source). Built: identities/clusters/
 `segments.cluster_id` + `SpeakerService`; torch-free `OnnxSpeakerEmbedder` (wespeaker CAM++_LM); pure-stdlib
@@ -18,13 +18,22 @@ relabels) + React `SpeakerPanel`; finalize bakes resolved names into `transcript
 `POST /meetings/{id}/rediarize` + "Refine speakers" UI button; cross-meeting voiceprint auto-recognition (a returning,
 manually-locked speaker is auto-named provisionally). **138 tests; full `make ci` + web tsc/build/codegen green.**
 
-**Pick up here → the only item left in Phase 2 is the on-device verify (Inc 7e), and it needs the user.** Capture a real
-multi-person meeting with `HEARSAY_DIARIZATION__REFINE=true`, run `hearsay rediarize latest`, and confirm the Them
-speakers separate cleanly in the rewritten `transcript.md`. (The torch-free online path already failed the multi-person
-bar — Inc 6b — which is why the pyannote refine exists; 7e validates that refine path end-to-end on device.) HF prereq is
-already cleared (user `crwiseman`; gated model accepted; `hf auth login` done). Once 7e passes, **Phase 2 closes and
-merges to `main`**, then Phase 3 (calendar roster + OCR active-speaker fusion). (Optional Phase 1 belt-and-suspenders
-still open: a both-speakers run to watch Me/Them interleave live.)
+**Pick up here → Phase 2 code is merged to `main`; the next coding work is Phase 3** (calendar roster + OCR
+active-speaker fusion). Two on-device validations remain outstanding (deferred to real hardware; the user chose to merge
+without gating on them): **(7e)** capture a real multi-person meeting with `HEARSAY_DIARIZATION__REFINE=true`, run
+`hearsay rediarize latest`, and confirm the Them speakers separate cleanly in the rewritten `transcript.md` (the
+torch-free online path already failed the multi-person bar — Inc 6b — which is why the pyannote refine exists); and a
+both-speakers run to watch Me/Them interleave live. HF prereq is cleared (user `crwiseman`; gated model accepted;
+`hf auth login` done).
+
+**Minor teardown note (2026-06-29):** a real `serve` log showed whisper.cpp Metal errors (`command buffer 0 failed
+with status 3` → `failed to encode`/`decode`) **immediately before `ggml_metal_free: deallocating` + a meeting DELETE**
+— i.e. at stop/app-kill, not a live mid-meeting failure (transcription did not stay dead; the user confirmed). Cause:
+`pipeline.close()` cancels the per-stream consume tasks, but a detached `asyncio.to_thread(self._asr.transcribe, …)`
+keeps running on the threadpool, so the Metal context can be freed (session GC on stop, or process exit on kill) while
+an inference is still in flight. Cost is only the last in-flight utterance + scary log lines at stop. **Low priority.**
+If ever fixed: join/await the in-flight ASR before teardown (note the cancel releases `_asr_lock` early, so the final
+`segmenter.flush()` can briefly overlap a second inference on the same context).
 
 Docs: `README.md` + `docs/{architecture,pipeline,api,development}.md`. Design: the plan. IPC: `shared/protocol/ipc.md`.
 
