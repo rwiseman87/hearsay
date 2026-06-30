@@ -60,5 +60,13 @@ let package = Package(
             name: "hearsay-asr",
             dependencies: [.product(name: "FluidAudio", package: "FluidAudio")]
         ),
+        // Live "Them" processor: streaming diarization + Parakeet on the ANE. The Python core
+        // streams the Them PCM in; as each speaker turn finalizes, this transcribes it and
+        // emits a labeled segment -- so Swift owns diarization + ASR + turn assembly and the
+        // core does no fusion. Separate target so the capture binary stays lean.
+        .executableTarget(
+            name: "hearsay-live",
+            dependencies: [.product(name: "FluidAudio", package: "FluidAudio")]
+        ),
     ]
 )
