@@ -130,11 +130,10 @@ def test_rediarize_without_recording_409(client: TestClient) -> None:
     assert response.status_code == 409
 
 
-def test_asr_models_lists_curated_with_default(client: TestClient) -> None:
+def test_asr_models_lists_parakeet(client: TestClient) -> None:
     body = client.get("/api/asr/models", headers=AUTH).json()
     assert body["backend"] == "parakeet"
-    assert body["model"] == "large-v3"
-    assert any(model["name"] == "large-v3-turbo" for model in body["models"])
+    assert [model["name"] for model in body["models"]] == ["parakeet-tdt-v3"]
 
 
 def test_asr_switch_model(client: TestClient) -> None:

@@ -17,8 +17,8 @@ dependencies = [
 
 [project.optional-dependencies]
 # Live ASR is FluidAudio Parakeet on the ANE (the Swift hearsay-asr helper, no Python dep).
-# whisper.cpp stays as a torch-free fallback (HEARSAY_ASR__BACKEND=whispercpp) + Silero VAD.
-asr = ["pywhispercpp>=1.5", "onnxruntime>=1.27", "numpy>=2.2"]
+# This extra is now just Silero VAD (onnxruntime) + numpy for packing PCM for the sidecars.
+asr = ["onnxruntime>=1.27", "numpy>=2.2"]
 # Offline diarization is FluidAudio on the ANE (the Swift hearsay-diarize helper). This extra
 # is only the cross-meeting voiceprint embedder: a torch-free ONNX speaker model on the
 # onnxruntime we already use for VAD, with kaldi-native-fbank for the reference features.
@@ -70,7 +70,6 @@ exclude = ["src/hearsay/db/migrations/"]
 
 [[tool.mypy.overrides]]
 module = [
-    "pywhispercpp.*",
     "onnxruntime.*",
     "kaldi_native_fbank.*",
     "silero_vad.*",

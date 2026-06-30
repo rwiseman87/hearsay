@@ -119,9 +119,9 @@ export interface paths {
         put?: never;
         /**
          * Rediarize
-         * @description Re-diarize the recorded Them track with pyannote and return the new speakers.
+         * @description Re-diarize the recorded Them track (FluidAudio on the ANE) and return the new speakers.
          *
-         *     Slow (loads + runs pyannote); the heavy work is off-loop. 404 if the meeting is
+         *     The heavy diarization runs in the helper, off-loop. 404 if the meeting is
          *     unknown, 409 if it has no recorded ``them.wav`` (diarization.refine was off).
          */
         post: operations["rediarize_api_meetings__meeting_id__rediarize_post"];
@@ -208,7 +208,7 @@ export interface components {
          * @description Which ASR implementation transcribes audio (selected in settings).
          * @enum {string}
          */
-        ASRBackendKind: "whispercpp" | "mlx";
+        ASRBackendKind: "parakeet";
         /** ASRSelect */
         ASRSelect: {
             backend?: components["schemas"]["ASRBackendKind"] | null;
