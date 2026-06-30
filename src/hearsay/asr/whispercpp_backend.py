@@ -63,3 +63,6 @@ class WhisperCppBackend:
             )
             for segment in segments
         ]
+
+    def close(self) -> None:
+        """In-process backend; nothing to release."""

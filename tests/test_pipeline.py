@@ -49,6 +49,9 @@ class FakeASR:
     ) -> list[ASRSegment]:
         return [ASRSegment(text="hello world", start_s=0.0, end_s=1.0)]
 
+    def close(self) -> None:
+        return None
+
 
 class RecordingASR:
     """Records the decoding prompt of each call and returns distinct text per call."""
@@ -66,6 +69,9 @@ class RecordingASR:
         self.prompts.append(prompt)
         self._n += 1
         return [ASRSegment(text=f"turn{self._n}", start_s=0.0, end_s=1.0)]
+
+    def close(self) -> None:
+        return None
 
 
 class StubEmbedder:

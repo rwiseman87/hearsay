@@ -220,6 +220,9 @@ class TranscriptionPipeline:
             final = segmenter.flush()
             if final is not None:
                 await self._emit(stream, final)
+        # Release the ASR backend (e.g. terminate the Parakeet sidecar) now that no more
+        # utterances will be transcribed; off the loop since it may wait on a subprocess.
+        await asyncio.to_thread(self._asr.close)
         if self._them_recorder is not None:
             self._them_recorder.close()
         # The live transcript was appended in ASR-completion order across two streams;

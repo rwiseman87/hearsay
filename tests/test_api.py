@@ -132,7 +132,7 @@ def test_rediarize_without_recording_409(client: TestClient) -> None:
 
 def test_asr_models_lists_curated_with_default(client: TestClient) -> None:
     body = client.get("/api/asr/models", headers=AUTH).json()
-    assert body["backend"] == "whispercpp"
+    assert body["backend"] == "parakeet"
     assert body["model"] == "large-v3"
     assert any(model["name"] == "large-v3-turbo" for model in body["models"])
 

@@ -84,8 +84,12 @@ all-Swift would delete the "bundle + notarize CPython" step, the roadmap's harde
   mypy green. Real trigger validates on the next live meeting.
 - **F2 — Live diarizer over IPC.** Add FluidAudio online/streaming diarization to the capture helper; stream speaker
   labels over `control.sock` live; Python fuses them onto live segments. Replaces the torch-free online clusterer.
-- **F3 — Parakeet ASR in the helper.** Move ASR to FluidAudio Parakeet (ANE); retire whisper.cpp/Silero from the live
-  path; stream transcript text over IPC. Completes the GPU-contention fix.
+- **F3 — Parakeet ASR in the helper. DONE (2026-06-30 eve).** Persistent `hearsay-asr` sidecar (FluidAudio Parakeet
+  TDT v3 on the ANE) + Python `ParakeetBackend` (owns the sidecar, round-trips utterances over stdio); `ASRBackend`
+  gained `close()`; `ASRBackendKind.PARAKEET` is the **default** (whisper.cpp/mlx kept as fallback). Removes
+  whisper.cpp/Metal from the live path (the unrecoverable-Metal failure source). ~100-230 ms warm/utterance; +7 tests;
+  156 pass; swift build + selftest green. Kept Silero VAD (CPU, not the fragility source). Follow-up: the ASR-model
+  picker UI is whisper-centric (no-op under Parakeet) — tidy in F4. On-device live validation pending.
 - **F4 — Teardown.** Once F1-F3 validate, delete the now-dead Python asr/vad/diarization inference + their deps
   (torch, pyannote, onnxruntime, pywhispercpp, mlx, kaldi-native-fbank); shrink pyproject; refresh docs.
 
@@ -193,6 +197,21 @@ uv run hearsay live --model base --seconds 60   # real pipeline -> live transcri
 
 ## Progress log
 
+- **2026-06-30 (eve, F3 built — Parakeet ASR on the ANE replaces whisper.cpp/Metal in the live path).** Directly fixes
+  the whisper Metal failure above. New persistent Swift sidecar **`hearsay-asr`** (FluidAudio Parakeet TDT v3): loads the
+  model once, then serves a stdio request/response loop — request `<uint32 LE n><n float32 LE>` (one VAD utterance) →
+  response `{"text":...}\n`; EOF exits. New Python **`ParakeetBackend`** (`ASRBackend` impl) owns the sidecar for the
+  meeting, round-trips each utterance over pipes (threading-lock-guarded against the stop-teardown race), parses text.
+  Added `close()` to the `ASRBackend` protocol (whisper/mlx no-op; Parakeet terminates the sidecar) + `pipeline.close()`
+  calls it after the final flush. New `ASRBackendKind.PARAKEET` + `asr.backend` **defaults to it** (whisper.cpp/mlx stay
+  available; Silero VAD unchanged — it's CPU, not the fragility source). **Measured:** warm transcribe of a real
+  utterance **~100-230 ms** (model load is a one-time ~11 s at sidecar start); transcript quality matches whisper
+  large-v3 (validated on the captured Vince Vaughn clip via the real sidecar + via `build_asr(Settings())`). +7 tests
+  (mocked sidecar: framing/parse/empty/EOF/missing-binary/close + default-backend + path) → **156 pass; ruff + mypy
+  --strict (70 files) + full swift build (3 executables) + selftest green.** Follow-up: the `GET/PUT /api/asr/model`
+  picker is still whisper-model-centric (ignored under Parakeet) — cleanup in F4. **The user must restart `serve` to pick
+  up the Parakeet default.** Uncommitted-then-committed on `feat/fluidaudio-pivot`. **Next: on-device validation of a
+  live meeting on Parakeet, then F2 (live diarization) or F4 (teardown).**
 - **2026-06-30 (eve, on-device auto-refine test → whisper-Metal failure diagnosed + a guard added).** User ran a real
   meeting (`hot_ones_vaughn`) via `serve`, hit stop, saw "1 speaker / no Them turn". **Diagnosis (not an auto-refine
   bug):** capture worked (them.wav = 54.7 s real audio, RMS 0.031) but the meeting had **0 transcribed segments** — in

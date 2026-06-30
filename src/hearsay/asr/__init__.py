@@ -7,10 +7,12 @@ from hearsay.asr.manager import (
     KNOWN_MODELS,
     KnownModel,
     ModelInfo,
+    asr_helper_path,
     available_models,
     build_asr,
     resolve_model,
 )
+from hearsay.asr.parakeet_backend import ParakeetBackend
 
 __all__ = [
     "KNOWN_MODELS",
@@ -19,6 +21,8 @@ __all__ = [
     "ASRSegment",
     "KnownModel",
     "ModelInfo",
+    "ParakeetBackend",
+    "asr_helper_path",
     "available_models",
     "build_asr",
     "resolve_model",

@@ -52,5 +52,13 @@ let package = Package(
             name: "hearsay-diarize",
             dependencies: [.product(name: "FluidAudio", package: "FluidAudio")]
         ),
+        // Persistent live-ASR sidecar (FluidAudio Parakeet TDT on the ANE). Loads the model
+        // once, then transcribes VAD utterances the Python core streams over stdin/stdout --
+        // replacing whisper.cpp/Metal in the live path (whose Metal backend can enter an
+        // unrecoverable error state). Separate target so the capture binary stays lean.
+        .executableTarget(
+            name: "hearsay-asr",
+            dependencies: [.product(name: "FluidAudio", package: "FluidAudio")]
+        ),
     ]
 )

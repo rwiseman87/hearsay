@@ -9,9 +9,11 @@ an explicit repo also works. Heavy backend deps load only when a backend is buil
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 
 from hearsay.asr.base import ASRBackend
 from hearsay.asr.mlx_backend import MlxBackend
+from hearsay.asr.parakeet_backend import ParakeetBackend
 from hearsay.asr.whispercpp_backend import WhisperCppBackend
 from hearsay.config.settings import Settings
 from hearsay.enums import ASRBackendKind
@@ -50,8 +52,16 @@ def resolve_model(kind: ASRBackendKind, model: str) -> str:
     return known.whispercpp if kind is ASRBackendKind.WHISPERCPP else known.mlx
 
 
+def asr_helper_path(settings: Settings) -> Path:
+    """The ``hearsay-asr`` sidecar binary (a sibling of the capture helper in the build dir)."""
+    return settings.helper_path.with_name("hearsay-asr")
+
+
 def build_asr(settings: Settings) -> ASRBackend:
     kind = settings.asr.backend
+    if kind is ASRBackendKind.PARAKEET:
+        # Parakeet uses its own bundled model; the whisper-centric `model` field doesn't apply.
+        return ParakeetBackend(binary_path=asr_helper_path(settings))
     model = resolve_model(kind, settings.asr.model)
     if kind is ASRBackendKind.WHISPERCPP:
         return WhisperCppBackend(

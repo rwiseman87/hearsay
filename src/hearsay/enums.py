@@ -33,7 +33,10 @@ class MeetingStatus(StrEnum):
 class ASRBackendKind(StrEnum):
     """Which ASR implementation transcribes audio (selected in settings)."""
 
-    WHISPERCPP = "whispercpp"  # pywhispercpp (default; torch-free, Metal+CoreML)
+    # FluidAudio Parakeet TDT on the ANE via the hearsay-asr sidecar (default; no Metal,
+    # so it dodges whisper.cpp's unrecoverable Metal command-buffer failures).
+    PARAKEET = "parakeet"
+    WHISPERCPP = "whispercpp"  # pywhispercpp (Metal+CoreML; torch-free)
     MLX = "mlx"  # mlx-whisper (opt-in; needs the `accel` extra, pulls torch)
 
 

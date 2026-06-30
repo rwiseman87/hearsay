@@ -41,3 +41,7 @@ class ASRBackend(Protocol):
         continuity (names/terms); backends without prompt support ignore it.
         """
         ...
+
+    def close(self) -> None:
+        """Release backend resources (e.g. a sidecar process). No-op for in-process backends."""
+        ...

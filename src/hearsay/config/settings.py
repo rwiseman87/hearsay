@@ -22,9 +22,11 @@ _OUTPUTS_DIR = Path(__file__).resolve().parents[3] / "outputs"
 class ASRSettings(BaseModel):
     """ASR backend + model selection (swappable at runtime; see model store)."""
 
-    backend: ASRBackendKind = ASRBackendKind.WHISPERCPP
-    # A known model name (e.g. ``large-v3-turbo``) the backend resolves/downloads,
-    # or an absolute path to a local model file.
+    # Default Parakeet (FluidAudio on the ANE) -- no whisper.cpp/Metal, which could enter an
+    # unrecoverable error state and silently stop transcribing. whisper.cpp/mlx stay available.
+    backend: ASRBackendKind = ASRBackendKind.PARAKEET
+    # A known model name (e.g. ``large-v3-turbo``) the backend resolves/downloads, or an
+    # absolute path. Applies to whisper.cpp/mlx; Parakeet uses its own bundled model.
     model: str = "large-v3"
     language: str | None = None  # None = auto-detect
     # Optional decoding knobs (whisper.cpp), off by default: an on-device A/B showed the model

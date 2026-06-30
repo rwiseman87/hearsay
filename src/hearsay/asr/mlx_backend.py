@@ -44,3 +44,6 @@ class MlxBackend:
             )
             for seg in result["segments"]
         ]
+
+    def close(self) -> None:
+        """In-process backend; nothing to release."""
