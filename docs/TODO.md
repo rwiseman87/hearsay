@@ -20,13 +20,45 @@ relabels) + React `SpeakerPanel`; finalize bakes resolved names into `transcript
 `POST /meetings/{id}/rediarize` + "Refine speakers" UI button; cross-meeting voiceprint auto-recognition (a returning,
 manually-locked speaker is auto-named provisionally). **139 tests; full `make ci` + web tsc/build/codegen green.**
 
-**Pick up here → Phase 2 is done (Inc 7e passed on-device 2026-06-30: the online path said 7 speakers, the pyannote
-refine corrected it to 2); the next coding work is Phase 3** (calendar roster + OCR active-speaker fusion). Near-term
-diarization follow-up: **auto-refine-at-finalize** — pyannote is the default but is still triggered explicitly (the
-"Refine speakers" button / `hearsay rediarize`); auto-running it needs a background task + the served-vs-CLI lifecycle
-handled. ASR follow-up if desired: a full-episode WER A/B to settle whether beam/context add anything. Optional Phase 1
-belt-and-suspenders still open: a both-speakers run to watch Me/Them interleave live. HF prereq is cleared (user
-`crwiseman`; gated model accepted; `hf auth login` done).
+**Pick up here → the open problem is LIVE-ACCURATE speaker labels; the lead is FluidAudio (Apple-Silicon ANE). A
+session of experiments (2026-06-30) settled what does NOT work, so a fresh context can skip re-deriving it:**
+- **ASR is not the problem.** `large-v3` (whisper.cpp/Metal) is accurate; the on-device pain was *diarization* + GPU
+  contention, not transcription. Don't chase a new ASR for accuracy alone.
+- **Torch-free live diarization is dead.** A wespeaker-embeddings + agglomerative-clustering prototype was degenerate
+  on real audio — 66% window-agreement vs pyannote (= chance; both clusters were the same speaker). Scratch:
+  `outputs/live_diarize_proto.py`.
+- **Live rolling-window pyannote-on-MPS FAILED on-device** — branch `feat/live-diarization` (**unmerged**; built +
+  ci-green but unusable). Three independent failures: (1) **GPU contention** — pyannote (MPS) and live `large-v3`
+  (Metal) fight for the GPU, so the transcript falls progressively behind; (2) **over-segments anyway** (showed 5
+  speakers, not 2 — the overlap-based anchoring is too weak); (3) **no graceful final pass** — stop cancels the loop,
+  pyannote never catches up. Pyannote latency was measured (`outputs/pyannote_latency.py`): MPS is ~25x faster than CPU
+  (60s window ~1s, RTF ~0.02), but contention + anchoring kill it regardless. **Recommend abandoning the branch.**
+
+**THE LEAD — FluidAudio** (vetted 2026-06-30; `github.com/FluidInference/FluidAudio`): a Swift/CoreML package
+(Apache-2.0) that runs ASR (Parakeet, 2.5% WER LibriSpeech) **and** diarization on the **Apple Neural Engine, bypassing
+the GPU/MPS entirely** — the root fix for the contention. Ships streaming diarizers (LS-EEND ≤10 spk, Sortformer ≤4)
+**and** the same pyannote Community-1 we validated, as CoreML (10.6% DER offline on AMI; ~26% streaming). Being Swift,
+it fits the existing helper (helper does capture → could also do ASR + diarization on the ANE → stream results over the
+existing IPC). Caveats: a real architecture pivot (audio-AI moves Python→Swift helper); pre-1.0 (v0.15.4); streaming
+DER ~26% (better than ours, not "solved"); Parakeet's NVIDIA Open Model License needs a distribution check (fine
+internally now).
+
+**RECOMMENDED NEXT STEP — a standalone Swift spike (measure before pivoting):** run FluidAudio's streaming diarizer +
+Parakeet against the recorded `outputs/recordings/*/them.wav` clips and measure (a) does its streaming diarization hold
+~2 speakers (not 5), (b) does the ANE path free the GPU so the transcript streams. If yes → plan the helper
+integration. If streaming DER is too rough → use its CoreML pyannote for an ANE-based refine and keep live labels simple.
+
+**FALLBACK if not pivoting to FluidAudio:** keep `diarization.live` OFF (the failed live setting only exists on the
+unmerged branch; `main` is already clean — online clusterer + the pyannote refine-on-stop default) and build
+**auto-refine-at-finalize** (run the validated full-track refine automatically at stop → correct 2 speakers, name
+post-stop). Small; reuses the built refine. The deferred **`turbo`-live + `large-v3`-finalize** ASR split (to free the
+GPU) only matters on the GPU-whisper path.
+
+**State of `main`:** everything through Phase 2 + the ASR-`large-v3` + pyannote-default work is merged and green; the
+live-diarizer experiment is NOT on main (only `feat/live-diarization`). HF prereq cleared (user `crwiseman`; gated model
+accepted; `hf auth login` done). Optional Phase 1 belt-and-suspenders still open (a both-speakers Me/Them interleave
+run). Phase 3 (calendar roster + OCR active-speaker fusion) remains the nominal next *phase* but is deprioritized behind
+getting live speaker labels right.
 
 **Minor teardown note (2026-06-29):** a real `serve` log showed whisper.cpp Metal errors (`command buffer 0 failed
 with status 3` → `failed to encode`/`decode`) **immediately before `ggml_metal_free: deallocating` + a meeting DELETE**
@@ -106,6 +138,19 @@ uv run hearsay live --model base --seconds 60   # real pipeline -> live transcri
 
 ## Progress log
 
+- **2026-06-30 (pm)** **Live-accurate diarization investigated end-to-end; rolling-window pyannote FAILED on-device;
+  FluidAudio (Apple ANE) chosen as the lead. No code merged to `main`.** Motivation: the online clusterer shows 7-8
+  phantom speakers live, making naming-before-refine + dedup painful. Ruled out torch-free live (a wespeaker
+  embeddings + AHC prototype scored 66% / chance vs pyannote, degenerate; `outputs/live_diarize_proto.py`). Measured
+  pyannote latency (`outputs/pyannote_latency.py`): MPS ~25x faster than CPU (60s window ~1s). Built a rolling-window
+  pyannote-on-MPS live diarizer on branch **`feat/live-diarization`** (`LiveDiarizer` + overlap anchoring + 3
+  `SpeakerService` methods + `diarization.live*` settings; +4 tests; full `make ci` green) — but it **failed
+  on-device**: GPU contention (pyannote-MPS vs live large-v3-Metal → transcript falls behind), over-segments anyway
+  (5 speakers not 2; weak anchoring), no graceful final pass on stop. **Branch unmerged; recommend abandoning.**
+  Confirmed whisper `large-v3` ASR is fine (not the bottleneck). **Research win:** vetted **FluidAudio** (Swift/CoreML,
+  Apache-2.0) — ASR (Parakeet) + diarization on the **ANE, bypassing the GPU** (the contention root-fix); ships
+  streaming diarizers + pyannote-CoreML (10.6% DER AMI). The lead; next is a standalone Swift spike on the recorded
+  them.wav. Scratch prototypes live under `outputs/` (gitignored). See the refreshed "Pick up here" up top.
 - **2026-06-30** **ASR default → large-v3 (measured) + pyannote promoted to the default diarization; Inc 7e validated.**
   **ASR:** built `scripts/transcribe_eval.py` (offline VAD+ASR eval, mirrors the live pipeline) and ran a real A/B on a
   recorded clip (Bill Murray Hot Ones, known content). At 1:02: baseline turbo/greedy → "tone"; turbo+beam+context →
