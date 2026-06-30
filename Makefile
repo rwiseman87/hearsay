@@ -17,8 +17,9 @@ dev: ## Run the app for local development (placeholder until the core server lan
 pytest: ## Run Python tests
 	uv run pytest -q
 
-swift-build: ## Build the Swift helper
-	swift build --package-path $(PKG)
+HELPER_PRODUCTS := --product hearsay-helper --product hearsay-diarize --product hearsay-asr --product hearsay-live
+swift-build: ## Build the Swift helper executables (explicit products skip FluidAudio's CLI, which has a type-check bug)
+	swift build --package-path $(PKG) $(HELPER_PRODUCTS)
 
 swift-test: ## Run the Swift cross-language self-test against the golden fixtures
 	swift run --package-path $(PKG) hearsay-helper selftest $(FIXTURES)
