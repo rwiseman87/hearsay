@@ -38,6 +38,10 @@ class DiarizationSettings(BaseModel):
     """Speaker diarization: torch-free ONNX embeddings + online clustering (Them only)."""
 
     enabled: bool = True
+    # Live "Them" labeling runs in the hearsay-live sidecar (FluidAudio streaming diarization +
+    # Parakeet on the ANE): the diarizer's turns drive the live transcript, so there's no online
+    # clustering or fusion in Python. Off falls back to the per-utterance online clusterer.
+    live_streaming: bool = True
     backend: DiarizationBackendKind = DiarizationBackendKind.ONNX
     # A curated model name (see the embedding-model registry) or an absolute .onnx path.
     model: str = "wespeaker-cam++-lm"

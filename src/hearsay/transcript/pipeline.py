@@ -32,6 +32,7 @@ from hearsay.vad import VAD, Segmenter, Utterance
 
 if TYPE_CHECKING:
     from hearsay.transcript.diarizer import MeetingDiarizer
+    from hearsay.transcript.live import LiveThemProcessor
 
 _log = get_logger("hearsay.pipeline")
 
@@ -59,6 +60,7 @@ class TranscriptionPipeline:
         vad: VADSettings,
         diarizer: MeetingDiarizer | None = None,
         them_recorder: ThemAudioRecorder | None = None,
+        them_processor: LiveThemProcessor | None = None,
         language: str | None = None,
         condition_on_previous_text: bool = False,
         context_reset_gap_s: float = 8.0,
@@ -70,6 +72,9 @@ class TranscriptionPipeline:
         self._asr = asr
         self._diarizer = diarizer
         self._them_recorder = them_recorder
+        # When set, Them is handled by the live sidecar (diar+ASR+turns); the VAD/online
+        # clusterer path below runs only for Me (and Them when streaming is off).
+        self._them_processor = them_processor
         self._language = language
         self._condition = condition_on_previous_text
         self._context_reset_gap_s = context_reset_gap_s
@@ -92,6 +97,8 @@ class TranscriptionPipeline:
 
     async def open(self, media: MediaChannel, meta: MeetingMeta) -> None:
         await self._sink.open(meta)
+        if self._them_processor is not None:
+            await self._them_processor.start()
         self._tasks = [
             asyncio.create_task(self._consume(media, stream)) for stream in (Stream.ME, Stream.THEM)
         ]
@@ -123,6 +130,10 @@ class TranscriptionPipeline:
                 )
             if stream is Stream.THEM and self._them_recorder is not None:
                 self._them_recorder.write(chunk.samples, t0_s=t0_s)
+            if stream is Stream.THEM and self._them_processor is not None:
+                # The sidecar does diarization + ASR + persistence for Them; no VAD here.
+                await self._them_processor.feed(chunk.samples, t0_s)
+                continue
             for utterance in segmenter.push(chunk.samples, t0_s=t0_s):
                 await self._emit(stream, utterance)
 
@@ -220,6 +231,10 @@ class TranscriptionPipeline:
             final = segmenter.flush()
             if final is not None:
                 await self._emit(stream, final)
+        # Drain the live Them sidecar: closing it finalizes its streaming tail, so the last
+        # turns are persisted before the transcript is rewritten in order below.
+        if self._them_processor is not None:
+            await self._them_processor.close()
         # Release the ASR backend (e.g. terminate the Parakeet sidecar) now that no more
         # utterances will be transcribed; off the loop since it may wait on a subprocess.
         await asyncio.to_thread(self._asr.close)

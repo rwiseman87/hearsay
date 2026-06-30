@@ -28,6 +28,7 @@ from hearsay.services import MeetingService, SpeakerService, meeting_folder_name
 from hearsay.transcript.broadcast import Broadcaster
 from hearsay.transcript.capture import Capture, HelperCapture
 from hearsay.transcript.diarizer import MeetingDiarizer
+from hearsay.transcript.live import LiveThemProcessor
 from hearsay.transcript.pipeline import TranscriptionPipeline
 from hearsay.transcript.recorder import ThemAudioRecorder
 from hearsay.transcript.refine import (
@@ -165,18 +166,31 @@ class SessionManager:
         self, meeting_id: UUID, broadcaster: Broadcaster, folder: Path
     ) -> PipelineFactory:
         def make() -> TranscriptionPipeline:
-            embedder = self._embedder_factory()
-            diarizer = (
-                MeetingDiarizer(
+            sink = self._sink_factory()
+            them_processor: LiveThemProcessor | None = None
+            diarizer: MeetingDiarizer | None = None
+            if self._settings.diarization.live_streaming:
+                # Turn-driven live Them: the Swift sidecar does diar + ASR + persistence.
+                them_processor = LiveThemProcessor(
+                    binary_path=self._settings.helper_path.with_name("hearsay-live"),
                     meeting_id=meeting_id,
                     database=self._db,
-                    embedder=embedder,
-                    threshold=self._settings.diarization.cluster_threshold,
-                    min_embed_ms=self._settings.diarization.min_embed_ms,
+                    broadcaster=broadcaster,
+                    sink=sink,
                 )
-                if embedder is not None
-                else None
-            )
+            else:
+                embedder = self._embedder_factory()
+                diarizer = (
+                    MeetingDiarizer(
+                        meeting_id=meeting_id,
+                        database=self._db,
+                        embedder=embedder,
+                        threshold=self._settings.diarization.cluster_threshold,
+                        min_embed_ms=self._settings.diarization.min_embed_ms,
+                    )
+                    if embedder is not None
+                    else None
+                )
             them_recorder = (
                 ThemAudioRecorder(folder / "them.wav")
                 if self._settings.diarization.refine
@@ -185,13 +199,14 @@ class SessionManager:
             return TranscriptionPipeline(
                 meeting_id=meeting_id,
                 database=self._db,
-                sink=self._sink_factory(),
+                sink=sink,
                 broadcaster=broadcaster,
                 asr=self._asr_factory(),
                 vad_factory=self._vad_factory,
                 vad=self._settings.vad,
                 diarizer=diarizer,
                 them_recorder=them_recorder,
+                them_processor=them_processor,
                 language=self._settings.asr.language,
                 condition_on_previous_text=self._settings.asr.condition_on_previous_text,
                 context_reset_gap_s=self._settings.asr.context_reset_gap_s,
