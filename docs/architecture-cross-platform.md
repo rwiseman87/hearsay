@@ -114,6 +114,7 @@ No -> FluidAudio stays the Mac tier and we carry two ASR backends (everything el
 
 ## Rust workspace layout
 
-See `rust/` (`rust/README.md` for the crate map and the mapping to the current Python modules). The
-scaffold is dependency-light on purpose; crate dependencies are pinned to verified latest versions as
-each crate is implemented.
+See `rust/` (`rust/README.md` for the crate map + status). As of 2026-07-01, `hearsay-ipc`,
+`hearsay-attribution`, and `hearsay-db` are implemented + tested (34 tests, gated by `make ci`);
+`hearsay-orchestrator`, `hearsay-capture`, `hearsay-core`, and `hearsay-inference` remain stubs. Crate
+dependencies are pinned to verified latest versions via `cargo add` as each crate is implemented.

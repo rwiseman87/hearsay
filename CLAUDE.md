@@ -7,6 +7,8 @@ Bedrock is configurable.
 
 Canonical design + phased roadmap: `~/.claude/plans/i-want-to-plan-keen-lake.md`.
 Resumable task tracker: `docs/TODO.md`. IPC contract: `shared/protocol/ipc.md`.
+Cross-platform (macOS + Windows) Rust + Tauri direction (in progress on branch
+`feat/cross-platform-rust-tauri`, not merged): `docs/architecture-cross-platform.md`.
 
 ## Architecture
 

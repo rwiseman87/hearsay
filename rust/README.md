@@ -3,10 +3,16 @@
 Cross-platform (macOS + Windows) foundation for Hearsay. Target architecture:
 [`../docs/architecture-cross-platform.md`](../docs/architecture-cross-platform.md).
 
-**Status: scaffold.** Crates are stubs (no logic, no external dependencies yet). The layout below is
-the agreed decomposition; each crate is filled in incrementally, porting the corresponding Python
-module. Dependencies are added and **pinned to verified latest stable versions** at implementation
-time (never guessed here).
+**Status (2026-07-01): 3 of 7 crates implemented + tested; 4 stubs remain.**
+
+- **Implemented + tested** (`cargo test` + `clippy -D warnings` + `rustfmt`, gated by `make ci`):
+  `hearsay-ipc`, `hearsay-attribution`, `hearsay-db`.
+- **Stubs** (responsibilities below, ported incrementally): `hearsay-orchestrator`, `hearsay-capture`,
+  `hearsay-core`, `hearsay-inference`.
+
+Dependencies are pinned to verified latest stable versions via `cargo add` at implementation time
+(never guessed here). Run the gate with `make rust-test` / `make rust-lint` (source `~/.cargo/env`
+first if `cargo` is not on PATH).
 
 ## Crate map
 

@@ -6,6 +6,60 @@ Conventions: `CLAUDE.md`.
 
 ## How to resume
 
+**CURRENT FOCUS (2026-07-01) — cross-platform (macOS + Windows) Rust + Tauri foundation.** Windows is
+now a **committed near-term requirement**. Since nothing is shipped yet (POC), the decision (full arc in
+[[hearsay-windows-requirement]] memory + `docs/architecture-cross-platform.md`) is to rebuild the
+foundation as **ONE Rust + Tauri app** — per-OS only at capture + ASR acceleration (~90% shared),
+**local-only** inference, one signed installer per OS. Hard constraints: runs on a **16GB Windows laptop
+with integrated graphics** (ref SKU Intel Core Ultra 5 225U) + an **M-series Mac 16GB+**; easily
+distributable to non-technical users. Key insight: the Windows-floor design (light streaming model live +
+heavy ASR/diarization **offline at stop**) designs away the two problems the FluidAudio/ANE pivot solved
+(live-diarization accuracy + Metal contention), so **whisper.cpp works as one unified engine on both
+OSes** (it is the revived pre-ANE stack).
+
+**Branch `feat/cross-platform-rust-tauri` (NOT merged to main).** Target design:
+`docs/architecture-cross-platform.md`. Crate map: `rust/README.md`.
+
+**DONE + tested — 34 Rust tests, `cargo test` + `clippy -D warnings` + `rustfmt` green, gated by `make ci`:**
+- Rust workspace `rust/` (7 crates) + `make rust-{build,test,lint,fmt}` folded into `make ci`.
+- **`hearsay-ipc`** — media-frame codec (validated byte-for-byte against `shared/fixtures/frames.jsonl`,
+  the same golden vectors Python/Swift check) + NDJSON control channel (Command/Reply/Event, sorted-key wire).
+- **`hearsay-attribution`** — voiceprint cosine matching + diarization mapping (`order_speakers`,
+  `assign_segment_speaker`), pure logic, zero deps.
+- **`hearsay-db`** — SQLx 0.9 + SQLite: one forward-only baseline migration (meetings/identities/clusters/
+  segments), row types + text enums, pool with the `engine.py` pragmas (WAL/busy_timeout/foreign_keys),
+  runtime-checked queries.
+
+**REMAINING crate stubs (`rust/crates/`):**
+- **`hearsay-orchestrator`** — `tokio::process` supervision + PCM routing on top of `hearsay-ipc`. Verifiable here with fakes.
+- **`hearsay-core`** — axum HTTP/WS API + utoipa (OpenAPI->TS); depends on `hearsay-db`. Verifiable here.
+- **`hearsay-capture`** — cpal per-OS (WASAPI loopback / Core Audio tap). Needs real audio devices / target OS.
+- **`hearsay-inference`** — whisper.cpp + Silero VAD + offline diarization, tiered models. The big one;
+  **GATED on the model verification below** — do not build until the model tiers are chosen.
+- Deferred: the **Tauri shell** (`cargo tauri init`; hosts the React UI; bundler + signing + notarization +
+  updater). Validate the `externalBin`-breaks-macOS-notarization bug early (the app is sidecar-based).
+
+**OPEN VERIFICATION GATE (the user runs this, in parallel):** model size + accuracy on the Windows floor.
+The user does **not** have a 225U; they verify **accuracy on their AMD 9700X desktop** (WER/DER/memory are
+hardware-independent — only real-time iGPU perf needs the target, deferred to a borrowed 225U or **Intel
+Tiber AI Cloud**'s free Core Ultra access). Quick non-technical check: **Buzz** (whisper.cpp + Vulkan) on
+the 225U — time a Small + Large model on a 5-min clip. This resolves the one open fork: **unify on ONE
+whisper.cpp/ONNX model family both platforms, vs keep FluidAudio/ANE as a macOS high-accuracy tier.** Bias
+model choice to the lighter end (zipformer-live + turbo/distil-large-refine) so the deferred iGPU perf
+check is a confirmation, not a redo.
+
+**Resume the Rust work:** `. "$HOME/.cargo/env"` first (the Bash-tool shell does not auto-source it);
+`make rust-test` / `rust-lint` / `rust-fmt`; per-crate `cargo test --manifest-path rust/crates/<crate>/Cargo.toml`.
+Pin new deps via `cargo add` (verified-latest, never guess). Next verifiable-here crate:
+`hearsay-orchestrator` or `hearsay-core`; `capture`/`inference` wait for target hardware + the model
+decision. Full context: [[hearsay-windows-requirement]].
+
+**Prior on-main focus (now paused behind this):** the three-item focus below — items 1+2 (dead-code, WAV
+consolidation) merged; **item 3 (post-meeting LLM notes) NOT started** — is paused while the cross-platform
+foundation is built. The FluidAudio pivot + post-pivot live-UX features (below) are all done + merged to `main`.
+
+---
+
 **Status (2026-07-01):** The **FluidAudio / Apple-Neural-Engine pivot is COMPLETE and MERGED to `main`** (`--no-ff`
 merge `00672ef`; `make ci` green — ruff + mypy --strict (63 files) + 125 pytest + swift selftest + audit + licenses).
 The on-device audio-AI moved off torch + whisper.cpp/Metal onto **FluidAudio** (Apache-2.0; diarization + Parakeet
