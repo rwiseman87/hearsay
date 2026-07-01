@@ -4,3 +4,6 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+
+[dev-dependencies]
+serde_json = "1.0.150"
