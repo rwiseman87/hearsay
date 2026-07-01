@@ -16,21 +16,25 @@ models CC-BY-4.0, **ungated**) on the **Apple Neural Engine**, in Swift sidecars
 (`hearsay-helper`) is a lean PCM streamer; all AI is in the sidecars. The whole arc (F1-F4, steps 2/3a/3b, the VAD tune,
 the sidecar-death fix, the docs + CLAUDE.md reconciliation) is in the progress log below. [[hearsay-swift-pivot-direction]]
 
-**Pick up here → branch `feat/audio-playback` has TWO post-pivot features stacked + committed, both code-complete +
-`make ci`-green but NOT yet validated on-device; validate them, then merge to `main`:**
+**Pick up here → the two post-pivot features are VALIDATED on-device and MERGED to `main`** (`--no-ff` merge `de7a436`;
+2026-07-01). They were stacked on the now-merged `feat/audio-playback`:
 1. **In-browser audio playback** — `MeetingAudioRecorder` writes a mixed `audio.wav`; `GET /api/meetings/{id}/audio`
-   serves it; the `TranscriptView` player highlights the current line + seeks on click. Validate: run a meeting via
-   `serve`, stop, reopen it in the UI, confirm the `<audio>` player + line-highlight-as-it-plays + click-to-seek.
-2. **Live streaming "Me" captions** — `hearsay-me` now uses FluidAudio `StreamingUnifiedAsrManager`; live "Me" text
-   streams in as growing partials (dimmed) then snaps to the final. Validate: `serve` + a meeting, talk, watch your words
-   stream live. (Smoke-tested off-device: 70 partials + final on a recorded clip.)
+   serves it; the `TranscriptView` player highlights the current line + seeks on click. **VALIDATED:** the user confirmed
+   the player + line-highlight + click-to-seek work and playback "sounded good" (loud + smooth). Objective check on the
+   16:55 recording's `audio.wav`: peak **0.900** (the normalize-to-0.9 held), **0.05%** internal zeros, **0** silent gaps
+   ≥1ms — vs the pre-fix 0.16 peak / 7.9% zeros / 530 gaps that the peak-normalize + contiguous-write fixes addressed.
+2. **Live streaming "Me" captions** — `hearsay-me` uses FluidAudio `StreamingUnifiedAsrManager`; live "Me" text streams
+   in as growing partials (dimmed) then snaps to the final. **VALIDATED:** in the 16:55 recording the user narrates the
+   test ("...is it actually gonna stream me? ... it does actually stream me. It just doesn't do the other ones") — live
+   Me streaming works; Them-not-streaming is the expected deferred follow-up (next), not a regression.
 
-**Then:** merge `feat/audio-playback` -> `main` (like the pivot), then the **Them streaming** follow-up (same
-`StreamingUnifiedAsrManager` in `hearsay-live`; show partials speaker-less until the turn's diarizer speaker is assigned
--- user OK'd deferring speaker attribution to turn-end) + the optional **level meter** (surface the helper's existing
-per-stream `level` RMS events to the UI, a cheap "it's picking up audio" indicator). Longer-horizon forks stay open:
-Phase 3 (calendar/OCR speaker naming), Phase 4 (LLM notes), Phase 5 (packaging), the all-Swift-backend decision, and the
-deferred higher-fi playback (a parallel HQ capture stream). The pivot itself is DONE + merged (`main` @ `00672ef`).
+**Next (nothing in flight — pick one):** the **Them streaming** follow-up (same `StreamingUnifiedAsrManager` in
+`hearsay-live`; show partials speaker-less until the turn's diarizer speaker is assigned -- user OK'd deferring speaker
+attribution to turn-end) + the optional **level meter** (surface the helper's existing per-stream `level` RMS events to
+the UI, a cheap "it's picking up audio" indicator). Longer-horizon forks stay open: Phase 3 (calendar/OCR speaker
+naming), Phase 4 (LLM notes), Phase 5 (packaging), the all-Swift-backend decision, and the deferred higher-fi playback
+(a parallel HQ capture stream). The pivot itself is DONE + merged (`main` @ `00672ef`); the two playback/streaming-Me
+features are DONE + merged (`main` @ `de7a436`).
 
 **Two carry-over notes for whoever picks this up:** (a) the committed VAD-tune config `VadSegmentationConfig(minSilence
 Duration: 0.45, speechPadding: 0.2)` on `main`/earlier commits trips FluidAudio's debug `assert(speechPadding <=
@@ -262,6 +266,17 @@ uv run hearsay live --model base --seconds 60   # real pipeline -> live transcri
 
 ## Progress log
 
+- **2026-07-01 (both post-pivot features VALIDATED on-device + MERGED to `main`).** Validated the two features stacked on
+  `feat/audio-playback` and merged the branch to `main` (`--no-ff`, merge `de7a436`). **(1) Live streaming "Me"
+  captions** — validated by the user's own words on the 16:55 real meeting ("...is it actually gonna stream me? ... it
+  does actually stream me. It just doesn't do the other ones"): live Me partials stream word-by-word; Them not streaming
+  live is the expected deferred follow-up, not a regression. **(2) In-browser audio playback** — the user confirmed the
+  player + line-highlight + click-to-seek and that playback "sounded good" (loud + smooth); objectively confirmed the
+  earlier choppy/quiet fixes held on the 16:55 `audio.wav`: peak **0.900** (peak-normalize-to-0.9), **0.05%** internal
+  zeros, **0** silent gaps ≥1ms (vs the pre-fix 0.16 peak / 7.9% zeros / 530 gaps). Merged without re-running `make ci`
+  (per the user — tree was clean and ci was green at commit time). **NEXT: nothing in flight — the Them-streaming
+  follow-up + the optional level meter are the near-term picks; Phases 3/4/5 + the all-Swift-backend decision stay
+  parked.** See [[hearsay-swift-pivot-direction]].
 - **2026-07-01 (feature: live streaming "Me" captions — code-complete, smoke-tested, needs on-device validation).**
   Rewrote the `hearsay-me` sidecar to use FluidAudio's **`StreamingUnifiedAsrManager`** (Parakeet streaming) instead of
   batch `AsrManager`: the VAD still marks utterance boundaries, but the ASR now emits growing **partial** transcripts as
