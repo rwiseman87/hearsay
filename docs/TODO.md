@@ -278,6 +278,14 @@ uv run hearsay live --model base --seconds 60   # real pipeline -> live transcri
 
 ## Progress log
 
+- **2026-07-01 (bug fix — transcript lines duplicated after auto-refine at finalize; frontend-only).** On stop, the
+  auto-refine replaces the Them segments server-side with new per-turn rows at different `start_s` keys; the transcript
+  reducer's `seed` action **merged** the refetched DB segments into `state.finals`, which still held the stale live-WS
+  finals (old keys) -- so both rendered until a manual refresh reset the state. Fix (`web/src/hooks/useTranscript.ts`):
+  `seed` now **replaces** the finals map (and clears partials) when the meeting is finalized (`replace: !isLive`) -- the
+  DB is authoritative post-refine -- while still merging during recording (a stale DB fetch can lag the live socket).
+  Pre-existing since auto-refine landed; surfaced during Them-streaming validation. tsc + vite build green; no frontend
+  test runner in the project. Committed on `feat/them-streaming` (`02554e0`).
 - **2026-07-01 (feature: live streaming "Them" captions — code-complete, `make ci`-green, needs on-device validation).**
   Added a `StreamingUnifiedAsrManager` to `hearsay-live` (mirroring the streaming-Me rewrite) **alongside** the existing
   LS-EEND diarizer + batch Parakeet, so live Them text streams in as growing **partials** while the proven per-turn
