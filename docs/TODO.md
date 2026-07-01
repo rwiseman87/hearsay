@@ -50,16 +50,13 @@ the FluidAudio pivot:
    flag) and stale whisper/mlx/fusion comments; ~520 lines gone. Behavior-neutral (Parakeet was already the only ASR path,
    ignoring every picker knob). `make ci` (62 mypy files, 135 pytest) + `make web-ci` green. Phase-3 placeholder enums
    (`ActiveSpeakerMode`, `NameHintSource`) kept as scaffolding.
-2. **Consolidate the WAV files to one — DONE on branch `feat/single-wav` (`make ci`-green), needs on-device validation +
-   merge.** `them.wav` + mixed-mono `audio.wav` collapsed into ONE timeline-accurate **stereo** `audio.wav` (Me = left,
-   Them = right, normalized by the overall peak to 0.9). Playback plays it spatially via a plain `<audio>` (mono devices
-   downmix) — no frontend change; the refine reads the Them (right) channel — timeline-anchored, so the offset sidecar +
-   `read_offset_s` + all offset threading are gone. `audio.record` is now the single audio-retention switch (feeds both
-   playback and the refine; off -> no playback + refine skips), per the user. `ThemAudioRecorder` deleted. `make ci` green
-   (62 mypy files, 133 pytest) + `make web-ci` green. **Validate: run a meeting, (a) confirm playback sounds right (Me
-   left / Them right, loud, smooth) and (b) hit stop and confirm the refine still produces the correct speakers off the
-   stereo Them channel** (it now diarizes a timeline-anchored + normalized Them track, vs the old contiguous raw
-   `them.wav`).
+2. **Consolidate the WAV files to one — VALIDATED on-device + MERGED to `main`** (`--no-ff` merge `bf2aecb`). `them.wav` +
+   mixed-mono `audio.wav` collapsed into ONE timeline-accurate **stereo** `audio.wav` (Me = left, Them = right, normalized
+   by the overall peak to 0.9). Playback plays it spatially via a plain `<audio>` (mono devices downmix) — no frontend
+   change; the refine reads the Them (right) channel (timeline-anchored, so the offset sidecar + all offset threading are
+   gone). `audio.record` is now the single audio-retention switch; `ThemAudioRecorder` deleted. **Validated:** the 20:16
+   meeting wrote one 2-channel `audio.wav` (Me=L peak 0.900, Them=R peak 0.482, no `them.wav`), played back, and the
+   refine produced correct speakers off the stereo Them channel. `make ci` + `make web-ci` green.
 3. **Post-meeting accuracy refinement + note distillation + action-item outcomes.** This is Phase-4-sized (LLM notes +
    extraction): a higher-accuracy post pass, LLM summary/notes (`notes.md`), and action-item extraction. Needs its own
    design pass (LLM provider = local OpenAI-compatible default + Bedrock per the plan; prompts; schema; storage; UI).
@@ -299,6 +296,10 @@ uv run hearsay live --seconds 60     # real pipeline -> live transcripts (on-dev
 
 ## Progress log
 
+- **2026-07-01 (WAV consolidation VALIDATED on-device + MERGED to `main`).** The 20:16 meeting confirmed the new format:
+  one 2-channel `audio.wav` (Me=L peak 0.900, Them=R peak 0.482, no `them.wav`), plays back, and the refine produced
+  correct speakers (`Speaker 1` + `Me`) off the stereo Them channel. Merged `feat/single-wav` -> `main` (`--no-ff`,
+  `bf2aecb`). Item 2 of 3 done. **NEXT: item 3 — post-meeting notes + action items (Phase-4-sized; needs a design pass).**
 - **2026-07-01 (WAV consolidation — one stereo `audio.wav` replaces them.wav + mixed-mono audio.wav; branch
   `feat/single-wav`, code-complete, needs on-device validation).** Second of the user's three focus items. Collapsed the
   two per-meeting WAVs into ONE timeline-accurate **stereo** `audio.wav` (Me = left channel, Them = right), normalized by
