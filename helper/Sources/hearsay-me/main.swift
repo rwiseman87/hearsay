@@ -81,6 +81,12 @@ func transcribeAndEmit(_ start: Int, _ end: Int) async {
 let frame = VadManager.chunkSize
 var pending: [Float] = []
 
+// Tuned for live meeting speech vs FluidAudio's defaults (0.75 s / 0.1 s): close an utterance
+// after a shorter silence so quick turn-ends finalize promptly, and pad the speech edges more so
+// Parakeet sees full word onsets/tails. minSilence (0.45) > 2x padding (0.2), so consecutive
+// utterances never overlap.
+let vadConfig = VadSegmentationConfig(minSilenceDuration: 0.45, speechPadding: 0.2)
+
 while true {
     guard let header = readExactly(4) else { break }
     let n = Int(header.withUnsafeBytes { $0.loadUnaligned(as: UInt32.self) })
@@ -92,7 +98,8 @@ while true {
     while pending.count >= frame {
         let chunk = Array(pending.prefix(frame))
         pending.removeFirst(frame)
-        guard let result = try? await vad.processStreamingChunk(chunk, state: vadState) else {
+        guard let result = try? await vad.processStreamingChunk(chunk, state: vadState, config: vadConfig)
+        else {
             note("vad failed")
             continue
         }
@@ -108,7 +115,9 @@ while true {
 }
 
 // Flush: run the trailing partial frame (it pads internally), then close any open utterance.
-if !pending.isEmpty, let result = try? await vad.processStreamingChunk(pending, state: vadState) {
+if !pending.isEmpty,
+    let result = try? await vad.processStreamingChunk(pending, state: vadState, config: vadConfig)
+{
     vadState = result.state
     if let event = result.event, event.kind == .speechStart {
         speechStart = event.sampleIndex
