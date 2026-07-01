@@ -22,7 +22,7 @@ interface State {
 
 type Action =
   | { type: "reset" }
-  | { type: "seed"; segments: SegmentRead[] }
+  | { type: "seed"; segments: SegmentRead[]; replace: boolean }
   | { type: "event"; event: TranscriptEvent };
 
 const lineKey = (line: { stream: string; start_s: number }): string =>
@@ -33,11 +33,15 @@ function reducer(state: State, action: Action): State {
     case "reset":
       return { finals: new Map(), partials: new Map() };
     case "seed": {
-      const finals = new Map(state.finals);
+      // While recording, merge the DB snapshot with the live WS finals (a stale fetch may lag
+      // behind the socket). Once finalized, the DB is authoritative -- and the auto-refine has
+      // rewritten the Them segments with new start_s keys, so replace outright (and drop any
+      // lingering partial) to avoid showing both the old live finals and the refined ones.
+      const finals = action.replace ? new Map<string, TranscriptLine>() : new Map(state.finals);
       for (const segment of action.segments) {
         finals.set(lineKey(segment), { ...segment, kind: "final" });
       }
-      return { finals, partials: state.partials };
+      return { finals, partials: action.replace ? new Map() : state.partials };
     }
     case "event": {
       const event = action.event;
@@ -75,9 +79,9 @@ export function useTranscript(meeting: MeetingRead | null): TranscriptLine[] {
 
   useEffect(() => {
     if (segments.data) {
-      dispatch({ type: "seed", segments: segments.data.items });
+      dispatch({ type: "seed", segments: segments.data.items, replace: !isLive });
     }
-  }, [segments.data]);
+  }, [segments.data, isLive]);
 
   useEffect(() => {
     if (!isLive || meetingId === null) return;
