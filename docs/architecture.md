@@ -84,17 +84,17 @@ one-shot WAV-in / JSON-out). The Python owners live in `transcript/live_base.py`
 ### `config/` — the single configuration source
 
 `settings.py` is one `pydantic-settings` object loaded once and injected via DI. Every
-tunable lives here: paths (`output_dir`, `models_dir`, `helper_path`), the database URL, the
-server host/port, and nested `asr` / `diarization` groups. A model validator fills derived
-paths (e.g. the default SQLite URL) so the rest of the code never computes them ad hoc. Reads
-`HEARSAY_`-prefixed env vars (nested via `__`, e.g. `HEARSAY_ASR__BACKEND`,
-`HEARSAY_DIARIZATION__REFINE`). Sidecar binaries are located relative to `helper_path`
+tunable lives here: paths (`output_dir`, `capture_debug_dir`, `helper_path`), the database URL,
+the server host/port, and the nested `diarization` / `audio` groups. A model validator fills
+derived paths (e.g. the default SQLite URL) so the rest of the code never computes them ad hoc.
+Reads `HEARSAY_`-prefixed env vars (nested via `__`, e.g. `HEARSAY_DIARIZATION__REFINE`,
+`HEARSAY_AUDIO__RECORD`). Sidecar binaries are located relative to `helper_path`
 (siblings in the same build dir).
 
 ### `enums.py`, `log.py` — shared primitives
 
 `StrEnum`s used for DB columns and JSON (`Stream`, `MeetingStatus`, `SampleFormat`,
-`ASRBackendKind`, ...). The binary IPC uses integer codes instead; that mapping is isolated
+`FrameType`, ...). The binary IPC uses integer codes instead; that mapping is isolated
 in `helper/protocol.py` so the wire format stays decoupled from these names. `log.py`
 configures a stdlib JSON logger once and hands out named loggers via `get_logger`.
 
@@ -207,8 +207,8 @@ the **post-meeting refine**, which re-transcribes each diarizer turn.
 - `parakeet_backend.py` — `ParakeetBackend`, the only ASR backend: owns a persistent
   `hearsay-asr` subprocess (FluidAudio Parakeet TDT v3 on the ANE), round-tripping each
   utterance over stdio (`<uint32 LE n>` + float32 samples → `{"text": ...}`).
-- `manager.py` — `build_asr()` constructs it; `available_models()` reports the single bundled
-  Parakeet model (there is no picker — Parakeet ships one model).
+- `manager.py` — `build_asr()` constructs it and `asr_helper_path()` locates the sidecar
+  binary. Parakeet ships one bundled model, so there is no model picker or ASR config.
 
 ### `diarization/` — offline diarization + voiceprints
 

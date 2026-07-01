@@ -1,62 +1,6 @@
 {
   "components": {
     "schemas": {
-      "ASRBackendKind": {
-        "description": "Which ASR implementation transcribes audio (selected in settings).",
-        "enum": [
-          "parakeet"
-        ],
-        "title": "ASRBackendKind",
-        "type": "string"
-      },
-      "ASRSelect": {
-        "properties": {
-          "backend": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/ASRBackendKind"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "model": {
-            "title": "Model",
-            "type": "string"
-          }
-        },
-        "required": [
-          "model"
-        ],
-        "title": "ASRSelect",
-        "type": "object"
-      },
-      "ASRStatus": {
-        "properties": {
-          "backend": {
-            "$ref": "#/components/schemas/ASRBackendKind"
-          },
-          "model": {
-            "title": "Model",
-            "type": "string"
-          },
-          "models": {
-            "items": {
-              "$ref": "#/components/schemas/ModelInfoRead"
-            },
-            "title": "Models",
-            "type": "array"
-          }
-        },
-        "required": [
-          "backend",
-          "model",
-          "models"
-        ],
-        "title": "ASRStatus",
-        "type": "object"
-      },
       "HTTPValidationError": {
         "properties": {
           "detail": {
@@ -188,29 +132,6 @@
         ],
         "title": "MeetingStatus",
         "type": "string"
-      },
-      "ModelInfoRead": {
-        "properties": {
-          "installed": {
-            "title": "Installed",
-            "type": "boolean"
-          },
-          "label": {
-            "title": "Label",
-            "type": "string"
-          },
-          "name": {
-            "title": "Name",
-            "type": "string"
-          }
-        },
-        "required": [
-          "name",
-          "label",
-          "installed"
-        ],
-        "title": "ModelInfoRead",
-        "type": "object"
       },
       "Page_IdentityRead_": {
         "properties": {
@@ -519,68 +440,6 @@
           }
         },
         "summary": "Index"
-      }
-    },
-    "/api/asr/model": {
-      "put": {
-        "operationId": "set_model_api_asr_model_put",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ASRSelect"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ASRStatus"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Set Model",
-        "tags": [
-          "asr"
-        ]
-      }
-    },
-    "/api/asr/models": {
-      "get": {
-        "operationId": "list_models_api_asr_models_get",
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ASRStatus"
-                }
-              }
-            },
-            "description": "Successful Response"
-          }
-        },
-        "summary": "List Models",
-        "tags": [
-          "asr"
-        ]
       }
     },
     "/api/identities": {

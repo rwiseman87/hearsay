@@ -30,14 +30,6 @@ class MeetingStatus(StrEnum):
     FINALIZED = "finalized"
 
 
-class ASRBackendKind(StrEnum):
-    """Which ASR implementation transcribes audio (selected in settings)."""
-
-    # FluidAudio Parakeet TDT on the ANE via the hearsay-asr sidecar (the only ASR backend
-    # now; no Metal, so it dodges whisper.cpp's unrecoverable Metal command-buffer failures).
-    PARAKEET = "parakeet"
-
-
 class SampleFormat(StrEnum):
     INT16 = "int16"
     FLOAT32 = "float32"

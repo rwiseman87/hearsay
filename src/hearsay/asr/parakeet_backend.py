@@ -1,17 +1,15 @@
 """Parakeet ASR backend: a persistent Swift sidecar running FluidAudio on the ANE.
 
-Live transcription used to run whisper.cpp in-process on Metal, whose backend can enter
-an unrecoverable command-buffer error state and silently stop producing transcripts. This
-backend instead owns a long-lived ``hearsay-asr`` subprocess that loads Parakeet TDT once
-and transcribes each VAD utterance the pipeline hands it, over a tiny stdio protocol:
+Owns a long-lived ``hearsay-asr`` subprocess that loads Parakeet TDT once and transcribes
+each audio span the refine hands it, over a tiny stdio protocol:
 
     request  (stdin):  <uint32 LE sample count><that many float32 LE samples>
     response (stdout): {"text": "..."}\\n
 
-The model stays warm for the meeting, so per-utterance latency is tens of milliseconds.
-``transcribe`` is called serially by the pipeline (off the loop, under its ASR lock); a
-local lock additionally guards the pipe against the known stop-teardown race where a
-detached in-flight call outlives its cancelled task.
+The model stays warm, so per-utterance latency is tens of milliseconds. ``transcribe`` is
+called serially (off the loop, under its ASR lock); a local lock additionally guards the
+pipe against the known stop-teardown race where a detached in-flight call outlives its
+cancelled task.
 """
 
 from __future__ import annotations
@@ -68,10 +66,7 @@ class ParakeetBackend:
         )
         return self._proc
 
-    def transcribe(
-        self, samples: Sequence[float], *, language: str | None = None, prompt: str | None = None
-    ) -> list[ASRSegment]:
-        # Parakeet has no whisper-style decoding prompt; language is auto (v3 is multilingual).
+    def transcribe(self, samples: Sequence[float]) -> list[ASRSegment]:
         pcm = np.ascontiguousarray(np.asarray(samples, dtype=np.float32))
         with self._lock:
             proc = self._ensure_process()

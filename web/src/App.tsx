@@ -3,7 +3,6 @@ import { useState } from "react";
 import { useMeetings } from "./api/hooks";
 import type { MeetingRead } from "./api/types";
 import { MeetingList } from "./components/MeetingList";
-import { ModelPicker } from "./components/ModelPicker";
 import { TranscriptView } from "./components/TranscriptView";
 
 export function App() {
@@ -16,7 +15,6 @@ export function App() {
     <div className="app">
       <header className="app__bar">
         <h1 className="app__title">hearsay - It's what happened, probably</h1>
-        <ModelPicker />
       </header>
       <main className="app__main">
         <MeetingList

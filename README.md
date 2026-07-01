@@ -56,7 +56,7 @@ make swift-build                           # build the capture helper + the Flui
 Run the real pipeline and watch live transcripts (the on-device validation path):
 
 ```sh
-uv run hearsay live --model base --seconds 60   # join a call first; talk + play remote audio
+uv run hearsay live --seconds 60   # join a call first; talk + play remote audio
 ```
 
 Or run the API server and open the UI:

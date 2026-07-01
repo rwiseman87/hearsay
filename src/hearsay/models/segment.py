@@ -30,11 +30,11 @@ class Segment(Base):
     )
     stream: Mapped[Stream] = mapped_column(str_enum(Stream))
     # Resolved display name for the speaker ("Me" by channel; "Speaker N" or a bound
-    # identity name for Them). Kept in sync with the cluster binding by fusion and
-    # recomputed on the finalize rewrite; cluster_id is the structured source.
+    # identity name for Them). Kept in sync with the cluster binding by the live sidecar +
+    # the refine, and recomputed on the finalize rewrite; cluster_id is the structured source.
     speaker_label: Mapped[str] = mapped_column(String(64))
-    # Set by fusion for Them segments once diarization assigns a cluster; NULL for Me
-    # and for Them before a cluster is known. SET NULL keeps segments if a cluster goes.
+    # Set for Them segments once diarization assigns a cluster; NULL for Me and for Them
+    # before a cluster is known. SET NULL keeps segments if a cluster goes.
     cluster_id: Mapped[uuid.UUID | None] = mapped_column(
         Uuid(), ForeignKey("clusters.id", ondelete="SET NULL"), default=None
     )

@@ -98,7 +98,7 @@ def _report(
     me_span, them_span = spans[Stream.ME], spans[Stream.THEM]
     if me_span is not None and them_span is not None:
         skew_ms = abs(me_span[0] - them_span[0]) / 1e6
-        click.echo(f"start skew: {skew_ms:.1f} ms (fusion alignment tolerance is 750 ms)")
+        click.echo(f"start skew: {skew_ms:.1f} ms (cross-stream alignment tolerance is 750 ms)")
 
 
 async def run(*, helper_path: Path, seconds: float, out_dir: Path, synthetic: bool) -> int:

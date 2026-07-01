@@ -76,5 +76,5 @@ def test_api_only_when_ui_not_built(tmp_path: Path) -> None:
     missing = tmp_path / "nope" / "dist"
     with _make_client(tmp_path, missing) as client:
         assert client.get("/").status_code == 404  # no "/" route mounted
-        ok = client.get("/api/asr/models", headers={"Authorization": f"Bearer {TOKEN}"})
+        ok = client.get("/api/meetings", headers={"Authorization": f"Bearer {TOKEN}"})
         assert ok.status_code == 200  # API still works
