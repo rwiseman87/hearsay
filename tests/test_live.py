@@ -10,6 +10,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from pathlib import Path
+from uuid import uuid4
 
 import pytest_asyncio
 from sqlalchemy import create_engine as create_sync_engine
@@ -85,3 +86,38 @@ async def test_handle_persists_labels_and_reuses_clusters(database: Database) ->
     assert sorted(c.ordinal for c in clusters) == [1, 2]
     assert them[0].cluster_id == them[2].cluster_id  # both "Speaker 1"
     assert len(sink.lines) == 3  # each turn appended to the transcript
+
+
+async def test_feed_survives_a_dead_sidecar_pipe(database: Database) -> None:
+    """A sidecar that dies mid-meeting must not crash the pipeline: feed swallows the broken
+    pipe, marks itself broken, and stops writing -- so the stop path can still finalize."""
+
+    class _DeadStdin:
+        def __init__(self) -> None:
+            self.writes = 0
+
+        def write(self, data: bytes) -> None:
+            self.writes += 1
+
+        async def drain(self) -> None:
+            raise BrokenPipeError(32, "Broken pipe")
+
+    class _FakeProc:
+        def __init__(self) -> None:
+            self.stdin = _DeadStdin()
+
+    processor = LiveThemProcessor(
+        binary_path=Path("unused"),
+        meeting_id=uuid4(),  # feed never touches the DB
+        database=database,
+        broadcaster=Broadcaster(),
+        sink=_FakeSink(),
+    )
+    proc = _FakeProc()
+    processor._proc = proc  # type: ignore[assignment]
+
+    await processor.feed([0.0, 0.0, 0.0], t0_s=0.0)  # broken pipe must not propagate
+    assert processor._broken is True
+    assert proc.stdin.writes == 1
+    await processor.feed([0.0, 0.0, 0.0], t0_s=1.0)  # already broken -> no-op, no further write
+    assert proc.stdin.writes == 1

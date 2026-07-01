@@ -10,7 +10,6 @@ Times are anchored to the first chunk's ``host_ts`` so both streams share one cl
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import re
 from collections.abc import Callable, Sequence
 from datetime import datetime
@@ -215,8 +214,14 @@ class TranscriptionPipeline:
         for task in self._tasks:
             task.cancel()
         for task in self._tasks:
-            with contextlib.suppress(asyncio.CancelledError):
+            try:
                 await task
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                # A consume task that already died (e.g. a sidecar's pipe broke) must not block the
+                # finalize below -- log and carry on so the transcript is still rewritten in order.
+                _log.exception("consume task failed during close")
         self._tasks = []
         # Force-flush any in-progress utterance (covers a stop that arrives before eos).
         for stream, segmenter in self._segmenters.items():
