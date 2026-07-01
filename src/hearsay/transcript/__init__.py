@@ -5,7 +5,6 @@ from __future__ import annotations
 from hearsay.transcript.broadcast import Broadcaster
 from hearsay.transcript.capture import Capture, HelperCapture
 from hearsay.transcript.pipeline import TranscriptionPipeline
-from hearsay.transcript.recorder import ThemAudioRecorder
 from hearsay.transcript.refine import (
     RefineError,
     RefineResult,
@@ -26,7 +25,6 @@ __all__ = [
     "RefineResult",
     "SessionBusyError",
     "SessionManager",
-    "ThemAudioRecorder",
     "TranscriptionPipeline",
     "rediarize_meeting",
 ]

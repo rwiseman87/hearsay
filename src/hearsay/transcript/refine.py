@@ -1,25 +1,23 @@
 """Post-meeting re-diarization: relabel a meeting's speakers from the recorded Them track.
 
 The live sidecar labels Them turn-by-turn, but a whole-track pass is more accurate (global
-clustering + overlap handling). This runs the offline diarizer (FluidAudio on the ANE) over
-the whole ``them.wav``, re-transcribes each speaker turn, replaces the clusters + segments,
-and regenerates ``transcript.md``. The diarizer also returns each speaker's voiceprint, which
-is stored on the cluster and matched against people named in prior meetings.
+clustering + overlap handling). This runs the offline diarizer (FluidAudio on the ANE) over the
+whole Them track (the right channel of ``audio.wav``), re-transcribes each speaker turn, replaces
+the clusters + segments, and regenerates ``transcript.md``. The diarizer also returns each
+speaker's voiceprint, which is stored on the cluster and matched against people named in prior
+meetings.
 """
 
 from __future__ import annotations
 
 import asyncio
 import math
-import wave
 from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from uuid import UUID
-
-import numpy as np
 
 from hearsay.asr import ASRBackend, build_asr
 from hearsay.config.settings import Settings
@@ -39,13 +37,13 @@ from hearsay.export import LocalMarkdownSink, MeetingMeta, TranscriptLine
 from hearsay.log import get_logger
 from hearsay.models import Cluster, Meeting, Segment
 from hearsay.services import MeetingService, SpeakerService, TurnSegment
-from hearsay.transcript.recorder import read_offset_s
+from hearsay.transcript.recorder import read_them_channel
 
 _log = get_logger("hearsay.refine")
 
 
 class RefineError(RuntimeError):
-    """Re-diarization could not run (missing meeting or no recorded Them track)."""
+    """Re-diarization could not run (missing meeting or no recorded audio track)."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,14 +51,6 @@ class RefineResult:
     meeting_id: UUID
     speaker_count: int
     segments_relabeled: int
-
-
-def _read_wav(path: Path) -> tuple[Any, int]:
-    with wave.open(str(path)) as wav:
-        sample_rate = wav.getframerate()
-        frames = wav.readframes(wav.getnframes())
-    samples = np.frombuffer(frames, dtype=np.int16).astype(np.float32) / 32768.0
-    return samples, sample_rate
 
 
 def _l2_normalize(vector: Sequence[float]) -> list[float]:
@@ -106,7 +96,6 @@ def _carry_forward_names(
     turns: Sequence[SpeakerTurn],
     clusters: Sequence[Cluster],
     label_to_ordinal: dict[str, int],
-    offset_s: float,
 ) -> dict[int, str]:
     """Vote each prior locked name onto the turn ordinal its old segments most overlap, so a
     re-diarize never drops a manual binding (one name <-> one ordinal)."""
@@ -122,7 +111,8 @@ def _carry_forward_names(
         prior_name = prior_name_by_cluster.get(segment.cluster_id)
         if prior_name is None:
             continue
-        label = assign_segment_speaker(segment.start_s, segment.end_s, turns, offset_s=offset_s)
+        # Old segments and turns are both in meeting time (the Them channel is timeline-anchored).
+        label = assign_segment_speaker(segment.start_s, segment.end_s, turns, offset_s=0.0)
         ordinal = label_to_ordinal.get(label) if label is not None else None
         if ordinal is not None:
             name_votes[(ordinal, prior_name)] += 1
@@ -141,11 +131,10 @@ async def _transcribe_turns(
     sample_rate: int,
     turns: Sequence[SpeakerTurn],
     label_to_ordinal: dict[str, int],
-    offset_s: float,
 ) -> list[TurnSegment]:
     """Re-transcribe each diarizer turn's audio span so the Them transcript follows speaker
     changes (the live VAD merges back-and-forth exchanges into one multi-speaker utterance).
-    Returns turn segments in meeting time (turn times are WAV-relative; ``offset_s`` shifts)."""
+    The Them channel is timeline-anchored, so a turn's time is already meeting time."""
     result: list[TurnSegment] = []
     for turn in sorted(turns, key=lambda t: t.start_s):
         ordinal = label_to_ordinal.get(turn.speaker)
@@ -163,8 +152,8 @@ async def _transcribe_turns(
             TurnSegment(
                 ordinal=ordinal,
                 text=text,
-                start_s=turn.start_s + offset_s,
-                end_s=turn.end_s + offset_s,
+                start_s=turn.start_s,
+                end_s=turn.end_s,
             )
         )
     return result
@@ -178,7 +167,7 @@ async def rediarize_meeting(
     diarizer: OfflineDiarizer | None = None,
     asr: ASRBackend | None = None,
 ) -> RefineResult:
-    """Re-diarize ``them.wav`` offline and rebuild the Them transcript per speaker turn.
+    """Re-diarize the Them channel of ``audio.wav`` offline and rebuild the Them transcript.
 
     Each diarizer turn's audio is re-transcribed (FluidAudio Parakeet by default) so the
     transcript splits the multi-speaker utterances the live VAD merged. The diarizer also
@@ -189,10 +178,10 @@ async def rediarize_meeting(
     if meeting is None:
         raise RefineError(f"meeting {meeting_id} not found")
     folder = settings.output_dir / meeting.folder
-    wav_path = folder / "them.wav"
+    wav_path = folder / "audio.wav"
     if not wav_path.exists():
         raise RefineError(
-            f"no them.wav for meeting {meeting_id}; enable diarization.refine before capturing"
+            f"no audio.wav for meeting {meeting_id}; enable audio.record before capturing"
         )
 
     async with database.session() as session:
@@ -207,8 +196,7 @@ async def rediarize_meeting(
         _log.info("rediarize: meeting %s has no Them segments; nothing to refine", meeting_id)
         return RefineResult(meeting_id=meeting_id, speaker_count=0, segments_relabeled=0)
 
-    samples, sample_rate = _read_wav(wav_path)
-    offset_s = read_offset_s(wav_path)
+    samples, sample_rate = read_them_channel(wav_path)
     diarizer = diarizer or build_offline_diarizer(settings)
     diarization = await asyncio.to_thread(diarizer.diarize, samples, sample_rate=sample_rate)
     turns = diarization.turns
@@ -219,9 +207,7 @@ async def rediarize_meeting(
     owns_asr = asr is None
     asr = asr or build_asr(settings)
     try:
-        turn_segments = await _transcribe_turns(
-            asr, samples, sample_rate, turns, label_to_ordinal, offset_s
-        )
+        turn_segments = await _transcribe_turns(asr, samples, sample_rate, turns, label_to_ordinal)
     finally:
         if owns_asr:
             await asyncio.to_thread(asr.close)
@@ -233,7 +219,7 @@ async def rediarize_meeting(
         )
 
     # Carry manual renames forward onto the new turn ordinals (never drop a manual binding).
-    ordinal_names = _carry_forward_names(them, turns, clusters, label_to_ordinal, offset_s)
+    ordinal_names = _carry_forward_names(them, turns, clusters, label_to_ordinal)
 
     # Voiceprints: store each speaker's centroid (from the diarizer) and auto-name a returning
     # person by matching against people named in prior meetings (manual carry-forward wins).

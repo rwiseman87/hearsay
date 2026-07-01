@@ -1,7 +1,7 @@
 """Post-meeting re-diarization: pure turn->segment mapping + end-to-end relabel.
 
 The mapping logic is pure (no torch); the end-to-end test drives the real orchestration
-(DB + them.wav + transcript rewrite) with a stub offline diarizer, so it runs in CI.
+(DB + audio.wav + transcript rewrite) with a stub offline diarizer, so it runs in CI.
 """
 
 from __future__ import annotations
@@ -77,9 +77,7 @@ class StubASR:
     def __init__(self) -> None:
         self._n = 0
 
-    def transcribe(
-        self, samples: object, *, language: str | None = None, prompt: str | None = None
-    ) -> list[ASRSegment]:
+    def transcribe(self, samples: object) -> list[ASRSegment]:
         text = f"t{self._n}"
         self._n += 1
         return [ASRSegment(text=text, start_s=0.0, end_s=1.0)]
@@ -98,9 +96,9 @@ def _make_db(tmp_path: Path) -> Database:
 
 def _write_silent_wav(path: Path, seconds: float = 6.0) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    pcm = array("h", [0] * int(16_000 * seconds))
+    pcm = array("h", [0] * (int(16_000 * seconds) * 2))  # stereo (Me=L, Them=R), silent
     with wave.open(str(path), "wb") as wav:
-        wav.setnchannels(1)
+        wav.setnchannels(2)
         wav.setsampwidth(2)
         wav.setframerate(16_000)
         wav.writeframes(pcm.tobytes())
@@ -130,7 +128,7 @@ async def test_rediarize_relabels_segments_and_transcript(tmp_path: Path) -> Non
         # A stale online cluster that the refine must replace.
         await SpeakerService(session).create_cluster(meeting.id, ordinal=1)
 
-    _write_silent_wav(tmp_path / "mtg" / "them.wav")
+    _write_silent_wav(tmp_path / "mtg" / "audio.wav")
     # Two turns -> the coarse Them segments are rebuilt as one re-transcribed segment per turn.
     stub = StubDiarizer([SpeakerTurn("SPEAKER_x", 0.0, 2.5), SpeakerTurn("SPEAKER_y", 2.5, 6.0)])
 
@@ -183,7 +181,7 @@ async def test_rediarize_preserves_manual_rename(tmp_path: Path) -> None:
         await speakers.assign_segment_cluster(seg_ids[1], alice.id)
         await speakers.bind_cluster(alice.id, display_name="Alice")
 
-    _write_silent_wav(tmp_path / "mtg" / "them.wav")
+    _write_silent_wav(tmp_path / "mtg" / "audio.wav")
     # pyannote re-clusters: x covers Alice's segs [0,4], y is the other speaker [4,6].
     stub = StubDiarizer([SpeakerTurn("SPEAKER_x", 0.0, 4.0), SpeakerTurn("SPEAKER_y", 4.0, 6.0)])
 
@@ -228,7 +226,7 @@ async def test_rediarize_recognizes_returning_speaker(tmp_path: Path) -> None:
             await meetings.add_segment(
                 m2.id, stream=Stream.THEM, speaker_label="Them", text="x", start_s=start, end_s=end
             )
-    _write_silent_wav(tmp_path / "m2" / "them.wav")
+    _write_silent_wav(tmp_path / "m2" / "audio.wav")
     # The diarizer returns a voiceprint per speaker; SPEAKER_x's matches Alice's [1, 0].
     stub = StubDiarizer(
         [SpeakerTurn("SPEAKER_x", 0.0, 4.0), SpeakerTurn("SPEAKER_y", 4.0, 6.0)],
@@ -275,7 +273,7 @@ async def test_rediarize_skips_when_no_them_segments(tmp_path: Path) -> None:
         await MeetingService(session).add_segment(
             meeting.id, stream=Stream.ME, speaker_label="Me", text="mine", start_s=0.0, end_s=2.0
         )
-    _write_silent_wav(tmp_path / "mtg" / "them.wav")
+    _write_silent_wav(tmp_path / "mtg" / "audio.wav")
 
     result = await rediarize_meeting(
         meeting.id, database=database, settings=settings, diarizer=_BoomDiarizer()

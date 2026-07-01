@@ -17,9 +17,9 @@ make swift-build                           # build hearsay-helper + the FluidAud
 ```
 
 `make sync` installs the full runtime: after the pivot the Python core runs no ML models, so
-numpy (to pack PCM for the sidecars, mix the playback WAV, and read them.wav in the refine) is
-the only ML-adjacent dependency, and it is a base dependency. All ASR + diarization runs in the
-Swift sidecars, whose CoreML models auto-download on first use.
+numpy (to pack PCM for the sidecars, build the stereo audio.wav, and read its Them channel in the
+refine) is the only ML-adjacent dependency, and it is a base dependency. All ASR + diarization
+runs in the Swift sidecars, whose CoreML models auto-download on first use.
 
 ## Make targets
 
@@ -98,9 +98,9 @@ The Phase 0 truth test: captures both streams for N seconds and writes `me.wav` 
 ## Models and dependency extras
 
 ASR, diarization, and voiceprints all run in the Swift sidecars on the ANE, so the Python core
-carries **no ML dependency**. numpy (packing PCM for the sidecars, mixing the playback WAV,
-reading `them.wav` in the refine) is the only ML-adjacent dep and is a **base** dependency, so
-`make sync` is the whole runtime. The one optional extra is:
+carries **no ML dependency**. numpy (packing PCM for the sidecars, building the stereo audio.wav,
+reading its Them channel in the refine) is the only ML-adjacent dep and is a **base** dependency,
+so `make sync` is the whole runtime. The one optional extra is:
 
 | Extra | Adds | For |
 |---|---|---|
@@ -128,14 +128,17 @@ All config flows through `hearsay.config.Settings`. Common overrides (env vars a
 |---|---|---|
 | Database URL | `DATABASE_URL` | `sqlite+aiosqlite:///<repo>/outputs/db/hearsay.db` |
 | Output dir | `HEARSAY_OUTPUT_DIR` | `<repo>/outputs/recordings` |
-| Post-meeting refine (records them.wav) | `HEARSAY_DIARIZATION__REFINE` | `true` |
+| Record meeting audio (`audio.wav`) | `HEARSAY_AUDIO__RECORD` | `true` |
+| Run the post-meeting refine | `HEARSAY_DIARIZATION__REFINE` | `true` |
 | Auto-refine at finalize | `HEARSAY_DIARIZATION__AUTO_REFINE` | `true` |
-| Record mixed audio for playback (records audio.wav) | `HEARSAY_AUDIO__RECORD` | `true` |
 
-**Playback.** When `audio.record` is on (default), each meeting records a single timeline-accurate
-mixed (Me+Them) `audio.wav`; the UI plays it back with the transcript highlighting in sync (click a
-line to seek). Privacy tradeoff: this retains the full raw audio — set `HEARSAY_AUDIO__RECORD=false`
-to opt out (delete-meeting removes the folder). Served by `GET /api/meetings/{id}/audio`.
+**Audio recording + playback.** When `audio.record` is on (default), each meeting records one
+timeline-accurate **stereo** `audio.wav` (Me = left channel, Them = right). This single file serves
+both playback — the UI plays it with the transcript highlighting in sync (click a line to seek) —
+and the post-meeting refine, which reads its Them channel. Privacy tradeoff: it retains the full
+raw audio; set `HEARSAY_AUDIO__RECORD=false` to opt out (which also disables the refine, since
+there is no recording to re-diarize; delete-meeting removes the folder). Served by
+`GET /api/meetings/{id}/audio`.
 
 When run from source, all runtime data (recordings, the SQLite DB, downloaded models) lives
 under the repo's `outputs/` (gitignored). Override any path with the env vars above.

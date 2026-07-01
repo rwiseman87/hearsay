@@ -23,15 +23,14 @@ class DiarizationSettings(BaseModel):
     """
 
     # Post-meeting re-diarization is the DEFAULT speaker path: FluidAudio (on the ANE) relabels
-    # the whole Them track far better than the live sidecar's streaming labels. When on, the Them
-    # track is recorded to <folder>/them.wav so `hearsay rediarize` / the "Refine speakers" button
-    # can run the offline diarizer. Privacy tradeoff: this retains raw audio by default -- set
-    # False to opt out (delete-meeting also removes the folder).
+    # the whole Them track far better than the live sidecar's streaming labels, reading the Them
+    # channel of the recorded <folder>/audio.wav. So it needs `audio.record` on (the master
+    # audio-retention switch); with it off there is no recording to re-diarize and the refine skips.
     refine: bool = True
     # Run the offline refine automatically when a meeting finalizes (vs. only on the manual
     # "Refine speakers" button / `hearsay rediarize`). Cheap now that the diarizer is FluidAudio
     # on the ANE (~seconds), so every meeting ends with accurate labels. Gated on `refine`
-    # (needs them.wav); a missing recording or a diarizer error never blocks the stop.
+    # (needs audio.wav); a missing recording or a diarizer error never blocks the stop.
     auto_refine: bool = True
     # Cosine at/above which a refined speaker's voiceprint is auto-matched to a person named
     # in a previous meeting. Conservative (a wrong cross-meeting match is worse than none).
@@ -39,12 +38,13 @@ class DiarizationSettings(BaseModel):
 
 
 class AudioSettings(BaseModel):
-    """Full-meeting audio recording for in-browser playback."""
+    """Full-meeting audio recording -- the single audio-retention switch."""
 
-    # Record a single timeline-accurate mixed (Me+Them) WAV per meeting (``<folder>/audio.wav``)
-    # so the UI can replay it with the transcript highlighting in sync. Independent of
-    # diarization.refine's Them-only them.wav. Privacy tradeoff: retains the full raw audio -- set
-    # False to opt out (delete-meeting also removes the folder).
+    # Record one timeline-accurate stereo WAV per meeting (``<folder>/audio.wav``, Me = left,
+    # Them = right). It serves both the in-browser playback (with synced transcript highlighting)
+    # and the post-meeting refine (which reads the Them channel). Privacy tradeoff: retains the
+    # full raw audio -- set False to opt out, which also disables the refine (no recording to
+    # re-diarize); delete-meeting removes the folder.
     record: bool = True
 
 

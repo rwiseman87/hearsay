@@ -110,10 +110,11 @@ Stops capture, flushes the pipeline, rewrites `transcript.md` in timestamp order
 Stops it if active, removes the DB rows (segments cascade), and deletes the on-disk folder.
 Returns `204`, or `404` if unknown.
 
-### `GET /api/meetings/{id}/audio` — the meeting's mixed audio (for playback)
+### `GET /api/meetings/{id}/audio` — the meeting's audio (for playback)
 
-Serves `audio.wav` (a single timeline-accurate Me+Them mix; sample N is meeting second N/16000,
-so a segment's `start_s` maps straight onto `audio.currentTime`). Auth accepts the token as a
+Serves `audio.wav` (one timeline-accurate stereo track — Me on the left channel, Them on the
+right; sample N is meeting second N/16000, so a segment's `start_s` maps straight onto
+`audio.currentTime`). Auth accepts the token as a
 `?token=` query param (an `<audio>` element cannot set an Authorization header) **or** a bearer
 header. Supports `Range` requests (`206 Partial Content`) for seeking. `404` if the meeting is
 unknown or was recorded with `audio.record` off.

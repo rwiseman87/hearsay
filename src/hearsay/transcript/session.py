@@ -28,7 +28,7 @@ from hearsay.transcript.capture import Capture, HelperCapture
 from hearsay.transcript.live import LiveThemProcessor
 from hearsay.transcript.live_me import LiveMeProcessor
 from hearsay.transcript.pipeline import TranscriptionPipeline
-from hearsay.transcript.recorder import MeetingAudioRecorder, ThemAudioRecorder
+from hearsay.transcript.recorder import MeetingAudioRecorder
 from hearsay.transcript.refine import RefineError, rediarize_meeting
 
 _log = get_logger("hearsay.session")
@@ -130,11 +130,6 @@ class SessionManager:
                 broadcaster=broadcaster,
                 sink=sink,
             )
-            them_recorder = (
-                ThemAudioRecorder(folder / "them.wav")
-                if self._settings.diarization.refine
-                else None
-            )
             audio_recorder = (
                 MeetingAudioRecorder(folder / "audio.wav") if self._settings.audio.record else None
             )
@@ -142,7 +137,6 @@ class SessionManager:
                 meeting_id=meeting_id,
                 database=self._db,
                 sink=sink,
-                them_recorder=them_recorder,
                 audio_recorder=audio_recorder,
                 them_processor=them_processor,
                 me_processor=me_processor,
@@ -197,8 +191,8 @@ class SessionManager:
         diarization = self._settings.diarization
         if not (diarization.refine and diarization.auto_refine):
             return
-        them_wav = self._settings.output_dir / meeting.folder / "them.wav"
-        if not them_wav.exists():
+        audio_wav = self._settings.output_dir / meeting.folder / "audio.wav"
+        if not audio_wav.exists():  # audio.record was off -> nothing to re-diarize
             return
         try:
             result = await rediarize_meeting(meeting.id, database=self._db, settings=self._settings)
