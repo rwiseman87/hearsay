@@ -6,6 +6,15 @@
 //!
 //! Every media message is a fixed 28-byte little-endian header followed by `n_samples *
 //! bytes_per_sample` payload bytes (payload only for `audio` frames).
+//!
+//! The NDJSON control channel (commands / replies / events) lives in [`control`].
+
+pub mod control;
+
+pub use control::{
+    parse_command, parse_message, to_line, Command, ControlError, Event, Inbound, JsonObj, Reply,
+    ReplyError,
+};
 
 /// Frame header magic byte.
 pub const MAGIC: u8 = 0xA7;
