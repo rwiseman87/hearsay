@@ -23,7 +23,7 @@ as the gated fallback. The live path is now fully Swift (Them + Me via sidecars)
 the capture binary (`hearsay-helper`) stays a lean PCM streamer; AI runs in Swift sidecars the Python core feeds; Python
 relays bytes but runs **no models**. End goal: Python = ML-free backend ([[hearsay-swift-pivot-direction]]).
 
-**Pick up here → merge `feat/fluidaudio-pivot` to `main` (do the CLAUDE.md cleanup first — see below). The pivot is complete: 3a Me→Swift + VAD tune VALIDATED on-device, 3b DONE (Python is now ML-dep-free — numpy only), docs swept, sidecar-death crash fixed. All on `feat/fluidaudio-pivot`; `make ci` green.**
+**Pick up here → merge `feat/fluidaudio-pivot` to `main`. The pivot is complete and nothing else is queued: 3a Me→Swift + VAD tune VALIDATED on-device, 3b DONE (Python is now ML-dep-free — numpy only), all docs + CLAUDE.md reconciled, sidecar-death crash fixed. All on `feat/fluidaudio-pivot`; `make ci` green.**
 - **(3a) Me → Swift — VALIDATED on-device (2026-07-01).** Ran a real meeting via `serve`: `hearsay-me` (streaming VAD +
   Parakeet) produced "Me" utterances, "working OK." Two caveats the user flagged: (i) turn-end boundaries a little iffy
   when a turn ends with a short/no pause, and (ii) some Parakeet ASR accuracy misses. Root cause of (i): `hearsay-me`
@@ -54,10 +54,13 @@ relays bytes but runs **no models**. End goal: Python = ML-free backend ([[hears
   --strict (63 files) + 125 pytest + swift selftest + pip-audit + licenses.** NB: step (2) already invalidated stored
   centroids (different vector space) — they re-seed on the next refine.
 
-**CLAUDE.md cleanup (do before merge):** `CLAUDE.md` still describes deleted things — the `fusion/` package in its
-structure tree, and pywhispercpp/mlx/onnxruntime + Silero VAD in the dependency-decision + env notes. Not touched during
-the pivot (checked-in project instructions; deferred by the user). A consolidated pass before merging to `main` should
-reconcile it with the ML-free-Python end state.
+**CLAUDE.md — reconciled (2026-07-01, DONE).** Updated to the current architecture: the lean Swift capture helper +
+FluidAudio/ANE sidecars (`hearsay-{live,me,diarize,asr}`) as their own bullet; the Python core described as
+orchestration + speaker attribution + persistence + API, running **no ML models**; `fusion/` removed from the structure
+tree + the helper executable list expanded; the "fusion engine" test note replaced with the pure diarization-mapping/
+voiceprint helpers; the Speaker-ID layers updated (diarization is Swift/ANE + voiceprints; calendar/active-speaker are
+Phase 3); and the Python-3.14 dep-decision note rewritten (the full ML stack moved to Swift, so numpy is the only
+ML-adjacent dep). Nothing stale remains.
 
 **Note on the live pipeline shape:** both streams always route to their Swift sidecars (Them -> `hearsay-live`, Me ->
 `hearsay-me`); `TranscriptionPipeline` runs no ML and only routes PCM + records them.wav + rewrites the transcript at
