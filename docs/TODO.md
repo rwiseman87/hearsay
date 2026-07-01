@@ -28,10 +28,22 @@ the sidecar-death fix, the docs + CLAUDE.md reconciliation) is in the progress l
    test ("...is it actually gonna stream me? ... it does actually stream me. It just doesn't do the other ones") — live
    Me streaming works; Them-not-streaming is the expected deferred follow-up (next), not a regression.
 
-**Next (nothing in flight — pick one):** the **Them streaming** follow-up (same `StreamingUnifiedAsrManager` in
-`hearsay-live`; show partials speaker-less until the turn's diarizer speaker is assigned -- user OK'd deferring speaker
-attribution to turn-end) + the optional **level meter** (surface the helper's existing per-stream `level` RMS events to
-the UI, a cheap "it's picking up audio" indicator). Longer-horizon forks stay open: Phase 3 (calendar/OCR speaker
+**Pick up here (3) → Them streaming — CODE-COMPLETE on branch `feat/them-streaming` (commit `fa8b5f9`), needs
+on-device validation, then merge to `main`.** `hearsay-live` now runs a `StreamingUnifiedAsrManager` alongside the
+existing LS-EEND diarizer + batch Parakeet: the in-progress (not-yet-finalized) Them audio is transcribed into growing
+**partial** transcripts (re-anchored to each finalized turn boundary), so Them text appears live as spoken. Partials are
+**speaker-less** (`speaker` -1, broadcast as `Them`) — the diarizer only assigns a speaker at turn end, so attribution is
+deferred to the **final** (the proven per-turn batch path is untouched: batch-transcribe each finalized diarizer turn →
+`Speaker N` + cluster). Sidecar now emits `{kind:"partial|final", speaker, text, start_s, end_s}`; `LiveThemProcessor`
+broadcasts partials to the UI only (never persisted), finals unchanged. Frontend already renders one dimmed partial per
+stream + supersedes it with the stream's next final → **no frontend change**. `make ci` green (ruff + mypy --strict (64
+files) + 138 pytest + swift selftest + audit + licenses); +1 test (`test_partials_broadcast_but_not_persisted` in
+`test_live.py`). **Validate: `serve` + a meeting, have Them talk, watch Them text stream live (dimmed, labeled `Them`)
+then snap to `Speaker N` at turn-end.** Watch for: (a) ANE memory/contention now that `hearsay-live` holds 3 models
+(LS-EEND + batch Parakeet + streaming Parakeet) — though the machine already ran 4 concurrently (me+live), so it should
+be incremental; if it's a problem the fallback is a single-engine token-timing split (heavier); (b) partial "Them" label
+reading oddly next to "Speaker N" — trivial to change. **The optional level meter is DROPPED** (user: "if we're
+streaming them, I don't need the level meter, too"). Longer-horizon forks stay open: Phase 3 (calendar/OCR speaker
 naming), Phase 4 (LLM notes), Phase 5 (packaging), the all-Swift-backend decision, and the deferred higher-fi playback
 (a parallel HQ capture stream). The pivot itself is DONE + merged (`main` @ `00672ef`); the two playback/streaming-Me
 features are DONE + merged (`main` @ `de7a436`).
@@ -266,6 +278,24 @@ uv run hearsay live --model base --seconds 60   # real pipeline -> live transcri
 
 ## Progress log
 
+- **2026-07-01 (feature: live streaming "Them" captions — code-complete, `make ci`-green, needs on-device validation).**
+  Added a `StreamingUnifiedAsrManager` to `hearsay-live` (mirroring the streaming-Me rewrite) **alongside** the existing
+  LS-EEND diarizer + batch Parakeet, so live Them text streams in as growing **partials** while the proven per-turn
+  finals path stays untouched. Design = purely additive (lowest risk, keeps the validated diarizer-turn finals): the
+  streaming ASR transcribes the in-progress (not-yet-finalized) audio; on each finalized turn the diarizer boundary
+  re-anchors the streaming context (`reset()` + re-feed from the boundary) so the partial only ever reflects the current
+  turn. Partials are **speaker-less** (`speaker` -1) because the diarizer assigns a speaker only at turn end — attribution
+  deferred to the final (user OK'd). Sidecar stdout is now `{kind:"partial|final", speaker, text, start_s, end_s}`;
+  `LiveThemProcessor._handle` branches: partials broadcast to the UI only (labeled `Them`, not persisted), finals keep the
+  Speaker-N + cluster + persist path. **No frontend change** — the reducer already keeps one dimmed partial per stream and
+  supersedes it with the stream's next final (leftover from the Me path). Also updated `docs/{pipeline,architecture}.md`
+  (Them path now describes partials + finals). +1 test (`test_partials_broadcast_but_not_persisted`). **`make ci` green:
+  ruff + mypy --strict (64 files) + 138 pytest + swift build + selftest + audit + licenses.** Committed on
+  `feat/them-streaming` (`fa8b5f9`). NB during the build: a stale incremental-build state made the first `make swift-build`
+  skip `hearsay-live` (only rebuilt `hearsay-me`) — a `touch` + targeted rebuild fixed it and it compiles clean; watch for
+  this if a sidecar edit seems not to take. **NEXT: on-device — `serve` + a meeting, watch Them stream live then snap to
+  `Speaker N`; watch ANE memory with 3 models in `hearsay-live`. Then merge to `main`.** The optional level meter is
+  **dropped** (user declined it once Them streams). See [[hearsay-swift-pivot-direction]].
 - **2026-07-01 (both post-pivot features VALIDATED on-device + MERGED to `main`).** Validated the two features stacked on
   `feat/audio-playback` and merged the branch to `main` (`--no-ff`, merge `de7a436`). **(1) Live streaming "Me"
   captions** — validated by the user's own words on the 16:55 real meeting ("...is it actually gonna stream me? ... it
