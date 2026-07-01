@@ -19,6 +19,8 @@ from pathlib import Path
 from typing import Any
 from uuid import UUID
 
+import numpy as np
+
 from hearsay.asr import ASRBackend, build_asr
 from hearsay.config.settings import Settings
 from hearsay.db import Database
@@ -54,8 +56,6 @@ class RefineResult:
 
 
 def _read_wav(path: Path) -> tuple[Any, int]:
-    import numpy as np  # noqa: PLC0415 (optional dep; only present when refining)
-
     with wave.open(str(path)) as wav:
         sample_rate = wav.getframerate()
         frames = wav.readframes(wav.getnframes())

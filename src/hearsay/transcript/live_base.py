@@ -18,6 +18,8 @@ from pathlib import Path
 from typing import Any
 from uuid import UUID
 
+import numpy as np
+
 from hearsay.db import Database
 from hearsay.export import TranscriptSink
 from hearsay.log import get_logger
@@ -76,8 +78,6 @@ class LiveSidecarProcessor:
             return
         if self._offset_s is None:
             self._offset_s = t0_s
-        import numpy as np  # noqa: PLC0415 (optional dep; only with the asr extra)
-
         pcm = np.ascontiguousarray(np.asarray(samples, dtype=np.float32))
         data = struct.pack("<I", len(pcm)) + pcm.tobytes()
         async with self._write_lock:

@@ -48,8 +48,7 @@ core runs no ML models. See [`docs/TODO.md`](docs/TODO.md) for the phase-by-phas
 Prereqs: [`uv`](https://docs.astral.sh/uv/) and Swift (Command Line Tools is enough).
 
 ```sh
-make sync                                  # create the venv + base deps (Python 3.14)
-uv sync --extra asr                        # numpy, to pack PCM for the sidecars + read them.wav
+make sync                                  # create the venv + all deps (Python 3.14; numpy is the only ML-adjacent dep)
 make swift-build                           # build the capture helper + the FluidAudio/ANE sidecars
 (cd web && npm ci && npm run build)        # build the React UI bundle (web/dist), served by the core
 ```
