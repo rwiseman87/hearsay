@@ -12,7 +12,7 @@ The on-device audio-AI moved off torch + whisper.cpp/Metal onto **FluidAudio** (
 models CC-BY-4.0, **ungated**) on the **Apple Neural Engine**, in Swift sidecars the Python core feeds over stdio:
 `hearsay-live` (live Them — streaming diarization + Parakeet), `hearsay-me` (live Me — streaming VAD + Parakeet),
 `hearsay-diarize` (post-meeting refine), `hearsay-asr` (Parakeet, used by the refine to re-transcribe each turn). The
-**Python core runs no ML models** (numpy only, to pack PCM + read them.wav). Architecture = **B**: the capture binary
+**Python core runs no ML models** (numpy only, to pack PCM + build/read the stereo `audio.wav`). Architecture = **B**: the capture binary
 (`hearsay-helper`) is a lean PCM streamer; all AI is in the sidecars. The whole arc (F1-F4, steps 2/3a/3b, the VAD tune,
 the sidecar-death fix, the docs + CLAUDE.md reconciliation) is in the progress log below. [[hearsay-swift-pivot-direction]]
 
@@ -44,12 +44,12 @@ the FluidAudio pivot:
    to `main`** (`--no-ff` merge `be8cb8f`; `make ci` green — 138 pytest + mypy --strict 64 files + swift selftest + audit +
    licenses; web tsc/build green).
 
-**Next — the user's current focus (three items, 2026-07-01):**
-1. **Dead-code removal — DONE on branch `chore/dead-code-cleanup` (`85616dc`), ci-green, awaiting merge.** Removed the
-   vestigial ASR model picker (endpoints + schemas + UI + `ASRSettings`/`ASRBackendKind`/`models_dir`/the no-op `--model`
-   flag) and stale whisper/mlx/fusion comments; ~520 lines gone. Behavior-neutral (Parakeet was already the only ASR path,
-   ignoring every picker knob). `make ci` (62 mypy files, 135 pytest) + `make web-ci` green. Phase-3 placeholder enums
-   (`ActiveSpeakerMode`, `NameHintSource`) kept as scaffolding.
+**Next — the user's current focus (three items, 2026-07-01). Items 1 + 2 DONE + merged; RESUME AT ITEM 3.**
+1. **Dead-code removal — DONE + MERGED to `main`** (`--no-ff` merge `dfc4fbc`). Removed the vestigial ASR model picker
+   (endpoints + schemas + UI + `ASRSettings`/`ASRBackendKind`/`models_dir`/the no-op `--model` flag) and stale
+   whisper/mlx/fusion comments; ~520 lines gone. Behavior-neutral (Parakeet was already the only ASR path, ignoring every
+   picker knob). `make ci` + `make web-ci` green. Phase-3 placeholder enums (`ActiveSpeakerMode`, `NameHintSource`) kept
+   as scaffolding. (Also removed a stray `src/hearsay/vad/` bytecode-only dir — untracked leftover of the deleted VAD pkg.)
 2. **Consolidate the WAV files to one — VALIDATED on-device + MERGED to `main`** (`--no-ff` merge `bf2aecb`). `them.wav` +
    mixed-mono `audio.wav` collapsed into ONE timeline-accurate **stereo** `audio.wav` (Me = left, Them = right, normalized
    by the overall peak to 0.9). Playback plays it spatially via a plain `<audio>` (mono devices downmix) — no frontend
@@ -57,9 +57,33 @@ the FluidAudio pivot:
    gone). `audio.record` is now the single audio-retention switch; `ThemAudioRecorder` deleted. **Validated:** the 20:16
    meeting wrote one 2-channel `audio.wav` (Me=L peak 0.900, Them=R peak 0.482, no `them.wav`), played back, and the
    refine produced correct speakers off the stereo Them channel. `make ci` + `make web-ci` green.
-3. **Post-meeting accuracy refinement + note distillation + action-item outcomes.** This is Phase-4-sized (LLM notes +
-   extraction): a higher-accuracy post pass, LLM summary/notes (`notes.md`), and action-item extraction. Needs its own
-   design pass (LLM provider = local OpenAI-compatible default + Bedrock per the plan; prompts; schema; storage; UI).
+3. **← RESUME HERE. Post-meeting accuracy refinement + note distillation + action-item outcomes** — the Phase-4-sized LLM
+   piece. NOT STARTED (no `llm/` code yet; the `bedrock` extra = boto3 exists in `pyproject.toml` but is unused). The
+   canonical design is the plan's **Phase 4** (`~/.claude/plans/i-want-to-plan-keen-lake.md`, lines ~98/113/144-149/252,
+   and risk #7); the `export/` **Sink seam already anticipates "transcript + notes."** Note: the plan describes a *rolling
+   in-meeting* notes pipeline, but the user framed this **post-meeting** (simpler, dodges compute contention — risk #7
+   explicitly allows post-meeting notes).
+
+   **Proposed shape (mine, for the next session):**
+   - **`llm/` provider layer** — `LLMProvider` protocol + an **OpenAI-compatible** client (local default: Ollama / LM
+     Studio / llama.cpp) + **Bedrock Converse** (lazy `boto3`). New `llm` settings group (provider / base_url / model /
+     key as `SecretStr`).
+   - **Note distillation** — post-meeting, feed the finalized transcript to the LLM → structured result (summary /
+     decisions / action_items) → render an atomic `notes.md` via the Sink seam.
+   - **Action items** — extracted in that same structured pass.
+   - **API + UI + trigger** — endpoint to generate/fetch notes, a UI notes panel, a trigger.
+
+   **OPEN DECISIONS (I put these to the user as an `AskUserQuestion`; they interrupted to wrap up, so they are UNANSWERED —
+   ask again before building):**
+   a. **LLM provider to build+validate against first** — local OpenAI-compatible (need base_url + model) / AWS Bedrock
+      (need region + model id) / build the abstraction with a stub and wire the endpoint later. *(Hard blocker: need a real
+      endpoint to validate on-device.)*
+   b. **What "post-meeting accuracy refinement" means** — (i) an LLM transcript-cleanup pass (fix ASR mishears /
+      punctuation / filler, keeping the original too) vs (ii) it's already covered by the diarize+re-transcribe refine, so
+      #3 is really just notes + action items vs (iii) both.
+   c. **Action-item storage** — DB-backed structured rows (owner / text / status; checkable in the UI, queryable across
+      meetings) + rendered into `notes.md`, vs markdown-only in `notes.md`.
+   d. **Trigger** — auto after stop (post-refine) + a "Regenerate notes" button, vs on-demand button only.
 
 **Longer-horizon forks (still open):** Phase 3 (calendar roster + OCR active-speaker naming), Phase 5 (packaging), the
 all-Swift-backend decision (revisit now that Python is ML-free), the deferred higher-fi playback (a parallel HQ capture
@@ -296,6 +320,12 @@ uv run hearsay live --seconds 60     # real pipeline -> live transcripts (on-dev
 
 ## Progress log
 
+- **2026-07-01 (session wrap — items 1 + 2 of the user's three-item focus done + merged; item 3 not started).** Dead-code
+  cleanup (`dfc4fbc`) and the single-stereo-WAV consolidation (`bf2aecb`) are both validated + merged to `main`; working
+  tree clean. Item 3 (post-meeting notes + action items, the Phase-4 LLM piece) is **NOT STARTED** — the design shape +
+  the four open decisions (LLM provider, what "accuracy refinement" means, action-item storage, trigger) are captured in
+  the "Pick up here" item 3 above; those decisions were put to the user but interrupted unanswered, so **ask them first**
+  when resuming. No `llm/` code exists yet. Also removed a stray untracked `src/hearsay/vad/` bytecode dir.
 - **2026-07-01 (WAV consolidation VALIDATED on-device + MERGED to `main`).** The 20:16 meeting confirmed the new format:
   one 2-channel `audio.wav` (Me=L peak 0.900, Them=R peak 0.482, no `them.wav`), plays back, and the refine produced
   correct speakers (`Speaker 1` + `Me`) off the stereo Them channel. Merged `feat/single-wav` -> `main` (`--no-ff`,
