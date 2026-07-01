@@ -28,7 +28,7 @@ from hearsay.transcript.capture import Capture, HelperCapture
 from hearsay.transcript.live import LiveThemProcessor
 from hearsay.transcript.live_me import LiveMeProcessor
 from hearsay.transcript.pipeline import TranscriptionPipeline
-from hearsay.transcript.recorder import ThemAudioRecorder
+from hearsay.transcript.recorder import MeetingAudioRecorder, ThemAudioRecorder
 from hearsay.transcript.refine import RefineError, rediarize_meeting
 
 _log = get_logger("hearsay.session")
@@ -135,11 +135,15 @@ class SessionManager:
                 if self._settings.diarization.refine
                 else None
             )
+            audio_recorder = (
+                MeetingAudioRecorder(folder / "audio.wav") if self._settings.audio.record else None
+            )
             return TranscriptionPipeline(
                 meeting_id=meeting_id,
                 database=self._db,
                 sink=sink,
                 them_recorder=them_recorder,
+                audio_recorder=audio_recorder,
                 them_processor=them_processor,
                 me_processor=me_processor,
             )

@@ -58,6 +58,16 @@ class DiarizationSettings(BaseModel):
     recognition_threshold: float = 0.6
 
 
+class AudioSettings(BaseModel):
+    """Full-meeting audio recording for in-browser playback."""
+
+    # Record a single timeline-accurate mixed (Me+Them) WAV per meeting (``<folder>/audio.wav``)
+    # so the UI can replay it with the transcript highlighting in sync. Independent of
+    # diarization.refine's Them-only them.wav. Privacy tradeoff: retains the full raw audio -- set
+    # False to opt out (delete-meeting also removes the folder).
+    record: bool = True
+
+
 class Settings(BaseSettings):
     """Application settings.
 
@@ -81,6 +91,7 @@ class Settings(BaseSettings):
     models_dir: Path | None = None  # default: <outputs>/models
     asr: ASRSettings = Field(default_factory=ASRSettings)
     diarization: DiarizationSettings = Field(default_factory=DiarizationSettings)
+    audio: AudioSettings = Field(default_factory=AudioSettings)
     helper_path: Path = Field(
         default_factory=lambda: (
             Path(__file__).resolve().parents[3] / "helper" / ".build" / "debug" / "hearsay-helper"

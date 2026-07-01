@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import wave
+from array import array
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -49,6 +51,24 @@ def _start(client: TestClient, title: str = "Sync") -> dict[str, object]:
     response = client.post("/api/meetings", json={"title": title}, headers=AUTH)
     assert response.status_code == 201, response.text
     return response.json()
+
+
+def _write_silence_wav(path: Path, *, seconds: float) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    frames = array("h", [0] * int(seconds * 16_000))
+    with wave.open(str(path), "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(16_000)
+        wav.writeframes(frames.tobytes())
+
+
+def _stopped_meeting_with_audio(client: TestClient, out_dir: Path, *, seconds: float = 0.1) -> str:
+    created = _start(client)
+    meeting_id = str(created["id"])
+    client.post(f"/api/meetings/{meeting_id}/stop", headers=AUTH)
+    _write_silence_wav(out_dir / str(created["folder"]) / "audio.wav", seconds=seconds)
+    return meeting_id
 
 
 def test_requires_bearer_token(client: TestClient) -> None:
@@ -128,6 +148,47 @@ def test_rediarize_without_recording_409(client: TestClient) -> None:
     # No audio was captured in this test, so no them.wav exists for re-diarize to read.
     response = client.post(f"/api/meetings/{meeting_id}/rediarize", headers=AUTH)
     assert response.status_code == 409
+
+
+def test_meeting_audio_serves_wav_with_query_token(client: TestClient, tmp_path: Path) -> None:
+    meeting_id = _stopped_meeting_with_audio(client, tmp_path / "out")
+    # An <audio> element cannot set an Authorization header -> the token rides in the query.
+    response = client.get(f"/api/meetings/{meeting_id}/audio?token={TOKEN}")
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "audio/wav"
+    assert len(response.content) > 44  # WAV header + samples
+
+
+def test_meeting_audio_accepts_bearer_header(client: TestClient, tmp_path: Path) -> None:
+    meeting_id = _stopped_meeting_with_audio(client, tmp_path / "out")
+    assert client.get(f"/api/meetings/{meeting_id}/audio", headers=AUTH).status_code == 200
+
+
+def test_meeting_audio_requires_token(client: TestClient, tmp_path: Path) -> None:
+    meeting_id = _stopped_meeting_with_audio(client, tmp_path / "out")
+    assert client.get(f"/api/meetings/{meeting_id}/audio").status_code == 401
+    assert client.get(f"/api/meetings/{meeting_id}/audio?token=wrong").status_code == 401
+
+
+def test_meeting_audio_404_without_recording(client: TestClient) -> None:
+    meeting_id = _start(client)["id"]
+    client.post(f"/api/meetings/{meeting_id}/stop", headers=AUTH)
+    assert client.get(f"/api/meetings/{meeting_id}/audio?token={TOKEN}").status_code == 404
+
+
+def test_meeting_audio_404_missing_meeting(client: TestClient) -> None:
+    missing = "00000000-0000-0000-0000-000000000000"
+    assert client.get(f"/api/meetings/{missing}/audio?token={TOKEN}").status_code == 404
+
+
+def test_meeting_audio_supports_range(client: TestClient, tmp_path: Path) -> None:
+    meeting_id = _stopped_meeting_with_audio(client, tmp_path / "out", seconds=0.2)
+    response = client.get(
+        f"/api/meetings/{meeting_id}/audio?token={TOKEN}", headers={"Range": "bytes=0-99"}
+    )
+    assert response.status_code == 206  # partial content, so the browser can seek
+    assert response.headers["content-range"].startswith("bytes 0-99/")
+    assert len(response.content) == 100
 
 
 def test_asr_models_lists_parakeet(client: TestClient) -> None:

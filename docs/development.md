@@ -12,13 +12,13 @@ How to set up, build, run, test, and troubleshoot the project from source.
 ## Setup
 
 ```sh
-make sync                                  # venv + base deps
-uv sync --extra asr                        # numpy, to pack PCM for the sidecars + read them.wav
+make sync                                  # venv + all deps (numpy is the only ML-adjacent dep)
 make swift-build                           # build hearsay-helper + the FluidAudio/ANE sidecars
 ```
 
-The base install (no extras) is enough for the API and the test suite. The `asr` extra adds
-numpy (the only remaining runtime dep the pipeline needs); all ASR + diarization runs in the
+`make sync` installs the full runtime: after the pivot the Python core runs no ML models, so
+numpy (to pack PCM for the sidecars, mix the playback WAV, and read them.wav in the refine) is
+the only ML-adjacent dependency, and it is a base dependency. All ASR + diarization runs in the
 Swift sidecars, whose CoreML models auto-download on first use.
 
 ## Make targets
@@ -99,14 +99,14 @@ The Phase 0 truth test: captures both streams for N seconds and writes `me.wav` 
 
 ## Models and dependency extras
 
+ASR, diarization, and voiceprints all run in the Swift sidecars on the ANE, so the Python core
+carries **no ML dependency**. numpy (packing PCM for the sidecars, mixing the playback WAV,
+reading `them.wav` in the refine) is the only ML-adjacent dep and is a **base** dependency, so
+`make sync` is the whole runtime. The one optional extra is:
+
 | Extra | Adds | For |
 |---|---|---|
-| `asr` | numpy (torch-free) | packing PCM for the sidecars + reading `them.wav` in the refine |
 | `bedrock` | boto3 | Phase 4 (cloud LLM, lazy-imported) |
-
-ASR, diarization, and voiceprints all run in the Swift sidecars on the ANE, so Python carries
-**no ML dependency** — the `asr` extra is now just numpy (the name is historical). The base
-install plus this one extra is the full runtime.
 
 **ASR + diarization models.** These live in the Swift sidecars (FluidAudio on the ANE): Parakeet
 TDT for ASR (`hearsay-asr` / `hearsay-me` / `hearsay-live`), pyannote community-1 as CoreML for
@@ -134,6 +134,12 @@ All config flows through `hearsay.config.Settings`. Common overrides (env vars a
 | ASR backend | `HEARSAY_ASR__BACKEND` | `parakeet` (the only backend) |
 | Post-meeting refine (records them.wav) | `HEARSAY_DIARIZATION__REFINE` | `true` |
 | Auto-refine at finalize | `HEARSAY_DIARIZATION__AUTO_REFINE` | `true` |
+| Record mixed audio for playback (records audio.wav) | `HEARSAY_AUDIO__RECORD` | `true` |
+
+**Playback.** When `audio.record` is on (default), each meeting records a single timeline-accurate
+mixed (Me+Them) `audio.wav`; the UI plays it back with the transcript highlighting in sync (click a
+line to seek). Privacy tradeoff: this retains the full raw audio — set `HEARSAY_AUDIO__RECORD=false`
+to opt out (delete-meeting removes the folder). Served by `GET /api/meetings/{id}/audio`.
 
 When run from source, all runtime data (recordings, the SQLite DB, downloaded models) lives
 under the repo's `outputs/` (gitignored). Override any path with the env vars above.

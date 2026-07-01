@@ -183,6 +183,14 @@ body {
   grid-template-columns: 56px 84px 1fr;
   gap: 12px;
   align-items: baseline;
+  padding: 3px 6px;
+  margin: 0 -6px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.line:hover {
+  background: var(--surface-2);
 }
 
 .line__time {
@@ -206,6 +214,21 @@ body {
 .line--partial {
   opacity: 0.6;
   font-style: italic;
+}
+
+.line--active {
+  background: var(--surface-2);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+.line--active .line__text {
+  color: var(--text);
+}
+
+.transcript__audio {
+  width: calc(100% - 32px);
+  margin: 8px 16px 0;
+  height: 34px;
 }
 
 .badge {
