@@ -811,6 +811,47 @@
         ]
       }
     },
+    "/api/meetings/{meeting_id}/audio": {
+      "get": {
+        "operationId": "get_meeting_audio_api_meetings__meeting_id__audio_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "meeting_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Meeting Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Meeting Audio",
+        "tags": [
+          "audio"
+        ]
+      }
+    },
     "/api/meetings/{meeting_id}/rediarize": {
       "post": {
         "description": "Re-diarize the recorded Them track (FluidAudio on the ANE) and return the new speakers.\n\nThe heavy diarization runs in the helper, off-loop. 404 if the meeting is\nunknown, 409 if it has no recorded ``them.wav`` (diarization.refine was off).",

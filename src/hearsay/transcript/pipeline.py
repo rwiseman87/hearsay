@@ -21,7 +21,7 @@ from hearsay.export import MeetingMeta, TranscriptLine, TranscriptSink
 from hearsay.helper.media_channel import AudioChunk, MediaChannel
 from hearsay.log import get_logger
 from hearsay.services import MeetingService
-from hearsay.transcript.recorder import ThemAudioRecorder
+from hearsay.transcript.recorder import MeetingAudioRecorder, ThemAudioRecorder
 
 if TYPE_CHECKING:
     from hearsay.transcript.live import LiveThemProcessor
@@ -39,6 +39,7 @@ class TranscriptionPipeline:
         database: Database,
         sink: TranscriptSink,
         them_recorder: ThemAudioRecorder | None = None,
+        audio_recorder: MeetingAudioRecorder | None = None,
         them_processor: LiveThemProcessor | None = None,
         me_processor: LiveMeProcessor | None = None,
     ) -> None:
@@ -46,6 +47,9 @@ class TranscriptionPipeline:
         self._db = database
         self._sink = sink
         self._them_recorder = them_recorder
+        # Mixed Me+Them WAV for playback (fed both streams by meeting time); Them-only recorder
+        # above is for the refine.
+        self._audio_recorder = audio_recorder
         # Each stream is handled by its live Swift sidecar (VAD/diarization + ASR on the ANE);
         # the pipeline only routes PCM to it. A stream with no processor (e.g. a missing sidecar
         # binary) is drained without transcription -- the Them track is still recorded for refine.
@@ -90,6 +94,8 @@ class TranscriptionPipeline:
                 )
             if stream is Stream.THEM and self._them_recorder is not None:
                 self._them_recorder.write(chunk.samples, t0_s=t0_s)
+            if self._audio_recorder is not None:  # both streams mix into the playback track
+                self._audio_recorder.write(chunk.samples, t0_s=t0_s, stream=stream)
             if processor is not None:
                 await processor.feed(chunk.samples, t0_s)
 
@@ -113,6 +119,8 @@ class TranscriptionPipeline:
                 await processor.close()
         if self._them_recorder is not None:
             self._them_recorder.close()
+        if self._audio_recorder is not None:
+            self._audio_recorder.close()  # write the mixed playback WAV
         # The live transcript was appended in the sidecars' emit order across two streams;
         # rewrite it once in timestamp order for the final, readable file.
         lines = await self._ordered_lines()

@@ -20,6 +20,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
+import numpy as np
+
 from hearsay.log import get_logger
 
 if TYPE_CHECKING:
@@ -97,8 +99,6 @@ class FluidAudioDiarizer:
         self._binary_path = binary_path
 
     def diarize(self, samples: Sequence[float], *, sample_rate: int) -> DiarizationResult:
-        import numpy as np  # noqa: PLC0415 (optional dep; only present when refining)
-
         if not self._binary_path.exists():
             raise RuntimeError(
                 f"hearsay-diarize not found at {self._binary_path}; build it with "

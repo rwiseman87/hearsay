@@ -16,11 +16,28 @@ models CC-BY-4.0, **ungated**) on the **Apple Neural Engine**, in Swift sidecars
 (`hearsay-helper`) is a lean PCM streamer; all AI is in the sidecars. The whole arc (F1-F4, steps 2/3a/3b, the VAD tune,
 the sidecar-death fix, the docs + CLAUDE.md reconciliation) is in the progress log below. [[hearsay-swift-pivot-direction]]
 
-**Pick up here → the pivot is DONE + merged (`main` @ `00672ef`, `make ci` green). No single next step is queued — the
-remaining roadmap items are parallel forks (see "Also still open" below): Phase 3 (calendar roster + OCR active-speaker),
-Phase 4 (LLM notes + Bedrock), Phase 5 (packaging), or the now-unblocked **all-Swift-backend decision** (Python is
-ML-free, so the parked "collapse the Python API/DB into Swift too" question is revisitable). Pick a direction. The
-pivot's own bullets (3a/3b/CLAUDE.md) below are retained as recently-completed history.**
+**Pick up here → branch `feat/audio-playback` has TWO post-pivot features stacked + committed, both code-complete +
+`make ci`-green but NOT yet validated on-device; validate them, then merge to `main`:**
+1. **In-browser audio playback** — `MeetingAudioRecorder` writes a mixed `audio.wav`; `GET /api/meetings/{id}/audio`
+   serves it; the `TranscriptView` player highlights the current line + seeks on click. Validate: run a meeting via
+   `serve`, stop, reopen it in the UI, confirm the `<audio>` player + line-highlight-as-it-plays + click-to-seek.
+2. **Live streaming "Me" captions** — `hearsay-me` now uses FluidAudio `StreamingUnifiedAsrManager`; live "Me" text
+   streams in as growing partials (dimmed) then snaps to the final. Validate: `serve` + a meeting, talk, watch your words
+   stream live. (Smoke-tested off-device: 70 partials + final on a recorded clip.)
+
+**Then:** merge `feat/audio-playback` -> `main` (like the pivot), then the **Them streaming** follow-up (same
+`StreamingUnifiedAsrManager` in `hearsay-live`; show partials speaker-less until the turn's diarizer speaker is assigned
+-- user OK'd deferring speaker attribution to turn-end) + the optional **level meter** (surface the helper's existing
+per-stream `level` RMS events to the UI, a cheap "it's picking up audio" indicator). Longer-horizon forks stay open:
+Phase 3 (calendar/OCR speaker naming), Phase 4 (LLM notes), Phase 5 (packaging), the all-Swift-backend decision, and the
+deferred higher-fi playback (a parallel HQ capture stream). The pivot itself is DONE + merged (`main` @ `00672ef`).
+
+**Two carry-over notes for whoever picks this up:** (a) the committed VAD-tune config `VadSegmentationConfig(minSilence
+Duration: 0.45, speechPadding: 0.2)` on `main`/earlier commits trips FluidAudio's debug `assert(speechPadding <=
+minSpeechDuration)` (default minSpeech 0.15) -> `hearsay-me` crashes on a **debug** build; the streaming-Me rewrite fixed
+it (raised minSpeechDuration to 0.2), so it rides in on the merge. (b) Me is NOT re-refined at stop, so switching Me to
+StreamingUnified made Me's saved finals StreamingUnified-quality (near-batch, a touch below pure batch) -- acceptable per
+the spike, but note it if Me accuracy regresses.
 - **(3a) Me → Swift — VALIDATED on-device (2026-07-01).** Ran a real meeting via `serve`: `hearsay-me` (streaming VAD +
   Parakeet) produced "Me" utterances, "working OK." Two caveats the user flagged: (i) turn-end boundaries a little iffy
   when a turn ends with a short/no pause, and (ii) some Parakeet ASR accuracy misses. Root cause of (i): `hearsay-me`
@@ -181,10 +198,8 @@ If ever fixed: join/await the in-flight ASR before teardown (note the cancel rel
 Docs: `README.md` + `docs/{architecture,pipeline,api,development}.md`. Design: the plan. IPC: `shared/protocol/ipc.md`.
 
 ```sh
-make sync                            # venv + base deps (Python 3.14)
-uv sync --extra asr                  # Silero VAD (onnxruntime) + numpy for PCM packing; ASR/diar/voiceprints are Swift sidecars
+make sync                            # venv + all deps (Python 3.14; numpy is the only ML-adjacent dep, base)
 make swift-build                     # build helper + sidecars: hearsay-{helper,diarize,asr,live,me} (skips FluidAudio's broken CLI)
-uv run hearsay fetch-models          # Silero VAD model (~2 MB)
 make ci                              # ruff + mypy --strict + pytest + swift selftest + audit + licenses
 cd web && npm ci && npm run build && cd ..   # build the React UI bundle (web/dist)
 make web-ci                          # web gate: npm ci + OpenAPI→TS drift + tsc + vite build
@@ -247,6 +262,47 @@ uv run hearsay live --model base --seconds 60   # real pipeline -> live transcri
 
 ## Progress log
 
+- **2026-07-01 (feature: live streaming "Me" captions — code-complete, smoke-tested, needs on-device validation).**
+  Rewrote the `hearsay-me` sidecar to use FluidAudio's **`StreamingUnifiedAsrManager`** (Parakeet streaming) instead of
+  batch `AsrManager`: the VAD still marks utterance boundaries, but the ASR now emits growing **partial** transcripts as
+  you speak (`getPartialTranscript()` per fed chunk) and a **final** at the utterance end (`finish()`). Chosen after a
+  spike A/B (`outputs/fluidaudio-spike`): StreamingUnified gives partials + near-batch finals from ONE engine (42x RT,
+  61 partials on the twitch clip) vs Nemotron/EOU which were weaker — so no need for a two-engine tandem. `LiveMeProcessor`
+  now forwards `kind:"partial"` (broadcast only) vs `kind:"final"` (persist + append + broadcast); the frontend already
+  renders + supersedes partials (leftover from the whisper VAD path), so **no frontend change**. Smoke-tested by framing a
+  recorded clip into the sidecar: 70 growing partials + 1 final, clean exit. +1 test (`test_partials_broadcast_but_not_
+  persisted`). **`make ci` green (137 tests, 64 mypy files, swift build + selftest).** NB: found + fixed a latent bug --
+  the tuned VAD config (`speechPadding 0.2` with default `minSpeechDuration 0.15`) trips FluidAudio's debug
+  `assert(speechPadding <= minSpeechDuration)`, crashing hearsay-me on a **debug** build; fixed by raising
+  `minSpeechDuration` to 0.2. (The *committed* VAD-tune config on `feat/audio-playback`/`main` has the same latent assert
+  -- only survives in release, where asserts compile out.) **NEXT: on-device -- run a meeting and watch live word-by-word
+  captions for your own voice.** Me isn't re-refined at stop, so Me finals are now StreamingUnified-quality (near-batch);
+  Them streaming (speaker-less-until-turn-end) is the follow-up.
+- **2026-07-01 (feature: in-browser audio playback with synced transcript highlighting — code-complete, needs on-device
+  validation).** The pivot's first post-merge feature (user-requested). New `MeetingAudioRecorder` records one
+  timeline-accurate mixed (Me+Them) `audio.wav` per meeting -- both streams are placed by meeting time and summed on
+  overlap, so sample N = second N (gaps + leading offset silence-padded); gated on the new `audio.record` setting
+  (default on). Served by `GET /api/meetings/{id}/audio` (Starlette `FileResponse` -> Range/`206` for seeking; auth via
+  `?token=` query param since an `<audio>` element can't set headers, or a bearer header). Frontend: `TranscriptView`
+  renders an `<audio controls>` for finalized meetings and highlights the current line as playback advances
+  (`.line--active`, auto-scrolled), click-a-line-to-seek. them.wav (Them-only, for the refine) is unchanged. +8 tests
+  (recorder mixing/timeline/padding + endpoint query-token/bearer/range/404); OpenAPI + TS types regenerated; `make ci`
+  green (64 mypy files, 134 pytest) + web tsc/build green. **Also, per user feedback (a hard rule): moved numpy to a
+  BASE dependency and hoisted every in-method `import numpy` to module level** (recorder, live_base, refine, offline,
+  parakeet_backend); dropped the now-empty `asr` extra + the last `--extra asr`/`fetch-models` doc remnants. See
+  [[no-imports-in-functions]]. **Validated functional on-device (player + highlight + seek work). User flagged the
+  playback was "very bad quality"; diagnosed from the recorded WAV -- not clipping (0%), just very quiet (peak 0.16,
+  RMS 0.016; the raw them.wav is equally quiet, so it's a low capture level). Fixed: `MeetingAudioRecorder.close` now
+  peak-normalizes the mix to 0.9 (~5.5x on that meeting). User then reported it was **choppy** -- diagnosed from the
+  WAV: audio.wav had **7.9% internal zeros / 530 silent gaps (up to 11 ms)** while them.wav was smooth (0.1%). Cause:
+  placing every chunk by its own `round(t0_s*rate)` scatters gaps because host_ts jitters a few ms/chunk (the total
+  span still matched them.wav, so it's zero-mean jitter, not drift). Fix: `MeetingAudioRecorder.write` now takes the
+  `stream` and writes each stream **contiguously** (like them.wav), re-anchoring to t0_s only when it diverges past
+  `_RESYNC_GAP` (0.2 s = a real delivery gap). NEXT: record a fresh meeting to confirm smooth + audible playback.
+  Remaining ceiling: capture is 16 kHz mono (resampled for the ASR sidecars in `Resampler.swift`), so playback is
+  telephone-band. Higher fidelity would need the helper to capture a **parallel higher-rate track** just for playback
+  (a new IPC stream + Swift capture-graph change; the 16 kHz ASR path stays untouched). Offered 48 kHz-stereo / 32 kHz /
+  16 kHz-stereo-only -- **user deferred it 2026-07-01 ("just leave it for now")**, so 16 kHz mono stands.**
 - **2026-07-01 (3b — deleted the Silero/`vad/` fallback; Python is now ML-dep-free).** With 3a validated, removed the
   entire Python VAD/ASR live path: deleted the `vad/` package (Silero, Segmenter), gutted `TranscriptionPipeline` down to
   a thin router (dropped `_emit`/`_transcribe`/`_context`/`_clean_text`/`_persist` + the `asr`/`vad_factory`/`vad`/

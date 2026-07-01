@@ -13,13 +13,13 @@ dependencies = [
     "sqlalchemy[asyncio]>=2.0",
     "aiosqlite>=0.20",
     "alembic>=1.13",
+    # numpy packs PCM for the Swift sidecars (live_base.feed), mixes the playback WAV, and reads
+    # them.wav in the refine. ASR + diarization run in the sidecars, so this is the only ML-adjacent
+    # dep -- a base dependency (not an extra) so it imports at module level everywhere.
+    "numpy>=2.2",
 ]
 
 [project.optional-dependencies]
-# ASR (Parakeet) + diarization (pyannote community-1) + voiceprints all run in the Swift
-# helpers on the ANE -- no Python ML dep. This extra is just numpy, used to pack PCM for the
-# sidecars (live_base.feed) and to read them.wav in the refine.
-asr = ["numpy>=2.2"]
 bedrock = ["boto3>=1.35"]
 
 [project.scripts]

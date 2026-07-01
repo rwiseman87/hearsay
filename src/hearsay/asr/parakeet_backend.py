@@ -24,6 +24,8 @@ import threading
 from collections.abc import Sequence
 from pathlib import Path
 
+import numpy as np
+
 from hearsay.asr.base import SAMPLE_RATE, ASRSegment
 from hearsay.log import get_logger
 
@@ -70,8 +72,6 @@ class ParakeetBackend:
         self, samples: Sequence[float], *, language: str | None = None, prompt: str | None = None
     ) -> list[ASRSegment]:
         # Parakeet has no whisper-style decoding prompt; language is auto (v3 is multilingual).
-        import numpy as np  # noqa: PLC0415 (optional dep; only present with the asr extra)
-
         pcm = np.ascontiguousarray(np.asarray(samples, dtype=np.float32))
         with self._lock:
             proc = self._ensure_process()

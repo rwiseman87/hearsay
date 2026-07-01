@@ -1,18 +1,20 @@
+import AVFoundation
 import FluidAudio
 import Foundation
 
-// Live "Me" processor: FluidAudio streaming VAD + Parakeet ASR on the ANE.
+// Live "Me" processor: FluidAudio streaming VAD + streaming Parakeet ASR on the ANE.
 //
-// The Python core streams the local-mic ("Me") PCM in; this runs the streaming VAD to find
-// speech boundaries and, as each utterance ends, slices that span's audio and transcribes it
-// (Parakeet), emitting a segment. So Swift owns VAD + ASR for Me -- the core does no chunking.
-// Me is always the local speaker, so there is no diarization and no speaker label.
+// The Python core streams the local-mic ("Me") PCM in. The VAD marks utterance boundaries; a
+// StreamingUnifiedAsrManager transcribes each utterance, emitting growing *partial* transcripts
+// as you speak and a *final* when the utterance closes. Me is always the local speaker, so there
+// is no diarization and no speaker label.
 //
 //   stdin  (binary): repeated [UInt32 LE n][n x Float32 LE]  -- Me audio, 16 kHz mono
-//   stdout (text):   {"text":"...","start_s":f,"end_s":f}\n  -- one per finalized utterance
-// EOF on stdin -> flush the trailing frame, close any open utterance, exit. Logs to stderr.
+//   stdout (text):   {"kind":"partial|final","text":...,"start_s":f,"end_s":f}\n
+// EOF on stdin -> finalize any open utterance, exit. Logs to stderr.
 
 struct Segment: Codable {
+    let kind: String
     let text: String
     let startS: Double
     let endS: Double
@@ -41,38 +43,76 @@ func readExactly(_ count: Int) -> Data? {
     return buffer
 }
 
+/// Wrap 16 kHz mono Float samples in an AVAudioPCMBuffer (what the streaming ASR consumes).
+func makeBuffer(_ samples: [Float]) -> AVAudioPCMBuffer {
+    let format = AVAudioFormat(
+        commonFormat: .pcmFormatFloat32, sampleRate: 16_000, channels: 1, interleaved: false)!
+    let buffer = AVAudioPCMBuffer(
+        pcmFormat: format, frameCapacity: AVAudioFrameCount(max(1, samples.count)))!
+    buffer.frameLength = AVAudioFrameCount(samples.count)
+    samples.withUnsafeBufferPointer { src in
+        if let base = src.baseAddress {
+            buffer.floatChannelData![0].update(from: base, count: samples.count)
+        }
+    }
+    return buffer
+}
+
 let vad: VadManager
 var vadState: VadStreamState
-let asr: AsrManager
+let asr: StreamingUnifiedAsrManager
 do {
     vad = try await VadManager()
     vadState = await vad.makeStreamState()
-    let asrModels = try await AsrModels.downloadAndLoad(version: .v3)
-    asr = AsrManager(config: .default, models: asrModels)
+    asr = StreamingUnifiedAsrManager()
+    try await asr.loadModels()
     note("models loaded")
 } catch {
     note("failed to load models: \(error)")
     exit(1)
 }
 
-// All Me audio so far, so a finalized utterance can be sliced out by its [start, end] samples.
+// All Me audio so far (sample indices from the VAD reference into it). `fedUpTo` tracks how much
+// of the current utterance we have handed to the streaming ASR.
 var audio: [Float] = []
-var speechStart: Int?  // sample index of the in-progress utterance, nil between utterances
+var speechStart: Int?  // utterance start sample, nil between utterances
+var fedUpTo = 0
 
 @MainActor
-func transcribeAndEmit(_ start: Int, _ end: Int) async {
-    let s = max(0, start)
-    let e = min(audio.count, end)
-    guard e > s else { return }
-    let clip = Array(audio[s..<e])
+func streamPartial(start: Int, feed: [Float], endSample: Int) async {
     do {
-        var decoder = try TdtDecoderState()
-        let result = try await asr.transcribe(clip, decoderState: &decoder)
-        let text = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { return }
-        emit(Segment(text: text, startS: Double(s) / 16_000, endS: Double(e) / 16_000))
+        if !feed.isEmpty {
+            try await asr.appendAudio(makeBuffer(feed))
+            try await asr.processBufferedAudio()
+        }
+        let text = await asr.getPartialTranscript().trimmingCharacters(in: .whitespacesAndNewlines)
+        if !text.isEmpty {
+            emit(
+                Segment(
+                    kind: "partial", text: text,
+                    startS: Double(start) / 16_000, endS: Double(endSample) / 16_000))
+        }
     } catch {
-        note("transcribe failed: \(error)")
+        note("stream partial failed: \(error)")
+    }
+}
+
+@MainActor
+func finalizeUtterance(start: Int, end: Int, feed: [Float]) async {
+    do {
+        if !feed.isEmpty {
+            try await asr.appendAudio(makeBuffer(feed))
+            try await asr.processBufferedAudio()
+        }
+        let text = (try await asr.finish()).trimmingCharacters(in: .whitespacesAndNewlines)
+        if !text.isEmpty {
+            emit(
+                Segment(
+                    kind: "final", text: text,
+                    startS: Double(start) / 16_000, endS: Double(end) / 16_000))
+        }
+    } catch {
+        note("finalize failed: \(error)")
     }
 }
 
@@ -83,9 +123,10 @@ var pending: [Float] = []
 
 // Tuned for live meeting speech vs FluidAudio's defaults (0.75 s / 0.1 s): close an utterance
 // after a shorter silence so quick turn-ends finalize promptly, and pad the speech edges more so
-// Parakeet sees full word onsets/tails. minSilence (0.45) > 2x padding (0.2), so consecutive
-// utterances never overlap.
-let vadConfig = VadSegmentationConfig(minSilenceDuration: 0.45, speechPadding: 0.2)
+// the ASR sees full word onsets/tails. minSpeechDuration is raised to 0.2 to keep FluidAudio's
+// invariant speechPadding <= minSpeechDuration (a debug assert otherwise).
+let vadConfig = VadSegmentationConfig(
+    minSpeechDuration: 0.2, minSilenceDuration: 0.45, speechPadding: 0.2)
 
 while true {
     guard let header = readExactly(4) else { break }
@@ -98,31 +139,46 @@ while true {
     while pending.count >= frame {
         let chunk = Array(pending.prefix(frame))
         pending.removeFirst(frame)
-        guard let result = try? await vad.processStreamingChunk(chunk, state: vadState, config: vadConfig)
+        guard
+            let result = try? await vad.processStreamingChunk(
+                chunk, state: vadState, config: vadConfig)
         else {
             note("vad failed")
             continue
         }
         vadState = result.state
-        guard let event = result.event else { continue }
-        if event.kind == .speechStart {
-            speechStart = event.sampleIndex
-        } else if let start = speechStart {  // speechEnd
-            await transcribeAndEmit(start, event.sampleIndex)
-            speechStart = nil
+        if let event = result.event {
+            if event.kind == .speechStart {
+                speechStart = event.sampleIndex
+                fedUpTo = event.sampleIndex
+                try? await asr.reset()
+            } else if let start = speechStart {  // speechEnd
+                let feed = fedUpTo < audio.count ? Array(audio[fedUpTo..<audio.count]) : []
+                fedUpTo = audio.count
+                await finalizeUtterance(start: start, end: event.sampleIndex, feed: feed)
+                speechStart = nil
+            }
+        }
+        if let start = speechStart {  // still in speech -> stream a partial for the new audio
+            let feed = fedUpTo < audio.count ? Array(audio[fedUpTo..<audio.count]) : []
+            fedUpTo = audio.count
+            await streamPartial(start: start, feed: feed, endSample: audio.count)
         }
     }
 }
 
-// Flush: run the trailing partial frame (it pads internally), then close any open utterance.
+// Flush: run the trailing partial frame, then finalize any open utterance.
 if !pending.isEmpty,
     let result = try? await vad.processStreamingChunk(pending, state: vadState, config: vadConfig)
 {
     vadState = result.state
     if let event = result.event, event.kind == .speechStart {
         speechStart = event.sampleIndex
+        fedUpTo = event.sampleIndex
+        try? await asr.reset()
     }
 }
 if let start = speechStart {
-    await transcribeAndEmit(start, audio.count)
+    let feed = fedUpTo < audio.count ? Array(audio[fedUpTo..<audio.count]) : []
+    await finalizeUtterance(start: start, end: audio.count, feed: feed)
 }

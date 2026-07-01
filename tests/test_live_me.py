@@ -6,6 +6,7 @@ The subprocess I/O (spawn/feed/read/close) is validated on-device; here we drive
 
 from __future__ import annotations
 
+import json
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from pathlib import Path
@@ -80,3 +81,37 @@ async def test_handle_persists_me_with_offset(database: Database) -> None:
     assert all(s.cluster_id is None for s in me)
     assert clusters == []
     assert len(sink.lines) == 2  # each utterance appended to the transcript
+
+
+async def test_partials_broadcast_but_not_persisted(database: Database) -> None:
+    async with database.session() as session:
+        meeting = await MeetingService(session).create(
+            title="M", folder="m", started_at=datetime.now(UTC)
+        )
+    sink = _FakeSink()
+    broadcaster = Broadcaster()
+    processor = LiveMeProcessor(
+        binary_path=Path("unused"),
+        meeting_id=meeting.id,
+        database=database,
+        broadcaster=broadcaster,
+        sink=sink,
+    )
+
+    with broadcaster.subscribe() as queue:
+        await processor._handle(
+            {"kind": "partial", "text": "hello wor", "start_s": 1.0, "end_s": 1.5}
+        )
+        await processor._handle(
+            {"kind": "final", "text": "hello world", "start_s": 1.0, "end_s": 2.0}
+        )
+        events = [json.loads(queue.get_nowait()) for _ in range(queue.qsize())]
+
+    # Both stream to the UI; only the final is persisted + appended to the transcript.
+    assert [e["kind"] for e in events] == ["partial", "final"]
+    async with database.session() as session:
+        segments, total = await MeetingService(session).list_segments(
+            meeting.id, page=1, page_size=100
+        )
+    assert total == 1 and segments[0].text == "hello world"
+    assert len(sink.lines) == 1  # only the final was appended
