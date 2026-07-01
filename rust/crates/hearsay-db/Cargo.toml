@@ -1,0 +1,6 @@
+[package]
+name = "hearsay-db"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
