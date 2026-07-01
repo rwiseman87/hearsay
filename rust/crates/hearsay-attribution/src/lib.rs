@@ -1,9 +1,12 @@
-//! Speaker attribution — pure logic, unit-tested in isolation.
+//! Speaker attribution — pure logic (no ML, no I/O), unit-tested in isolation.
 //!
-//! Cluster -> name binding by weighted-majority vote over sparse hints (a single wrong hint must
-//! never flip a stable binding); cross-meeting voiceprint cosine matching; manual labels lock a
-//! binding (votes cannot override).
-//!
-//! Rust port of `src/hearsay/services/speakers.py` and the diarization mapping helpers.
-//!
-//! Scaffold: see `docs/architecture-cross-platform.md`.
+//! Rust port of the pure attribution logic in the Python core: cross-meeting voiceprint matching
+//! (`hearsay.diarization.voiceprint`) and the diarization mapping helpers `order_speakers` /
+//! `assign_segment_speaker` (`hearsay.diarization.offline`). See
+//! `docs/architecture-cross-platform.md`.
+
+pub mod mapping;
+pub mod voiceprint;
+
+pub use mapping::{assign_segment_speaker, order_speakers, SpeakerTurn};
+pub use voiceprint::{centroid_from_bytes, centroid_to_bytes, cosine, match_identity};
