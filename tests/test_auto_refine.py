@@ -125,9 +125,7 @@ async def test_auto_refine_error_does_not_break_stop(
     settings = Settings(output_dir=tmp_path / "out")
     meeting = await _finalized_candidate(database, settings)
 
-    async def boom(
-        meeting_id: UUID, *, database: Database, settings: Settings
-    ) -> RefineResult:
+    async def boom(meeting_id: UUID, *, database: Database, settings: Settings) -> RefineResult:
         raise RuntimeError("diarizer exploded")
 
     monkeypatch.setattr(session_mod, "rediarize_meeting", boom)

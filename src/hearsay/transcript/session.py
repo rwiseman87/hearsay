@@ -236,9 +236,7 @@ class SessionManager:
         if not them_wav.exists():
             return
         try:
-            result = await rediarize_meeting(
-                meeting.id, database=self._db, settings=self._settings
-            )
+            result = await rediarize_meeting(meeting.id, database=self._db, settings=self._settings)
             _log.info(
                 "auto-refined meeting %s at finalize: %d speakers, %d segments relabeled",
                 meeting.id,

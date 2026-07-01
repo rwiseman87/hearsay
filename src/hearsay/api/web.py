@@ -68,8 +68,6 @@ def mount_web(app: FastAPI, web_dir: Path) -> None:
     async def index(request: Request) -> HTMLResponse:
         context: AppContext = request.app.state.ctx
         nonce = secrets.token_urlsafe(16)
-        html = _render_index(
-            index_file.read_text(encoding="utf-8"), context.session_token, nonce
-        )
+        html = _render_index(index_file.read_text(encoding="utf-8"), context.session_token, nonce)
         headers = {"Content-Security-Policy": _csp(nonce), **_SECURITY_HEADERS}
         return HTMLResponse(html, headers=headers)

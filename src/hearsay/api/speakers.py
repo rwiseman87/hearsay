@@ -61,9 +61,7 @@ async def rediarize(meeting_id: UUID, context: ContextDep) -> Page[SpeakerRead]:
         if await MeetingService(session).get(meeting_id) is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="meeting not found")
     try:
-        await rediarize_meeting(
-            meeting_id, database=context.database, settings=context.settings
-        )
+        await rediarize_meeting(meeting_id, database=context.database, settings=context.settings)
     except RefineError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     async with context.database.session() as session:

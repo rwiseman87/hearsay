@@ -29,8 +29,9 @@ test: swift-build pytest swift-test ## Run all tests (Python + Swift; build firs
 typecheck: ## Type-check (mypy --strict)
 	uv run mypy src scripts
 
-lint: ## Lint (ruff)
+lint: ## Lint (ruff check + format check)
 	uv run ruff check
+	uv run ruff format --check
 
 fmt: ## Format (ruff)
 	uv run ruff format
