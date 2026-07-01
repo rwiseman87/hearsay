@@ -2,8 +2,11 @@
 
 The sidecar (FluidAudio streaming diarization + Parakeet on the ANE) does the diarization,
 ASR, and turn assembly; this just streams the Them PCM in and persists + broadcasts the
-labeled segments it emits -- no VAD, no online clustering, no fusion. The post-meeting refine
-still re-diarizes the whole track for final accuracy + cross-meeting recognition.
+labeled segments it emits -- no VAD, no online clustering, no fusion. It emits growing
+``partial`` transcripts of the in-progress speech (speaker-less -- the diarizer only assigns a
+speaker at turn end) and a ``final`` per finalized turn (with the speaker). Partials stream to
+the UI only; finals are persisted + appended to ``transcript.md``. The post-meeting refine still
+re-diarizes the whole track for final accuracy + cross-meeting recognition.
 """
 
 from __future__ import annotations
@@ -43,12 +46,27 @@ class LiveThemProcessor(LiveSidecarProcessor):
         self._cluster_ids: dict[int, UUID] = {}
 
     async def _handle(self, seg: dict[str, Any]) -> None:
+        kind = "partial" if str(seg.get("kind", "final")) == "partial" else "final"
         offset = self._offset_s or 0.0
-        ordinal = int(seg["speaker"]) + 1  # sidecar speakers are 0-based
-        label = f"Speaker {ordinal}"
         text = str(seg["text"])
         start_s = float(seg["start_s"]) + offset
         end_s = float(seg["end_s"]) + offset
+        # A partial is the in-progress turn before the diarizer has assigned a speaker: stream it to
+        # the UI speaker-less ("Them"), don't persist. The frontend supersedes it with the final.
+        if kind == "partial":
+            self._broadcaster.publish(
+                TranscriptEvent(
+                    kind="partial",
+                    stream=Stream.THEM,
+                    speaker_label="Them",
+                    text=text,
+                    start_s=start_s,
+                    end_s=end_s,
+                ).model_dump_json()
+            )
+            return
+        ordinal = int(seg["speaker"]) + 1  # sidecar speakers are 0-based
+        label = f"Speaker {ordinal}"
         cluster_id = await self._cluster_for(ordinal)
         async with self._db.session() as session:
             await MeetingService(session).add_segment(

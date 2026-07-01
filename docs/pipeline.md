@@ -92,9 +92,13 @@ frame), and reads the NDJSON segments it emits on stdout. All VAD, diarization, 
 inside the sidecar on the ANE — the Python side never touches a model.
 
 - **Them → `hearsay-live`** (`LiveThemProcessor`). FluidAudio's streaming diarizer + Parakeet:
-  as each speaker turn finalizes, the sidecar transcribes it and emits
-  `{speaker, text, start_s, end_s}`. The processor maps the 0-based `speaker` to a 1-based
-  `Speaker N` label, creating a `Cluster` row per ordinal on first sight.
+  as each speaker turn finalizes, the sidecar transcribes it (batch Parakeet) and emits a
+  `{kind:"final", speaker, text, start_s, end_s}` turn. The processor maps the 0-based `speaker`
+  to a 1-based `Speaker N` label, creating a `Cluster` row per ordinal on first sight. On top of
+  that a `StreamingUnifiedAsrManager` transcribes the in-progress (not-yet-finalized) audio into
+  growing **partial** transcripts, re-anchored to each finalized turn boundary. Partials are
+  **speaker-less** (`speaker` = -1, broadcast as `Them`) — the diarizer only assigns a speaker at
+  turn end, so attribution is deferred to the final.
 - **Me → `hearsay-me`** (`LiveMeProcessor`). FluidAudio streaming VAD (utterance boundaries) +
   streaming Parakeet (`StreamingUnifiedAsrManager`): it emits growing **partial** transcripts as
   you speak and a **final** when the utterance closes, each `{kind, text, start_s, end_s}`. Me is
@@ -115,9 +119,10 @@ re-diarizes; it is the only raw-audio retention and can be turned off.
 
 Each sidecar **final** is fanned out three ways by its processor's `_handle`: broadcast to the
 WebSocket with its resolved label, persisted as a `Segment` row (DB, Them carries a
-`cluster_id`), and appended to `transcript.md`. `hearsay-me` also emits **partials** as you speak
-— those are broadcast to the WebSocket only (never persisted); the frontend renders them dimmed
-and supersedes them with the final.
+`cluster_id`), and appended to `transcript.md`. Both sidecars also emit **partials** as speech
+arrives (`hearsay-me` per utterance, `hearsay-live` per in-progress Them turn) — those are
+broadcast to the WebSocket only (never persisted); the frontend renders them dimmed, one per
+stream, and supersedes each with its stream's next final.
 
 ### 6. Finalize: ordered rewrite
 
