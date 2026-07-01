@@ -1,6 +1,7 @@
-.PHONY: help install sync dev pytest swift-build swift-test test typecheck lint fmt codegen web-install web-typecheck web-build web-codegen-check web-ci audit licenses ci build package notarize clean serve
+.PHONY: help install sync dev pytest swift-build swift-test rust-build rust-test rust-lint rust-fmt test typecheck lint fmt codegen web-install web-typecheck web-build web-codegen-check web-ci audit licenses ci build package notarize clean serve
 
 PKG := helper
+RUST := rust
 FIXTURES := shared/fixtures/frames.jsonl
 # Copyleft families we refuse (open-license gate; see CLAUDE.md).
 DENY_LICENSES := GPL;AGPL;LGPL;MPL;EUPL;SSPL;CC-BY-SA
@@ -24,16 +25,29 @@ swift-build: ## Build the Swift helper executables (explicit products skip Fluid
 swift-test: ## Run the Swift cross-language self-test against the golden fixtures
 	swift run --package-path $(PKG) hearsay-helper selftest $(FIXTURES)
 
-test: swift-build pytest swift-test ## Run all tests (Python + Swift; build first so the integration test runs)
+rust-build: ## Build the Rust workspace
+	cargo build --manifest-path $(RUST)/Cargo.toml
+
+rust-test: ## Run the Rust workspace tests (cargo test)
+	cargo test --manifest-path $(RUST)/Cargo.toml
+
+rust-lint: ## Lint Rust (clippy with warnings denied + rustfmt --check)
+	cargo clippy --manifest-path $(RUST)/Cargo.toml --all-targets -- -D warnings
+	cargo fmt --manifest-path $(RUST)/Cargo.toml --check
+
+rust-fmt: ## Format Rust (rustfmt)
+	cargo fmt --manifest-path $(RUST)/Cargo.toml
+
+test: swift-build pytest swift-test rust-test ## Run all tests (Python + Swift + Rust; build first so the integration test runs)
 
 typecheck: ## Type-check (mypy --strict)
 	uv run mypy src scripts
 
-lint: ## Lint (ruff check + format check)
+lint: rust-lint ## Lint (ruff + clippy + format checks)
 	uv run ruff check
 	uv run ruff format --check
 
-fmt: ## Format (ruff)
+fmt: rust-fmt ## Format (ruff + rustfmt)
 	uv run ruff format
 
 codegen: ## Regenerate IPC fixtures + OpenAPI schema + web TS types
@@ -69,7 +83,7 @@ build package notarize: ## Distribution targets (Phase 5; deferred for internal 
 	@echo "$@: deferred until there is a decision to distribute (see plan Phase 5)"
 
 clean: ## Remove build artifacts
-	rm -rf $(PKG)/.build
+	rm -rf $(PKG)/.build $(RUST)/target
 
 serve: ## Serve the application
 	uv run hearsay serve
