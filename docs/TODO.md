@@ -223,7 +223,7 @@ make ci                              # ruff + mypy --strict + pytest + swift sel
 cd web && npm ci && npm run build && cd ..   # build the React UI bundle (web/dist)
 make web-ci                          # web gate: npm ci + OpenAPI→TS drift + tsc + vite build
 uv run hearsay serve                 # loopback API + WS + the built UI (prints URL + ?token= link)
-uv run hearsay live --model base --seconds 60   # real pipeline -> live transcripts (on-device validation)
+uv run hearsay live --seconds 60     # real pipeline -> live transcripts (on-device validation)
 ```
 
 - Python core: `src/hearsay/`  ·  Swift helper: `helper/`  ·  web UI: `web/` (Vite + React + TS).

@@ -246,17 +246,6 @@ body {
   border-color: var(--them);
 }
 
-.model-picker {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 13px;
-}
-
-.model-picker span {
-  color: var(--muted);
-}
-
 button,
 input,
 select {

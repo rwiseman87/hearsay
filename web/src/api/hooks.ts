@@ -3,8 +3,6 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "./client";
 import { queryKeys } from "./queryKeys";
 import type {
-  ASRSelect,
-  ASRStatus,
   MeetingCreate,
   MeetingRead,
   PageIdentity,
@@ -108,20 +106,5 @@ export function useRediarize(meetingId: string) {
       qc.invalidateQueries({ queryKey: queryKeys.meetings.all });
       qc.invalidateQueries({ queryKey: queryKeys.identities.all });
     },
-  });
-}
-
-export function useAsrStatus() {
-  return useQuery({
-    queryKey: queryKeys.asr.status,
-    queryFn: () => api.get<ASRStatus>("/api/asr/models"),
-  });
-}
-
-export function useSetAsrModel() {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: (body: ASRSelect) => api.put<ASRStatus>("/api/asr/model", body),
-    onSuccess: (data) => qc.setQueryData(queryKeys.asr.status, data),
   });
 }

@@ -118,40 +118,6 @@ so a segment's `start_s` maps straight onto `audio.currentTime`). Auth accepts t
 header. Supports `Range` requests (`206 Partial Content`) for seeking. `404` if the meeting is
 unknown or was recorded with `audio.record` off.
 
-## ASR status
-
-ASR runs in the Swift `hearsay-asr` sidecar (FluidAudio Parakeet TDT on the ANE). There is one
-bundled model and one backend, so this surface is informational — kept as a seam for a future
-alternate backend.
-
-### `GET /api/asr/models` — current selection + available models
-
-```json
-// 200 OK
-{
-  "backend": "parakeet",
-  "model": "large-v3",
-  "models": [
-    { "name": "parakeet-tdt-v3", "label": "Parakeet TDT v3 (ANE)", "installed": true }
-  ]
-}
-```
-
-(`model` echoes the `asr.model` setting, which the Parakeet backend ignores.)
-
-### `PUT /api/asr/model` — update the selection
-
-Updates process settings; would take effect for the **next** meeting. With a single backend and
-one bundled model this is effectively a no-op today.
-
-```sh
-curl -X PUT http://127.0.0.1:8137/api/asr/model \
-  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
-  -d '{"model": "parakeet-tdt-v3"}'
-```
-
-Body: `{ "model": "<name>", "backend": "parakeet" (optional) }`. Returns the updated `ASRStatus`.
-
 ## Speakers and identities
 
 A diarized **Them** speaker is a *cluster*; renaming it binds the cluster to a cross-meeting

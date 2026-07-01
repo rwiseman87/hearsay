@@ -12,7 +12,4 @@ export const queryKeys = {
     all: ["identities"] as const,
     list: (page: number, pageSize: number) => ["identities", "list", page, pageSize] as const,
   },
-  asr: {
-    status: ["asr", "status"] as const,
-  },
 } as const;

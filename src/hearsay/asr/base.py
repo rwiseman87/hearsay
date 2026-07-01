@@ -1,9 +1,8 @@
 """ASR backend seam.
 
-One concrete backend ships per install extra (whisper.cpp by default, mlx opt-in),
-all behind :class:`ASRBackend` so the active model/backend is swappable from config.
-``transcribe`` is synchronous and CPU/GPU-bound; the pipeline runs it off the event
-loop with ``asyncio.to_thread``.
+The post-meeting refine re-transcribes each diarizer turn through an :class:`ASRBackend`
+(FluidAudio Parakeet on the ANE, via the ``hearsay-asr`` sidecar). ``transcribe`` is
+synchronous; the refine runs it off the event loop with ``asyncio.to_thread``.
 """
 
 from __future__ import annotations
@@ -32,14 +31,8 @@ class ASRBackend(Protocol):
     @property
     def model(self) -> str: ...
 
-    def transcribe(
-        self, samples: Sequence[float], *, language: str | None = None, prompt: str | None = None
-    ) -> list[ASRSegment]:
-        """Transcribe 16 kHz mono float samples in [-1, 1] into ordered segments.
-
-        ``prompt`` is optional preceding text used as a decoding hint for cross-utterance
-        continuity (names/terms); backends without prompt support ignore it.
-        """
+    def transcribe(self, samples: Sequence[float]) -> list[ASRSegment]:
+        """Transcribe 16 kHz mono float samples in [-1, 1] into ordered segments."""
         ...
 
     def close(self) -> None:

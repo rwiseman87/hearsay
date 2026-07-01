@@ -1,7 +1,7 @@
 """Diarization clusters + cross-meeting identities.
 
-Routers and the fusion engine stay thin and delegate here. Each method is a single
-logical write; ``bind`` is a two-step write (get-or-create identity, then point the
+The speakers router and the post-meeting refine stay thin and delegate here. Each method is
+a single logical write; ``bind`` is a two-step write (get-or-create identity, then point the
 cluster at it) wrapped in one commit.
 """
 

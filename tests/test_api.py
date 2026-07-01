@@ -191,19 +191,6 @@ def test_meeting_audio_supports_range(client: TestClient, tmp_path: Path) -> Non
     assert len(response.content) == 100
 
 
-def test_asr_models_lists_parakeet(client: TestClient) -> None:
-    body = client.get("/api/asr/models", headers=AUTH).json()
-    assert body["backend"] == "parakeet"
-    assert [model["name"] for model in body["models"]] == ["parakeet-tdt-v3"]
-
-
-def test_asr_switch_model(client: TestClient) -> None:
-    response = client.put("/api/asr/model", json={"model": "base"}, headers=AUTH)
-    assert response.status_code == 200
-    assert response.json()["model"] == "base"
-    assert client.get("/api/asr/models", headers=AUTH).json()["model"] == "base"
-
-
 def test_ws_rejects_bad_token(client: TestClient) -> None:
     meeting_id = _start(client)["id"]
     url = f"/ws/meetings/{meeting_id}?token=wrong"

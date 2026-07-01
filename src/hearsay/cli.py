@@ -116,18 +116,13 @@ async def _run_live(settings: Settings, seconds: float, *, synthetic: bool) -> i
 @main.command()
 @click.option("--seconds", default=60.0, show_default=True, help="Recording duration.")
 @click.option(
-    "--model", default=None, help="Override the ASR model for this run (e.g. 'base' for speed)."
-)
-@click.option(
     "--synthetic",
     is_flag=True,
     help="Use the helper's tone source (glue smoke test; no real audio).",
 )
-def live(seconds: float, model: str | None, synthetic: bool) -> None:
+def live(seconds: float, synthetic: bool) -> None:
     """Run the real capture -> transcribe pipeline and print live transcripts (validation)."""
     settings = Settings()
-    if model:
-        settings.asr.model = model
     try:
         code = asyncio.run(_run_live(settings, seconds, synthetic=synthetic))
     except KeyboardInterrupt:

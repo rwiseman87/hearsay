@@ -85,8 +85,6 @@ uv run hearsay live --seconds 60                # join a call first
 uv run hearsay live --synthetic --seconds 4     # glue smoke: tone source, no mic/TCC, no real audio
 ```
 
-- `--model` sets `asr.model`, but the default Parakeet backend ships a single bundled model and
-  ignores it, so the flag has no effect today (kept for a future alternate backend).
 - `--synthetic` uses the helper's tone source — useful to exercise the wiring without
   capturing real audio.
 - Output lands in `outputs/recordings/<date>_live-validation/transcript.md`. `Ctrl-C` stops early.
@@ -111,8 +109,8 @@ reading `them.wav` in the refine) is the only ML-adjacent dep and is a **base** 
 **ASR + diarization models.** These live in the Swift sidecars (FluidAudio on the ANE): Parakeet
 TDT for ASR (`hearsay-asr` / `hearsay-me` / `hearsay-live`), pyannote community-1 as CoreML for
 the offline diarizer (`hearsay-diarize`). Their CoreML models are ungated and auto-download +
-compile on first use — no fetch step, no HF token. There is no meaningful ASR picker: Parakeet
-ships one bundled model, which `GET /api/asr/models` reports for the UI.
+compile on first use — no fetch step, no HF token. Parakeet ships a single bundled model, so
+there is no model picker or ASR config.
 
 **Diarization.** The live Them stream is labeled Speaker 1..N by the `hearsay-live` sidecar. The
 post-meeting refine (`HEARSAY_DIARIZATION__REFINE`, default on) re-diarizes the whole Them track
@@ -130,8 +128,6 @@ All config flows through `hearsay.config.Settings`. Common overrides (env vars a
 |---|---|---|
 | Database URL | `DATABASE_URL` | `sqlite+aiosqlite:///<repo>/outputs/db/hearsay.db` |
 | Output dir | `HEARSAY_OUTPUT_DIR` | `<repo>/outputs/recordings` |
-| Models dir | `HEARSAY_MODELS_DIR` | `<repo>/outputs/models` |
-| ASR backend | `HEARSAY_ASR__BACKEND` | `parakeet` (the only backend) |
 | Post-meeting refine (records them.wav) | `HEARSAY_DIARIZATION__REFINE` | `true` |
 | Auto-refine at finalize | `HEARSAY_DIARIZATION__AUTO_REFINE` | `true` |
 | Record mixed audio for playback (records audio.wav) | `HEARSAY_AUDIO__RECORD` | `true` |

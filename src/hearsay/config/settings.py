@@ -7,31 +7,11 @@ from pathlib import Path
 from pydantic import AliasChoices, BaseModel, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from hearsay.enums import ASRBackendKind, Environment
+from hearsay.enums import Environment
 
 # Local-first run-from-source layout: recordings, the SQLite DB, and models all live
 # under the repo's outputs/ (gitignored). Packaging (Phase 5) can repoint these.
 _OUTPUTS_DIR = Path(__file__).resolve().parents[3] / "outputs"
-
-
-class ASRSettings(BaseModel):
-    """ASR backend + model selection (swappable at runtime; see model store)."""
-
-    # Default Parakeet (FluidAudio on the ANE) -- no whisper.cpp/Metal, which could enter an
-    # unrecoverable error state and silently stop transcribing. whisper.cpp/mlx stay available.
-    backend: ASRBackendKind = ASRBackendKind.PARAKEET
-    # A known model name (e.g. ``large-v3-turbo``) the backend resolves/downloads, or an
-    # absolute path. Applies to whisper.cpp/mlx; Parakeet uses its own bundled model.
-    model: str = "large-v3"
-    language: str | None = None  # None = auto-detect
-    # Optional decoding knobs (whisper.cpp), off by default: an on-device A/B showed the model
-    # choice -- not these -- drove accuracy, and beam search slows live transcription. Kept
-    # config-gated for future tuning. beam_size > 1 enables beam search (1 = greedy).
-    beam_size: int = 1
-    # When on, feed the previous final's text as a decoding prompt so names/terms stay consistent
-    # across utterances; reset after a silence gap so a wrong prompt cannot snowball.
-    condition_on_previous_text: bool = False
-    context_reset_gap_s: float = 8.0
 
 
 class DiarizationSettings(BaseModel):
@@ -88,8 +68,6 @@ class Settings(BaseSettings):
     )
     output_dir: Path = Field(default_factory=lambda: _OUTPUTS_DIR / "recordings")
     capture_debug_dir: Path = Field(default_factory=lambda: _OUTPUTS_DIR / "capture-debug")
-    models_dir: Path | None = None  # default: <outputs>/models
-    asr: ASRSettings = Field(default_factory=ASRSettings)
     diarization: DiarizationSettings = Field(default_factory=DiarizationSettings)
     audio: AudioSettings = Field(default_factory=AudioSettings)
     helper_path: Path = Field(
@@ -111,6 +89,4 @@ class Settings(BaseSettings):
     def _fill_derived_paths(self) -> Settings:
         if self.database_url is None:
             self.database_url = f"sqlite+aiosqlite:///{_OUTPUTS_DIR / 'db' / 'hearsay.db'}"
-        if self.models_dir is None:
-            self.models_dir = _OUTPUTS_DIR / "models"
         return self
