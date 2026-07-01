@@ -4,10 +4,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from pydantic import AliasChoices, BaseModel, Field, SecretStr, model_validator
+from pydantic import AliasChoices, BaseModel, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from hearsay.enums import ASRBackendKind, DiarizationBackendKind, Environment
+from hearsay.enums import ASRBackendKind, Environment
 
 # Local-first run-from-source layout: recordings, the SQLite DB, and models all live
 # under the repo's outputs/ (gitignored). Packaging (Phase 5) can repoint these.
@@ -17,9 +17,11 @@ _OUTPUTS_DIR = Path(__file__).resolve().parents[3] / "outputs"
 class ASRSettings(BaseModel):
     """ASR backend + model selection (swappable at runtime; see model store)."""
 
-    backend: ASRBackendKind = ASRBackendKind.WHISPERCPP
-    # A known model name (e.g. ``large-v3-turbo``) the backend resolves/downloads,
-    # or an absolute path to a local model file.
+    # Default Parakeet (FluidAudio on the ANE) -- no whisper.cpp/Metal, which could enter an
+    # unrecoverable error state and silently stop transcribing. whisper.cpp/mlx stay available.
+    backend: ASRBackendKind = ASRBackendKind.PARAKEET
+    # A known model name (e.g. ``large-v3-turbo``) the backend resolves/downloads, or an
+    # absolute path. Applies to whisper.cpp/mlx; Parakeet uses its own bundled model.
     model: str = "large-v3"
     language: str | None = None  # None = auto-detect
     # Optional decoding knobs (whisper.cpp), off by default: an on-device A/B showed the model
@@ -33,47 +35,27 @@ class ASRSettings(BaseModel):
 
 
 class DiarizationSettings(BaseModel):
-    """Speaker diarization: torch-free ONNX embeddings + online clustering (Them only)."""
+    """Speaker diarization: post-meeting refine + cross-meeting voiceprint recognition.
 
-    enabled: bool = True
-    backend: DiarizationBackendKind = DiarizationBackendKind.ONNX
-    # A curated model name (see the embedding-model registry) or an absolute .onnx path.
-    model: str = "wespeaker-cam++-lm"
-    model_path: Path | None = None  # default: <models_dir>/<model filename>
-    # Skip embedding utterances shorter than this: sub-second turns carry too little signal
-    # for a reliable voiceprint, so they stay generic "Them" rather than risk mis-attribution.
-    min_embed_ms: int = 1000
-    # Cosine similarity at/above which an utterance joins an existing speaker vs starting a
-    # new one. Clean-speech reference: same-speaker ~0.84, different ~0.2-0.33. Real-call
-    # audio compresses that margin -- tune from the per-utterance cosines the diarizer logs.
-    cluster_threshold: float = 0.5
-    # Post-meeting re-diarization is the DEFAULT speaker path (2026-06-30): pyannote relabels the
-    # Them track far better than the live online clusterer (on-device: 7 phantom speakers -> 2).
-    # When on, the Them track is recorded to <folder>/them.wav so `hearsay rediarize` / the "Refine
-    # speakers" button can run pyannote offline; needs the `diarization-pyannote` extra + HF login.
-    # Privacy tradeoff: this retains raw audio by default -- set False to opt out (delete-meeting
-    # also removes the folder).
+    All inference runs in Swift on the ANE: live "Them" labels come from the hearsay-live
+    sidecar, and the post-meeting refine (the hearsay-diarize helper) re-labels the whole
+    Them track + emits per-speaker voiceprints. Nothing here selects a model.
+    """
+
+    # Post-meeting re-diarization is the DEFAULT speaker path: FluidAudio (on the ANE) relabels
+    # the whole Them track far better than the live sidecar's streaming labels. When on, the Them
+    # track is recorded to <folder>/them.wav so `hearsay rediarize` / the "Refine speakers" button
+    # can run the offline diarizer. Privacy tradeoff: this retains raw audio by default -- set
+    # False to opt out (delete-meeting also removes the folder).
     refine: bool = True
-    # pyannote pipeline + auth for the refine pass (used only when `refine` is on and the
-    # `diarization-pyannote` extra is installed). hf_token defaults to None -> use the
-    # huggingface CLI login; device "cpu" is safe on Apple Silicon ("mps" is faster, opt-in).
-    pyannote_model: str = "pyannote/speaker-diarization-community-1"
-    hf_token: SecretStr | None = None
-    refine_device: str = "cpu"
+    # Run the offline refine automatically when a meeting finalizes (vs. only on the manual
+    # "Refine speakers" button / `hearsay rediarize`). Cheap now that the diarizer is FluidAudio
+    # on the ANE (~seconds), so every meeting ends with accurate labels. Gated on `refine`
+    # (needs them.wav); a missing recording or a diarizer error never blocks the stop.
+    auto_refine: bool = True
     # Cosine at/above which a refined speaker's voiceprint is auto-matched to a person named
     # in a previous meeting. Conservative (a wrong cross-meeting match is worse than none).
     recognition_threshold: float = 0.6
-
-
-class VADSettings(BaseModel):
-    """Silero VAD thresholds + segmentation hysteresis."""
-
-    threshold: float = 0.5
-    min_speech_ms: int = 250
-    min_silence_ms: int = 600
-    # Cadence for live partial transcripts during ongoing speech (0 disables partials).
-    partial_ms: int = 800
-    model_path: Path | None = None  # default: <models_dir>/silero_vad.onnx
 
 
 class Settings(BaseSettings):
@@ -98,7 +80,6 @@ class Settings(BaseSettings):
     capture_debug_dir: Path = Field(default_factory=lambda: _OUTPUTS_DIR / "capture-debug")
     models_dir: Path | None = None  # default: <outputs>/models
     asr: ASRSettings = Field(default_factory=ASRSettings)
-    vad: VADSettings = Field(default_factory=VADSettings)
     diarization: DiarizationSettings = Field(default_factory=DiarizationSettings)
     helper_path: Path = Field(
         default_factory=lambda: (
@@ -121,6 +102,4 @@ class Settings(BaseSettings):
             self.database_url = f"sqlite+aiosqlite:///{_OUTPUTS_DIR / 'db' / 'hearsay.db'}"
         if self.models_dir is None:
             self.models_dir = _OUTPUTS_DIR / "models"
-        if self.vad.model_path is None:
-            self.vad.model_path = self.models_dir / "silero_vad.onnx"
         return self

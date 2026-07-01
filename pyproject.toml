@@ -16,15 +16,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Default transcription path: whisper.cpp ASR + Silero VAD on onnxruntime (torch-free).
-asr = ["pywhispercpp>=1.5", "onnxruntime>=1.27", "numpy>=2.2"]
-# Default diarization: torch-free + ungated -- a speaker-embedding ONNX model run on the
-# onnxruntime we already use (Silero VAD), with kaldi-native-fbank for the exact reference
-# features the model expects (no torch), + our own online clustering. All Apache/CC-BY.
-diarization = ["onnxruntime>=1.27", "numpy>=2.2", "kaldi-native-fbank>=1.22"]
-# Opt-in max-accuracy diarizer: pulls torch + needs a gated HF model/token (see docs).
-diarization-pyannote = ["pyannote-audio>=4.0"]
-accel = ["mlx-whisper>=0.4"]
+# ASR (Parakeet) + diarization (pyannote community-1) + voiceprints all run in the Swift
+# helpers on the ANE -- no Python ML dep. This extra is just numpy, used to pack PCM for the
+# sidecars (live_base.feed) and to read them.wav in the refine.
+asr = ["numpy>=2.2"]
 bedrock = ["boto3>=1.35"]
 
 [project.scripts]
@@ -72,13 +67,6 @@ exclude = ["src/hearsay/db/migrations/"]
 
 [[tool.mypy.overrides]]
 module = [
-    "pywhispercpp.*",
-    "pyannote.*",
-    "torch.*",
-    "onnxruntime.*",
-    "kaldi_native_fbank.*",
-    "mlx_whisper.*",
-    "silero_vad.*",
     "numpy.*",
 ]
 ignore_missing_imports = true

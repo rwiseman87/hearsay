@@ -1,32 +1,24 @@
-"""Speaker diarization: torch-free speaker embeddings + (Phase 3) online clustering.
+"""Speaker diarization: offline whole-track diarization + cross-meeting voiceprints.
 
-The :class:`SpeakerEmbedder` seam turns one Them utterance into a fixed-dimension
-voiceprint. The default backend runs a license-clean ONNX model (wespeaker CAM++) on
-the onnxruntime we already use for VAD, with kaldi-native-fbank for the exact reference
-features -- no torch, no gated model. The fusion engine clusters these embeddings into
-stable "Speaker N" identities (next increment).
+All inference runs in the Swift ``hearsay-diarize`` helper (FluidAudio's pyannote
+community-1 CoreML diarizer on the Apple Neural Engine -- no torch, no gated model).
+:class:`FluidAudioDiarizer` shells out to it and returns a :class:`DiarizationResult`:
+the speaker turns plus each speaker's mean voiceprint, which the post-meeting refine
+stores on a cluster and matches against people named in prior meetings.
 """
 
 from __future__ import annotations
 
-from hearsay.diarization.base import SpeakerEmbedder
-from hearsay.diarization.manager import (
-    KNOWN_EMBEDDING_MODELS,
-    EmbeddingModel,
-    build_embedder,
-    download_embedding_model,
-    embedding_model_path,
-    resolve_embedding_model,
-)
 from hearsay.diarization.offline import (
+    DiarizationResult,
+    FluidAudioDiarizer,
     OfflineDiarizer,
-    PyannoteDiarizer,
     SpeakerTurn,
     assign_segment_speaker,
     build_offline_diarizer,
+    diarize_helper_path,
     order_speakers,
 )
-from hearsay.diarization.onnx_embedder import OnnxSpeakerEmbedder
 from hearsay.diarization.voiceprint import (
     centroid_from_bytes,
     centroid_to_bytes,
@@ -34,21 +26,15 @@ from hearsay.diarization.voiceprint import (
 )
 
 __all__ = [
-    "KNOWN_EMBEDDING_MODELS",
-    "EmbeddingModel",
+    "DiarizationResult",
+    "FluidAudioDiarizer",
     "OfflineDiarizer",
-    "OnnxSpeakerEmbedder",
-    "PyannoteDiarizer",
-    "SpeakerEmbedder",
     "SpeakerTurn",
     "assign_segment_speaker",
-    "build_embedder",
     "build_offline_diarizer",
     "centroid_from_bytes",
     "centroid_to_bytes",
-    "download_embedding_model",
-    "embedding_model_path",
+    "diarize_helper_path",
     "match_identity",
     "order_speakers",
-    "resolve_embedding_model",
 ]

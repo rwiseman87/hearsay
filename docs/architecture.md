@@ -1,33 +1,44 @@
 # Architecture
 
-This document explains the implementation that exists today (the Phase 0 capture spike, the
-Phase 1 backend MVP, and the Phase 2 diarization layer): the process boundaries, why the
-system is split the way it is, and what each Python package does. For the real-time data flow
-see [pipeline.md](pipeline.md); for the HTTP/WebSocket surface see [api.md](api.md).
+This document explains the implementation that exists today: the process boundaries, why the
+system is split the way it is, and what each Python package does. The audio-AI (ASR +
+diarization) has moved out of Python into Swift sidecars running FluidAudio on the Apple Neural
+Engine; Python orchestrates capture, persistence, and the API but runs no ML models itself. For
+the real-time data flow see [pipeline.md](pipeline.md); for the HTTP/WebSocket surface see
+[api.md](api.md).
 
-## Why three processes
+## Why this split
 
-Two hard constraints shaped the design:
+Three constraints shaped the design:
 
 1. **Capturing mic and system audio as separate channels gives "Me vs Them" for free.**
    The only remaining hard problem is naming the *multiple* remote speakers inside the
-   system-audio stream (later phases).
+   system-audio stream.
 2. **Real-time audio capture cannot be done reliably from Python.** PyObjC cannot safely
-   run Core Audio realtime callbacks. So a thin **Swift helper** owns native capture and
-   everything else lives in **Python**.
+   run Core Audio realtime callbacks. So a thin **Swift helper** owns native capture.
+3. **On-device ASR + diarization belong on the Apple Neural Engine.** The earlier GPU path
+   (whisper.cpp on Metal, pyannote on MPS) fought for the GPU and could wedge. FluidAudio runs
+   both on the ANE, so the audio-AI lives in **Swift sidecars** the Python core feeds over
+   stdio — leaving Python free of heavyweight ML dependencies.
 
 ```mermaid
 flowchart TB
-  subgraph Helper["Swift helper (helper/)"]
+  subgraph Helper["Swift capture helper (helper/)"]
     Tap["SystemAudioTap\nglobal-except-self process tap"]
     Mic["MicCapture\nAVAudioEngine"]
     Rs["Resampler -> 16 kHz mono\n+ one monotonic host_ts clock"]
     Tap --> Rs
     Mic --> Rs
   end
+  subgraph Side["Swift sidecars (FluidAudio / ANE)"]
+    SL["hearsay-live (Them: diarize + Parakeet)"]
+    SMe["hearsay-me (Me: VAD + Parakeet)"]
+    SD["hearsay-diarize (offline refine)"]
+    SA["hearsay-asr (Parakeet, refine re-transcribe)"]
+  end
   subgraph Core["Python core (src/hearsay/)"]
     Sup["helper/ supervisor + channels"]
-    Pipe["transcript/ pipeline\nVAD -> ASR (+ diarize Them)"]
+    Pipe["transcript/ pipeline\nfeeds sidecars, persists results"]
     DB[("SQLite\nmeetings + segments\n+ clusters + identities")]
     MD["transcript.md\n+ meeting.json"]
     API["api/ FastAPI + WebSocket\n127.0.0.1 + token"]
@@ -36,16 +47,18 @@ flowchart TB
     Pipe --> API
   end
   Rs -- "media.sock (binary PCM)\ncontrol.sock (NDJSON)" --> Sup
+  Pipe <-- "stdin PCM / stdout NDJSON" --> Side
   Core -- "spawns + supervises" --> Helper
 ```
 
 The **core spawns and supervises the helper** (not the other way around), so capture
-lifecycle and backpressure live in one place and survive helper restarts.
+lifecycle and backpressure live in one place and survive helper restarts. The core likewise
+spawns the sidecars as plain subprocesses and streams audio to them over pipes.
 
 ## Process boundary: the IPC contract
 
-Two Unix-domain sockets in a per-session run directory, **owned (listened) by the core**
-so they outlive helper restarts; the helper connects as a client.
+Two Unix-domain sockets in a per-session run directory carry capture, **owned (listened) by
+the core** so they outlive helper restarts; the helper connects as a client.
 
 - **`media.sock`** — binary framed PCM, helper -> core only. A fixed 28-byte little-endian
   header + payload. Both streams are multiplexed by a `stream` byte (0 = "me", 1 = "them").
@@ -61,16 +74,22 @@ Swift `HearsayIPC.FrameCodec` and the Python `hearsay.helper.protocol`. Golden f
 `shared/fixtures/frames.jsonl` pin the contract; both languages validate against them in
 CI, so the two codecs cannot drift.
 
+The **sidecars** use a simpler private contract, not the socket IPC: PCM on stdin, one JSON
+object per emitted segment on stdout (`hearsay-asr` is request/response; `hearsay-diarize` is a
+one-shot WAV-in / JSON-out). The Python owners live in `transcript/live_base.py`,
+`asr/parakeet_backend.py`, and `diarization/offline.py`.
+
 ## The Python core, package by package
 
 ### `config/` — the single configuration source
 
 `settings.py` is one `pydantic-settings` object loaded once and injected via DI. Every
-tunable lives here: paths (`output_dir`, `models_dir`, `helper_path`),
-the database URL, the server host/port, and nested `asr` / `vad` / `diarization` groups. A
-model validator fills derived paths (e.g. the default SQLite URL and the Silero model path) so
-the rest of the code never computes them ad hoc. Reads `HEARSAY_`-prefixed env vars (nested via
-`__`, e.g. `HEARSAY_ASR__MODEL`, `HEARSAY_DIARIZATION__CLUSTER_THRESHOLD`).
+tunable lives here: paths (`output_dir`, `models_dir`, `helper_path`), the database URL, the
+server host/port, and nested `asr` / `diarization` groups. A model validator fills derived
+paths (e.g. the default SQLite URL) so the rest of the code never computes them ad hoc. Reads
+`HEARSAY_`-prefixed env vars (nested via `__`, e.g. `HEARSAY_ASR__BACKEND`,
+`HEARSAY_DIARIZATION__REFINE`). Sidecar binaries are located relative to `helper_path`
+(siblings in the same build dir).
 
 ### `enums.py`, `log.py` — shared primitives
 
@@ -95,9 +114,9 @@ typed async streams:
   end-of-stream.
 - `supervisor.py` — `HelperSupervisor` creates the run dir, listens on both sockets, spawns
   the helper, awaits its `hello`, and tears everything down cleanly.
-- `capture_debug.py` — the Phase 0 truth-test harness behind `hearsay capture-debug`:
-  drains both streams for N seconds and writes `me.wav` / `them.wav` with drift + skew
-  diagnostics. This is how Me/Them separation was first proven on-device.
+- `capture_debug.py` — the truth-test harness behind `hearsay capture-debug`: drains both
+  streams for N seconds and writes `me.wav` / `them.wav` with drift + skew diagnostics. This
+  is how Me/Them separation was first proven on-device.
 
 ### `db/` + `models/` — persistence
 
@@ -119,6 +138,8 @@ PostgreSQL by swapping the URL.
   `ordinal` → "Speaker N", optional `identity_id`, a manual-lock flag, a `centroid` voiceprint
   BLOB, unique `(meeting_id, ordinal)`) and `Identity` (a cross-meeting person, unique
   `display_name`). Binding a cluster relabels its segments and the identity is suggested next time.
+  The voiceprint centroid is written by the refine (from FluidAudio's per-speaker embedding) and
+  matched against locked, named clusters from other meetings.
 - `db/migrations/` — Alembic (async `env.py`, `render_as_batch` for SQLite; batch FK constraints
   are named). `alembic check` confirms the models match the latest revision.
 
@@ -127,8 +148,8 @@ PostgreSQL by swapping the URL.
 Pydantic request/response models, kept separate from ORM models so the HTTP surface is
 validated and decoupled from storage: `MeetingCreate`/`MeetingRead`, `SegmentRead` (carries the
 resolved `speaker_label` + its `cluster_id`), the generic paginated `Page[T]`, the
-`TranscriptEvent` (the WebSocket payload), the ASR picker schemas (`ASRStatus`, `ASRSelect`),
-and the speaker schemas (`SpeakerRead`, `SpeakerRename`, `IdentityRead`).
+`TranscriptEvent` (the WebSocket payload), the ASR status schema, and the speaker schemas
+(`SpeakerRead`, `SpeakerRename`, `IdentityRead`).
 
 ### `services/` — business logic
 
@@ -136,8 +157,11 @@ and the speaker schemas (`SpeakerRead`, `SpeakerRename`, `IdentityRead`).
 stay thin): create, get, paginated list, add-segment, finalize, cascade delete, plus the
 meeting-folder slug helper. Each method is a single logical write with one commit.
 `SpeakerService` owns clusters + identities: create/list clusters (identity eager-loaded),
-assign a segment to a cluster, `bind_cluster` (rename → get-or-create the identity, lock it, and
-bulk-relabel that cluster's segments), and list identities for suggestions.
+`bind_cluster` (rename → get-or-create the identity, lock it, and bulk-relabel that cluster's
+segments), `known_voiceprints` (locked named centroids from other meetings, for cross-meeting
+recognition), and `apply_turn_diarization` (the refine's atomic rebuild: drop the coarse Them
+clusters + segments, create `Speaker 1..N`, write one segment per diarizer turn, carry manual
+names forward, and store each speaker's centroid).
 
 ### `transcript/` — orchestration
 
@@ -146,62 +170,56 @@ The heart of a running meeting.
 - `capture.py` — the `Capture` protocol (`start`/`stop`/`media`) and `HelperCapture`, which
   wraps `HelperSupervisor`: spawn the helper, send `start_capture`, expose the media channel,
   and tear down. The protocol is the seam that lets tests run the lifecycle without a helper.
-- `pipeline.py` — `TranscriptionPipeline`: one consumer task per stream that segments audio
-  (VAD), transcribes utterances off the event loop, diarizes finalized **Them** utterances, and
-  fans results out to DB + `transcript.md` + WebSocket. See [pipeline.md](pipeline.md).
-- `diarizer.py` — `MeetingDiarizer` (one per meeting): wraps the speaker embedder + the online
-  clusterer + cluster-row persistence behind one async `resolve(utterance)` the pipeline calls
-  for Them finals (embed off-loop → assign → label → `cluster_id`); `bind(ordinal, name)` relays
-  a live rename. Me is never diarized.
+- `pipeline.py` — `TranscriptionPipeline`: one consumer task per stream. It feeds each stream's
+  PCM to its live sidecar (Them → `hearsay-live`, Me → `hearsay-me`) and, for a stream without a
+  sidecar, falls back to the in-process VAD + ASR path. See [pipeline.md](pipeline.md).
+- `live_base.py` — `LiveSidecarProcessor`: the shared plumbing for a streaming sidecar (spawn,
+  feed PCM on stdin, read NDJSON on stdout, drain the finalized tail on close). Subclasses
+  implement `_handle` to persist + broadcast one emitted segment.
+- `live.py` — `LiveThemProcessor`: owns `hearsay-live`, maps each emitted turn's 0-based speaker
+  to a `Speaker N` label + `Cluster` row, persists + broadcasts it.
+- `live_me.py` — `LiveMeProcessor`: owns `hearsay-me`, persists + broadcasts each Me utterance
+  (always labeled `Me`, never diarized).
+- `recorder.py` — `ThemAudioRecorder`: streams the Them track to `<folder>/them.wav` (only when
+  `diarization.refine` is on) plus an offset sidecar, so the post-meeting refine can map turns
+  back onto meeting time.
+- `refine.py` — `rediarize_meeting`: the offline re-diarization. Runs `FluidAudioDiarizer` over
+  the whole `them.wav`, re-transcribes each turn with Parakeet, rebuilds the Them transcript one
+  segment per turn, carries manual renames forward, and stores + matches voiceprints. Runs
+  automatically at stop and on demand.
 - `broadcast.py` — `Broadcaster`, an in-process pub/sub that fans JSON event strings to
   active WebSocket subscribers.
 - `session.py` — `MeetingSession` (one meeting: capture + pipeline + broadcaster) and
   `SessionManager` (owns the single active session; lock-guarded start/stop/delete +
-  `relabel_speaker`, which binds in the DB and propagates the name to the live clusterer). The
-  manager injects the ASR/VAD/sink/embedder factories, so the real ML stack is built on demand
-  (the embedder factory degrades to `None` when no model is installed) and tests inject fakes.
+  `relabel_speaker`, and `_maybe_auto_refine` after a stop). The manager injects the
+  capture/sink factories and builds both streams' live processors, so the lifecycle is testable
+  without the helper.
 
-### `vad/` — voice activity detection
+### `asr/` — speech recognition (used by the refine)
 
-- `base.py` — the `VAD` protocol (score a fixed-size frame) and `Segmenter`, the pure,
-  heavily unit-tested state machine that turns frame scores into utterances using start/stop
-  hysteresis and emits periodic partial snapshots.
-- `silero.py` — the real `SileroVAD`, running the MIT Silero ONNX model directly on
-  `onnxruntime` (no torch). Includes the pinned, integrity-checked model download.
+Live ASR runs inside the `hearsay-live` / `hearsay-me` sidecars; this Python backend exists for
+the **post-meeting refine**, which re-transcribes each diarizer turn.
 
-### `asr/` — speech recognition
+- `base.py` — the `ASRBackend` protocol (`transcribe(samples) -> [ASRSegment]` + `close()`) and
+  the `ASRSegment` type.
+- `parakeet_backend.py` — `ParakeetBackend`, the only ASR backend: owns a persistent
+  `hearsay-asr` subprocess (FluidAudio Parakeet TDT v3 on the ANE), round-tripping each
+  utterance over stdio (`<uint32 LE n>` + float32 samples → `{"text": ...}`).
+- `manager.py` — `build_asr()` constructs it; `available_models()` reports the single bundled
+  Parakeet model (there is no picker — Parakeet ships one model).
 
-- `base.py` — the `ASRBackend` protocol (`transcribe(samples) -> [ASRSegment]`) and the
-  `ASRSegment` type.
-- `whispercpp_backend.py` — the default backend (pywhispercpp / whisper.cpp, Metal + CoreML,
-  torch-free).
-- `mlx_backend.py` — an opt-in Apple-MLX backend (behind the `accel` extra; pulls torch).
-- `manager.py` — `build_asr()` selects the backend from settings; `resolve_model()` maps a
-  friendly name (`large-v3-turbo`) to a backend-specific identifier (a GGML name vs an MLX
-  Hugging Face repo); `available_models()` powers the picker.
+### `diarization/` — offline diarization + voiceprints
 
-### `diarization/` — speaker embeddings (Them voiceprints)
+All inference runs in the Swift `hearsay-diarize` helper on the ANE; Python parses its output.
 
-Torch-free by design, reusing the `onnxruntime` already vendored for VAD.
-
-- `base.py` — the `SpeakerEmbedder` protocol (`embed(samples) -> L2-normalized vector`) plus
-  `dim` / `model_id` (the model id tags stored centroids so a model change is detected).
-- `features.py` — `compute_fbank()`: 80-dim Kaldi filterbank via `kaldi-native-fbank` (the same
-  C++ extractor the models were trained with, so features are bit-identical — no torch) + the
-  per-utterance mean normalization the models expect.
-- `onnx_embedder.py` — `OnnxSpeakerEmbedder`: runs the embedding ONNX model on the CPU execution
-  provider (fbank `[1, T, 80]` in, a `[1, dim]` voiceprint out).
-- `manager.py` — the curated, license-vetted model registry (default **wespeaker CAM++_LM**,
-  CC-BY-4.0, ungated, 512-d), pinned + sha256-checked downloads, and `build_embedder()`. pyannote
-  stays an opt-in alternative behind the `diarization-pyannote` extra (pulls torch + a gated model).
-
-### `fusion/` — speaker clustering
-
-- `clustering.py` — `OnlineSpeakerClusterer`: **pure stdlib (no numpy)**, so it is dependency-free
-  and exhaustively unit-tested. Each Them voiceprint is matched to the nearest speaker by cosine
-  to a running centroid; at/above `threshold` it joins (updating the centroid), else it starts a
-  new speaker. "Speaker N" ordinals follow first appearance; `bind()` manually names + locks a
-  speaker; `add_seed()` recognizes a returning person from a prior meeting's voiceprint.
+- `offline.py` — the `OfflineDiarizer` protocol and `FluidAudioDiarizer`: shells out to
+  `hearsay-diarize` (FluidAudio's pyannote community-1 CoreML model, ANE) with a temp WAV and
+  parses its JSON into a `DiarizationResult` (`SpeakerTurn`s + a per-speaker voiceprint). Also
+  the pure helpers `order_speakers` (label → "Speaker N" by first appearance) and
+  `assign_segment_speaker` (max-overlap, offset-shifted). Torch-free and ungated — no HF token.
+- `voiceprint.py` — pure-stdlib centroid (de)serialization (`centroid_to_bytes` /
+  `centroid_from_bytes`) and `match_identity` (nearest named centroid by cosine, above a
+  threshold), used by the refine for cross-meeting recognition.
 
 ### `export/` — output sink
 
@@ -218,36 +236,44 @@ Torch-free by design, reusing the `onnxruntime` already vendored for VAD.
   and the routers.
 - `security.py` / `deps.py` — Host + Origin allowlist, bearer-token checks, and Annotated DI
   dependencies (session, manager, token).
-- `meetings.py`, `asr.py`, `speakers.py`, `ws.py` — the meetings CRUD router, the ASR model
-  picker, the speakers router (list speakers + rename → identity + list identities), and the
-  live-transcript WebSocket.
+- `meetings.py`, `asr.py`, `speakers.py`, `ws.py` — the meetings CRUD router (incl. the
+  "Refine speakers" endpoint), the ASR status router, the speakers router (list speakers +
+  rename → identity + list identities), and the live-transcript WebSocket.
 
 ### `cli.py` — the `hearsay` command
 
 `serve` (run the API), `live` (run the real pipeline and print transcripts — the on-device
-validation harness), `fetch-models` (download the Silero VAD + speaker-embedding models), and
-`capture-debug` (the Phase 0 raw-audio dump).
+validation harness), `rediarize` (run the offline refine on a meeting), and `capture-debug`
+(the raw-audio dump). There is no `fetch-models` step — the Swift sidecars auto-download their
+CoreML models (Parakeet, the diarizer) on first use.
 
 ## Seams (build one, defer the rest)
 
 Each protocol below has exactly one real implementation today plus injectable test doubles.
-This is what keeps the MVP small while the plausible futures stay cheap.
+This is what keeps the app small while the plausible futures stay cheap.
 
-| Seam | Protocol | Today | Deferred |
+| Seam | Protocol / owner | Today | Deferred / fallback |
 |---|---|---|---|
 | Capture | `transcript.capture.Capture` | `HelperCapture` (Swift helper) | test fakes |
-| VAD | `vad.base.VAD` | `SileroVAD` (onnxruntime) | whisper.cpp built-in VAD |
-| ASR | `asr.base.ASRBackend` | `WhisperCppBackend` | `MlxBackend` (built, opt-in), SpeechAnalyzer |
-| Embedder | `diarization.base.SpeakerEmbedder` | `OnnxSpeakerEmbedder` (onnxruntime) | pyannote (opt-in extra), voiceprint enrollment |
+| Live Them | `LiveSidecarProcessor` | `LiveThemProcessor` (`hearsay-live`) | test fakes |
+| Live Me | `LiveSidecarProcessor` | `LiveMeProcessor` (`hearsay-me`) | test fakes |
+| ASR (refine) | `asr.base.ASRBackend` | `ParakeetBackend` (`hearsay-asr`) | test fakes |
+| Offline diarizer | `diarization.offline.OfflineDiarizer` | `FluidAudioDiarizer` (`hearsay-diarize`) | stub diarizer (tests) |
 | Output | `export.base.TranscriptSink` | `LocalMarkdownSink` | central API / object store |
 
-## The Swift helper (summary)
+## The Swift helper + sidecars (summary)
 
-The helper is intentionally thin and stateless. `SystemAudioTap` builds a Core Audio process
-tap configured **global-except-self** (dodges the Teams per-process-silent bug and covers
-browser meeting apps) plus a private aggregate device, with a zero-buffer watchdog that
-rebuilds both on sustained silence. `MicCapture` taps `AVAudioEngine` and rebuilds on
+The **capture helper** is intentionally thin and stateless. `SystemAudioTap` builds a Core
+Audio process tap configured **global-except-self** (dodges the Teams per-process-silent bug
+and covers browser meeting apps) plus a private aggregate device, with a zero-buffer watchdog
+that rebuilds both on sustained silence. `MicCapture` taps `AVAudioEngine` and rebuilds on
 configuration changes. Both feed `Resampler` (16 kHz mono) and are stamped by `Clock`
 (monotonic `host_ts`). `Serve.swift` drains the per-stream ring buffers to `media.sock` and
 handles control commands. Details and the watchdog rationale are in the plan and
 [`shared/protocol/ipc.md`](../shared/protocol/ipc.md).
+
+The **sidecars** (`hearsay-live`, `hearsay-me`, `hearsay-diarize`, `hearsay-asr`) are separate
+SwiftPM products in the same `helper/` package. They depend on FluidAudio (kept off the lean
+capture binary so its CoreML dependency never bloats capture) and run Parakeet ASR and pyannote
+diarization on the Apple Neural Engine. `make swift-build` builds all of them; the Python core
+locates each as a sibling of the capture helper in the build dir.

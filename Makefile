@@ -17,8 +17,9 @@ dev: ## Run the app for local development (placeholder until the core server lan
 pytest: ## Run Python tests
 	uv run pytest -q
 
-swift-build: ## Build the Swift helper
-	swift build --package-path $(PKG)
+HELPER_PRODUCTS := --product hearsay-helper --product hearsay-diarize --product hearsay-asr --product hearsay-live --product hearsay-me
+swift-build: ## Build the Swift helper executables (explicit products skip FluidAudio's CLI, which has a type-check bug)
+	swift build --package-path $(PKG) $(HELPER_PRODUCTS)
 
 swift-test: ## Run the Swift cross-language self-test against the golden fixtures
 	swift run --package-path $(PKG) hearsay-helper selftest $(FIXTURES)
@@ -28,8 +29,9 @@ test: swift-build pytest swift-test ## Run all tests (Python + Swift; build firs
 typecheck: ## Type-check (mypy --strict)
 	uv run mypy src scripts
 
-lint: ## Lint (ruff)
+lint: ## Lint (ruff check + format check)
 	uv run ruff check
+	uv run ruff format --check
 
 fmt: ## Format (ruff)
 	uv run ruff format

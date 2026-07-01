@@ -2,30 +2,39 @@
 
 This document traces a single meeting from audio frames to a finished `transcript.md`. The
 orchestration lives in `transcript/` (`SessionManager` -> `MeetingSession` ->
-`TranscriptionPipeline`); the stages it drives live in `vad/`, `asr/`, `diarization/`,
-`fusion/`, `export/`, and `db/`.
+`TranscriptionPipeline`); the audio-AI itself runs in **Swift sidecars** (FluidAudio on the
+Apple Neural Engine) that the pipeline spawns and feeds. The Python core relays PCM and
+persists results but runs no ML models of its own.
 
 ## End-to-end flow
 
 ```mermaid
 flowchart LR
-  subgraph Helper["Swift helper"]
+  subgraph Helper["Swift capture helper"]
     Cap["mic + system tap\n16 kHz mono PCM + host_ts"]
   end
   subgraph Core["Python core: TranscriptionPipeline (one consumer per stream)"]
     MC["media_channel\nper-stream AudioChunk queues"]
-    Seg["Segmenter (VAD)\nhysteresis -> utterances"]
-    ASR["ASRBackend.transcribe\n(off-loop, serialized by a lock)"]
-    Clean["_clean_text\ndrop [BLANK_AUDIO]/[Music]"]
-    Diar["MeetingDiarizer (Them finals)\nembed -> cluster -> Speaker N / name"]
-    Seg --> ASR --> Clean
-    Clean -->|"final (Them)"| Diar
+    Them["LiveThemProcessor\nfeeds Them PCM -> hearsay-live"]
+    Me["LiveMeProcessor\nfeeds Me PCM -> hearsay-me"]
+    Rec["ThemAudioRecorder\nthem.wav (for the refine)"]
+    MC -->|Them| Them
+    MC -->|Me| Me
+    MC -->|Them| Rec
   end
-  Cap -- media.sock --> MC --> Seg
-  Clean -->|"final (Me = channel label)"| DB[("DB: segments + clusters")]
-  Diar -->|"label + cluster_id"| DB
-  Clean -->|final| MD["transcript.md (append)"]
-  Clean -->|partial + final| WS["WebSocket broadcaster"]
+  subgraph Sidecars["Swift sidecars (FluidAudio / ANE)"]
+    SL["hearsay-live\nstreaming diarize + Parakeet"]
+    SM["hearsay-me\nstreaming VAD + Parakeet"]
+  end
+  Cap -- media.sock --> MC
+  Them <-- "stdin PCM / stdout NDJSON" --> SL
+  Me <-- "stdin PCM / stdout NDJSON" --> SM
+  SL -->|"{speaker,text,start_s,end_s}"| DB[("DB: segments + clusters")]
+  SM -->|"{text,start_s,end_s}"| DB
+  Them --> MD["transcript.md (append)"]
+  Me --> MD
+  Them --> WS["WebSocket broadcaster"]
+  Me --> WS
   DB -. "at stop: sorted rewrite\n(resolved names)" .-> MD
 ```
 
@@ -37,6 +46,7 @@ sequenceDiagram
   participant SM as SessionManager
   participant Cap as HelperCapture
   participant P as TranscriptionPipeline
+  participant Side as Swift sidecars
   participant Sink as LocalMarkdownSink
 
   API->>SM: start_meeting(title)
@@ -44,13 +54,16 @@ sequenceDiagram
   SM->>Cap: start()  (spawn helper, start_capture)
   SM->>P: open(media, meta)
   P->>Sink: open(meta)  (folder, transcript.md, meeting.json)
+  P->>Side: spawn hearsay-live (Them) + hearsay-me (Me)
   P->>P: spawn a consumer task per stream
   loop while recording
-    P->>P: AudioChunk -> Segmenter -> (partial|final) -> ASR -> fan-out
+    P->>Side: AudioChunk -> feed PCM on stdin
+    Side->>P: NDJSON segment on stdout -> persist + broadcast
   end
   API->>SM: stop_meeting(id)
-  SM->>P: close(ended_at)  (flush, then sorted finalize)
+  SM->>P: close(ended_at)  (EOF sidecars, drain tails, sorted finalize)
   P->>Sink: finalize(sorted lines)  (atomic rewrite + meeting.json)
+  SM->>SM: _maybe_auto_refine (offline re-diarize, best-effort)
   SM->>Cap: stop()  (stop_capture, tear down helper)
 ```
 
@@ -65,91 +78,105 @@ pipeline runs **one consumer task per stream** (`Stream.ME`, `Stream.THEM`).
 ### 2. One clock, meeting-relative seconds
 
 The first `AudioChunk` seen on either stream sets `epoch_ns`. Every chunk's time becomes
-`t0_s = (host_ts - epoch_ns) / 1e9`, and the `Segmenter` re-anchors its frame clock to that
-`t0_s` on every chunk (not just the first), so utterance times follow `host_ts` even when a
-stream has delivery gaps (e.g. system audio during silence). Because both streams are stamped
-from the helper's *single* monotonic clock, "Me" and "Them" share one timeline — segment times
-are directly comparable across streams, never aligned by sample index.
+`t0_s = (host_ts - epoch_ns) / 1e9`. Because both streams are stamped from the helper's
+*single* monotonic clock, "Me" and "Them" share one timeline — segment times are directly
+comparable across streams, never aligned by sample index. Each sidecar is told the meeting
+time of its first fed sample (`offset_s`), so the WAV-relative times it emits map back onto
+the meeting clock.
 
-### 3. Segmentation (VAD)
+### 3. Routing a stream to its sidecar
 
-Each consumer feeds samples to a `Segmenter` (one per stream, each with its own `VAD`
-instance because the model is stateful). The segmenter:
+Each stream is handled by a `LiveSidecarProcessor` that owns one Swift subprocess: it spawns
+the sidecar, streams the stream's PCM in on stdin (`<uint32 LE sample-count>` + float32
+frame), and reads the NDJSON segments it emits on stdout. All VAD, diarization, and ASR happen
+inside the sidecar on the ANE — the Python side never touches a model.
 
-- slices the stream into fixed frames (512 samples for Silero) and scores each,
-- applies **start/stop hysteresis** (`min_speech_ms` to open an utterance, `min_silence_ms`
-  to close it), keeping a short speech-onset pre-roll,
-- emits a **final** `Utterance` when speech ends, and periodic **partial** snapshots during
-  ongoing speech (`partial_ms` cadence; set to 0 to disable).
+- **Them → `hearsay-live`** (`LiveThemProcessor`). FluidAudio's streaming diarizer + Parakeet:
+  as each speaker turn finalizes, the sidecar transcribes it and emits
+  `{speaker, text, start_s, end_s}`. The processor maps the 0-based `speaker` to a 1-based
+  `Speaker N` label, creating a `Cluster` row per ordinal on first sight.
+- **Me → `hearsay-me`** (`LiveMeProcessor`). FluidAudio streaming VAD + Parakeet: it finds
+  speech boundaries and transcribes each utterance, emitting `{text, start_s, end_s}`. Me is
+  always the local speaker, so there is no diarization — the label is always `Me`.
 
-`Segmenter` is pure logic and is the highest-value unit-test surface — tests drive it with a
-deterministic stub VAD, so coverage does not require the ONNX model.
+The pipeline runs no ML itself: it routes each stream's PCM to its processor and does nothing
+else with the samples. A stream with no processor (e.g. a missing sidecar binary) is drained
+without transcription — the Them track is still recorded for the refine.
 
-### 4. Transcription (ASR)
+### 4. Recording the Them track for the refine
 
-Each emitted utterance is transcribed by the configured `ASRBackend`. Two important details:
+When `diarization.refine` is on (the default), a `ThemAudioRecorder` streams the raw Them
+samples to `<folder>/them.wav` (stdlib `wave`), capturing the first sample's meeting-time
+offset in a sidecar file. Me is never recorded. This is the input the post-meeting refine
+re-diarizes; it is the only raw-audio retention and can be turned off.
 
-- ASR is CPU/GPU-bound, so it runs via `asyncio.to_thread` and never blocks the event loop.
-- A single `asyncio.Lock` serializes transcription across both streams, so the two consumers
-  never call the native model concurrently.
+### 5. Fan-out per segment
 
-The joined text is passed through `_clean_text`, which drops clips whisper renders as a lone
-non-speech marker (`[BLANK_AUDIO]`, `[Music]`, `(buzzing)`).
+Each sidecar segment is fanned out three ways by its processor's `_handle`: broadcast to the
+WebSocket with its resolved label, persisted as a `Segment` row (DB, Them carries a
+`cluster_id`), and appended to `transcript.md`. The sidecars emit finalized segments only.
 
-### 5. Speaker attribution (Them)
+### 6. Finalize: ordered rewrite
 
-Me is the mic channel — labeled `Me`, never diarized. For a finalized **Them** utterance the
-`MeetingDiarizer` (one per meeting) resolves a speaker:
+The live `transcript.md` is appended in arrival order, which interleaves the two streams (a
+longer Them turn can finish after a later Me utterance). At stop, `close()` sends EOF to each
+sidecar (so it finalizes and persists its streaming tail), reads every segment back from the DB
+sorted by `start_s`, and the sink **atomically rewrites** `transcript.md` in timestamp order
+(temp file + `os.replace`), grouping consecutive same-speaker segments under one
+`### HH:MM:SS — Speaker` header. The DB is the source of truth; the file is a durable
+projection of it.
 
-- embed the utterance off the event loop (`SpeakerEmbedder`, a torch-free ONNX voiceprint),
-- `OnlineSpeakerClusterer.assign` matches it to the nearest speaker by cosine to a running
-  centroid (≥ `cluster_threshold` joins and updates the centroid, else it starts a new speaker;
-  ordinals follow first appearance), creating a `Cluster` row on first appearance,
-- the label becomes the bound identity's name, else `Speaker N`.
+### 7. Post-meeting refine (offline re-diarization)
 
-Utterances shorter than `min_embed_ms` stay the generic `Them`; with no embedding model
-installed the pipeline degrades to `Them` for everything, so capture is never blocked.
+The streaming Them labels are good but not authoritative — a whole-track pass clusters
+globally and handles overlap better. `rediarize_meeting` runs automatically at stop (when
+`diarization.auto_refine` is on) and on demand via the "Refine speakers" button /
+`hearsay rediarize`:
 
-### 6. Fan-out: final vs partial
+- diarize the whole `them.wav` with `FluidAudioDiarizer` (the `hearsay-diarize` helper —
+  FluidAudio's pyannote community-1 CoreML model on the ANE), which returns speaker turns
+  **and** each speaker's mean voiceprint,
+- **re-transcribe each turn's audio span** with Parakeet, so the transcript follows speaker
+  changes turn by turn (`apply_turn_diarization` drops the coarse live Them segments/clusters
+  and writes one segment per turn as `Speaker 1..N`; Me is untouched),
+- carry any manual renames forward by voting each locked name onto the turn ordinal its old
+  segments most overlap (a re-diarize never drops a manual binding),
+- store each speaker's centroid on its cluster and match it against people named in prior
+  meetings — a returning person is auto-named *provisionally* (a manual rename still wins),
+- rewrite `transcript.md` from the rebuilt segments.
 
-- **Partial** (speech in progress): broadcast to the WebSocket only. Partials are a live,
-  best-effort preview; they are never persisted (and not embedded).
-- **Final** (utterance closed): broadcast to the WebSocket with its resolved label, persisted
-  as a `Segment` row (DB, with `cluster_id`), and appended to `transcript.md`.
-
-### 7. Finalize: ordered rewrite
-
-The live `transcript.md` is appended in **ASR-completion order**, which interleaves the two
-streams (a longer "Them" utterance can finish after a later "Me" one). At stop, the pipeline
-reads every segment back from the DB sorted by `start_s` and the sink **atomically rewrites**
-`transcript.md` in timestamp order (temp file + `os.replace`), grouping consecutive
-same-speaker segments under one `### HH:MM:SS — Speaker` header. Because renaming a speaker
-relabels that cluster's segments in the DB, this re-read **bakes resolved names** into the final
-file. The DB is the source of truth; the file is a durable projection of it.
+A meeting with no Them segments (e.g. a capture failure) is skipped rather than seeded with a
+phantom speaker; a diarizer/ASR run that yields no turns leaves the existing transcript intact.
 
 ## Design rationale
 
 - **Why a single `host_ts` clock?** Mic and system audio come from independent hardware
   clocks that drift. Stamping both from one monotonic clock in the helper makes cross-stream
-  alignment (and, later, hint-to-cluster fusion) exact.
-- **Why VAD-driven utterances instead of fixed windows?** Whisper works best on coherent
-  speech spans. VAD cuts on natural pauses, which also bounds latency (a final lands shortly
-  after you stop talking) and keeps the model off silence.
-- **Why finals-only to disk?** Partials are noisy and rewrite constantly. Persisting only
-  finals keeps `transcript.md` corruption-free (complete, newline-terminated blocks) and the
-  DB clean; the UI gets the live feel from the WebSocket.
-- **Why rewrite at finalize?** Live append cannot reorder past writes, but a meeting-relative
-  sort produces a readable final document, and the re-read from the DB bakes in any speaker
-  names resolved (or renamed) during the meeting.
+  alignment exact.
+- **Why sidecars on the ANE?** The earlier GPU path (whisper.cpp on Metal + pyannote on MPS)
+  fought for the GPU and could enter an unrecoverable Metal error state. FluidAudio runs ASR
+  and diarization on the Apple Neural Engine, which co-schedules the two workloads with
+  negligible interference and never touches the GPU. Keeping each model in its own Swift
+  subprocess also keeps the Python core free of heavyweight ML dependencies.
+- **Why turn-driven Them instead of VAD + separate diarize?** A VAD cuts on silence, not on
+  speaker change, so a back-and-forth exchange lands in one utterance that a single label
+  cannot split (the Phase-2 "segmentation ceiling"). The diarizer's turns *are* the segments,
+  live and in the refine, so quick turn-taking splits correctly.
+- **Why re-diarize at finalize?** The streaming diarizer works online with limited context; a
+  whole-track pass is more accurate and cheap on the ANE (~seconds), so every meeting ends with
+  authoritative labels and the refine can also recognize returning people by voiceprint.
+- **Why finals-only to disk, rewritten at finalize?** Live append cannot reorder past writes,
+  but a meeting-relative sort produces a readable final document, and the re-read from the DB
+  bakes in any speaker names resolved (or renamed) during or after the meeting.
 
 ## Validation
 
-The wiring is unit-tested end to end with a fake media channel + stub VAD + fake ASR
-(`tests/test_pipeline.py`), asserting the segment persists, `transcript.md` contains it, and a
-final WebSocket event fires. The real stack is exercised on-device via `hearsay live` (see
-[development.md](development.md)); a real call confirmed Me/Them separation, ~1-2 s finals,
-and a correct `transcript.md`. Diarization is unit-tested too: a stub embedder drives two
-distinct Them speakers into `Speaker 1`/`Speaker 2` (Me stays by channel), an end-to-end test
-confirms a mid-meeting rename bakes into the finalized transcript, and the real embedder +
-clusterer are validated on actual speech (same-speaker cosine ~0.84 vs ~0.3 for a different
-speaker, so they cluster correctly).
+The wiring is unit-tested end to end with a fake media channel and stubbed processors
+(`tests/test_pipeline.py`), asserting a segment persists, `transcript.md` contains it, and a
+WebSocket event fires; the sidecar processors are tested against their NDJSON contract, and the
+refine is tested with a stub diarizer (turn rebuild, manual-rename carry-forward, voiceprint
+recognition, the empty-meeting and no-turns guards). The real stack is exercised on-device via
+`hearsay live` and `hearsay serve` (see [development.md](development.md)); a real meeting
+confirmed Me/Them separation, live turn labels with a few seconds' latency, and a correct
+refined `transcript.md`. The standalone Swift sidecars are validated directly on recorded clips
+(accurate Parakeet text; the offline diarizer returns the known speaker count).

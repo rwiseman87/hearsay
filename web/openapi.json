@@ -4,8 +4,7 @@
       "ASRBackendKind": {
         "description": "Which ASR implementation transcribes audio (selected in settings).",
         "enum": [
-          "whispercpp",
-          "mlx"
+          "parakeet"
         ],
         "title": "ASRBackendKind",
         "type": "string"
@@ -814,7 +813,7 @@
     },
     "/api/meetings/{meeting_id}/rediarize": {
       "post": {
-        "description": "Re-diarize the recorded Them track with pyannote and return the new speakers.\n\nSlow (loads + runs pyannote); the heavy work is off-loop. 404 if the meeting is\nunknown, 409 if it has no recorded ``them.wav`` (diarization.refine was off).",
+        "description": "Re-diarize the recorded Them track (FluidAudio on the ANE) and return the new speakers.\n\nThe heavy diarization runs in the helper, off-loop. 404 if the meeting is\nunknown, 409 if it has no recorded ``them.wav`` (diarization.refine was off).",
         "operationId": "rediarize_api_meetings__meeting_id__rediarize_post",
         "parameters": [
           {

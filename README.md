@@ -34,14 +34,14 @@ flowchart LR
 
 ## Status
 
-**Phase 1 (MVP) is complete and validated on-device; Phase 2 (diarization) is
-code-complete.** Capture (Me/Them separation) → Silero VAD → whisper.cpp ASR → SQLite +
-live `transcript.md` + the loopback REST/WebSocket API + the React UI all work end to end.
-Phase 2 adds **speaker diarization of the Them stream**: each remote utterance is embedded
-(a torch-free ONNX voiceprint) and online-clustered into stable **Speaker 1..N**, which you
-can **rename to real people** in the UI — names persist and are suggested in later meetings.
-Me is the mic channel and is never diarized. The remaining Phase 2 step is the multi-person
-on-device verify. See [`docs/TODO.md`](docs/TODO.md) for the phase-by-phase tracker.
+**Phases 1-2 work end to end; the on-device audio-AI now runs in Swift sidecars on the Apple
+Neural Engine (FluidAudio).** Capture (Me/Them separation) feeds the `hearsay-live` (Them:
+streaming diarization + Parakeet ASR) and `hearsay-me` (Me: streaming VAD + Parakeet) sidecars →
+SQLite + live `transcript.md` + the loopback REST/WebSocket API + the React UI. Remote speakers
+are labeled **Speaker 1..N** live and refined by a whole-track pass at stop (`hearsay-diarize`),
+which also recognizes returning people by voiceprint; **rename them to real people** in the UI —
+names persist and carry across meetings. Me is the mic channel and is never diarized. The Python
+core runs no ML models. See [`docs/TODO.md`](docs/TODO.md) for the phase-by-phase tracker.
 
 ## Quickstart
 
@@ -49,9 +49,8 @@ Prereqs: [`uv`](https://docs.astral.sh/uv/) and Swift (Command Line Tools is eno
 
 ```sh
 make sync                                  # create the venv + base deps (Python 3.14)
-uv sync --extra asr --extra diarization    # transcription + diarization stack (torch-free)
-swift build --package-path helper          # build the capture helper
-uv run hearsay fetch-models                # Silero VAD (~2 MB) + the speaker-embedding model (~30 MB)
+uv sync --extra asr                        # numpy, to pack PCM for the sidecars + read them.wav
+make swift-build                           # build the capture helper + the FluidAudio/ANE sidecars
 (cd web && npm ci && npm run build)        # build the React UI bundle (web/dist), served by the core
 ```
 
@@ -76,7 +75,7 @@ the token injected. For frontend dev with hot reload: `cd web && npm run dev` ag
 | Doc | Contents |
 |---|---|
 | [docs/architecture.md](docs/architecture.md) | The three-process design and a module-by-module tour of the Python core — what each piece does and why. |
-| [docs/pipeline.md](docs/pipeline.md) | The real-time transcription data flow: capture -> IPC -> VAD/segmenter -> ASR -> DB + `transcript.md` + WebSocket. |
+| [docs/pipeline.md](docs/pipeline.md) | The real-time transcription data flow: capture -> IPC -> Swift sidecars (diarize + ASR on the ANE) -> DB + `transcript.md` + WebSocket. |
 | [docs/api.md](docs/api.md) | REST + WebSocket reference: auth model, endpoints, request/response examples. |
 | [docs/development.md](docs/development.md) | Setup, `make` targets, running (`serve`/`live`), model management, testing, troubleshooting. |
 | [shared/protocol/ipc.md](shared/protocol/ipc.md) | The helper <-> core IPC contract (source of truth). |
@@ -93,15 +92,13 @@ src/hearsay/
   db/ models/  async SQLAlchemy engine/session + ORM models + Alembic migrations
   schemas/     Pydantic request/response models (the API boundary)
   services/    business logic (routers stay thin)
-  transcript/  orchestration: MeetingSession, capture seam, pipeline, MeetingDiarizer, broadcaster
-  vad/         VAD seam + streaming Segmenter + Silero (onnxruntime) backend
-  asr/         ASRBackend seam + whisper.cpp / mlx backends + model manager
-  diarization/ speaker-embedding seam + ONNX backend (onnxruntime + kaldi-native-fbank) + model registry
-  fusion/      online speaker clustering (pure stdlib): voiceprints -> stable "Speaker N"
+  transcript/  orchestration: MeetingSession, capture seam, pipeline, live Me/Them sidecars, refine
+  asr/         ASRBackend seam + Parakeet sidecar backend (used by the refine)
+  diarization/ offline diarizer seam (Swift hearsay-diarize) + cross-meeting voiceprints
   export/      output Sink seam + local Markdown writer
   api/         FastAPI app, routers, WebSocket, loopback security, DI
-  cli.py       the `hearsay` command (serve, live, fetch-models, capture-debug)
-helper/        SwiftPM: hearsay-helper executable + HearsayIPC library
+  cli.py       the `hearsay` command (serve, live, rediarize, capture-debug)
+helper/        SwiftPM: hearsay-{helper,diarize,asr,live,me} executables + HearsayIPC library
 web/           React UI (Vite + TS): typed fetch client, TanStack Query, OpenAPI-generated types
 shared/        IPC contract (ipc.md) + golden frame fixtures
 tests/         pytest suite (SAVEPOINT-isolated DB tests; guarded on-device tests)

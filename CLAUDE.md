@@ -10,12 +10,17 @@ Resumable task tracker: `docs/TODO.md`. IPC contract: `shared/protocol/ipc.md`.
 
 ## Architecture
 
-Hybrid, three processes (Apple Silicon, macOS 14.4+):
+Hybrid, multi-process (Apple Silicon, macOS 14.4+):
 
-- **Swift helper** (`helper/`) — the ONLY process that touches guarded native APIs (Core Audio tap,
-  AVAudioEngine, ScreenCaptureKit, Vision OCR, EventKit, Accessibility). Streams PCM + name hints over IPC.
-- **Python core** (`src/hearsay/`) — ASR, diarization, speaker-attribution fusion, LLM notes, Markdown,
-  persistence, and a loopback FastAPI + WebSocket API.
+- **Swift capture helper** (`helper/`) — the ONLY process that touches guarded native APIs (Core Audio tap,
+  AVAudioEngine, ScreenCaptureKit, Vision OCR, EventKit, Accessibility). A lean PCM streamer; streams PCM +
+  name hints over IPC.
+- **Swift sidecars** (`helper/`, FluidAudio on the Apple Neural Engine) — the audio-AI: `hearsay-live` (live
+  Them diarization + Parakeet ASR), `hearsay-me` (live Me VAD + Parakeet), `hearsay-diarize` (post-meeting
+  refine), `hearsay-asr` (Parakeet, used by the refine). The core spawns + feeds each over stdio.
+- **Python core** (`src/hearsay/`) — orchestration (spawns the helper + sidecars, routes PCM), speaker
+  attribution (clusters + cross-meeting voiceprints + manual labels), LLM notes (later phase), Markdown,
+  persistence, and a loopback FastAPI + WebSocket API. Runs **no ML models** itself.
 - **Web UI** — typed React frontend served by the core, shown in a WKWebView window (later phase).
 
 The core spawns and supervises the helper; they talk over two Unix sockets (binary PCM + NDJSON
@@ -35,8 +40,8 @@ src/hearsay/
   schemas/             Pydantic request/response models
   services/            business logic (routers stay thin)
   api/                 FastAPI routers + WebSocket
-  asr/ diarization/ fusion/ llm/ transcript/ export/ platforms/   (added per phase)
-helper/                SwiftPM: hearsay-helper executable + HearsayIPC library
+  asr/ diarization/ transcript/ export/   (+ llm/ platforms/ in later phases)
+helper/                SwiftPM: hearsay-{helper,live,me,diarize,asr} executables + HearsayIPC library
 shared/protocol/ipc.md IPC contract (source of truth)   ·   shared/fixtures/   golden frames
 scripts/               dev tooling (gen_fixtures.py)
 tests/                 pytest suite
@@ -78,10 +83,14 @@ tests/                 pytest suite
 
 ## Swift Helper
 
-- SwiftPM package in `helper/`: `hearsay-helper` executable + `HearsayIPC` library. Deployment macOS 14.4.
-- All TCC-guarded native work lives here (mic, audio capture, screen recording, accessibility, calendar).
+- SwiftPM package in `helper/`: the `hearsay-helper` capture executable + the FluidAudio/ANE sidecars
+  (`hearsay-{live,me,diarize,asr}`) + the `HearsayIPC` library. Deployment macOS 14.4. `make swift-build`
+  builds explicit products (a bare `swift build` pulls in FluidAudio's broken CLI target).
+- All TCC-guarded native work lives in the capture helper (mic, audio capture, screen recording,
+  accessibility, calendar); it stays lean (no FluidAudio). The heavy CoreML dep is isolated in the sidecar
+  targets, so it never touches the capture binary.
 - Tests run via `hearsay-helper selftest` (works with Command Line Tools); `swift test`/XCTest needs full
-  Xcode. Keep the helper thin and stateless where possible.
+  Xcode. Keep the capture helper thin and stateless where possible.
 
 ## Database
 
@@ -104,23 +113,25 @@ tests/                 pytest suite
 
 - pytest with async fixtures (conftest.py creates a test DB per session); use SAVEPOINT/rollback isolation.
 - API tests use `httpx.AsyncClient` against the FastAPI app; service tests use in-memory fixtures.
-- The fusion engine is pure logic -- unit-test it heavily with synthetic timelines.
+- The diarization mapping (`order_speakers`, `assign_segment_speaker`) + voiceprint matching are pure logic --
+  unit-test them directly; the pipeline, sidecar processors, and refine are tested with fakes/stubs (no ML deps).
 - Run: `make test` (or `uv run pytest -x -v`).
 
 ## Audio Capture (guardrails)
 
 - System audio: Core Audio process tap configured **global-except-self** (dodges the Teams
   per-process-silent bug; also covers browser meeting apps).
-- Resample both sources to **16 kHz mono**; stamp both with ONE monotonic clock (`host_ts`). Fusion aligns
-  by timestamp, never by sample index.
+- Resample both sources to **16 kHz mono**; stamp both with ONE monotonic clock (`host_ts`). Cross-stream
+  alignment is by timestamp, never by sample index.
 - Zero-buffer watchdog: on sustained all-zero buffers, rebuild BOTH the tap and the aggregate device; emit
   `tap_health`. The mic is always "Me" and is never diarized.
 
-## Speaker Identification & Fusion (guardrails)
+## Speaker Identification (guardrails)
 
-- Layers: channel (Me/Them) + calendar roster + diarization (Them only) + active-speaker hints + manual labels.
-- Bind a diarization cluster -> name by **weighted majority vote** over many sparse hints; a single wrong
-  hint must never flip a stable binding. Manual labels lock a binding (votes cannot override).
+- Layers today: channel (Me/Them) + diarization (Them only, Swift/ANE) + cross-meeting voiceprints + manual
+  labels. Calendar roster + active-speaker hints are the Phase-3 additions.
+- Bind a diarization cluster -> name by **weighted majority vote** over many sparse hints (the Phase-3 design);
+  a single wrong hint must never flip a stable binding. Manual labels lock a binding (votes cannot override).
 - Active-speaker is **OCR-primary** (ScreenCaptureKit + Vision); Zoom Accessibility is opt-in. Degrade
   gracefully to "Speaker N" + manual labeling when hints are absent.
 
@@ -144,8 +155,10 @@ tests/                 pytest suite
 
 - Persistence (2026-06-25): local-first SQLite via async SQLAlchemy 2.0 + Alembic. Single-user desktop app,
   so no Postgres server; the SQLAlchemy layer keeps a future Postgres/central pivot cheap.
-- Python 3.14 locked (2026-06-25): the full ML stack (torch 2.12.1, pyannote-audio 4.0.5, onnxruntime
-  1.27.0, pywhispercpp 1.5.0, mlx-whisper 0.4.3, numpy 2.4.6) resolves on cp314 under uv.
+- Python 3.14 locked (2026-06-25): originally to fit the full Python ML stack on cp314. Since the FluidAudio
+  pivot (2026-06-30/07-01) that stack is gone -- ASR + diarization moved to Swift/ANE sidecars, so the Python
+  core carries **no ML dependency** (numpy is the only ML-adjacent dep, to pack PCM + read them.wav). 3.14
+  stays locked; the fallback ladder 3.13 -> 3.12 applies only if a dep regresses.
 
 ## Environment Variables
 

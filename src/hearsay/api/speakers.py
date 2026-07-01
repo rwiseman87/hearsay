@@ -11,7 +11,7 @@ from hearsay.api.deps import ContextDep, ManagerDep, SessionDep, require_token
 from hearsay.models import Cluster
 from hearsay.schemas import IdentityRead, Page, SpeakerRead, SpeakerRename
 from hearsay.services import MeetingService, SpeakerService
-from hearsay.transcript import RefineError, build_recognition_embedder, rediarize_meeting
+from hearsay.transcript import RefineError, rediarize_meeting
 
 router = APIRouter(tags=["speakers"], dependencies=[Depends(require_token)])
 
@@ -53,18 +53,15 @@ async def rename_speaker(
 
 @router.post("/meetings/{meeting_id}/rediarize", response_model=Page[SpeakerRead])
 async def rediarize(meeting_id: UUID, context: ContextDep) -> Page[SpeakerRead]:
-    """Re-diarize the recorded Them track with pyannote and return the new speakers.
+    """Re-diarize the recorded Them track (FluidAudio on the ANE) and return the new speakers.
 
-    Slow (loads + runs pyannote); the heavy work is off-loop. 404 if the meeting is
+    The heavy diarization runs in the helper, off-loop. 404 if the meeting is
     unknown, 409 if it has no recorded ``them.wav`` (diarization.refine was off)."""
     async with context.database.session() as session:
         if await MeetingService(session).get(meeting_id) is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="meeting not found")
     try:
-        embedder = build_recognition_embedder(context.settings)
-        await rediarize_meeting(
-            meeting_id, database=context.database, settings=context.settings, embedder=embedder
-        )
+        await rediarize_meeting(meeting_id, database=context.database, settings=context.settings)
     except RefineError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     async with context.database.session() as session:

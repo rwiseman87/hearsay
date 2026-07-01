@@ -16,7 +16,6 @@ from hearsay import __version__
 from hearsay.api import create_app
 from hearsay.config.settings import Settings
 from hearsay.db import Database
-from hearsay.diarization import download_embedding_model, resolve_embedding_model
 from hearsay.helper import capture_debug as cd
 from hearsay.models import Base
 from hearsay.services import MeetingService
@@ -25,11 +24,9 @@ from hearsay.transcript import (
     HelperCapture,
     RefineError,
     SessionManager,
-    build_recognition_embedder,
     rediarize_meeting,
 )
 from hearsay.transcript.capture import Capture
-from hearsay.vad.silero import download_silero_model
 
 
 @click.group()
@@ -41,32 +38,6 @@ def main() -> None:
 def version() -> None:
     """Print the hearsay version."""
     click.echo(__version__)
-
-
-@main.command("fetch-models")
-def fetch_models() -> None:
-    """Download the Silero VAD + speaker-embedding models (whisper.cpp auto-downloads)."""
-    settings = Settings()
-    model_path = settings.vad.model_path
-    assert model_path is not None  # filled by Settings' validator
-    path = download_silero_model(model_path)
-    click.echo(f"Silero VAD model ready at {path}")
-
-    embedding_model = resolve_embedding_model(settings.diarization.model)
-    if embedding_model is not None:
-        assert settings.models_dir is not None
-        emb_path = download_embedding_model(embedding_model, settings.models_dir)
-        click.echo(
-            f"speaker-embedding model '{embedding_model.name}' "
-            f"({embedding_model.license}) ready at {emb_path}"
-        )
-    else:
-        click.echo(f"speaker-embedding model '{settings.diarization.model}': custom; skipped.")
-
-    click.echo(
-        f"whisper.cpp model '{settings.asr.model}' auto-downloads to "
-        f"{settings.models_dir} on first transcription."
-    )
 
 
 def _free_port(host: str) -> int:
@@ -182,10 +153,7 @@ async def _run_rediarize(settings: Settings, meeting_ref: str) -> int:
         if meeting_id is None:
             click.echo("no meetings found to rediarize", err=True)
             return 1
-        embedder = build_recognition_embedder(settings)
-        result = await rediarize_meeting(
-            meeting_id, database=database, settings=settings, embedder=embedder
-        )
+        result = await rediarize_meeting(meeting_id, database=database, settings=settings)
     except RefineError as exc:
         click.echo(f"rediarize failed: {exc}", err=True)
         return 1
@@ -200,15 +168,12 @@ async def _run_rediarize(settings: Settings, meeting_ref: str) -> int:
 
 @main.command()
 @click.argument("meeting_id")
-@click.option("--device", default=None, help="Override the pyannote device (cpu / mps).")
-def rediarize(meeting_id: str, device: str | None) -> None:
-    """Re-diarize a recorded meeting's Them track with pyannote and relabel its speakers.
+def rediarize(meeting_id: str) -> None:
+    """Re-diarize a recorded meeting's Them track (FluidAudio on the ANE) and relabel speakers.
 
     MEETING_ID is a meeting UUID or the literal "latest" for the most recent meeting.
     """
     settings = Settings()
-    if device:
-        settings.diarization.refine_device = device
     if meeting_id != "latest":
         try:
             UUID(meeting_id)

@@ -6,22 +6,77 @@ Conventions: `CLAUDE.md`.
 
 ## How to resume
 
-**Status (2026-06-30):** Phases 0 + **Phase 1 MVP** complete (merged to `main`, validated on a real meeting).
-**Phase 2 (diarization) is CODE-COMPLETE and merged to `main`** (2026-06-30, fast-forward `5e8c74e..156944b`; Inc 1–7d
-+ cross-meeting voiceprint recognition). **Diarization default flipped (2026-06-30): pyannote
-`speaker-diarization-community-1` post-meeting refine is now the default** (`diarization.refine` defaults on, records
-`them.wav`); the torch-free online clusterer is the live labeler + bundle-able fallback (torch-free rescoped to a
-deferred Phase-5/distribution concern). **ASR default → `large-v3`** (was turbo; chosen by an on-device A/B). Built:
-identities/clusters/
-`segments.cluster_id` + `SpeakerService`; torch-free `OnnxSpeakerEmbedder` (wespeaker CAM++_LM); pure-stdlib
-`OnlineSpeakerClusterer`; `MeetingDiarizer` in the pipeline; `GET/PUT /speakers` rename (binds + locks + retroactively
-relabels) + React `SpeakerPanel`; finalize bakes resolved names into `transcript.md`; `ThemAudioRecorder` (records
-`them.wav` only when refine is on); `PyannoteDiarizer` + `rediarize_meeting` + `hearsay rediarize <id|latest>` +
-`POST /meetings/{id}/rediarize` + "Refine speakers" UI button; cross-meeting voiceprint auto-recognition (a returning,
-manually-locked speaker is auto-named provisionally). **139 tests; full `make ci` + web tsc/build/codegen green.**
+**Status (2026-06-30 eve):** Phases 0-2 are on `main`. The **FluidAudio / Apple-Neural-Engine pivot** is built on
+branch **`feat/fluidaudio-pivot`** (NOT yet merged to `main`): the on-device audio-AI moved off torch +
+whisper.cpp/Metal onto FluidAudio (Apache-2.0; diarization + Parakeet models CC-BY-4.0, **ungated**) running on the ANE.
+Done + validated: **F1** offline diarizer (ANE, `hearsay-diarize` sidecar) · **auto-refine at finalize** · **F3**
+Parakeet ASR (ANE, `hearsay-asr` sidecar — the only ASR backend now) · **turn-accurate refine** (re-transcribes each
+diarizer turn, so overlapping/quick-turn speakers split) · **F4** torch removal (pyannote + mlx gone) · **F2**
+turn-driven live Them (`hearsay-live` sidecar: streaming diar + Parakeet → labeled turns; **validated on a real
+meeting**) · **whisper.cpp dropped** (Parakeet-only) · **step (2) voiceprints from FluidAudio** (`hearsay-diarize` now
+emits per-speaker embeddings → the refine stores + matches them; ONNX embedder + kaldi + the whole online-clusterer
+fallback `fusion/`+`MeetingDiarizer` deleted; `hearsay-live` is the only live Them path) · **step (3a) Me → Swift
+(VALIDATED on-device 2026-07-01, minor caveats — see the 3a bullet)** — new `hearsay-me` sidecar (FluidAudio streaming VAD + Parakeet → "Me"
+utterances) + `LiveMeProcessor`; wired as the **default** Me path (`vad.me_sidecar`, default on), Silero+Python-ASR kept
+as the gated fallback. The live path is now fully Swift (Them + Me via sidecars), **no Python fusion**. **135 tests; ruff
++ mypy --strict (66 files) + swift build (5 products) + selftest + audit + licenses all green.** Architecture = **B**:
+the capture binary (`hearsay-helper`) stays a lean PCM streamer; AI runs in Swift sidecars the Python core feeds; Python
+relays bytes but runs **no models**. End goal: Python = ML-free backend ([[hearsay-swift-pivot-direction]]).
 
-**Pick up here → the open problem is LIVE-ACCURATE speaker labels; the lead is FluidAudio (Apple-Silicon ANE). A
-session of experiments (2026-06-30) settled what does NOT work, so a fresh context can skip re-deriving it:**
+**Pick up here → merge `feat/fluidaudio-pivot` to `main`. The pivot is complete and nothing else is queued: 3a Me→Swift + VAD tune VALIDATED on-device, 3b DONE (Python is now ML-dep-free — numpy only), all docs + CLAUDE.md reconciled, sidecar-death crash fixed. All on `feat/fluidaudio-pivot`; `make ci` green.**
+- **(3a) Me → Swift — VALIDATED on-device (2026-07-01).** Ran a real meeting via `serve`: `hearsay-me` (streaming VAD +
+  Parakeet) produced "Me" utterances, "working OK." Two caveats the user flagged: (i) turn-end boundaries a little iffy
+  when a turn ends with a short/no pause, and (ii) some Parakeet ASR accuracy misses. Root cause of (i): `hearsay-me`
+  calls `processStreamingChunk` with **no config**, so it uses FluidAudio's `VadSegmentationConfig.default`
+  (`minSilenceDuration=0.75s` — only closes an utterance after 0.75s of silence, so short/no-pause turn-ends don't fire
+  promptly; a true no-pause run can only be split by `maxSpeechDuration=14s`). Part of (ii) is the default
+  `speechPadding=0.1s` clipping word edges before Parakeet; the rest is Parakeet TDT's quality ceiling. NB: **Me is not
+  re-refined at finalize** (only Them's `them.wav` is recorded + re-diarized), so Me's live boundaries are final — the
+  "finalizing fixes it" the user saw is the Them refine + the sorted rewrite.
+- **(3a-tune) sharpen the `hearsay-me` VAD — VALIDATED on-device 2026-07-01 (user: "test is good").**
+  `hearsay-me/main.swift` passes a tuned `VadSegmentationConfig(minSilenceDuration: 0.45, speechPadding: 0.2)` to
+  `processStreamingChunk` (both the loop + the flush) instead of the defaults (0.75 / 0.1). Effect: utterances close
+  after 0.45s of silence (sharper turn-ends on short pauses) and speech edges get 0.2s of padding (fewer clipped word
+  onsets/tails → better Parakeet). Chosen so `minSilence (0.45) > 2x padding (0.2)`, so consecutive utterances can't
+  overlap. The user re-ran a real meeting and confirmed the boundaries read well (and the sidecar-death bug fix held —
+  no crash). If turns ever over-split mid-sentence, raise `minSilenceDuration` (toward 0.6); if too laggy, lower it
+  (toward 0.35). **3a + tuning complete → 3b is next.**
+- **(3b) Delete the Silero/`vad/` path — DONE (2026-07-01).** Ripped out the `vad/` package (Silero, Segmenter), the
+  pipeline's entire VAD/ASR branch (`_emit`/`_transcribe`/`_context`/`_clean_text`/`_persist` + the `asr`/`vad_factory`/
+  `vad`/`broadcaster` params), the `_asr_factory`/`_vad_factory` + `ASRFactory`/`VADFactory` in session, `VADSettings`
+  (+ the `me_sidecar` toggle), the `fetch-models` CLI command (Silero was all it did), and the `onnxruntime` dep (pruned
+  from `uv.lock`/venv along with flatbuffers + protobuf; its mypy override removed). `TranscriptionPipeline` is now a thin
+  router: both streams always go to their sidecars (Them -> `hearsay-live`, Me -> `hearsay-me`); a stream with no processor
+  is drained (Them still recorded). `build_asr`/`ParakeetBackend` stay — the **refine** uses them to re-transcribe turns.
+  **Python now has zero ML deps** (numpy only, for PCM packing + reading them.wav). Tests: deleted `test_segmenter.py` +
+  `test_silero_vad.py`, rewrote `test_pipeline.py` to fake-sidecar routing (+ a no-processor drain test). Docs (README +
+  architecture/pipeline/development) updated to drop Silero/fetch-models/me_sidecar. **`make ci` green: ruff + mypy
+  --strict (63 files) + 125 pytest + swift selftest + pip-audit + licenses.** NB: step (2) already invalidated stored
+  centroids (different vector space) — they re-seed on the next refine.
+
+**CLAUDE.md — reconciled (2026-07-01, DONE).** Updated to the current architecture: the lean Swift capture helper +
+FluidAudio/ANE sidecars (`hearsay-{live,me,diarize,asr}`) as their own bullet; the Python core described as
+orchestration + speaker attribution + persistence + API, running **no ML models**; `fusion/` removed from the structure
+tree + the helper executable list expanded; the "fusion engine" test note replaced with the pure diarization-mapping/
+voiceprint helpers; the Speaker-ID layers updated (diarization is Swift/ANE + voiceprints; calendar/active-speaker are
+Phase 3); and the Python-3.14 dep-decision note rewritten (the full ML stack moved to Swift, so numpy is the only
+ML-adjacent dep). Nothing stale remains.
+
+**Note on the live pipeline shape:** both streams always route to their Swift sidecars (Them -> `hearsay-live`, Me ->
+`hearsay-me`); `TranscriptionPipeline` runs no ML and only routes PCM + records them.wav + rewrites the transcript at
+stop. `LiveThemProcessor`/`LiveMeProcessor` share a `LiveSidecarProcessor` base (spawn/feed/read/close + broken-pipe
+resilience); only `_handle` differs. The live manual-rename relay is gone (sidecars have no bind API) — a rename still
+relabels existing segments + is carried forward by the refine.
+
+Also still open (lower priority): the optional both-speakers Me/Them interleave validation; Phases 3 (calendar+OCR), 4
+(LLM notes+Bedrock), 5 (packaging). The all-Swift-*backend* question (Python API/DB → Swift too) stays parked as a
+Phase-5 decision (revisit once Python is ML-free).
+
+---
+
+**The blocks below (FluidAudio lead, spike numbers, the phased-pivot decision) are now HISTORY** — kept so a fresh
+context can see how we got here; the *current* state is the Status line above. A session of experiments (2026-06-30)
+settled what does NOT work, so a fresh context can skip re-deriving it:
 - **ASR is not the problem.** `large-v3` (whisper.cpp/Metal) is accurate; the on-device pain was *diarization* + GPU
   contention, not transcription. Don't chase a new ASR for accuracy alone.
 - **Torch-free live diarization is dead.** A wespeaker-embeddings + agglomerative-clustering prototype was degenerate
@@ -43,10 +98,67 @@ existing IPC). Caveats: a real architecture pivot (audio-AI moves Python→Swift
 DER ~26% (better than ours, not "solved"); Parakeet's NVIDIA Open Model License needs a distribution check (fine
 internally now).
 
-**RECOMMENDED NEXT STEP — a standalone Swift spike (measure before pivoting):** run FluidAudio's streaming diarizer +
-Parakeet against the recorded `outputs/recordings/*/them.wav` clips and measure (a) does its streaming diarization hold
-~2 speakers (not 5), (b) does the ANE path free the GPU so the transcript streams. If yes → plan the helper
-integration. If streaming DER is too rough → use its CoreML pyannote for an ANE-based refine and keep live labels simple.
+**SPIKE DONE (2026-06-30 eve) — FluidAudio validated; see the progress log for the full numbers.** The standalone Swift
+spike lives at `outputs/fluidaudio-spike/` (gitignored). Headline: on the two known-2-speaker clips, FluidAudio
+**offline** (pyannote community-1 CoreML) nails **2**, **online clustering** gives 2-dominant (+<1% phantom), both on
+the **ANE at 200-400x RTFx**, torch-free + ungated; Parakeet ASR (ANE) is large-v3-class. Caveat: streaming
+over-segments on harder audio (offline is the reliable reference) — improved, not solved. To re-run:
+`cd outputs/fluidaudio-spike && swift build -c release && .build/release/spike <offline|online|lseend|asr> <them.wav>`.
+
+**CHOSEN (2026-06-30 eve, with the user): the PHASED pivot (A→B).** Move on-device AI into the Swift helper on the
+ANE, smallest-risk-first. Licensing verified all-clean (FluidAudio Apache-2.0; diarization + Parakeet models both
+CC-BY-4.0 + **ungated** — removes the HF-gate distribution blocker). The all-Swift-backend question (collapse the Python
+API/DB into Swift too) is **parked as a Phase-5/distribution decision** — revisit once the AI is in Swift and we see how
+thin Python gets; the deciding variable is whether distribution-to-non-tech-users becomes a near-term priority (going
+all-Swift would delete the "bundle + notarize CPython" step, the roadmap's hardest). The IPC seam keeps it reversible.
+
+**Increments (the plan):**
+- **F1 — Offline diarizer in the helper (replaces the Python pyannote refine). DONE (2026-06-30 eve).** New Swift
+  executable `hearsay-diarize` (in `helper/`, depends on FluidAudio 0.15.4, pinned in `helper/Package.resolved`; kept a
+  separate target so the heavy CoreML dep never touches the lean capture binary) reads a wav → runs
+  `OfflineDiarizerManager` (pyannote community-1 CoreML, ANE) → emits JSON speaker turns to stdout (all FluidAudio
+  diagnostics go to stderr, so stdout is clean JSON). New Python `FluidAudioDiarizer` (an `OfflineDiarizer` impl,
+  `diarization/offline.py`) writes the samples to a temp wav (FluidAudio's loader is file-based), subprocess-invokes
+  the tool, parses turns; slots behind the existing seam so `rediarize_meeting` + both call sites (CLI `hearsay
+  rediarize` + `POST /meetings/{id}/rediarize`) are **unchanged**. New `OfflineDiarizerKind` enum +
+  `diarization.offline_backend` setting **defaults to FluidAudio**; pyannote stays opt-in (its `pyannote_model`/
+  `hf_token`/`refine_device` fields apply only to it). **Validated:** the tool + the full Python→Swift→Python path both
+  return **2 speakers / 102 turns** on the 1535 call (matches the spike + the Python pyannote we trust). +5 tests
+  (mocked subprocess: JSON parse, helper-failure, missing-binary; default-backend; pyannote opt-in) → **144 pass; ruff
+  + mypy --strict (69 files) + full `swift build` + `hearsay-helper selftest` all green**. **Win delivered: the default
+  refine no longer needs torch, pyannote, or the HF gate.** Note: `swift build` now emits one benign warning from
+  FluidAudio's *own* tree (a stray `benchmark.md` unhandled file) — third-party, build still exits clean. Uncommitted
+  on `main` (no branch/commit yet — awaiting the user). (Batch/one-shot → subcommand + JSON stdout, not the live IPC;
+  live streaming is F2.)
+- **F1b — Auto-refine at finalize. DONE (2026-06-30 eve).** The refine now runs automatically when a meeting stops
+  (inline in `SessionManager.stop_meeting` → `_maybe_auto_refine`), not just via the manual button — cheap now that F1
+  put the diarizer on the ANE. New `diarization.auto_refine` setting (default on); gated on `refine` + `them.wav`;
+  best-effort (never breaks the stop). Both stop paths (API + CLI `hearsay live`) covered. +4 tests; 148 pass; ruff +
+  mypy green. Real trigger validates on the next live meeting.
+- **F2 — Live diarizer over IPC.** Add FluidAudio online/streaming diarization to the capture helper; stream speaker
+  labels over `control.sock` live; Python fuses them onto live segments. Replaces the torch-free online clusterer.
+- **F3 — Parakeet ASR in the helper. DONE (2026-06-30 eve).** Persistent `hearsay-asr` sidecar (FluidAudio Parakeet
+  TDT v3 on the ANE) + Python `ParakeetBackend` (owns the sidecar, round-trips utterances over stdio); `ASRBackend`
+  gained `close()`; `ASRBackendKind.PARAKEET` is the **default** (whisper.cpp/mlx kept as fallback). Removes
+  whisper.cpp/Metal from the live path (the unrecoverable-Metal failure source). ~100-230 ms warm/utterance; +7 tests;
+  156 pass; swift build + selftest green. Kept Silero VAD (CPU, not the fragility source). Follow-up: the ASR-model
+  picker UI is whisper-centric (no-op under Parakeet) — tidy in F4. On-device live validation pending.
+- **F4 — Teardown.** Once F1-F3 validate, delete the now-dead Python asr/vad/diarization inference + their deps
+  (torch, pyannote, onnxruntime, pywhispercpp, mlx, kaldi-native-fbank); shrink pyproject; refresh docs.
+
+**(superseded) the three options that were on the table:** smallest→largest —
+- **(A) Offline-refine swap only.** Replace the Python pyannote refine with FluidAudio's offline CoreML diarizer in the
+  helper. Same model + accuracy we validated, but **removes both distribution blockers** (no ~2 GB torch, no HF-gated
+  model) and runs on the ANE. Medium effort, high certainty, no live-path risk. Keeps live labels as-is (online
+  clusterer) or upgrades them to FluidAudio online (still imperfect).
+- **(B) Full audio-AI pivot.** Move **ASR (Parakeet) + live + offline diarization** into the Swift helper on the ANE,
+  stream results over the existing IPC; retire whisper.cpp/Silero/pyannote from the live path. Biggest change
+  (audio-AI moves Python→Swift), **structurally kills GPU contention**, best live labels available. Pre-1.0 dep risk;
+  Parakeet's model license VERIFIED CC-BY-4.0 + ungated (2026-06-30 eve — upstream nvidia/parakeet-tdt-0.6b-v3 is CC-BY-4.0, not the restrictive NVIDIA Open Model License; commercial + redistribution OK with attribution).
+- **(C) ~~Measure more before committing.~~ DONE (2026-06-30 eve):** ran FluidAudio online diarization + Parakeet ASR
+  concurrently on the 567s clip — ~3-7% interference, both held ~400x real-time. The (b) contention risk is retired;
+  the remaining fork is purely **A vs B** (the only un-measured thing left is a true end-to-end live capture, which is
+  the validation step *after* whichever path is built).
 
 **FALLBACK if not pivoting to FluidAudio:** keep `diarization.live` OFF (the failed live setting only exists on the
 unmerged branch; `main` is already clean — online clusterer + the pyannote refine-on-stop default) and build
@@ -73,8 +185,8 @@ Docs: `README.md` + `docs/{architecture,pipeline,api,development}.md`. Design: t
 
 ```sh
 make sync                            # venv + base deps (Python 3.14)
-uv sync --extra asr                  # transcription stack (whisper.cpp + onnxruntime VAD; torch-free)
-swift build --package-path helper    # build the capture helper
+uv sync --extra asr                  # Silero VAD (onnxruntime) + numpy for PCM packing; ASR/diar/voiceprints are Swift sidecars
+make swift-build                     # build helper + sidecars: hearsay-{helper,diarize,asr,live,me} (skips FluidAudio's broken CLI)
 uv run hearsay fetch-models          # Silero VAD model (~2 MB)
 make ci                              # ruff + mypy --strict + pytest + swift selftest + audit + licenses
 cd web && npm ci && npm run build && cd ..   # build the React UI bundle (web/dist)
@@ -138,6 +250,213 @@ uv run hearsay live --model base --seconds 60   # real pipeline -> live transcri
 
 ## Progress log
 
+- **2026-07-01 (3b — deleted the Silero/`vad/` fallback; Python is now ML-dep-free).** With 3a validated, removed the
+  entire Python VAD/ASR live path: deleted the `vad/` package (Silero, Segmenter), gutted `TranscriptionPipeline` down to
+  a thin router (dropped `_emit`/`_transcribe`/`_context`/`_clean_text`/`_persist` + the `asr`/`vad_factory`/`vad`/
+  `broadcaster` params -- both streams always route to their sidecars now, a processor-less stream is drained),
+  removed session's `_asr_factory`/`_vad_factory`/`ASRFactory`/`VADFactory`, `VADSettings` (+ the `me_sidecar` toggle),
+  the `fetch-models` CLI command, and the `onnxruntime` dep (pruned from `uv.lock`/venv with flatbuffers + protobuf; mypy
+  override gone). `build_asr`/`ParakeetBackend` stay -- the post-meeting refine still uses them to re-transcribe each
+  diarizer turn. Tests: deleted `test_segmenter.py` + `test_silero_vad.py`, rewrote `test_pipeline.py` to fake-sidecar
+  routing (+ a no-processor drain test). Docs (README + architecture/pipeline/development) updated to drop Silero/
+  fetch-models/me_sidecar. **`make ci` green: ruff + mypy --strict (63 files) + 125 pytest + swift selftest + pip-audit +
+  licenses.** End state: the Python core runs **no ML models** (numpy only, to pack PCM + read them.wav); all audio-AI is
+  in the Swift sidecars on the ANE. **NEXT: a CLAUDE.md cleanup pass, then merge `feat/fluidaudio-pivot` to `main`.** See
+  [[hearsay-swift-pivot-direction]].
+- **2026-07-01 (bug fix — live pipeline survives a sidecar dying mid-meeting).** During the 3a-tune re-test the user
+  refreshed the browser mid-recording; the tap watchdog rebuilt and a live sidecar (`hearsay-me`/`hearsay-live`) died,
+  so its stdin pipe broke. `LiveSidecarProcessor.feed` had no error handling around `stdin.drain()`, so the `_consume`
+  task died with `BrokenPipeError`; at stop, `pipeline.close()`'s `await task` (under `suppress(CancelledError)` **only**)
+  re-raised it -> `POST /stop` 500'd and the meeting was left **stuck** (finalize never ran, `self._active` never cleared,
+  helper left running -> no new meeting could start). Fix (Python-only, no Swift rebuild): (1) `feed()` now catches
+  `(BrokenPipeError, ConnectionResetError)`, sets `self._broken`, logs once, no-ops further feeds (mirrors
+  `ParakeetBackend`); (2) `pipeline.close()` awaits the consume tasks defensively (log + continue on any non-Cancelled
+  exception) so finalize always runs; (3) sidecars now run with `stderr=PIPE` buffered into a 50-line ring, surfaced only
+  on a broken pipe / non-zero exit (was `DEVNULL`) -- our only window into WHY a sidecar died. +1 test
+  (`test_feed_survives_a_dead_sidecar_pipe`). **136 tests; ruff check + mypy --strict (66 files) green.** NB: the sidecar
+  death itself is **not yet root-caused** (stderr was discarded at the time; the capture stays up, only that meeting's
+  live Me/Them stopped, and the refine still recovers Them from them.wav). A sidecar restart/watchdog is a possible
+  follow-up. **The 3a-tune VAD re-test was interrupted by this crash; the user then re-ran with the fix in place and
+  confirmed "test is good" (tuned boundaries read well + no crash).**
+- **2026-07-01 (docs sweep — post-pivot architecture docs; the pre-merge carry-over).** Rewrote `docs/architecture.md`
+  + `docs/pipeline.md` end-to-end to the current Swift-sidecar architecture: the capture helper stays a lean PCM
+  streamer; ASR + diarization run in `hearsay-{live,me,diarize,asr}` on the ANE (FluidAudio); Python feeds them + persists
+  but runs no models. Removed every reference to the deleted `fusion/`, `MeetingDiarizer`, ONNX embedder, kaldi, online
+  clusterer, whispercpp/mlx, and the torch/pyannote-in-Python path; documented the turn-driven live path, the Me-sidecar
+  default + Silero fallback, and the offline refine (re-transcribe-per-turn + voiceprints). Also corrected
+  `docs/development.md` (extras table → just `asr`+`bedrock`; config + troubleshooting tables) and `docs/api.md` (ASR
+  picker → the single Parakeet model) — the older note claimed development.md was already fixed, but both still described
+  the deleted backends/extras/settings. All four docs scan clean of the dead terms. Docs-only; no code touched
+  (`git diff` = 4 files). Also ran `make swift-build` so all sidecars are built at `.build/debug/hearsay-{helper,diarize,
+  asr,live,me}` (where the default `helper_path` looks) — the 3a on-device run is ready. **Still NEXT (needs the user):
+  validate 3a (Me → `hearsay-me`) on a real meeting, then 3b (delete `vad/`/Silero + onnxruntime → zero Python ML deps),
+  then merge.** NB left for merge: `CLAUDE.md` still lists `fusion/` + pywhispercpp/mlx. See
+  [[hearsay-swift-pivot-direction]].
+- **2026-07-01 (step 3a — Me → Swift `hearsay-me` sidecar, code-complete; needs on-device validation).** New Swift
+  `hearsay-me` executable: local-mic PCM in → FluidAudio streaming VAD (`VadManager.processStreamingChunk`, 4096-sample
+  frames) finds speech boundaries → Parakeet transcribes each utterance → emits `{text,start_s,end_s}` (Me is always the
+  local speaker, no diarization). Python `LiveMeProcessor` owns it + persists "Me" segments. Factored the shared sidecar
+  plumbing (spawn/feed/read/close) into `LiveSidecarProcessor`; `LiveThemProcessor` + `LiveMeProcessor` now subclass it
+  (only `_handle` differs). Wired as the **default** Me path via `vad.me_sidecar` (default on); the Silero VAD + Python
+  ASR path stays as the gated fallback (`HEARSAY_VAD__ME_SIDECAR=false`). Pipeline now builds a stream's Segmenter + the
+  Python ASR backend **only for sidecar-less streams** (`_processor_for`), so the default path spawns no idle Parakeet/
+  Silero. **135 tests (+ `LiveMeProcessor._handle`, + pipeline me_processor routing); ruff + mypy --strict (66 files) +
+  swift build (5 products) + selftest + audit + licenses green.** Committed on `feat/fluidaudio-pivot`. **NEXT: restart
+  serve + run a real meeting to validate the streaming VAD (the only unproven piece); then 3b — delete `vad/`/Silero +
+  onnxruntime → zero ML deps. See [[hearsay-swift-pivot-direction]].**
+- **2026-06-30 (eve, step 2 done — voiceprints from FluidAudio; online-clusterer fallback deleted).** `hearsay-diarize`
+  now emits FluidAudio's per-speaker `speakerDatabase` (mean-of-segments embeddings) in its JSON; the Swift `Output`
+  gained a `speakers:[{speaker,embedding}]` field. Python `OfflineDiarizer.diarize` returns a new `DiarizationResult`
+  (`turns` + `embeddings`); the refine's `_recognize_speakers` stores each speaker's centroid (L2-normalized) + matches
+  it against prior meetings — **no more audio-embedding pass**, so the ONNX embedder is gone. Deleting it orphaned the
+  live online-clusterer fallback (it *needs* an embedder), so with the user's OK that whole fallback went too:
+  **deleted** `diarization/{onnx_embedder,manager,features,base}.py`, `transcript/diarizer.py` (`MeetingDiarizer`), the
+  `fusion/` package (`OnlineSpeakerClusterer`), `DiarizationBackendKind`, the `diarization.{enabled,live_streaming,
+  backend,model,model_path,min_embed_ms,cluster_threshold}` settings, the `kaldi-native-fbank` dep + its mypy override,
+  and the now-redundant `diarization` extra (== `asr`). `hearsay-live` is now the **only** live Them path (no off-switch;
+  refine-at-finalize stays the safety net). `pipeline.py` lost its `diarizer`/`_resolve_speaker`/`bind_speaker`; `session.py`
+  lost the embedder factory + the live-rename relay (the live sidecar has no bind API — a manual rename still relabels
+  existing segments + is carried forward by the refine). Also **deleted the obsolete `scripts/transcribe_eval.py`** (a
+  whisper.cpp A/B tool that imported the already-removed `whispercpp_backend` — it had silently broken `make typecheck`
+  since the whisper drop). Tests: deleted `test_fusion.py` + `test_diarization.py`, dropped the 2 `MeetingDiarizer`
+  pipeline tests, reworked the refine recognition test to source embeddings from the (stub) diarizer. README +
+  development.md install commands fixed (`--extra asr`, no more `--extra diarization`). **`make ci` green: ruff + mypy
+  --strict (64 files) + 133 pytest + swift build (4 products) + selftest + pip-audit + licenses; OpenAPI no drift.**
+  Committed on `feat/fluidaudio-pivot`. **NEXT: step (3) Me → `hearsay-me` sidecar (needs on-device validation), then
+  the architecture.md/pipeline.md docs sweep, then merge.** NB: step 2 invalidated stored centroids (different vector
+  space) — old voiceprints re-seed on the next refine. See [[hearsay-swift-pivot-direction]].
+- **2026-06-30 (eve, F2 validated live + step 4 done; steps 2-3 remain).** User confirmed F2 works on a real meeting
+  ("seems fine"). Then did the fully-Swift **step 4 — dropped whisper.cpp**: deleted `WhisperCppBackend` + `pywhispercpp`
+  (pruned from the venv + the `asr` extra), `build_asr` is Parakeet-only, `ASRBackendKind` reduced to `PARAKEET`, the
+  model picker is now informational (one model). OpenAPI->TS regenerated; **web typechecks; 153 pass; ruff + mypy
+  --strict (69 files) green.** Commit `3950ba1`. **Remaining fully-Swift steps (NEXT, documented for a clean
+  continuation — see [[hearsay-swift-pivot-direction]]):** (2) **voiceprints from FluidAudio** — `TimedSpeakerSegment`
+  carries an `embedding: [Float]`, so have `hearsay-diarize` emit per-speaker embeddings + the refine use them, then
+  delete the ONNX embedder + kaldi (note: invalidates existing stored centroids — a different vector space). (3)
+  **Me -> Swift** — a `hearsay-me` sidecar (FluidAudio streaming VAD + Parakeet → "Me" segments; the VAD streaming API
+  is `makeStreamState`/`processStreamingChunk`), then drop Silero + the online clusterer/`MeetingDiarizer`/`vad/` (the
+  whole VAD path) so the live pipeline is pure-sidecar. After (2)+(3) Python has zero ML deps (numpy stays only to pack
+  PCM). Both need their own build + on-device validation; deferred this session for context.
+- **2026-06-30 (eve, F2 — turn-driven live Them in Swift, code-complete; needs live validation).** With the user,
+  committed to the **full fully-Swift end state** (all audio-AI in Swift/ANE, Python = ML-free backend) via
+  **architecture B** (lean capture binary stays a PCM streamer; AI in sidecars the core feeds; Python relays bytes but
+  runs no models). Built F2 = turn-driven live Them, **no Python fusion** (the diarizer's turns ARE the segments, like
+  the refine): new Swift **`hearsay-live`** sidecar (FluidAudio LS-EEND streaming diarizer + Parakeet) — Them PCM in →
+  as each turn finalizes, transcribe it → emit `{speaker,text,start_s,end_s}`. **Validated standalone** on a recorded
+  clip (20 turns, 2 speakers, accurate text, caught the back-and-forth). Python **`LiveThemProcessor`** owns the
+  sidecar, feeds Them audio (offset-corrected), persists + broadcasts the turns (speaker→Speaker N + cluster); wired
+  into the pipeline (Them skips VAD/ASR/clusterer) + session, behind `diarization.live_streaming` (default **on**). Me
+  stays VAD+Parakeet. Online clusterer kept as the **off-fallback** (delete after on-device validation). Also fixed a
+  latent CI bug: a bare `swift build` pulled in FluidAudio's broken CLI target — Makefile now builds explicit products.
+  **154 pass; ruff + mypy --strict (70 files) + swift build + selftest green.** Commits `c5a39c4` (sidecar) `9b35e2d`
+  (build fix) `60c138e` (wiring) on `feat/fluidaudio-pivot`. **NEXT (needs the user): restart serve + run a real
+  meeting to validate live turn labels** (expect a few seconds of latency, correct speakers; refine still perfects at
+  finalize). **Then the remaining fully-Swift steps:** (2) voiceprints from FluidAudio's embeddings → drop the ONNX
+  embedder + kaldi; (3) Me → a Swift streaming-ASR sidecar → drop Silero; (4) drop whisper.cpp (Parakeet-only). After
+  (4) Python has zero audio/ML deps. See [[hearsay-swift-pivot-direction]].
+- **2026-06-30 (eve, F4 part 1 — torch removed).** With the validated FluidAudio path the default everywhere, deleted
+  the torch-heavy fallbacks: the in-process **pyannote** offline diarizer (`PyannoteDiarizer` + the `offline_backend`/
+  `pyannote_model`/`hf_token`/`refine_device` settings + `OfflineDiarizerKind` + the `diarization-pyannote` extra) and
+  the **mlx** ASR backend (`MlxBackend` + the `accel` extra + the mlx model-resolution). `build_offline_diarizer` is now
+  always FluidAudio; `build_asr` is Parakeet (default) or whisper.cpp. Dropped the `pyannote`/`torch`/`mlx_whisper` mypy
+  overrides; `hearsay rediarize` lost its pyannote `--device` flag. **`uv lock` + `uv sync` pruned the whole torch tree
+  (~2 GB: torch, torchaudio, torchcodec, triton, …) — `torch`/`pyannote` confirmed gone from the venv.** This kills the
+  biggest distribution blocker (a 2 GB bundle). **153 pass; ruff + mypy --strict (69 files) + licenses + pip-audit
+  green** (the torchcodec UNKNOWN-license noise is gone too). Kept on purpose: **whisper.cpp** as a torch-free ASR
+  fallback (`HEARSAY_ASR__BACKEND=whispercpp`) + its model picker; **Silero VAD** (live chunking) + the **ONNX voiceprint
+  embedder** (cross-meeting recall) — both onnxruntime, no torch, still used. Remaining F4: optionally drop whisper.cpp +
+  the picker for a pure-FluidAudio build (user's call); a docs/CLAUDE.md sweep (still say pyannote/torch). Committed on
+  `feat/fluidaudio-pivot`. **Next: F2 (live diarization in Swift).**
+- **2026-06-30 (eve, turn-accurate refine — splits overlapping/quick-turn-taking talkers).** On-device, Parakeet
+  accuracy + quick finalization were great, but slightly-overlapping talkers weren't split. **Diagnosed:** the Silero
+  VAD (no max-duration cap, still Python) merged a full back-and-forth into one 56 s utterance, so the diarizer's fine
+  turns (S1/S2/S1) collapsed to the dominant speaker at the segment level — the Phase-2 "segmentation ceiling." Any VAD
+  splits on silence, not speaker change, so the fix isn't a different VAD: **segment by the diarizer's turns.** Rebuilt
+  the refine — `rediarize_meeting` now, for each FluidAudio turn, slices that turn's audio and **re-transcribes it with
+  Parakeet** (the sidecar from F3), emitting one correctly-labeled segment per turn. New `SpeakerService.apply_turn_
+  diarization` (replaces `apply_diarization`): drops the coarse Them segments + clusters, creates Speaker 1..N, inserts
+  one segment per turn (Me untouched). Manual-rename carry-forward + voiceprint recognition preserved (factored
+  `_carry_forward_names`); a no-turns result leaves the transcript intact (no wipe). **The finalized transcript is now
+  fully FluidAudio/ANE-driven — Silero no longer shapes it** (it remains only the live chunker feeding Parakeet during
+  the meeting). **Validated on the real 2019 hot-ones-vaughn meeting**: the 56 s "Speaker 1" block became S1[1.7-28.7]/
+  S2[28.7-40.6]/S1[40.6-57.1], each with its own text. +3 tests rewritten (turn-rebuild) → **156 pass; ruff + mypy
+  --strict (70 files) green.** Cost: auto-refine now re-transcribes every turn (a 2nd short-lived Parakeet sidecar at
+  finalize) — still a few seconds. Committed on `feat/fluidaudio-pivot`. (Honest state: VAD + live-diar still Python;
+  F2 would move live diar to Swift. The *finalized* path is now Swift end-to-end.)
+- **2026-06-30 (eve, F3 built — Parakeet ASR on the ANE replaces whisper.cpp/Metal in the live path).** Directly fixes
+  the whisper Metal failure above. New persistent Swift sidecar **`hearsay-asr`** (FluidAudio Parakeet TDT v3): loads the
+  model once, then serves a stdio request/response loop — request `<uint32 LE n><n float32 LE>` (one VAD utterance) →
+  response `{"text":...}\n`; EOF exits. New Python **`ParakeetBackend`** (`ASRBackend` impl) owns the sidecar for the
+  meeting, round-trips each utterance over pipes (threading-lock-guarded against the stop-teardown race), parses text.
+  Added `close()` to the `ASRBackend` protocol (whisper/mlx no-op; Parakeet terminates the sidecar) + `pipeline.close()`
+  calls it after the final flush. New `ASRBackendKind.PARAKEET` + `asr.backend` **defaults to it** (whisper.cpp/mlx stay
+  available; Silero VAD unchanged — it's CPU, not the fragility source). **Measured:** warm transcribe of a real
+  utterance **~100-230 ms** (model load is a one-time ~11 s at sidecar start); transcript quality matches whisper
+  large-v3 (validated on the captured Vince Vaughn clip via the real sidecar + via `build_asr(Settings())`). +7 tests
+  (mocked sidecar: framing/parse/empty/EOF/missing-binary/close + default-backend + path) → **156 pass; ruff + mypy
+  --strict (70 files) + full swift build (3 executables) + selftest green.** Follow-up: the `GET/PUT /api/asr/model`
+  picker is still whisper-model-centric (ignored under Parakeet) — cleanup in F4. **The user must restart `serve` to pick
+  up the Parakeet default.** Uncommitted-then-committed on `feat/fluidaudio-pivot`. **Next: on-device validation of a
+  live meeting on Parakeet, then F2 (live diarization) or F4 (teardown).**
+- **2026-06-30 (eve, on-device auto-refine test → whisper-Metal failure diagnosed + a guard added).** User ran a real
+  meeting (`hot_ones_vaughn`) via `serve`, hit stop, saw "1 speaker / no Them turn". **Diagnosis (not an auto-refine
+  bug):** capture worked (them.wav = 54.7 s real audio, RMS 0.031) but the meeting had **0 transcribed segments** — in
+  the long-running serve process **whisper.cpp's Metal backend hit a transient `command buffer failed (status 3)` and
+  entered an unrecoverable error state** ("recreate the backend to recover"); whisper.cpp doesn't auto-recreate, so the
+  whole meeting produced no finals. Confirmed whisper itself is fine: transcribing the *same* them.wav offline returned
+  the correct Vince Vaughn intro. Auto-refine then ran on the empty meeting and minted a phantom "Speaker 1" (the "1
+  speaker" seen). **Fix:** `rediarize_meeting` now **skips when there are 0 Them segments** (no diarize, no phantom
+  cluster) — reordered to read segments first + early-return; +1 test (`test_rediarize_skips_when_no_them_segments`);
+  **149 pass; ruff + mypy green.** Short-term workaround: restart `serve` to recreate the whisper backend. **This is
+  exactly the whisper.cpp/Metal fragility the pivot's F3 (Parakeet ASR on the ANE) eliminates — strong evidence to
+  prioritize F3.** (The user's `hot_ones_vaughn` meeting row is empty + has a phantom cluster; safe to delete in the UI.)
+  Uncommitted-then-committed on `feat/fluidaudio-pivot`.
+- **2026-06-30 (eve, latest)** **Auto-refine at finalize built (the quick win F1 unlocked).** With the user, chose to
+  do this before the heavier live-streaming F2: now that the default offline diarizer is FluidAudio on the ANE
+  (~seconds, not 30s+ of torch), the refine runs **inline when a meeting stops** instead of only via the manual "Refine
+  speakers" button. Single hook in `SessionManager.stop_meeting` → `_maybe_auto_refine(meeting)`: gated on
+  `diarization.refine && diarization.auto_refine` (new setting, default **on**) + `them.wav` existing; best-effort
+  (a missing recording or a diarizer error is logged, **never** breaks the stop). Both stop paths (API
+  `POST /meetings/{id}/stop` + CLI `hearsay live`) funnel through `stop_meeting`, so both get it. Inline-await (not a
+  background task) sidesteps the served-vs-CLI lifecycle problem the TODO flagged — viable only because F1 made the
+  refine fast. +4 tests (runs / disabled / no-recording / error-tolerant) → **148 pass; ruff + mypy --strict (69 files)
+  green** (also fixed an `__all__` sort RUF022 that F1's targeted lint missed). Real stop→refine validates on the next
+  live meeting (now automatic). Uncommitted on `feat/fluidaudio-pivot`. **Next: F2 (live diarizer over IPC), still
+  open.**
+- **2026-06-30 (eve, later)** **Phased pivot chosen + increment F1 built — FluidAudio offline diarizer in the Swift
+  helper, replacing the default Python pyannote refine.** With the user (after the licensing questions resolved
+  all-clean — FluidAudio Apache-2.0; diarization + Parakeet models both CC-BY-4.0 + ungated), chose the **phased**
+  pivot (A→B), parking the all-Swift-backend question as a Phase-5/distribution decision. Built **F1**: new Swift
+  `hearsay-diarize` tool (FluidAudio `OfflineDiarizerManager`, ANE → JSON turns on stdout) + Python `FluidAudioDiarizer`
+  (`OfflineDiarizer` impl, subprocess + temp wav + JSON parse) + `OfflineDiarizerKind`/`offline_backend` setting
+  **defaulting to FluidAudio**; pyannote opt-in. Drop-in behind the existing seam — `rediarize_meeting` + both call
+  sites unchanged. Validated 2 speakers / 102 turns end-to-end on the 1535 call. **144 pass; ruff + mypy --strict + full
+  swift build + selftest green.** Removes torch + pyannote + the HF gate from the default refine. Full detail in the F1
+  increment entry below. Uncommitted on `main`. **Next: F2 (live diarizer streaming over IPC).**
+- **2026-06-30 (eve)** **FluidAudio spike DONE — measured on the recorded `them.wav`; the lead is validated, the
+  full pivot is the open decision.** Built a throwaway Swift spike (`outputs/fluidaudio-spike/`, gitignored) on
+  **FluidAudio 0.15.4** (Apache-2.0, vetted live; actively maintained, 61 releases). The bundled `fluidaudiocli` won't
+  link — a Swift type-checker timeout in an unrelated Nemotron *benchmark* file — so the spike links the `FluidAudio`
+  **library** directly (read the real API from the resolved checkout's CLI commands; don't trust the docs). Ran 3
+  diarizers + Parakeet ASR against the recorded clips; all CoreML models auto-download from public `FluidInference/*`
+  HF repos (**no gate, no torch**). **On the 2 known-2-speaker clips** (Hot Ones interview; the 1535 real call where
+  our torch-free clusterer reported **7**): FluidAudio **offline** (pyannote community-1 CoreML) = exactly **2** on
+  both (RTFx 28x cold / 280x warm); **online clustering** (pyannote-3.1 CoreML) = 2 dominant + a <1% phantom → **2**
+  after a trivial min-talk filter; **LS-EEND** = 2 (count right, talk balance poor — 79/6 on Hot Ones vs true ~34/46).
+  All on the **ANE at 200-400x RTFx**. **Parakeet TDT-v3 ASR (ANE)** transcribed Hot Ones at whisper-large-v3-class
+  quality, 3.6x RTFx (cold, incl. model compile). **Caveat (no over-claim):** on the 3 clips *without* ground truth,
+  offline (1-3 spk) and online (2-5 spk) **disagree** — online over-segments on harder audio, and offline *merged* the
+  two speakers of the manually-`vader`-labeled 1619 clip. So streaming is **improved, not solved** (matches the docs'
+  ~26% streaming DER); **offline** (the same model we already trust in Python) is the reliable reference. **Verdict:**
+  (a) streaming holds ~2 on clean audio — **YES**; (b) ANE frees the GPU — **YES, measured** (not just structural):
+  running FluidAudio online diarization **and** Parakeet ASR concurrently on the 567s clip cost ~3-7% — diarization
+  398x→370x, ASR 410x→399x, both still ~400x real-time. The exact opposite of the pyannote-MPS-vs-whisper-Metal
+  contention that fell progressively behind. CoreML co-schedules two AI workloads with negligible interference. (Warm
+  Parakeet ASR is 410x — the earlier 81s/292s was almost all first-run CoreML compile.) Two clean wins fell out: an
+  **offline-refine
+  swap** (FluidAudio offline = our validated pyannote, but torch-free + ungated + ANE → kills both distribution
+  blockers) and **ANE ASR** (kills GPU contention). The **full Python→Swift audio-AI pivot is the open decision** — see
+  Pick up here. Nothing merged to `main`; spike is gitignored scratch.
 - **2026-06-30 (pm)** **Live-accurate diarization investigated end-to-end; rolling-window pyannote FAILED on-device;
   FluidAudio (Apple ANE) chosen as the lead. No code merged to `main`.** Motivation: the online clusterer shows 7-8
   phantom speakers live, making naming-before-refine + dedup painful. Ruled out torch-free live (a wespeaker

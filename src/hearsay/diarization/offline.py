@@ -1,19 +1,24 @@
 """Offline (post-meeting) diarization: whole-track speaker-turn segmentation.
 
-Unlike the online :class:`~hearsay.fusion.OnlineSpeakerClusterer` (one embedding per
-VAD utterance), an offline diarizer runs over the *entire* Them track at once, so it can
-do sliding-window segmentation + global clustering + overlap handling -- which is what
-the online path cannot do when the VAD hands it multi-speaker utterances. The default
-backend wraps pyannote (the accuracy-max opt-in); the seam keeps it swappable and lets
-the refine orchestration be unit-tested with a stub.
+Unlike the live sidecar's streaming labels, an offline diarizer runs over the *entire* Them
+track at once, so it can do sliding-window segmentation + global clustering + overlap
+handling -- which the streaming path cannot do as well in real time. The backend
+wraps FluidAudio's pyannote community-1 CoreML diarizer (run on the ANE in the Swift
+helper); the seam keeps it swappable and lets the refine orchestration be unit-tested
+with a stub. Each run also returns a per-speaker voiceprint (FluidAudio's mean-of-segments
+speaker embedding) the refine stores + matches across meetings.
 """
 
 from __future__ import annotations
 
-import warnings
+import json
+import subprocess
+import tempfile
+import wave
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
+from pathlib import Path
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from hearsay.log import get_logger
 
@@ -30,6 +35,19 @@ class SpeakerTurn:
     speaker: str
     start_s: float
     end_s: float
+
+
+@dataclass(frozen=True, slots=True)
+class DiarizationResult:
+    """A whole-track diarization: speaker turns + each speaker's voiceprint.
+
+    ``embeddings`` maps a diarizer speaker label (the same label used in ``turns``) to its
+    mean speaker embedding; it may be empty (a stub, or a model that exposes no embeddings),
+    in which case cross-meeting recognition is simply skipped.
+    """
+
+    turns: list[SpeakerTurn]
+    embeddings: dict[str, list[float]]
 
 
 def order_speakers(turns: Sequence[SpeakerTurn]) -> dict[str, int]:
@@ -61,74 +79,72 @@ def assign_segment_speaker(
 
 @runtime_checkable
 class OfflineDiarizer(Protocol):
-    def diarize(self, samples: Sequence[float], *, sample_rate: int) -> list[SpeakerTurn]:
-        """Return speaker turns over ``samples`` (mono float in [-1, 1])."""
+    def diarize(self, samples: Sequence[float], *, sample_rate: int) -> DiarizationResult:
+        """Speaker turns + per-speaker voiceprints over ``samples`` (mono float in [-1, 1])."""
         ...
 
 
-class PyannoteDiarizer:
-    """pyannote ``speaker-diarization-community-1`` over an in-memory waveform.
+class FluidAudioDiarizer:
+    """FluidAudio's pyannote community-1 CoreML diarizer, run on the ANE via the helper.
 
-    The pipeline (heavy: torch) loads lazily on first :meth:`diarize`. pyannote is fed a
-    torch tensor rather than a file path, so it never touches torchcodec/ffmpeg decoding.
+    Offline inference lives in the Swift ``hearsay-diarize`` tool (it owns the CoreML/ANE
+    work + auto-downloads ungated models); this adapter runs it as a subprocess and parses
+    its JSON speaker turns. Torch-free and ungated -- no HF token, no ~2 GB torch. FluidAudio's
+    loader is file-based, so the samples are written to a temporary WAV for the tool to read.
     """
 
-    def __init__(self, *, model: str, token: str | None = None, device: str = "cpu") -> None:
-        self._model = model
-        self._token = token
-        self._device = device
-        self._pipeline: Any | None = None
+    def __init__(self, *, binary_path: Path) -> None:
+        self._binary_path = binary_path
 
-    def _ensure_pipeline(self) -> Any:
-        if self._pipeline is None:
-            import logging  # noqa: PLC0415
+    def diarize(self, samples: Sequence[float], *, sample_rate: int) -> DiarizationResult:
+        import numpy as np  # noqa: PLC0415 (optional dep; only present when refining)
 
-            import torch  # noqa: PLC0415 (optional dep; only when refining)
-
-            # huggingface_hub logs every model-file HEAD over httpx at INFO; quiet it.
-            logging.getLogger("httpx").setLevel(logging.WARNING)
-
-            # torchcodec fails to load without ffmpeg and warns loudly (a multi-line traceback)
-            # at import; we feed an in-memory tensor (never decode a file), so it's pure noise.
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore")
-                from pyannote.audio import Pipeline  # noqa: PLC0415
-
-            pipeline = Pipeline.from_pretrained(self._model, token=self._token)
-            if pipeline is None:
-                raise RuntimeError(
-                    f"could not load pyannote pipeline '{self._model}'; check the "
-                    "diarization-pyannote extra, the HF login, and gated-model access"
-                )
-            self._pipeline = pipeline.to(torch.device(self._device))
-        return self._pipeline
-
-    def diarize(self, samples: Sequence[float], *, sample_rate: int) -> list[SpeakerTurn]:
-        import torch  # noqa: PLC0415
-
-        pipeline = self._ensure_pipeline()
-        waveform = torch.tensor(samples, dtype=torch.float32).unsqueeze(0)  # (1, num_samples)
-        with warnings.catch_warnings():
-            # pyannote's pooling warns "std(): degrees of freedom <= 0" on very short frames.
-            warnings.filterwarnings("ignore", message=".*degrees of freedom.*")
-            output = pipeline({"waveform": waveform, "sample_rate": sample_rate})
-        # Exclusive diarization assigns each instant to at most one speaker, which maps
-        # cleanly onto transcript segments (overlap regions are split, not double-labelled).
-        annotation = output.exclusive_speaker_diarization
+        if not self._binary_path.exists():
+            raise RuntimeError(
+                f"hearsay-diarize not found at {self._binary_path}; build it with "
+                "`swift build --package-path helper`"
+            )
+        pcm = (np.clip(np.asarray(samples, dtype=np.float32), -1.0, 1.0) * 32767.0).astype(np.int16)
+        with tempfile.TemporaryDirectory() as tmp:
+            wav_path = Path(tmp) / "them.wav"
+            with wave.open(str(wav_path), "wb") as wav:
+                wav.setnchannels(1)
+                wav.setsampwidth(2)
+                wav.setframerate(sample_rate)
+                wav.writeframes(pcm.tobytes())
+            # Fixed argv (no shell); the tool prints JSON to stdout, diagnostics to stderr.
+            proc = subprocess.run(
+                [str(self._binary_path), str(wav_path)], capture_output=True, check=False
+            )
+        if proc.returncode != 0:
+            tail = proc.stderr.decode("utf-8", "replace").strip().splitlines()
+            raise RuntimeError(
+                f"hearsay-diarize failed ({proc.returncode}): {tail[-1] if tail else ''}"
+            )
+        data = json.loads(proc.stdout)
         turns = [
-            SpeakerTurn(speaker=str(label), start_s=float(segment.start), end_s=float(segment.end))
-            for segment, _, label in annotation.itertracks(yield_label=True)
+            SpeakerTurn(
+                speaker=str(turn["speaker"]),
+                start_s=float(turn["start_s"]),
+                end_s=float(turn["end_s"]),
+            )
+            for turn in data["turns"]
         ]
+        embeddings = {
+            str(entry["speaker"]): [float(value) for value in entry["embedding"]]
+            for entry in data.get("speakers", [])
+        }
         _log.info(
-            "pyannote diarized: %d turns, %d speakers", len(turns), len({t.speaker for t in turns})
+            "fluidaudio diarized: %d turns, %d speakers", len(turns), data.get("speaker_count", 0)
         )
-        return turns
+        return DiarizationResult(turns=turns, embeddings=embeddings)
+
+
+def diarize_helper_path(settings: Settings) -> Path:
+    """The ``hearsay-diarize`` binary (a sibling of the capture helper in the same build dir)."""
+    return settings.helper_path.with_name("hearsay-diarize")
 
 
 def build_offline_diarizer(settings: Settings) -> OfflineDiarizer:
-    """Construct the configured offline diarizer (pyannote; pipeline loads lazily)."""
-    diarization = settings.diarization
-    token = diarization.hf_token.get_secret_value() if diarization.hf_token is not None else None
-    return PyannoteDiarizer(
-        model=diarization.pyannote_model, token=token, device=diarization.refine_device
-    )
+    """Construct the offline diarizer (FluidAudio pyannote community-1 CoreML on the ANE)."""
+    return FluidAudioDiarizer(binary_path=diarize_helper_path(settings))

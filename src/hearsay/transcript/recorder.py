@@ -1,7 +1,7 @@
 """Stream the Them PCM to a WAV for post-meeting re-diarization.
 
 Recorded only when ``diarization.refine`` is enabled (raw audio is otherwise not
-retained). The meeting-time offset of the first sample is captured so a later pyannote
+retained). The meeting-time offset of the first sample is captured so a later FluidAudio diarizer
 pass can map its turn times back onto segment timestamps -- both share the host_ts clock.
 """
 
@@ -61,7 +61,7 @@ class ThemAudioRecorder:
             self._wav.close()
             self._wav = None
             # Persist the meeting-time offset so an out-of-process `rediarize` can align
-            # pyannote turn times onto segment timestamps.
+            # diarizer turn times onto segment timestamps.
             sidecar = self._path.with_suffix(".json")
             sidecar.write_text(
                 json.dumps(
