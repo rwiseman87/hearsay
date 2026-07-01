@@ -6,24 +6,21 @@ Conventions: `CLAUDE.md`.
 
 ## How to resume
 
-**Status (2026-06-30 eve):** Phases 0-2 are on `main`. The **FluidAudio / Apple-Neural-Engine pivot** is built on
-branch **`feat/fluidaudio-pivot`** (NOT yet merged to `main`): the on-device audio-AI moved off torch +
-whisper.cpp/Metal onto FluidAudio (Apache-2.0; diarization + Parakeet models CC-BY-4.0, **ungated**) running on the ANE.
-Done + validated: **F1** offline diarizer (ANE, `hearsay-diarize` sidecar) · **auto-refine at finalize** · **F3**
-Parakeet ASR (ANE, `hearsay-asr` sidecar — the only ASR backend now) · **turn-accurate refine** (re-transcribes each
-diarizer turn, so overlapping/quick-turn speakers split) · **F4** torch removal (pyannote + mlx gone) · **F2**
-turn-driven live Them (`hearsay-live` sidecar: streaming diar + Parakeet → labeled turns; **validated on a real
-meeting**) · **whisper.cpp dropped** (Parakeet-only) · **step (2) voiceprints from FluidAudio** (`hearsay-diarize` now
-emits per-speaker embeddings → the refine stores + matches them; ONNX embedder + kaldi + the whole online-clusterer
-fallback `fusion/`+`MeetingDiarizer` deleted; `hearsay-live` is the only live Them path) · **step (3a) Me → Swift
-(VALIDATED on-device 2026-07-01, minor caveats — see the 3a bullet)** — new `hearsay-me` sidecar (FluidAudio streaming VAD + Parakeet → "Me"
-utterances) + `LiveMeProcessor`; wired as the **default** Me path (`vad.me_sidecar`, default on), Silero+Python-ASR kept
-as the gated fallback. The live path is now fully Swift (Them + Me via sidecars), **no Python fusion**. **135 tests; ruff
-+ mypy --strict (66 files) + swift build (5 products) + selftest + audit + licenses all green.** Architecture = **B**:
-the capture binary (`hearsay-helper`) stays a lean PCM streamer; AI runs in Swift sidecars the Python core feeds; Python
-relays bytes but runs **no models**. End goal: Python = ML-free backend ([[hearsay-swift-pivot-direction]]).
+**Status (2026-07-01):** The **FluidAudio / Apple-Neural-Engine pivot is COMPLETE and MERGED to `main`** (`--no-ff`
+merge `00672ef`; `make ci` green — ruff + mypy --strict (63 files) + 125 pytest + swift selftest + audit + licenses).
+The on-device audio-AI moved off torch + whisper.cpp/Metal onto **FluidAudio** (Apache-2.0; diarization + Parakeet
+models CC-BY-4.0, **ungated**) on the **Apple Neural Engine**, in Swift sidecars the Python core feeds over stdio:
+`hearsay-live` (live Them — streaming diarization + Parakeet), `hearsay-me` (live Me — streaming VAD + Parakeet),
+`hearsay-diarize` (post-meeting refine), `hearsay-asr` (Parakeet, used by the refine to re-transcribe each turn). The
+**Python core runs no ML models** (numpy only, to pack PCM + read them.wav). Architecture = **B**: the capture binary
+(`hearsay-helper`) is a lean PCM streamer; all AI is in the sidecars. The whole arc (F1-F4, steps 2/3a/3b, the VAD tune,
+the sidecar-death fix, the docs + CLAUDE.md reconciliation) is in the progress log below. [[hearsay-swift-pivot-direction]]
 
-**Pick up here → merge `feat/fluidaudio-pivot` to `main`. The pivot is complete and nothing else is queued: 3a Me→Swift + VAD tune VALIDATED on-device, 3b DONE (Python is now ML-dep-free — numpy only), all docs + CLAUDE.md reconciled, sidecar-death crash fixed. All on `feat/fluidaudio-pivot`; `make ci` green.**
+**Pick up here → the pivot is DONE + merged (`main` @ `00672ef`, `make ci` green). No single next step is queued — the
+remaining roadmap items are parallel forks (see "Also still open" below): Phase 3 (calendar roster + OCR active-speaker),
+Phase 4 (LLM notes + Bedrock), Phase 5 (packaging), or the now-unblocked **all-Swift-backend decision** (Python is
+ML-free, so the parked "collapse the Python API/DB into Swift too" question is revisitable). Pick a direction. The
+pivot's own bullets (3a/3b/CLAUDE.md) below are retained as recently-completed history.**
 - **(3a) Me → Swift — VALIDATED on-device (2026-07-01).** Ran a real meeting via `serve`: `hearsay-me` (streaming VAD +
   Parakeet) produced "Me" utterances, "working OK." Two caveats the user flagged: (i) turn-end boundaries a little iffy
   when a turn ends with a short/no pause, and (ii) some Parakeet ASR accuracy misses. Root cause of (i): `hearsay-me`
