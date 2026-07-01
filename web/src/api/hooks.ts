@@ -39,10 +39,19 @@ export function useStartMeeting() {
   });
 }
 
+// Stop runs the inline auto-refine (re-diarize + re-transcribe every turn; a cold Parakeet
+// sidecar load alone is ~11s), so it can take far longer than the 15s default -- give it the
+// same long timeout as the manual refine. Too short and the client aborts before onSuccess can
+// invalidate, so the UI never refetches the refined transcript the server did finish writing.
+const REFINE_TIMEOUT_MS = 600_000;
+
 export function useStopMeeting() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (id: string) => api.post<MeetingRead>(`/api/meetings/${id}/stop`),
+    mutationFn: (id: string) =>
+      api.post<MeetingRead>(`/api/meetings/${id}/stop`, undefined, {
+        timeoutMs: REFINE_TIMEOUT_MS,
+      }),
     onSuccess: () => qc.invalidateQueries({ queryKey: queryKeys.meetings.all }),
   });
 }
@@ -86,16 +95,14 @@ export function useRenameSpeaker(meetingId: string) {
   });
 }
 
-// Post-meeting pyannote re-diarization. Slow, so it gets a long timeout; on success
-// the transcript + speaker labels are rewritten server-side, so refresh both trees.
-const REDIARIZE_TIMEOUT_MS = 600_000;
-
+// Post-meeting re-diarization. Slow, so it gets a long timeout; on success the transcript +
+// speaker labels are rewritten server-side, so refresh both trees.
 export function useRediarize(meetingId: string) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: () =>
       api.post<PageSpeaker>(`/api/meetings/${meetingId}/rediarize`, undefined, {
-        timeoutMs: REDIARIZE_TIMEOUT_MS,
+        timeoutMs: REFINE_TIMEOUT_MS,
       }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: queryKeys.meetings.all });

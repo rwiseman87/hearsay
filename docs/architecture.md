@@ -176,8 +176,9 @@ The heart of a running meeting.
 - `live_base.py` — `LiveSidecarProcessor`: the shared plumbing for a streaming sidecar (spawn,
   feed PCM on stdin, read NDJSON on stdout, drain the finalized tail on close). Subclasses
   implement `_handle` to persist + broadcast one emitted segment.
-- `live.py` — `LiveThemProcessor`: owns `hearsay-live`, maps each emitted turn's 0-based speaker
-  to a `Speaker N` label + `Cluster` row, persists + broadcasts it.
+- `live.py` — `LiveThemProcessor`: owns `hearsay-live`, maps each finalized turn's 0-based speaker
+  to a `Speaker N` label + `Cluster` row, persists + broadcasts it; also broadcasts the sidecar's
+  speaker-less **partials** (UI only, labeled `Them` until the turn's speaker is assigned).
 - `live_me.py` — `LiveMeProcessor`: owns `hearsay-me`, streaming the live "Me" transcript —
   broadcasts partials (UI only) and persists + broadcasts finals (always labeled `Me`, never
   diarized).

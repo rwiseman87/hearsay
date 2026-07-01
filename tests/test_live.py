@@ -7,6 +7,7 @@ reuse per speaker, and persistence.
 
 from __future__ import annotations
 
+import json
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from pathlib import Path
@@ -86,6 +87,47 @@ async def test_handle_persists_labels_and_reuses_clusters(database: Database) ->
     assert sorted(c.ordinal for c in clusters) == [1, 2]
     assert them[0].cluster_id == them[2].cluster_id  # both "Speaker 1"
     assert len(sink.lines) == 3  # each turn appended to the transcript
+
+
+async def test_partials_broadcast_but_not_persisted(database: Database) -> None:
+    async with database.session() as session:
+        meeting = await MeetingService(session).create(
+            title="M", folder="m", started_at=datetime.now(UTC)
+        )
+    sink = _FakeSink()
+    broadcaster = Broadcaster()
+    processor = LiveThemProcessor(
+        binary_path=Path("unused"),
+        meeting_id=meeting.id,
+        database=database,
+        broadcaster=broadcaster,
+        sink=sink,
+    )
+
+    with broadcaster.subscribe() as queue:
+        # A speaker-less partial (speaker -1) streams to the UI only; the finalized turn is
+        # persisted + labeled with the diarizer speaker.
+        await processor._handle(
+            {"kind": "partial", "speaker": -1, "text": "hello wor", "start_s": 1.0, "end_s": 1.5}
+        )
+        await processor._handle(
+            {"kind": "final", "speaker": 0, "text": "hello world", "start_s": 1.0, "end_s": 2.0}
+        )
+        events = [json.loads(queue.get_nowait()) for _ in range(queue.qsize())]
+
+    assert [(e["kind"], e["speaker_label"]) for e in events] == [
+        ("partial", "Them"),
+        ("final", "Speaker 1"),
+    ]
+    async with database.session() as session:
+        segments, total = await MeetingService(session).list_segments(
+            meeting.id, page=1, page_size=100
+        )
+        clusters = await SpeakerService(session).list_clusters(meeting.id)
+    # Only the final is persisted (one segment, one cluster); the partial left no rows.
+    assert total == 1 and segments[0].text == "hello world"
+    assert [c.ordinal for c in clusters] == [1]
+    assert len(sink.lines) == 1  # only the final was appended to the transcript
 
 
 async def test_feed_survives_a_dead_sidecar_pipe(database: Database) -> None:
