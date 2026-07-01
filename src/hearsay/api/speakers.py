@@ -56,7 +56,7 @@ async def rediarize(meeting_id: UUID, context: ContextDep) -> Page[SpeakerRead]:
     """Re-diarize the recorded Them track (FluidAudio on the ANE) and return the new speakers.
 
     The heavy diarization runs in the helper, off-loop. 404 if the meeting is
-    unknown, 409 if it has no recorded ``them.wav`` (diarization.refine was off)."""
+    unknown, 409 if it has no recorded ``audio.wav`` (audio.record was off)."""
     async with context.database.session() as session:
         if await MeetingService(session).get(meeting_id) is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="meeting not found")

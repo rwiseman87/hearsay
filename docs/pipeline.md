@@ -17,10 +17,10 @@ flowchart LR
     MC["media_channel\nper-stream AudioChunk queues"]
     Them["LiveThemProcessor\nfeeds Them PCM -> hearsay-live"]
     Me["LiveMeProcessor\nfeeds Me PCM -> hearsay-me"]
-    Rec["ThemAudioRecorder\nthem.wav (for the refine)"]
+    Rec["MeetingAudioRecorder\naudio.wav (Me=L, Them=R)"]
     MC -->|Them| Them
     MC -->|Me| Me
-    MC -->|Them| Rec
+    MC -->|Me + Them| Rec
   end
   subgraph Sidecars["Swift sidecars (FluidAudio / ANE)"]
     SL["hearsay-live\nstreaming diarize + Parakeet"]
@@ -106,14 +106,16 @@ inside the sidecar on the ANE — the Python side never touches a model.
 
 The pipeline runs no ML itself: it routes each stream's PCM to its processor and does nothing
 else with the samples. A stream with no processor (e.g. a missing sidecar binary) is drained
-without transcription — the Them track is still recorded for the refine.
+without transcription — the audio is still recorded.
 
-### 4. Recording the Them track for the refine
+### 4. Recording the meeting audio
 
-When `diarization.refine` is on (the default), a `ThemAudioRecorder` streams the raw Them
-samples to `<folder>/them.wav` (stdlib `wave`), capturing the first sample's meeting-time
-offset in a sidecar file. Me is never recorded. This is the input the post-meeting refine
-re-diarizes; it is the only raw-audio retention and can be turned off.
+When `audio.record` is on (the default), a `MeetingAudioRecorder` accumulates one
+timeline-accurate **stereo** WAV, `<folder>/audio.wav` — Me on the left channel, Them on the
+right, each placed by meeting time so sample N is meeting time N/rate. This single file serves
+both the in-browser playback (see the audio endpoint) and the post-meeting refine, which reads
+its Them (right) channel. It is the only raw-audio retention and can be turned off (which also
+disables the refine — no recording to re-diarize).
 
 ### 5. Fan-out per segment
 
@@ -141,9 +143,9 @@ globally and handles overlap better. `rediarize_meeting` runs automatically at s
 `diarization.auto_refine` is on) and on demand via the "Refine speakers" button /
 `hearsay rediarize`:
 
-- diarize the whole `them.wav` with `FluidAudioDiarizer` (the `hearsay-diarize` helper —
-  FluidAudio's pyannote community-1 CoreML model on the ANE), which returns speaker turns
-  **and** each speaker's mean voiceprint,
+- diarize the whole Them track (the right channel of `audio.wav`) with `FluidAudioDiarizer` (the
+  `hearsay-diarize` helper — FluidAudio's pyannote community-1 CoreML model on the ANE), which
+  returns speaker turns **and** each speaker's mean voiceprint,
 - **re-transcribe each turn's audio span** with Parakeet, so the transcript follows speaker
   changes turn by turn (`apply_turn_diarization` drops the coarse live Them segments/clusters
   and writes one segment per turn as `Speaker 1..N`; Me is untouched),

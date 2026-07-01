@@ -52,7 +52,7 @@ async def database(tmp_path: Path) -> AsyncIterator[Database]:
 
 
 async def _finalized_candidate(
-    database: Database, settings: Settings, *, folder: str = "meet-1", them: bool = True
+    database: Database, settings: Settings, *, folder: str = "meet-1", recorded: bool = True
 ) -> Meeting:
     async with database.session() as session:
         meeting = await MeetingService(session).create(
@@ -60,8 +60,8 @@ async def _finalized_candidate(
         )
     meeting_dir = settings.output_dir / folder
     meeting_dir.mkdir(parents=True, exist_ok=True)
-    if them:
-        (meeting_dir / "them.wav").write_bytes(b"")  # existence is all the pre-check needs
+    if recorded:
+        (meeting_dir / "audio.wav").write_bytes(b"")  # existence is all the pre-check needs
     return meeting
 
 
@@ -109,14 +109,14 @@ async def test_auto_refine_skips_without_recording(
     database: Database, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     settings = Settings(output_dir=tmp_path / "out")
-    meeting = await _finalized_candidate(database, settings, them=False)
+    meeting = await _finalized_candidate(database, settings, recorded=False)
     calls: list[UUID] = []
     monkeypatch.setattr(session_mod, "rediarize_meeting", _record_calls(calls))
 
     manager = SessionManager(database=database, settings=settings, capture_factory=_FakeCapture)
     await manager.stop_meeting(meeting.id)
 
-    assert calls == []  # no them.wav -> nothing to refine
+    assert calls == []  # no audio.wav -> nothing to refine
 
 
 async def test_auto_refine_error_does_not_break_stop(

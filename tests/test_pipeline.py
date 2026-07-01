@@ -50,14 +50,14 @@ class FakeProcessor:
 
 
 class FakeRecorder:
-    """Records the Them chunks written to it; stands in for ThemAudioRecorder."""
+    """Records the chunks written to it; stands in for MeetingAudioRecorder."""
 
     def __init__(self) -> None:
-        self.writes: list[tuple[int, float]] = []
+        self.writes: list[tuple[int, float, Stream]] = []
         self.closed = False
 
-    def write(self, samples: Sequence[float], *, t0_s: float) -> None:
-        self.writes.append((len(samples), t0_s))
+    def write(self, samples: Sequence[float], *, t0_s: float, stream: Stream) -> None:
+        self.writes.append((len(samples), t0_s, stream))
 
     def close(self) -> None:
         self.closed = True
@@ -80,12 +80,12 @@ async def test_pipeline_routes_each_stream_to_its_sidecar(tmp_path: Path) -> Non
 
     me_processor = FakeProcessor()
     them_processor = FakeProcessor()
-    them_recorder = FakeRecorder()
+    audio_recorder = FakeRecorder()
     pipeline = TranscriptionPipeline(
         meeting_id=meeting.id,
         database=database,
         sink=LocalMarkdownSink(),
-        them_recorder=them_recorder,  # type: ignore[arg-type]
+        audio_recorder=audio_recorder,  # type: ignore[arg-type]
         them_processor=them_processor,  # type: ignore[arg-type]
         me_processor=me_processor,  # type: ignore[arg-type]
     )
@@ -106,9 +106,11 @@ async def test_pipeline_routes_each_stream_to_its_sidecar(tmp_path: Path) -> Non
     assert them_processor.started and them_processor.closed
     assert me_processor.fed == [(5 * FRAME, 0.0)]
     assert them_processor.fed == [(3 * FRAME, 0.0)]
-    # Only the Them track is recorded (for the post-meeting refine); Me is never recorded.
-    assert them_recorder.writes == [(3 * FRAME, 0.0)]
-    assert them_recorder.closed
+    # Both streams go into the one stereo track (Me = left, Them = right).
+    assert sorted(audio_recorder.writes) == sorted(
+        [(5 * FRAME, 0.0, Stream.ME), (3 * FRAME, 0.0, Stream.THEM)]
+    )
+    assert audio_recorder.closed
     # The fakes persist nothing, so the pipeline itself writes no segments (real sidecars do).
     assert segments == []
 

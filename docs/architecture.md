@@ -182,12 +182,13 @@ The heart of a running meeting.
 - `live_me.py` — `LiveMeProcessor`: owns `hearsay-me`, streaming the live "Me" transcript —
   broadcasts partials (UI only) and persists + broadcasts finals (always labeled `Me`, never
   diarized).
-- `recorder.py` — `ThemAudioRecorder`: streams the Them track to `<folder>/them.wav` (only when
-  `diarization.refine` is on) plus an offset sidecar, so the post-meeting refine can map turns
-  back onto meeting time.
+- `recorder.py` — `MeetingAudioRecorder`: accumulates one timeline-accurate stereo WAV,
+  `<folder>/audio.wav` (Me = left, Them = right), when `audio.record` is on. Serves both playback
+  and the refine (which reads the Them channel).
 - `refine.py` — `rediarize_meeting`: the offline re-diarization. Runs `FluidAudioDiarizer` over
-  the whole `them.wav`, re-transcribes each turn with Parakeet, rebuilds the Them transcript one
-  segment per turn, carries manual renames forward, and stores + matches voiceprints. Runs
+  the Them channel of `audio.wav`, re-transcribes each turn with Parakeet, rebuilds the Them
+  transcript one segment per turn, carries manual renames forward, and stores + matches
+  voiceprints. Runs
   automatically at stop and on demand.
 - `broadcast.py` — `Broadcaster`, an in-process pub/sub that fans JSON event strings to
   active WebSocket subscribers.
