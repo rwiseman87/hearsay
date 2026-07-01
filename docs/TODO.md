@@ -44,12 +44,24 @@ the FluidAudio pivot:
    to `main`** (`--no-ff` merge `be8cb8f`; `make ci` green — 138 pytest + mypy --strict 64 files + swift selftest + audit +
    licenses; web tsc/build green).
 
-**Next (nothing in flight):** the longer-horizon forks are all that remain open — Phase 3 (calendar roster + OCR
-active-speaker naming), Phase 4 (LLM notes + Bedrock), Phase 5 (packaging/distribution), the all-Swift-backend decision
-(revisit now that Python is ML-free), and the deferred higher-fi playback (a parallel HQ capture stream). The pivot is
-DONE + merged (`main` @ `00672ef`); playback + streaming-Me merged (`main` @ `de7a436`); streaming-Them + the two
-finalize fixes merged (`main` @ `be8cb8f`). A possible small follow-up if the `Them` partial label reads oddly next to
-`Speaker N`: change it to blank or `Speaker …` (trivial).
+**Next — the user's current focus (three items, 2026-07-01):**
+1. **Dead-code removal — DONE on branch `chore/dead-code-cleanup` (`85616dc`), ci-green, awaiting merge.** Removed the
+   vestigial ASR model picker (endpoints + schemas + UI + `ASRSettings`/`ASRBackendKind`/`models_dir`/the no-op `--model`
+   flag) and stale whisper/mlx/fusion comments; ~520 lines gone. Behavior-neutral (Parakeet was already the only ASR path,
+   ignoring every picker knob). `make ci` (62 mypy files, 135 pytest) + `make web-ci` green. Phase-3 placeholder enums
+   (`ActiveSpeakerMode`, `NameHintSource`) kept as scaffolding.
+2. **Consolidate the WAV files to one (if possible).** Today a meeting writes `them.wav` (Them-only, for the refine) +
+   `audio.wav` (mixed Me+Them, peak-normalized, for playback). Likely collapsible to ONE stereo WAV (L=Me, R=Them): the
+   refine reads the Them channel, playback plays the stereo (or downmixes). Tradeoff to settle: L/R-spatial playback vs a
+   centered downmix. Touches `recorder.py`, the audio endpoint, `refine.py`, and the `<audio>` playback path.
+3. **Post-meeting accuracy refinement + note distillation + action-item outcomes.** This is Phase-4-sized (LLM notes +
+   extraction): a higher-accuracy post pass, LLM summary/notes (`notes.md`), and action-item extraction. Needs its own
+   design pass (LLM provider = local OpenAI-compatible default + Bedrock per the plan; prompts; schema; storage; UI).
+
+**Longer-horizon forks (still open):** Phase 3 (calendar roster + OCR active-speaker naming), Phase 5 (packaging), the
+all-Swift-backend decision (revisit now that Python is ML-free), the deferred higher-fi playback (a parallel HQ capture
+stream), and the trivial `Them`-partial-label tweak. The pivot is DONE + merged (`main` @ `00672ef`); playback +
+streaming-Me merged (`de7a436`); streaming-Them + finalize fixes merged (`be8cb8f`).
 
 **Two carry-over notes for whoever picks this up:** (a) the committed VAD-tune config `VadSegmentationConfig(minSilence
 Duration: 0.45, speechPadding: 0.2)` on `main`/earlier commits trips FluidAudio's debug `assert(speechPadding <=
@@ -281,6 +293,21 @@ uv run hearsay live --seconds 60     # real pipeline -> live transcripts (on-dev
 
 ## Progress log
 
+- **2026-07-01 (dead-code cleanup — removed the vestigial ASR picker + pivot remnants; branch `chore/dead-code-cleanup`,
+  `85616dc`).** First of the user's three new focus items. Audited with vulture + grep: the pivot cleanup was already
+  thorough, but the **ASR model picker** was fully vestigial (Parakeet-only in the `hearsay-asr` sidecar with one bundled
+  model, so `ParakeetBackend` ignores every knob). Removed the whole feature and the now-dead config around it: `api/asr.py`
+  + `schemas/asr.py` (GET/PUT routes, ASRStatus/ASRSelect/ModelInfoRead), the frontend `ModelPicker` + `useAsrStatus`/
+  `useSetAsrModel` + `.model-picker` CSS + dead type re-exports, `ASRSettings` (backend/model/language/beam_size/
+  condition_on_previous_text/context_reset_gap_s — all whisper-era, **zero reads**), the `asr` settings group, the unread
+  `models_dir` setting, the `ASRBackendKind` enum, `available_models()`/`ModelInfo`, the never-passed `language`/`prompt`
+  params on `ASRBackend.transcribe`, and the no-op `hearsay live --model` flag. Fixed stale whisper/mlx/**fusion** comments
+  in `asr/base.py`, `parakeet_backend.py`, `services/speakers.py`, `models/segment.py`, `capture_debug.py`; updated README
+  + `docs/{api,architecture,development}.md`; regenerated OpenAPI + web TS. **Net ~520 lines removed. `make ci` green (62
+  mypy files, 135 pytest, swift selftest, audit, licenses); `make web-ci` green (codegen drift clean, tsc + vite build);
+  vulture (conf 80) clean.** Kept `ActiveSpeakerMode`/`NameHintSource` as Phase-3 scaffolding (user's call). Behavior-neutral
+  — no on-device validation needed. NB: a stray 1.4 GB `Archive.zip` was found untracked in the repo root (not created by
+  this work; left for the user, not committed). **NEXT: WAV consolidation, then post-meeting notes/action-items.**
 - **2026-07-01 (Them streaming + the two finalize fixes VALIDATED on-device + MERGED to `main`).** User confirmed "it's
   working ok" — live Them captions stream in speaker-less then snap to `Speaker N` at turn end, no post-stop duplication,
   and the refined transcript now loads without a manual refresh. ANE was fine with `hearsay-live` holding 3 models
