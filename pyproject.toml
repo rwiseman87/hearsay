@@ -17,9 +17,9 @@ dependencies = [
 
 [project.optional-dependencies]
 # ASR (Parakeet) + diarization (pyannote community-1) + voiceprints all run in the Swift
-# helpers on the ANE -- no Python ML dep. This extra is just Silero VAD (onnxruntime) + numpy
-# for packing PCM for the sidecars. (Both are removed once Me moves to a Swift sidecar too.)
-asr = ["onnxruntime>=1.27", "numpy>=2.2"]
+# helpers on the ANE -- no Python ML dep. This extra is just numpy, used to pack PCM for the
+# sidecars (live_base.feed) and to read them.wav in the refine.
+asr = ["numpy>=2.2"]
 bedrock = ["boto3>=1.35"]
 
 [project.scripts]
@@ -67,8 +67,6 @@ exclude = ["src/hearsay/db/migrations/"]
 
 [[tool.mypy.overrides]]
 module = [
-    "onnxruntime.*",
-    "silero_vad.*",
     "numpy.*",
 ]
 ignore_missing_imports = true

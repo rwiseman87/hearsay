@@ -13,13 +13,13 @@ How to set up, build, run, test, and troubleshoot the project from source.
 
 ```sh
 make sync                                  # venv + base deps
-uv sync --extra asr                        # Silero VAD (onnxruntime) + numpy for PCM packing
-make swift-build                           # build hearsay-helper + ASR/diarization sidecars
-uv run hearsay fetch-models                # Silero VAD into models_dir (Swift sidecar models auto-download)
+uv sync --extra asr                        # numpy, to pack PCM for the sidecars + read them.wav
+make swift-build                           # build hearsay-helper + the FluidAudio/ANE sidecars
 ```
 
-The base install (no extras) is enough for the API and the test suite; the `asr` + `diarization`
-extras add the ML stack needed to transcribe and diarize.
+The base install (no extras) is enough for the API and the test suite. The `asr` extra adds
+numpy (the only remaining runtime dep the pipeline needs); all ASR + diarization runs in the
+Swift sidecars, whose CoreML models auto-download on first use.
 
 ## Make targets
 
@@ -101,18 +101,18 @@ The Phase 0 truth test: captures both streams for N seconds and writes `me.wav` 
 
 | Extra | Adds | For |
 |---|---|---|
-| `asr` | onnxruntime, numpy (torch-free) | Silero VAD (the Me fallback path) + PCM packing for the sidecars |
+| `asr` | numpy (torch-free) | packing PCM for the sidecars + reading `them.wav` in the refine |
 | `bedrock` | boto3 | Phase 4 (cloud LLM, lazy-imported) |
 
 ASR, diarization, and voiceprints all run in the Swift sidecars on the ANE, so Python carries
-no ML dependency. The `asr` extra is now just Silero VAD (onnxruntime) for the Me fallback plus
-numpy to pack PCM; both go away once the `hearsay-me` sidecar is validated on-device.
+**no ML dependency** — the `asr` extra is now just numpy (the name is historical). The base
+install plus this one extra is the full runtime.
 
 **ASR + diarization models.** These live in the Swift sidecars (FluidAudio on the ANE): Parakeet
 TDT for ASR (`hearsay-asr` / `hearsay-me` / `hearsay-live`), pyannote community-1 as CoreML for
 the offline diarizer (`hearsay-diarize`). Their CoreML models are ungated and auto-download +
-compile on first use — no `fetch-models`, no HF token. There is no meaningful ASR picker:
-Parakeet ships one bundled model, which `GET /api/asr/models` reports for the UI.
+compile on first use — no fetch step, no HF token. There is no meaningful ASR picker: Parakeet
+ships one bundled model, which `GET /api/asr/models` reports for the UI.
 
 **Diarization.** The live Them stream is labeled Speaker 1..N by the `hearsay-live` sidecar. The
 post-meeting refine (`HEARSAY_DIARIZATION__REFINE`, default on) re-diarizes the whole Them track
@@ -132,8 +132,6 @@ All config flows through `hearsay.config.Settings`. Common overrides (env vars a
 | Output dir | `HEARSAY_OUTPUT_DIR` | `<repo>/outputs/recordings` |
 | Models dir | `HEARSAY_MODELS_DIR` | `<repo>/outputs/models` |
 | ASR backend | `HEARSAY_ASR__BACKEND` | `parakeet` (the only backend) |
-| Live "Me" via Swift sidecar | `HEARSAY_VAD__ME_SIDECAR` | `true` |
-| VAD thresholds (Me fallback) | `HEARSAY_VAD__THRESHOLD`, `HEARSAY_VAD__MIN_SILENCE_MS`, ... | see `config/settings.py` |
 | Post-meeting refine (records them.wav) | `HEARSAY_DIARIZATION__REFINE` | `true` |
 | Auto-refine at finalize | `HEARSAY_DIARIZATION__AUTO_REFINE` | `true` |
 
@@ -150,14 +148,13 @@ make test                 # Python + Swift cross-language self-test
 - DB tests use SAVEPOINT/nested-transaction isolation (`tests/conftest.py`): the schema is
   created once on a temp file and each test runs inside an outer transaction rolled back at
   teardown, so even code that commits stays isolated.
-- The `Segmenter` and `MeetingService` are pure/in-memory and unit-tested directly.
+- `MeetingService` and `SpeakerService` are in-memory and unit-tested directly.
 - API tests use Starlette's `TestClient` with a temp DB and a fake capture (no helper).
-- The pipeline is tested end to end with fakes (fake media + stub VAD + fake ASR).
-- The offline diarizer + refine are tested with a stub diarizer (no ML deps): the Swift
-  `hearsay-diarize` JSON parsing, turn->segment mapping, and cross-meeting voiceprint match.
-- Tests that need the real ML stack are **guarded**: the Silero VAD tests skip unless
-  `onnxruntime` is installed (it runs after `uv sync --extra asr`); the helper integration
-  test skips unless the Swift binary is built.
+- The pipeline is tested end to end with fake media + fake sidecar processors: each stream's
+  PCM routes to its processor, and the Them track is recorded.
+- The sidecar processors are tested against their NDJSON contract, including the broken-pipe
+  resilience path; the offline diarizer + refine use a stub diarizer (no ML deps).
+- The helper integration test skips unless the Swift binary is built.
 
 ## Troubleshooting
 
@@ -171,9 +168,6 @@ make test                 # Python + Swift cross-language self-test
 - **"helper binary not found" / a sidecar's live transcription is off.** Build them all:
   `make swift-build`. The default capture-helper path is `helper/.build/debug/hearsay-helper`
   (override via `HEARSAY_HELPER_PATH`); the sidecars are located as its siblings.
-- **Silero "model not found".** Only the Me fallback path (`HEARSAY_VAD__ME_SIDECAR=false`) needs
-  the Silero model — run `uv run hearsay fetch-models` to fetch it. The default sidecar path and
-  the diarizer auto-download their own CoreML models.
 - **Speakers over- or under-merge.** The live labels are approximate; run the refine ("Refine
   speakers" / `hearsay rediarize <id>`) for a more accurate whole-track re-diarization. Manual
   renames are carried across a re-diarize.

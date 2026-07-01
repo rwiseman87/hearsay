@@ -2,9 +2,9 @@
 
 ``SessionManager`` owns the single active :class:`MeetingSession` (Phase 1 records
 one meeting at a time). A session creates the meeting row + folder, drives capture,
-and runs the transcription pipeline (media -> VAD -> ASR -> DB + transcript.md + WS).
-The ASR/VAD/sink dependencies are injected so the lifecycle is testable without the
-helper or the ML stack; the real factories build Parakeet + Silero on demand.
+and runs the transcription pipeline, which routes each stream's PCM to its Swift sidecar
+(``hearsay-live`` for Them, ``hearsay-me`` for Me). The capture/sink dependencies are
+injected so the lifecycle is testable without the helper.
 """
 
 from __future__ import annotations
@@ -16,7 +16,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 from uuid import UUID
 
-from hearsay.asr import ASRBackend, build_asr
 from hearsay.config.settings import Settings
 from hearsay.db import Database
 from hearsay.export import LocalMarkdownSink, MeetingMeta, TranscriptSink
@@ -31,14 +30,10 @@ from hearsay.transcript.live_me import LiveMeProcessor
 from hearsay.transcript.pipeline import TranscriptionPipeline
 from hearsay.transcript.recorder import ThemAudioRecorder
 from hearsay.transcript.refine import RefineError, rediarize_meeting
-from hearsay.vad import VAD
-from hearsay.vad.silero import SileroVAD
 
 _log = get_logger("hearsay.session")
 
 CaptureFactory = Callable[[], Capture]
-ASRFactory = Callable[[], ASRBackend]
-VADFactory = Callable[[], VAD]
 SinkFactory = Callable[[], TranscriptSink]
 PipelineFactory = Callable[[], TranscriptionPipeline]
 
@@ -90,23 +85,6 @@ def _default_capture_factory(settings: Settings) -> CaptureFactory:
     return make
 
 
-def _default_asr_factory(settings: Settings) -> ASRFactory:
-    def make() -> ASRBackend:
-        return build_asr(settings)
-
-    return make
-
-
-def _default_vad_factory(settings: Settings) -> VADFactory:
-    model_path = settings.vad.model_path
-    assert model_path is not None  # filled by Settings' validator
-
-    def make() -> VAD:
-        return SileroVAD(model_path)
-
-    return make
-
-
 def _default_title(when: datetime) -> str:
     return f"Meeting {when:%Y-%m-%d %H:%M}"
 
@@ -118,15 +96,11 @@ class SessionManager:
         database: Database,
         settings: Settings,
         capture_factory: CaptureFactory | None = None,
-        asr_factory: ASRFactory | None = None,
-        vad_factory: VADFactory | None = None,
         sink_factory: SinkFactory | None = None,
     ) -> None:
         self._db = database
         self._settings = settings
         self._capture_factory = capture_factory or _default_capture_factory(settings)
-        self._asr_factory = asr_factory or _default_asr_factory(settings)
-        self._vad_factory = vad_factory or _default_vad_factory(settings)
         self._sink_factory = sink_factory or LocalMarkdownSink
         self._active: MeetingSession | None = None
         self._lock = asyncio.Lock()
@@ -140,7 +114,8 @@ class SessionManager:
     ) -> PipelineFactory:
         def make() -> TranscriptionPipeline:
             sink = self._sink_factory()
-            # Turn-driven live Them: the Swift sidecar does diarization + ASR + persistence.
+            # Both live streams run in Swift sidecars (VAD/diarization + ASR + persistence on the
+            # ANE): Them -> hearsay-live, Me -> hearsay-me.
             them_processor = LiveThemProcessor(
                 binary_path=self._settings.helper_path.with_name("hearsay-live"),
                 meeting_id=meeting_id,
@@ -148,20 +123,13 @@ class SessionManager:
                 broadcaster=broadcaster,
                 sink=sink,
             )
-            # Live Me: the Swift hearsay-me sidecar (streaming VAD + Parakeet). Default; falls back
-            # to the Python VAD + ASR path (which needs an ASR backend) when me_sidecar is off.
-            me_processor: LiveMeProcessor | None = None
-            asr: ASRBackend | None = None
-            if self._settings.vad.me_sidecar:
-                me_processor = LiveMeProcessor(
-                    binary_path=self._settings.helper_path.with_name("hearsay-me"),
-                    meeting_id=meeting_id,
-                    database=self._db,
-                    broadcaster=broadcaster,
-                    sink=sink,
-                )
-            else:
-                asr = self._asr_factory()
+            me_processor = LiveMeProcessor(
+                binary_path=self._settings.helper_path.with_name("hearsay-me"),
+                meeting_id=meeting_id,
+                database=self._db,
+                broadcaster=broadcaster,
+                sink=sink,
+            )
             them_recorder = (
                 ThemAudioRecorder(folder / "them.wav")
                 if self._settings.diarization.refine
@@ -171,16 +139,9 @@ class SessionManager:
                 meeting_id=meeting_id,
                 database=self._db,
                 sink=sink,
-                broadcaster=broadcaster,
-                asr=asr,
-                vad_factory=self._vad_factory,
-                vad=self._settings.vad,
                 them_recorder=them_recorder,
                 them_processor=them_processor,
                 me_processor=me_processor,
-                language=self._settings.asr.language,
-                condition_on_previous_text=self._settings.asr.condition_on_previous_text,
-                context_reset_gap_s=self._settings.asr.context_reset_gap_s,
             )
 
         return make

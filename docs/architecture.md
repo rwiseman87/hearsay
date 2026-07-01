@@ -34,7 +34,7 @@ flowchart TB
     SL["hearsay-live (Them: diarize + Parakeet)"]
     SMe["hearsay-me (Me: VAD + Parakeet)"]
     SD["hearsay-diarize (offline refine)"]
-    SA["hearsay-asr (Parakeet, refine + Me fallback)"]
+    SA["hearsay-asr (Parakeet, refine re-transcribe)"]
   end
   subgraph Core["Python core (src/hearsay/)"]
     Sup["helper/ supervisor + channels"]
@@ -85,11 +85,11 @@ one-shot WAV-in / JSON-out). The Python owners live in `transcript/live_base.py`
 
 `settings.py` is one `pydantic-settings` object loaded once and injected via DI. Every
 tunable lives here: paths (`output_dir`, `models_dir`, `helper_path`), the database URL, the
-server host/port, and nested `asr` / `vad` / `diarization` groups. A model validator fills
-derived paths (e.g. the default SQLite URL and the Silero model path) so the rest of the code
-never computes them ad hoc. Reads `HEARSAY_`-prefixed env vars (nested via `__`, e.g.
-`HEARSAY_ASR__BACKEND`, `HEARSAY_VAD__ME_SIDECAR`). Sidecar binaries are located relative to
-`helper_path` (siblings in the same build dir).
+server host/port, and nested `asr` / `diarization` groups. A model validator fills derived
+paths (e.g. the default SQLite URL) so the rest of the code never computes them ad hoc. Reads
+`HEARSAY_`-prefixed env vars (nested via `__`, e.g. `HEARSAY_ASR__BACKEND`,
+`HEARSAY_DIARIZATION__REFINE`). Sidecar binaries are located relative to `helper_path`
+(siblings in the same build dir).
 
 ### `enums.py`, `log.py` — shared primitives
 
@@ -192,21 +192,13 @@ The heart of a running meeting.
 - `session.py` — `MeetingSession` (one meeting: capture + pipeline + broadcaster) and
   `SessionManager` (owns the single active session; lock-guarded start/stop/delete +
   `relabel_speaker`, and `_maybe_auto_refine` after a stop). The manager injects the
-  ASR/VAD/sink factories and builds the live processors, so the real stack is constructed on
-  demand and tests inject fakes.
+  capture/sink factories and builds both streams' live processors, so the lifecycle is testable
+  without the helper.
 
-### `vad/` — voice activity detection (the Me fallback path)
+### `asr/` — speech recognition (used by the refine)
 
-Used only when `vad.me_sidecar` is off (a debugging fallback for the streaming VAD; slated for
-removal once `hearsay-me` is validated on-device).
-
-- `base.py` — the `VAD` protocol (score a fixed-size frame) and `Segmenter`, the pure,
-  heavily unit-tested state machine that turns frame scores into utterances using start/stop
-  hysteresis and emits periodic partial snapshots.
-- `silero.py` — the real `SileroVAD`, running the MIT Silero ONNX model directly on
-  `onnxruntime` (no torch). Includes the pinned, integrity-checked model download.
-
-### `asr/` — speech recognition
+Live ASR runs inside the `hearsay-live` / `hearsay-me` sidecars; this Python backend exists for
+the **post-meeting refine**, which re-transcribes each diarizer turn.
 
 - `base.py` — the `ASRBackend` protocol (`transcribe(samples) -> [ASRSegment]` + `close()`) and
   the `ASRSegment` type.
@@ -251,9 +243,9 @@ All inference runs in the Swift `hearsay-diarize` helper on the ANE; Python pars
 ### `cli.py` — the `hearsay` command
 
 `serve` (run the API), `live` (run the real pipeline and print transcripts — the on-device
-validation harness), `fetch-models` (download the Silero VAD model; the Swift ASR + diarization
-helpers auto-download their CoreML models on first use), `rediarize` (run the offline refine on
-a meeting), and `capture-debug` (the raw-audio dump).
+validation harness), `rediarize` (run the offline refine on a meeting), and `capture-debug`
+(the raw-audio dump). There is no `fetch-models` step — the Swift sidecars auto-download their
+CoreML models (Parakeet, the diarizer) on first use.
 
 ## Seams (build one, defer the rest)
 
@@ -264,8 +256,8 @@ This is what keeps the app small while the plausible futures stay cheap.
 |---|---|---|---|
 | Capture | `transcript.capture.Capture` | `HelperCapture` (Swift helper) | test fakes |
 | Live Them | `LiveSidecarProcessor` | `LiveThemProcessor` (`hearsay-live`) | test fakes |
-| Live Me | `LiveSidecarProcessor` | `LiveMeProcessor` (`hearsay-me`) | Silero VAD + Parakeet (`me_sidecar=false`) |
-| ASR | `asr.base.ASRBackend` | `ParakeetBackend` (`hearsay-asr`) | test fakes |
+| Live Me | `LiveSidecarProcessor` | `LiveMeProcessor` (`hearsay-me`) | test fakes |
+| ASR (refine) | `asr.base.ASRBackend` | `ParakeetBackend` (`hearsay-asr`) | test fakes |
 | Offline diarizer | `diarization.offline.OfflineDiarizer` | `FluidAudioDiarizer` (`hearsay-diarize`) | stub diarizer (tests) |
 | Output | `export.base.TranscriptSink` | `LocalMarkdownSink` | central API / object store |
 

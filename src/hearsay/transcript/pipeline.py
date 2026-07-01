@@ -1,33 +1,27 @@
 """Per-stream transcription pipeline.
 
-For each stream a consumer reads :class:`AudioChunk`s, segments them with a VAD
-(``Me``/``Them`` by channel in Phase 1), transcribes each utterance off the event
-loop, and fans the result out three ways: final segments are persisted (DB) and
-appended to ``transcript.md``; partials are broadcast to the live WebSocket only.
-Times are anchored to the first chunk's ``host_ts`` so both streams share one clock.
+Each stream's audio is streamed to its live Swift sidecar (Them -> ``hearsay-live``,
+Me -> ``hearsay-me``), which runs VAD/diarization + ASR on the ANE and emits labeled
+segments the sidecar processor persists + broadcasts. This pipeline just routes each
+stream's PCM to its processor -- anchoring times to the first chunk's ``host_ts`` so both
+streams share one clock -- records the Them track for the post-meeting refine, and rewrites
+``transcript.md`` in timestamp order at stop.
 """
 
 from __future__ import annotations
 
 import asyncio
-import re
-from collections.abc import Callable, Sequence
 from datetime import datetime
 from typing import TYPE_CHECKING
 from uuid import UUID
 
-from hearsay.asr import ASRBackend
-from hearsay.config.settings import VADSettings
 from hearsay.db import Database
 from hearsay.enums import MeetingStatus, Stream
 from hearsay.export import MeetingMeta, TranscriptLine, TranscriptSink
 from hearsay.helper.media_channel import AudioChunk, MediaChannel
 from hearsay.log import get_logger
-from hearsay.schemas import TranscriptEvent
 from hearsay.services import MeetingService
-from hearsay.transcript.broadcast import Broadcaster
 from hearsay.transcript.recorder import ThemAudioRecorder
-from hearsay.vad import VAD, Segmenter, Utterance
 
 if TYPE_CHECKING:
     from hearsay.transcript.live import LiveThemProcessor
@@ -36,66 +30,29 @@ if TYPE_CHECKING:
 
 _log = get_logger("hearsay.pipeline")
 
-_SPEAKER = {Stream.ME: "Me", Stream.THEM: "Them"}
-# Whisper emits bracketed non-speech markers (e.g. [BLANK_AUDIO], [Music], (buzzing))
-# when a VAD-passed clip has no real speech; drop clips that are entirely one marker.
-_NON_SPEECH = re.compile(r"^[\[(][^\])]*[\])]$")
-
-
-def _clean_text(text: str) -> str:
-    stripped = text.strip()
-    return "" if _NON_SPEECH.match(stripped) else stripped
-
 
 class TranscriptionPipeline:
-    def __init__(  # noqa: PLR0913 (dependency-injection seam; each arg is a distinct dep)
+    def __init__(
         self,
         *,
         meeting_id: UUID,
         database: Database,
         sink: TranscriptSink,
-        broadcaster: Broadcaster,
-        vad_factory: Callable[[], VAD],
-        vad: VADSettings,
-        asr: ASRBackend | None = None,
         them_recorder: ThemAudioRecorder | None = None,
         them_processor: LiveThemProcessor | None = None,
         me_processor: LiveMeProcessor | None = None,
-        language: str | None = None,
-        condition_on_previous_text: bool = False,
-        context_reset_gap_s: float = 8.0,
     ) -> None:
         self._meeting_id = meeting_id
         self._db = database
         self._sink = sink
-        self._broadcaster = broadcaster
-        self._asr = asr
         self._them_recorder = them_recorder
-        # Each stream is handled either by its live Swift sidecar (VAD/diar + ASR on the ANE)
-        # or, as a fallback, by the Python VAD + ASR path below. A stream with a sidecar skips
-        # the VAD entirely, so its segmenter (and the Python ASR backend) is never built.
+        # Each stream is handled by its live Swift sidecar (VAD/diarization + ASR on the ANE);
+        # the pipeline only routes PCM to it. A stream with no processor (e.g. a missing sidecar
+        # binary) is drained without transcription -- the Them track is still recorded for refine.
         self._them_processor = them_processor
         self._me_processor = me_processor
-        self._language = language
-        self._condition = condition_on_previous_text
-        self._context_reset_gap_s = context_reset_gap_s
-        # Per-stream rolling decoding context: the last final's text + when it ended.
-        self._context: dict[Stream, str] = {Stream.ME: "", Stream.THEM: ""}
-        self._context_end_s: dict[Stream, float] = {Stream.ME: 0.0, Stream.THEM: 0.0}
-        self._asr_lock = asyncio.Lock()
         self._tasks: list[asyncio.Task[None]] = []
         self._epoch_ns: int | None = None
-        self._segmenters = {
-            stream: Segmenter(
-                vad_factory(),
-                threshold=vad.threshold,
-                min_speech_ms=vad.min_speech_ms,
-                min_silence_ms=vad.min_silence_ms,
-                partial_ms=vad.partial_ms,
-            )
-            for stream in (Stream.ME, Stream.THEM)
-            if self._processor_for(stream) is None
-        }
 
     def _processor_for(self, stream: Stream) -> LiveSidecarProcessor | None:
         return self._me_processor if stream is Stream.ME else self._them_processor
@@ -115,11 +72,7 @@ class TranscriptionPipeline:
         logged_first = False
         while True:
             chunk: AudioChunk | None = await queue.get()
-            if chunk is None:  # end-of-stream
-                if processor is None:  # flush the VAD segmenter's tail (sidecars drain on close)
-                    final = self._segmenters[stream].flush()
-                    if final is not None:
-                        await self._emit(stream, final)
+            if chunk is None:  # end-of-stream (the sidecar drains its own tail on close)
                 return
             if self._epoch_ns is None:
                 self._epoch_ns = chunk.host_ts
@@ -138,77 +91,7 @@ class TranscriptionPipeline:
             if stream is Stream.THEM and self._them_recorder is not None:
                 self._them_recorder.write(chunk.samples, t0_s=t0_s)
             if processor is not None:
-                # The Swift sidecar does VAD/diarization + ASR + persistence; no Python VAD here.
                 await processor.feed(chunk.samples, t0_s)
-                continue
-            for utterance in self._segmenters[stream].push(chunk.samples, t0_s=t0_s):
-                await self._emit(stream, utterance)
-
-    async def _emit(self, stream: Stream, utterance: Utterance) -> None:
-        # Only finals carry decoding context; partials stay context-free (fast + drift-safe).
-        prompt = self._context_prompt(stream, utterance) if utterance.is_final else None
-        text = await self._transcribe(utterance.samples, prompt=prompt)
-        if not text:
-            return
-        # This path handles Me (always the mic channel) and, in tests without a live sidecar,
-        # Them as the generic channel label. Live Them speakers come from the sidecar.
-        speaker, cluster_id = _SPEAKER[stream], None
-        event = TranscriptEvent(
-            kind="final" if utterance.is_final else "partial",
-            stream=stream,
-            speaker_label=speaker,
-            text=text,
-            start_s=utterance.start_s,
-            end_s=utterance.end_s,
-        )
-        self._broadcaster.publish(event.model_dump_json())
-        if utterance.is_final:
-            await self._persist(
-                stream, speaker, text, utterance.start_s, utterance.end_s, cluster_id
-            )
-            if self._condition:
-                self._context[stream] = text
-                self._context_end_s[stream] = utterance.end_s
-
-    def _context_prompt(self, stream: Stream, utterance: Utterance) -> str | None:
-        # Carry the previous final's text as a decoding hint, but drop it after a long
-        # silence so a stale/wrong prompt cannot snowball into the next utterance.
-        if not self._condition:
-            return None
-        if utterance.start_s - self._context_end_s[stream] > self._context_reset_gap_s:
-            return None
-        return self._context[stream] or None
-
-    async def _transcribe(self, samples: Sequence[float], *, prompt: str | None = None) -> str:
-        assert self._asr is not None  # only the VAD path calls this, and it always has an ASR
-        async with self._asr_lock:
-            segments = await asyncio.to_thread(
-                self._asr.transcribe, samples, language=self._language, prompt=prompt
-            )
-        return _clean_text(" ".join(segment.text for segment in segments))
-
-    async def _persist(
-        self,
-        stream: Stream,
-        speaker: str,
-        text: str,
-        start_s: float,
-        end_s: float,
-        cluster_id: UUID | None,
-    ) -> None:
-        async with self._db.session() as session:
-            await MeetingService(session).add_segment(
-                self._meeting_id,
-                stream=stream,
-                speaker_label=speaker,
-                text=text,
-                start_s=start_s,
-                end_s=end_s,
-                cluster_id=cluster_id,
-            )
-        await self._sink.append(
-            TranscriptLine(speaker_label=speaker, text=text, start_s=start_s, end_s=end_s)
-        )
 
     async def close(self, *, ended_at: datetime) -> None:
         for task in self._tasks:
@@ -223,23 +106,14 @@ class TranscriptionPipeline:
                 # finalize below -- log and carry on so the transcript is still rewritten in order.
                 _log.exception("consume task failed during close")
         self._tasks = []
-        # Force-flush any in-progress utterance (covers a stop that arrives before eos).
-        for stream, segmenter in self._segmenters.items():
-            final = segmenter.flush()
-            if final is not None:
-                await self._emit(stream, final)
         # Drain the live sidecars: closing each finalizes its streaming tail, so the last
         # segments are persisted before the transcript is rewritten in order below.
         for processor in (self._them_processor, self._me_processor):
             if processor is not None:
                 await processor.close()
-        # Release the ASR backend (e.g. terminate the Parakeet sidecar) now that no more
-        # utterances will be transcribed; off the loop since it may wait on a subprocess.
-        if self._asr is not None:
-            await asyncio.to_thread(self._asr.close)
         if self._them_recorder is not None:
             self._them_recorder.close()
-        # The live transcript was appended in ASR-completion order across two streams;
+        # The live transcript was appended in the sidecars' emit order across two streams;
         # rewrite it once in timestamp order for the final, readable file.
         lines = await self._ordered_lines()
         await self._sink.finalize(lines, ended_at=ended_at, status=MeetingStatus.FINALIZED.value)

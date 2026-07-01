@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
@@ -9,87 +8,19 @@ from types import SimpleNamespace
 
 from sqlalchemy import create_engine as create_sync_engine
 
-from hearsay.asr import ASRSegment
-from hearsay.config.settings import VADSettings
 from hearsay.db import Database
 from hearsay.enums import Stream
 from hearsay.export import LocalMarkdownSink, MeetingMeta
 from hearsay.helper.media_channel import AudioChunk
 from hearsay.models import Base
-from hearsay.services import MeetingService, SpeakerService
-from hearsay.transcript import (
-    Broadcaster,
-    TranscriptionPipeline,
-)
-from hearsay.transcript.pipeline import _clean_text
+from hearsay.services import MeetingService
+from hearsay.transcript import TranscriptionPipeline
 
 FRAME = 160
 
 
-class StubVAD:
-    @property
-    def frame_samples(self) -> int:
-        return FRAME
-
-    def reset(self) -> None:
-        return None
-
-    def speech_prob(self, frame: Sequence[float]) -> float:
-        return 1.0 if any(sample != 0.0 for sample in frame) else 0.0
-
-
-class FakeASR:
-    name = "fake"
-    model = "fake"
-
-    def transcribe(
-        self, samples: Sequence[float], *, language: str | None = None, prompt: str | None = None
-    ) -> list[ASRSegment]:
-        return [ASRSegment(text="hello world", start_s=0.0, end_s=1.0)]
-
-    def close(self) -> None:
-        return None
-
-
-class RecordingASR:
-    """Records the decoding prompt of each call and returns distinct text per call."""
-
-    name = "rec"
-    model = "rec"
-
-    def __init__(self) -> None:
-        self.prompts: list[str | None] = []
-        self._n = 0
-
-    def transcribe(
-        self, samples: Sequence[float], *, language: str | None = None, prompt: str | None = None
-    ) -> list[ASRSegment]:
-        self.prompts.append(prompt)
-        self._n += 1
-        return [ASRSegment(text=f"turn{self._n}", start_s=0.0, end_s=1.0)]
-
-    def close(self) -> None:
-        return None
-
-
 def _speech(frames: int) -> list[float]:
     return [0.5] * (frames * FRAME)
-
-
-def _level(frames: int, value: float) -> list[float]:
-    return [value] * (frames * FRAME)
-
-
-def _silence(frames: int) -> list[float]:
-    return [0.0] * (frames * FRAME)
-
-
-def test_clean_text_drops_pure_non_speech() -> None:
-    assert _clean_text("[BLANK_AUDIO]") == ""
-    assert _clean_text("  [Music] ") == ""
-    assert _clean_text("(buzzing)") == ""
-    assert _clean_text("  hello world  ") == "hello world"
-    assert _clean_text("It was $93,000.") == "It was $93,000."
 
 
 def _make_db(tmp_path: Path) -> Database:
@@ -100,149 +31,8 @@ def _make_db(tmp_path: Path) -> Database:
     return Database(f"sqlite+aiosqlite:///{db_file}")
 
 
-async def test_pipeline_transcribes_persists_and_broadcasts(tmp_path: Path) -> None:
-    database = _make_db(tmp_path)
-    async with database.session() as session:
-        meeting = await MeetingService(session).create(
-            title="T", folder="mtg", started_at=datetime.now(UTC)
-        )
-
-    me_queue: asyncio.Queue[AudioChunk | None] = asyncio.Queue()
-    them_queue: asyncio.Queue[AudioChunk | None] = asyncio.Queue()
-    utterance = tuple(_silence(2) + _speech(5) + _silence(5))
-    me_queue.put_nowait(AudioChunk(host_ts=0, samples=utterance))
-    me_queue.put_nowait(None)
-    them_queue.put_nowait(None)
-    media = SimpleNamespace(queues={Stream.ME: me_queue, Stream.THEM: them_queue})
-
-    broadcaster = Broadcaster()
-    pipeline = TranscriptionPipeline(
-        meeting_id=meeting.id,
-        database=database,
-        sink=LocalMarkdownSink(),
-        broadcaster=broadcaster,
-        asr=FakeASR(),
-        vad_factory=StubVAD,
-        vad=VADSettings(min_speech_ms=20, min_silence_ms=40, partial_ms=0),
-    )
-    meta = MeetingMeta(
-        id=meeting.id, title="T", started_at=datetime.now(UTC), folder=tmp_path / "mtg"
-    )
-
-    events: list[dict[str, object]] = []
-    with broadcaster.subscribe() as queue:
-        await pipeline.open(media, meta)  # type: ignore[arg-type]
-        await asyncio.sleep(0.2)  # let the per-stream consumers drain to eos
-        await pipeline.close(ended_at=datetime.now(UTC))
-        while not queue.empty():
-            events.append(json.loads(queue.get_nowait()))
-
-    async with database.session() as session:
-        segments, total = await MeetingService(session).list_segments(
-            meeting.id, page=1, page_size=10
-        )
-    await database.dispose()
-
-    assert total == 1
-    assert segments[0].text == "hello world"
-    assert segments[0].speaker_label == "Me"
-    assert segments[0].stream is Stream.ME
-
-    transcript = (tmp_path / "mtg" / "transcript.md").read_text(encoding="utf-8")
-    assert "hello world" in transcript
-    assert "— Me" in transcript
-
-    finals = [e for e in events if e["kind"] == "final"]
-    assert len(finals) == 1
-    assert finals[0]["text"] == "hello world"
-    assert finals[0]["stream"] == "me"
-
-
-async def test_pipeline_carries_previous_final_as_prompt(tmp_path: Path) -> None:
-    database = _make_db(tmp_path)
-    async with database.session() as session:
-        meeting = await MeetingService(session).create(
-            title="T", folder="mtg", started_at=datetime.now(UTC)
-        )
-
-    me_queue: asyncio.Queue[AudioChunk | None] = asyncio.Queue()
-    them_queue: asyncio.Queue[AudioChunk | None] = asyncio.Queue()
-    # Two speech bursts -> two finals, close together (gap well under the reset window).
-    samples = _silence(2) + _speech(5) + _silence(5) + _speech(5) + _silence(5)
-    me_queue.put_nowait(AudioChunk(host_ts=0, samples=tuple(samples)))
-    me_queue.put_nowait(None)
-    them_queue.put_nowait(None)
-    media = SimpleNamespace(queues={Stream.ME: me_queue, Stream.THEM: them_queue})
-
-    asr = RecordingASR()
-    pipeline = TranscriptionPipeline(
-        meeting_id=meeting.id,
-        database=database,
-        sink=LocalMarkdownSink(),
-        broadcaster=Broadcaster(),
-        asr=asr,
-        vad_factory=StubVAD,
-        vad=VADSettings(min_speech_ms=20, min_silence_ms=40, partial_ms=0),
-        condition_on_previous_text=True,
-    )
-    meta = MeetingMeta(
-        id=meeting.id, title="T", started_at=datetime.now(UTC), folder=tmp_path / "mtg"
-    )
-
-    await pipeline.open(media, meta)  # type: ignore[arg-type]
-    await asyncio.sleep(0.2)
-    await pipeline.close(ended_at=datetime.now(UTC))
-    await database.dispose()
-
-    # First final has no prior context; the second is prompted with the first final's text.
-    assert asr.prompts == [None, "turn1"]
-
-
-async def test_pipeline_without_diarizer_keeps_them_generic(tmp_path: Path) -> None:
-    database = _make_db(tmp_path)
-    async with database.session() as session:
-        meeting = await MeetingService(session).create(
-            title="T", folder="mtg", started_at=datetime.now(UTC)
-        )
-
-    me_queue: asyncio.Queue[AudioChunk | None] = asyncio.Queue()
-    them_queue: asyncio.Queue[AudioChunk | None] = asyncio.Queue()
-    me_queue.put_nowait(None)
-    them_queue.put_nowait(
-        AudioChunk(host_ts=0, samples=tuple(_silence(2) + _level(5, 0.5) + _silence(5)))
-    )
-    them_queue.put_nowait(None)
-    media = SimpleNamespace(queues={Stream.ME: me_queue, Stream.THEM: them_queue})
-
-    pipeline = TranscriptionPipeline(  # no diarizer -> graceful degradation to "Them"
-        meeting_id=meeting.id,
-        database=database,
-        sink=LocalMarkdownSink(),
-        broadcaster=Broadcaster(),
-        asr=FakeASR(),
-        vad_factory=StubVAD,
-        vad=VADSettings(min_speech_ms=20, min_silence_ms=40, partial_ms=0),
-    )
-    meta = MeetingMeta(
-        id=meeting.id, title="T", started_at=datetime.now(UTC), folder=tmp_path / "mtg"
-    )
-
-    await pipeline.open(media, meta)  # type: ignore[arg-type]
-    await asyncio.sleep(0.3)
-    await pipeline.close(ended_at=datetime.now(UTC))
-
-    async with database.session() as session:
-        segments, _ = await MeetingService(session).list_segments(meeting.id, page=1, page_size=10)
-        clusters = await SpeakerService(session).list_clusters(meeting.id)
-    await database.dispose()
-
-    them = [s for s in segments if s.stream is Stream.THEM]
-    assert len(them) == 1 and them[0].speaker_label == "Them" and them[0].cluster_id is None
-    assert clusters == []
-
-
-class FakeMeProcessor:
-    """Records the audio fed to it; stands in for the hearsay-me sidecar (no subprocess)."""
+class FakeProcessor:
+    """Records the audio fed to it; stands in for a live sidecar (no subprocess)."""
 
     def __init__(self) -> None:
         self.fed: list[tuple[int, float]] = []
@@ -259,7 +49,21 @@ class FakeMeProcessor:
         self.closed = True
 
 
-async def test_pipeline_routes_me_to_sidecar(tmp_path: Path) -> None:
+class FakeRecorder:
+    """Records the Them chunks written to it; stands in for ThemAudioRecorder."""
+
+    def __init__(self) -> None:
+        self.writes: list[tuple[int, float]] = []
+        self.closed = False
+
+    def write(self, samples: Sequence[float], *, t0_s: float) -> None:
+        self.writes.append((len(samples), t0_s))
+
+    def close(self) -> None:
+        self.closed = True
+
+
+async def test_pipeline_routes_each_stream_to_its_sidecar(tmp_path: Path) -> None:
     database = _make_db(tmp_path)
     async with database.session() as session:
         meeting = await MeetingService(session).create(
@@ -270,18 +74,19 @@ async def test_pipeline_routes_me_to_sidecar(tmp_path: Path) -> None:
     them_queue: asyncio.Queue[AudioChunk | None] = asyncio.Queue()
     me_queue.put_nowait(AudioChunk(host_ts=0, samples=tuple(_speech(5))))
     me_queue.put_nowait(None)
+    them_queue.put_nowait(AudioChunk(host_ts=0, samples=tuple(_speech(3))))
     them_queue.put_nowait(None)
     media = SimpleNamespace(queues={Stream.ME: me_queue, Stream.THEM: them_queue})
 
-    me_processor = FakeMeProcessor()
-    # me_processor handles Me, Them is empty -> no VAD path runs, so no ASR backend is needed.
+    me_processor = FakeProcessor()
+    them_processor = FakeProcessor()
+    them_recorder = FakeRecorder()
     pipeline = TranscriptionPipeline(
         meeting_id=meeting.id,
         database=database,
         sink=LocalMarkdownSink(),
-        broadcaster=Broadcaster(),
-        vad_factory=StubVAD,
-        vad=VADSettings(min_speech_ms=20, min_silence_ms=40, partial_ms=0),
+        them_recorder=them_recorder,  # type: ignore[arg-type]
+        them_processor=them_processor,  # type: ignore[arg-type]
         me_processor=me_processor,  # type: ignore[arg-type]
     )
     meta = MeetingMeta(
@@ -296,6 +101,49 @@ async def test_pipeline_routes_me_to_sidecar(tmp_path: Path) -> None:
         segments, _ = await MeetingService(session).list_segments(meeting.id, page=1, page_size=10)
     await database.dispose()
 
+    # Each stream's PCM went to its own sidecar; both were started and drained on close.
     assert me_processor.started and me_processor.closed
-    assert me_processor.fed == [(5 * FRAME, 0.0)]  # the Me chunk went to the sidecar, not the VAD
-    assert segments == []  # the pipeline did not transcribe Me via the Python VAD path
+    assert them_processor.started and them_processor.closed
+    assert me_processor.fed == [(5 * FRAME, 0.0)]
+    assert them_processor.fed == [(3 * FRAME, 0.0)]
+    # Only the Them track is recorded (for the post-meeting refine); Me is never recorded.
+    assert them_recorder.writes == [(3 * FRAME, 0.0)]
+    assert them_recorder.closed
+    # The fakes persist nothing, so the pipeline itself writes no segments (real sidecars do).
+    assert segments == []
+
+
+async def test_pipeline_drains_stream_without_a_processor(tmp_path: Path) -> None:
+    """A stream with no sidecar (e.g. a missing binary) is drained without crashing."""
+    database = _make_db(tmp_path)
+    async with database.session() as session:
+        meeting = await MeetingService(session).create(
+            title="T", folder="mtg", started_at=datetime.now(UTC)
+        )
+
+    me_queue: asyncio.Queue[AudioChunk | None] = asyncio.Queue()
+    them_queue: asyncio.Queue[AudioChunk | None] = asyncio.Queue()
+    me_queue.put_nowait(AudioChunk(host_ts=0, samples=tuple(_speech(5))))
+    me_queue.put_nowait(None)
+    them_queue.put_nowait(None)
+    media = SimpleNamespace(queues={Stream.ME: me_queue, Stream.THEM: them_queue})
+
+    # No processors at all: the consumers just drain to eos and finalize an empty transcript.
+    pipeline = TranscriptionPipeline(
+        meeting_id=meeting.id,
+        database=database,
+        sink=LocalMarkdownSink(),
+    )
+    meta = MeetingMeta(
+        id=meeting.id, title="T", started_at=datetime.now(UTC), folder=tmp_path / "mtg"
+    )
+
+    await pipeline.open(media, meta)  # type: ignore[arg-type]
+    await asyncio.sleep(0.2)
+    await pipeline.close(ended_at=datetime.now(UTC))
+
+    async with database.session() as session:
+        segments, _ = await MeetingService(session).list_segments(meeting.id, page=1, page_size=10)
+    await database.dispose()
+
+    assert segments == []

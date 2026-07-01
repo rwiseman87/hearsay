@@ -27,7 +27,6 @@ from hearsay.transcript import (
     rediarize_meeting,
 )
 from hearsay.transcript.capture import Capture
-from hearsay.vad.silero import download_silero_model
 
 
 @click.group()
@@ -39,20 +38,6 @@ def main() -> None:
 def version() -> None:
     """Print the hearsay version."""
     click.echo(__version__)
-
-
-@main.command("fetch-models")
-def fetch_models() -> None:
-    """Download the Silero VAD model (the Swift ASR + diarization helpers auto-download theirs)."""
-    settings = Settings()
-    model_path = settings.vad.model_path
-    assert model_path is not None  # filled by Settings' validator
-    path = download_silero_model(model_path)
-    click.echo(f"Silero VAD model ready at {path}")
-    click.echo(
-        "ASR (Parakeet) + diarization (pyannote community-1) run in the Swift helpers on the "
-        "ANE; their CoreML models auto-download on first use."
-    )
 
 
 def _free_port(host: str) -> int:

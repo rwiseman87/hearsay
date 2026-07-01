@@ -95,24 +95,13 @@ inside the sidecar on the ANE — the Python side never touches a model.
   as each speaker turn finalizes, the sidecar transcribes it and emits
   `{speaker, text, start_s, end_s}`. The processor maps the 0-based `speaker` to a 1-based
   `Speaker N` label, creating a `Cluster` row per ordinal on first sight.
-- **Me → `hearsay-me`** (`LiveMeProcessor`, the default). FluidAudio streaming VAD + Parakeet:
-  it finds speech boundaries and transcribes each utterance, emitting `{text, start_s, end_s}`.
-  Me is always the local speaker, so there is no diarization — the label is always `Me`.
+- **Me → `hearsay-me`** (`LiveMeProcessor`). FluidAudio streaming VAD + Parakeet: it finds
+  speech boundaries and transcribes each utterance, emitting `{text, start_s, end_s}`. Me is
+  always the local speaker, so there is no diarization — the label is always `Me`.
 
-Because a stream on a sidecar needs no Python segmentation, the pipeline builds a `Segmenter`
-(and the Python ASR backend) **only for a stream without a processor** (`_processor_for`), so
-the default path (both streams on sidecars) spawns no idle VAD or ASR.
-
-### 3a. The Me fallback (Silero VAD + Parakeet)
-
-Setting `vad.me_sidecar=false` routes Me through the in-process path instead: a `Segmenter`
-(one `SileroVAD` per stream, ONNX on `onnxruntime`) slices the mic stream into utterances with
-start/stop hysteresis and periodic partials, and each utterance is transcribed by the
-`ParakeetBackend` — which itself round-trips the samples to a persistent `hearsay-asr` sidecar
-(Parakeet on the ANE). This path exists as a debugging fallback for the streaming VAD and is
-slated for removal once the `hearsay-me` path is validated on-device. Its ASR is serialized by
-a single lock and runs via `asyncio.to_thread`, and finalized text passes through `_clean_text`
-(drops clips Parakeet renders as a lone non-speech marker like `[BLANK_AUDIO]`).
+The pipeline runs no ML itself: it routes each stream's PCM to its processor and does nothing
+else with the samples. A stream with no processor (e.g. a missing sidecar binary) is drained
+without transcription — the Them track is still recorded for the refine.
 
 ### 4. Recording the Them track for the refine
 
@@ -123,11 +112,9 @@ re-diarizes; it is the only raw-audio retention and can be turned off.
 
 ### 5. Fan-out per segment
 
-Each sidecar segment (and each fallback-path final) is fanned out three ways: broadcast to the
+Each sidecar segment is fanned out three ways by its processor's `_handle`: broadcast to the
 WebSocket with its resolved label, persisted as a `Segment` row (DB, Them carries a
-`cluster_id`), and appended to `transcript.md`. The live path emits **finals**; the fallback
-path additionally broadcasts **partials** during ongoing speech, which are preview-only and
-never persisted.
+`cluster_id`), and appended to `transcript.md`. The sidecars emit finalized segments only.
 
 ### 6. Finalize: ordered rewrite
 

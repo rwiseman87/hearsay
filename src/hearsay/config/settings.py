@@ -58,21 +58,6 @@ class DiarizationSettings(BaseModel):
     recognition_threshold: float = 0.6
 
 
-class VADSettings(BaseModel):
-    """Silero VAD thresholds + segmentation hysteresis (the live "Me" fallback path)."""
-
-    threshold: float = 0.5
-    min_speech_ms: int = 250
-    min_silence_ms: int = 600
-    # Cadence for live partial transcripts during ongoing speech (0 disables partials).
-    partial_ms: int = 800
-    model_path: Path | None = None  # default: <models_dir>/silero_vad.onnx
-    # Route the live "Me" stream through the Swift hearsay-me sidecar (FluidAudio streaming VAD +
-    # Parakeet on the ANE) instead of this Silero VAD + the Python ASR backend. Default on; set
-    # False to fall back to the Python VAD path. (The Silero path goes away once Me is validated.)
-    me_sidecar: bool = True
-
-
 class Settings(BaseSettings):
     """Application settings.
 
@@ -95,7 +80,6 @@ class Settings(BaseSettings):
     capture_debug_dir: Path = Field(default_factory=lambda: _OUTPUTS_DIR / "capture-debug")
     models_dir: Path | None = None  # default: <outputs>/models
     asr: ASRSettings = Field(default_factory=ASRSettings)
-    vad: VADSettings = Field(default_factory=VADSettings)
     diarization: DiarizationSettings = Field(default_factory=DiarizationSettings)
     helper_path: Path = Field(
         default_factory=lambda: (
@@ -118,6 +102,4 @@ class Settings(BaseSettings):
             self.database_url = f"sqlite+aiosqlite:///{_OUTPUTS_DIR / 'db' / 'hearsay.db'}"
         if self.models_dir is None:
             self.models_dir = _OUTPUTS_DIR / "models"
-        if self.vad.model_path is None:
-            self.vad.model_path = self.models_dir / "silero_vad.onnx"
         return self
