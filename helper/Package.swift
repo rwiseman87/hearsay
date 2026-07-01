@@ -68,5 +68,13 @@ let package = Package(
             name: "hearsay-live",
             dependencies: [.product(name: "FluidAudio", package: "FluidAudio")]
         ),
+        // Live "Me" processor: streaming VAD + Parakeet on the ANE. The Python core streams the
+        // local-mic PCM in; this segments speech and transcribes each utterance, emitting a
+        // segment -- so Swift owns VAD + ASR for Me (no Silero/Python in the live path). Me is
+        // always the local speaker, so there is no diarization. Separate target, lean capture.
+        .executableTarget(
+            name: "hearsay-me",
+            dependencies: [.product(name: "FluidAudio", package: "FluidAudio")]
+        ),
     ]
 )

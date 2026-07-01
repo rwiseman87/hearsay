@@ -32,6 +32,8 @@ from hearsay.vad import VAD, Segmenter, Utterance
 
 if TYPE_CHECKING:
     from hearsay.transcript.live import LiveThemProcessor
+    from hearsay.transcript.live_base import LiveSidecarProcessor
+    from hearsay.transcript.live_me import LiveMeProcessor
 
 _log = get_logger("hearsay.pipeline")
 
@@ -54,11 +56,12 @@ class TranscriptionPipeline:
         database: Database,
         sink: TranscriptSink,
         broadcaster: Broadcaster,
-        asr: ASRBackend,
         vad_factory: Callable[[], VAD],
         vad: VADSettings,
+        asr: ASRBackend | None = None,
         them_recorder: ThemAudioRecorder | None = None,
         them_processor: LiveThemProcessor | None = None,
+        me_processor: LiveMeProcessor | None = None,
         language: str | None = None,
         condition_on_previous_text: bool = False,
         context_reset_gap_s: float = 8.0,
@@ -69,9 +72,11 @@ class TranscriptionPipeline:
         self._broadcaster = broadcaster
         self._asr = asr
         self._them_recorder = them_recorder
-        # When set, Them is handled by the live sidecar (diar+ASR+turns); the VAD path
-        # below runs only for Me (and Them in tests without a live sidecar).
+        # Each stream is handled either by its live Swift sidecar (VAD/diar + ASR on the ANE)
+        # or, as a fallback, by the Python VAD + ASR path below. A stream with a sidecar skips
+        # the VAD entirely, so its segmenter (and the Python ASR backend) is never built.
         self._them_processor = them_processor
+        self._me_processor = me_processor
         self._language = language
         self._condition = condition_on_previous_text
         self._context_reset_gap_s = context_reset_gap_s
@@ -90,26 +95,32 @@ class TranscriptionPipeline:
                 partial_ms=vad.partial_ms,
             )
             for stream in (Stream.ME, Stream.THEM)
+            if self._processor_for(stream) is None
         }
+
+    def _processor_for(self, stream: Stream) -> LiveSidecarProcessor | None:
+        return self._me_processor if stream is Stream.ME else self._them_processor
 
     async def open(self, media: MediaChannel, meta: MeetingMeta) -> None:
         await self._sink.open(meta)
-        if self._them_processor is not None:
-            await self._them_processor.start()
+        for processor in (self._them_processor, self._me_processor):
+            if processor is not None:
+                await processor.start()
         self._tasks = [
             asyncio.create_task(self._consume(media, stream)) for stream in (Stream.ME, Stream.THEM)
         ]
 
     async def _consume(self, media: MediaChannel, stream: Stream) -> None:
-        segmenter = self._segmenters[stream]
+        processor = self._processor_for(stream)
         queue = media.queues[stream]
         logged_first = False
         while True:
             chunk: AudioChunk | None = await queue.get()
             if chunk is None:  # end-of-stream
-                final = segmenter.flush()
-                if final is not None:
-                    await self._emit(stream, final)
+                if processor is None:  # flush the VAD segmenter's tail (sidecars drain on close)
+                    final = self._segmenters[stream].flush()
+                    if final is not None:
+                        await self._emit(stream, final)
                 return
             if self._epoch_ns is None:
                 self._epoch_ns = chunk.host_ts
@@ -127,11 +138,11 @@ class TranscriptionPipeline:
                 )
             if stream is Stream.THEM and self._them_recorder is not None:
                 self._them_recorder.write(chunk.samples, t0_s=t0_s)
-            if stream is Stream.THEM and self._them_processor is not None:
-                # The sidecar does diarization + ASR + persistence for Them; no VAD here.
-                await self._them_processor.feed(chunk.samples, t0_s)
+            if processor is not None:
+                # The Swift sidecar does VAD/diarization + ASR + persistence; no Python VAD here.
+                await processor.feed(chunk.samples, t0_s)
                 continue
-            for utterance in segmenter.push(chunk.samples, t0_s=t0_s):
+            for utterance in self._segmenters[stream].push(chunk.samples, t0_s=t0_s):
                 await self._emit(stream, utterance)
 
     async def _emit(self, stream: Stream, utterance: Utterance) -> None:
@@ -170,6 +181,7 @@ class TranscriptionPipeline:
         return self._context[stream] or None
 
     async def _transcribe(self, samples: Sequence[float], *, prompt: str | None = None) -> str:
+        assert self._asr is not None  # only the VAD path calls this, and it always has an ASR
         async with self._asr_lock:
             segments = await asyncio.to_thread(
                 self._asr.transcribe, samples, language=self._language, prompt=prompt
@@ -211,13 +223,15 @@ class TranscriptionPipeline:
             final = segmenter.flush()
             if final is not None:
                 await self._emit(stream, final)
-        # Drain the live Them sidecar: closing it finalizes its streaming tail, so the last
-        # turns are persisted before the transcript is rewritten in order below.
-        if self._them_processor is not None:
-            await self._them_processor.close()
+        # Drain the live sidecars: closing each finalizes its streaming tail, so the last
+        # segments are persisted before the transcript is rewritten in order below.
+        for processor in (self._them_processor, self._me_processor):
+            if processor is not None:
+                await processor.close()
         # Release the ASR backend (e.g. terminate the Parakeet sidecar) now that no more
         # utterances will be transcribed; off the loop since it may wait on a subprocess.
-        await asyncio.to_thread(self._asr.close)
+        if self._asr is not None:
+            await asyncio.to_thread(self._asr.close)
         if self._them_recorder is not None:
             self._them_recorder.close()
         # The live transcript was appended in ASR-completion order across two streams;

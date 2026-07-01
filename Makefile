@@ -17,7 +17,7 @@ dev: ## Run the app for local development (placeholder until the core server lan
 pytest: ## Run Python tests
 	uv run pytest -q
 
-HELPER_PRODUCTS := --product hearsay-helper --product hearsay-diarize --product hearsay-asr --product hearsay-live
+HELPER_PRODUCTS := --product hearsay-helper --product hearsay-diarize --product hearsay-asr --product hearsay-live --product hearsay-me
 swift-build: ## Build the Swift helper executables (explicit products skip FluidAudio's CLI, which has a type-check bug)
 	swift build --package-path $(PKG) $(HELPER_PRODUCTS)
 

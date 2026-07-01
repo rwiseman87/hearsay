@@ -15,21 +15,36 @@ diarizer turn, so overlapping/quick-turn speakers split) · **F4** torch removal
 turn-driven live Them (`hearsay-live` sidecar: streaming diar + Parakeet → labeled turns; **validated on a real
 meeting**) · **whisper.cpp dropped** (Parakeet-only) · **step (2) voiceprints from FluidAudio** (`hearsay-diarize` now
 emits per-speaker embeddings → the refine stores + matches them; ONNX embedder + kaldi + the whole online-clusterer
-fallback `fusion/`+`MeetingDiarizer` deleted; `hearsay-live` is the only live Them path). The live path is now fully
-Swift (Them + Me-ASR via sidecars), **no Python fusion**. **133 tests; ruff + mypy --strict (64 files) + swift build +
-selftest + audit + licenses all green.** Architecture = **B**: the capture binary (`hearsay-helper`) stays a lean PCM
-streamer; AI runs in Swift sidecars the Python core feeds; Python relays bytes but runs **no models**. End goal: Python
-= ML-free backend ([[hearsay-swift-pivot-direction]]).
+fallback `fusion/`+`MeetingDiarizer` deleted; `hearsay-live` is the only live Them path) · **step (3a) Me → Swift
+(code-complete, needs on-device validation)** — new `hearsay-me` sidecar (FluidAudio streaming VAD + Parakeet → "Me"
+utterances) + `LiveMeProcessor`; wired as the **default** Me path (`vad.me_sidecar`, default on), Silero+Python-ASR kept
+as the gated fallback. The live path is now fully Swift (Them + Me via sidecars), **no Python fusion**. **135 tests; ruff
++ mypy --strict (66 files) + swift build (5 products) + selftest + audit + licenses all green.** Architecture = **B**:
+the capture binary (`hearsay-helper`) stays a lean PCM streamer; AI runs in Swift sidecars the Python core feeds; Python
+relays bytes but runs **no models**. End goal: Python = ML-free backend ([[hearsay-swift-pivot-direction]]).
 
-**Pick up here → 1 fully-Swift cleanup left, then a docs sweep, then merge `feat/fluidaudio-pivot` to `main`:**
-- **(3) Me → Swift** — a new `hearsay-me` sidecar (FluidAudio streaming VAD `makeStreamState`/`processStreamingChunk` +
-  Parakeet → "Me" segments), then rip out Silero VAD + the whole `vad/` path → pure-sidecar live pipeline. **Needs an
-  on-device meeting to validate.** After (3) Python has **zero ML deps** (numpy stays only to pack PCM; onnxruntime gone
-  with Silero). NB: step (2) already invalidated existing stored centroids (FluidAudio embeddings are a different vector
-  space than the old wespeaker ONNX ones) — old voiceprints won't match; they re-seed on the next refine.
+**Pick up here → validate step 3a on-device, then finish 3b (delete `vad/`), then a docs sweep, then merge to `main`:**
+- **(3a) VALIDATE Me → Swift on-device (NEXT, needs the user).** `hearsay-me` is built + wired as the default but has
+  **never run on-device** — only the Parakeet ASR path is proven (via `hearsay-live`/`hearsay-asr`); the new piece is the
+  **streaming VAD** (`VadManager.processStreamingChunk`, 4096-sample frames, auto-downloads the Silero-CoreML model).
+  Restart `serve` + run a real meeting: expect "Me" utterances with a few seconds' latency + reasonable boundaries. If
+  the VAD segmentation is off, tune (thresholds are FluidAudio's `VadConfig`/`VadSegmentationConfig` defaults in
+  `helper/Sources/hearsay-me/main.swift`). To fall back to the old Silero+Python path while debugging:
+  `HEARSAY_VAD__ME_SIDECAR=false`.
+- **(3b) Delete the Silero/`vad/` path (after 3a validates).** Rip out `vad/` (Silero, Segmenter), the pipeline's VAD
+  branch + `_emit`/`_transcribe`/`_context`/`asr` param, the `_asr_factory`/`vad_factory` in session, `VADSettings`
+  (+ `me_sidecar` toggle), `fetch-models`' Silero download, and the `onnxruntime` dep (Silero was its last user; numpy
+  stays only to pack PCM). After 3b Python has **zero ML deps**. NB: step (2) already invalidated stored centroids
+  (FluidAudio embeddings are a different vector space than the old wespeaker ONNX ones) — they re-seed on the next refine.
 - **Docs sweep (carry-over)** — `docs/architecture.md` + `docs/pipeline.md` still describe the deleted `fusion/`,
   `MeetingDiarizer`, ONNX embedder, kaldi, and online clustering as live (README + development.md already fixed). Also
   the `pyannote`/`torch` mentions flagged in F4. Do this as part of the pre-merge cleanup.
+
+**Note on the 3a pipeline shape:** `TranscriptionPipeline` now builds a stream's Silero Segmenter + the Python ASR
+backend **only for streams without a sidecar** (via `_processor_for`), so the default path (both streams on sidecars)
+spawns no idle Parakeet/Silero. `LiveThemProcessor`/`LiveMeProcessor` share a `LiveSidecarProcessor` base (spawn/feed/
+read/close); only `_handle` differs. The live manual-rename relay is gone (sidecars have no bind API) — a rename still
+relabels existing segments + is carried forward by the refine.
 
 Also still open (lower priority): the optional both-speakers Me/Them interleave validation; Phases 3 (calendar+OCR), 4
 (LLM notes+Bedrock), 5 (packaging). The all-Swift-*backend* question (Python API/DB → Swift too) stays parked as a
@@ -149,7 +164,7 @@ Docs: `README.md` + `docs/{architecture,pipeline,api,development}.md`. Design: t
 ```sh
 make sync                            # venv + base deps (Python 3.14)
 uv sync --extra asr                  # Silero VAD (onnxruntime) + numpy for PCM packing; ASR/diar/voiceprints are Swift sidecars
-make swift-build                     # build helper + sidecars: hearsay-{helper,diarize,asr,live} (skips FluidAudio's broken CLI)
+make swift-build                     # build helper + sidecars: hearsay-{helper,diarize,asr,live,me} (skips FluidAudio's broken CLI)
 uv run hearsay fetch-models          # Silero VAD model (~2 MB)
 make ci                              # ruff + mypy --strict + pytest + swift selftest + audit + licenses
 cd web && npm ci && npm run build && cd ..   # build the React UI bundle (web/dist)
@@ -213,6 +228,18 @@ uv run hearsay live --model base --seconds 60   # real pipeline -> live transcri
 
 ## Progress log
 
+- **2026-07-01 (step 3a — Me → Swift `hearsay-me` sidecar, code-complete; needs on-device validation).** New Swift
+  `hearsay-me` executable: local-mic PCM in → FluidAudio streaming VAD (`VadManager.processStreamingChunk`, 4096-sample
+  frames) finds speech boundaries → Parakeet transcribes each utterance → emits `{text,start_s,end_s}` (Me is always the
+  local speaker, no diarization). Python `LiveMeProcessor` owns it + persists "Me" segments. Factored the shared sidecar
+  plumbing (spawn/feed/read/close) into `LiveSidecarProcessor`; `LiveThemProcessor` + `LiveMeProcessor` now subclass it
+  (only `_handle` differs). Wired as the **default** Me path via `vad.me_sidecar` (default on); the Silero VAD + Python
+  ASR path stays as the gated fallback (`HEARSAY_VAD__ME_SIDECAR=false`). Pipeline now builds a stream's Segmenter + the
+  Python ASR backend **only for sidecar-less streams** (`_processor_for`), so the default path spawns no idle Parakeet/
+  Silero. **135 tests (+ `LiveMeProcessor._handle`, + pipeline me_processor routing); ruff + mypy --strict (66 files) +
+  swift build (5 products) + selftest + audit + licenses green.** Committed on `feat/fluidaudio-pivot`. **NEXT: restart
+  serve + run a real meeting to validate the streaming VAD (the only unproven piece); then 3b — delete `vad/`/Silero +
+  onnxruntime → zero ML deps. See [[hearsay-swift-pivot-direction]].**
 - **2026-06-30 (eve, step 2 done — voiceprints from FluidAudio; online-clusterer fallback deleted).** `hearsay-diarize`
   now emits FluidAudio's per-speaker `speakerDatabase` (mean-of-segments embeddings) in its JSON; the Swift `Output`
   gained a `speakers:[{speaker,embedding}]` field. Python `OfflineDiarizer.diarize` returns a new `DiarizationResult`

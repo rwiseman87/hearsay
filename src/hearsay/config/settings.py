@@ -59,7 +59,7 @@ class DiarizationSettings(BaseModel):
 
 
 class VADSettings(BaseModel):
-    """Silero VAD thresholds + segmentation hysteresis."""
+    """Silero VAD thresholds + segmentation hysteresis (the live "Me" fallback path)."""
 
     threshold: float = 0.5
     min_speech_ms: int = 250
@@ -67,6 +67,10 @@ class VADSettings(BaseModel):
     # Cadence for live partial transcripts during ongoing speech (0 disables partials).
     partial_ms: int = 800
     model_path: Path | None = None  # default: <models_dir>/silero_vad.onnx
+    # Route the live "Me" stream through the Swift hearsay-me sidecar (FluidAudio streaming VAD +
+    # Parakeet on the ANE) instead of this Silero VAD + the Python ASR backend. Default on; set
+    # False to fall back to the Python VAD path. (The Silero path goes away once Me is validated.)
+    me_sidecar: bool = True
 
 
 class Settings(BaseSettings):

@@ -27,6 +27,7 @@ from hearsay.services import MeetingService, SpeakerService, meeting_folder_name
 from hearsay.transcript.broadcast import Broadcaster
 from hearsay.transcript.capture import Capture, HelperCapture
 from hearsay.transcript.live import LiveThemProcessor
+from hearsay.transcript.live_me import LiveMeProcessor
 from hearsay.transcript.pipeline import TranscriptionPipeline
 from hearsay.transcript.recorder import ThemAudioRecorder
 from hearsay.transcript.refine import RefineError, rediarize_meeting
@@ -147,6 +148,20 @@ class SessionManager:
                 broadcaster=broadcaster,
                 sink=sink,
             )
+            # Live Me: the Swift hearsay-me sidecar (streaming VAD + Parakeet). Default; falls back
+            # to the Python VAD + ASR path (which needs an ASR backend) when me_sidecar is off.
+            me_processor: LiveMeProcessor | None = None
+            asr: ASRBackend | None = None
+            if self._settings.vad.me_sidecar:
+                me_processor = LiveMeProcessor(
+                    binary_path=self._settings.helper_path.with_name("hearsay-me"),
+                    meeting_id=meeting_id,
+                    database=self._db,
+                    broadcaster=broadcaster,
+                    sink=sink,
+                )
+            else:
+                asr = self._asr_factory()
             them_recorder = (
                 ThemAudioRecorder(folder / "them.wav")
                 if self._settings.diarization.refine
@@ -157,11 +172,12 @@ class SessionManager:
                 database=self._db,
                 sink=sink,
                 broadcaster=broadcaster,
-                asr=self._asr_factory(),
+                asr=asr,
                 vad_factory=self._vad_factory,
                 vad=self._settings.vad,
                 them_recorder=them_recorder,
                 them_processor=them_processor,
+                me_processor=me_processor,
                 language=self._settings.asr.language,
                 condition_on_previous_text=self._settings.asr.condition_on_previous_text,
                 context_reset_gap_s=self._settings.asr.context_reset_gap_s,

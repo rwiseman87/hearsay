@@ -239,3 +239,63 @@ async def test_pipeline_without_diarizer_keeps_them_generic(tmp_path: Path) -> N
     them = [s for s in segments if s.stream is Stream.THEM]
     assert len(them) == 1 and them[0].speaker_label == "Them" and them[0].cluster_id is None
     assert clusters == []
+
+
+class FakeMeProcessor:
+    """Records the audio fed to it; stands in for the hearsay-me sidecar (no subprocess)."""
+
+    def __init__(self) -> None:
+        self.fed: list[tuple[int, float]] = []
+        self.started = False
+        self.closed = False
+
+    async def start(self) -> None:
+        self.started = True
+
+    async def feed(self, samples: Sequence[float], t0_s: float) -> None:
+        self.fed.append((len(samples), t0_s))
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+async def test_pipeline_routes_me_to_sidecar(tmp_path: Path) -> None:
+    database = _make_db(tmp_path)
+    async with database.session() as session:
+        meeting = await MeetingService(session).create(
+            title="T", folder="mtg", started_at=datetime.now(UTC)
+        )
+
+    me_queue: asyncio.Queue[AudioChunk | None] = asyncio.Queue()
+    them_queue: asyncio.Queue[AudioChunk | None] = asyncio.Queue()
+    me_queue.put_nowait(AudioChunk(host_ts=0, samples=tuple(_speech(5))))
+    me_queue.put_nowait(None)
+    them_queue.put_nowait(None)
+    media = SimpleNamespace(queues={Stream.ME: me_queue, Stream.THEM: them_queue})
+
+    me_processor = FakeMeProcessor()
+    # me_processor handles Me, Them is empty -> no VAD path runs, so no ASR backend is needed.
+    pipeline = TranscriptionPipeline(
+        meeting_id=meeting.id,
+        database=database,
+        sink=LocalMarkdownSink(),
+        broadcaster=Broadcaster(),
+        vad_factory=StubVAD,
+        vad=VADSettings(min_speech_ms=20, min_silence_ms=40, partial_ms=0),
+        me_processor=me_processor,  # type: ignore[arg-type]
+    )
+    meta = MeetingMeta(
+        id=meeting.id, title="T", started_at=datetime.now(UTC), folder=tmp_path / "mtg"
+    )
+
+    await pipeline.open(media, meta)  # type: ignore[arg-type]
+    await asyncio.sleep(0.2)
+    await pipeline.close(ended_at=datetime.now(UTC))
+
+    async with database.session() as session:
+        segments, _ = await MeetingService(session).list_segments(meeting.id, page=1, page_size=10)
+    await database.dispose()
+
+    assert me_processor.started and me_processor.closed
+    assert me_processor.fed == [(5 * FRAME, 0.0)]  # the Me chunk went to the sidecar, not the VAD
+    assert segments == []  # the pipeline did not transcribe Me via the Python VAD path
