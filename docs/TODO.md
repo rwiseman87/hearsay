@@ -23,7 +23,7 @@ as the gated fallback. The live path is now fully Swift (Them + Me via sidecars)
 the capture binary (`hearsay-helper`) stays a lean PCM streamer; AI runs in Swift sidecars the Python core feeds; Python
 relays bytes but runs **no models**. End goal: Python = ML-free backend ([[hearsay-swift-pivot-direction]]).
 
-**Pick up here → 3b (delete the Silero/`vad/` fallback → zero Python ML deps), then merge to `main`. (3a Me→Swift + the VAD tune VALIDATED on-device 2026-07-01; docs sweep DONE; sidecar-death crash fixed.)**
+**Pick up here → merge `feat/fluidaudio-pivot` to `main` (do the CLAUDE.md cleanup first — see below). The pivot is complete: 3a Me→Swift + VAD tune VALIDATED on-device, 3b DONE (Python is now ML-dep-free — numpy only), docs swept, sidecar-death crash fixed. All on `feat/fluidaudio-pivot`; `make ci` green.**
 - **(3a) Me → Swift — VALIDATED on-device (2026-07-01).** Ran a real meeting via `serve`: `hearsay-me` (streaming VAD +
   Parakeet) produced "Me" utterances, "working OK." Two caveats the user flagged: (i) turn-end boundaries a little iffy
   when a turn ends with a short/no pause, and (ii) some Parakeet ASR accuracy misses. Root cause of (i): `hearsay-me`
@@ -41,23 +41,28 @@ relays bytes but runs **no models**. End goal: Python = ML-free backend ([[hears
   overlap. The user re-ran a real meeting and confirmed the boundaries read well (and the sidecar-death bug fix held —
   no crash). If turns ever over-split mid-sentence, raise `minSilenceDuration` (toward 0.6); if too laggy, lower it
   (toward 0.35). **3a + tuning complete → 3b is next.**
-- **(3b) Delete the Silero/`vad/` path (after 3a validates).** Rip out `vad/` (Silero, Segmenter), the pipeline's VAD
-  branch + `_emit`/`_transcribe`/`_context`/`asr` param, the `_asr_factory`/`vad_factory` in session, `VADSettings`
-  (+ `me_sidecar` toggle), `fetch-models`' Silero download, and the `onnxruntime` dep (Silero was its last user; numpy
-  stays only to pack PCM). After 3b Python has **zero ML deps**. NB: step (2) already invalidated stored centroids
-  (FluidAudio embeddings are a different vector space than the old wespeaker ONNX ones) — they re-seed on the next refine.
-- **Docs sweep — DONE (2026-07-01).** Rewrote `docs/architecture.md` + `docs/pipeline.md` to the post-pivot sidecar
-  architecture (hearsay-{live,me,diarize,asr} on the ANE; Python ML-free) and also fixed `docs/development.md` +
-  `docs/api.md` — the "development.md already fixed" note above was **stale**: they still listed the deleted `accel`/
-  `diarization`/`diarization-pyannote` extras, the whispercpp/mlx ASR picker, and the removed `CLUSTER_THRESHOLD`/
-  `DIARIZATION__ENABLED` settings. All four now scan clean of the dead terms. **Left as-is (not in doc-sweep scope, flag
-  before merge):** `CLAUDE.md` still lists a `fusion/` package in its structure tree + pywhispercpp/mlx in the Python-3.14
-  dep-decision note.
+- **(3b) Delete the Silero/`vad/` path — DONE (2026-07-01).** Ripped out the `vad/` package (Silero, Segmenter), the
+  pipeline's entire VAD/ASR branch (`_emit`/`_transcribe`/`_context`/`_clean_text`/`_persist` + the `asr`/`vad_factory`/
+  `vad`/`broadcaster` params), the `_asr_factory`/`_vad_factory` + `ASRFactory`/`VADFactory` in session, `VADSettings`
+  (+ the `me_sidecar` toggle), the `fetch-models` CLI command (Silero was all it did), and the `onnxruntime` dep (pruned
+  from `uv.lock`/venv along with flatbuffers + protobuf; its mypy override removed). `TranscriptionPipeline` is now a thin
+  router: both streams always go to their sidecars (Them -> `hearsay-live`, Me -> `hearsay-me`); a stream with no processor
+  is drained (Them still recorded). `build_asr`/`ParakeetBackend` stay — the **refine** uses them to re-transcribe turns.
+  **Python now has zero ML deps** (numpy only, for PCM packing + reading them.wav). Tests: deleted `test_segmenter.py` +
+  `test_silero_vad.py`, rewrote `test_pipeline.py` to fake-sidecar routing (+ a no-processor drain test). Docs (README +
+  architecture/pipeline/development) updated to drop Silero/fetch-models/me_sidecar. **`make ci` green: ruff + mypy
+  --strict (63 files) + 125 pytest + swift selftest + pip-audit + licenses.** NB: step (2) already invalidated stored
+  centroids (different vector space) — they re-seed on the next refine.
 
-**Note on the 3a pipeline shape:** `TranscriptionPipeline` now builds a stream's Silero Segmenter + the Python ASR
-backend **only for streams without a sidecar** (via `_processor_for`), so the default path (both streams on sidecars)
-spawns no idle Parakeet/Silero. `LiveThemProcessor`/`LiveMeProcessor` share a `LiveSidecarProcessor` base (spawn/feed/
-read/close); only `_handle` differs. The live manual-rename relay is gone (sidecars have no bind API) — a rename still
+**CLAUDE.md cleanup (do before merge):** `CLAUDE.md` still describes deleted things — the `fusion/` package in its
+structure tree, and pywhispercpp/mlx/onnxruntime + Silero VAD in the dependency-decision + env notes. Not touched during
+the pivot (checked-in project instructions; deferred by the user). A consolidated pass before merging to `main` should
+reconcile it with the ML-free-Python end state.
+
+**Note on the live pipeline shape:** both streams always route to their Swift sidecars (Them -> `hearsay-live`, Me ->
+`hearsay-me`); `TranscriptionPipeline` runs no ML and only routes PCM + records them.wav + rewrites the transcript at
+stop. `LiveThemProcessor`/`LiveMeProcessor` share a `LiveSidecarProcessor` base (spawn/feed/read/close + broken-pipe
+resilience); only `_handle` differs. The live manual-rename relay is gone (sidecars have no bind API) — a rename still
 relabels existing segments + is carried forward by the refine.
 
 Also still open (lower priority): the optional both-speakers Me/Them interleave validation; Phases 3 (calendar+OCR), 4
@@ -242,6 +247,19 @@ uv run hearsay live --model base --seconds 60   # real pipeline -> live transcri
 
 ## Progress log
 
+- **2026-07-01 (3b — deleted the Silero/`vad/` fallback; Python is now ML-dep-free).** With 3a validated, removed the
+  entire Python VAD/ASR live path: deleted the `vad/` package (Silero, Segmenter), gutted `TranscriptionPipeline` down to
+  a thin router (dropped `_emit`/`_transcribe`/`_context`/`_clean_text`/`_persist` + the `asr`/`vad_factory`/`vad`/
+  `broadcaster` params -- both streams always route to their sidecars now, a processor-less stream is drained),
+  removed session's `_asr_factory`/`_vad_factory`/`ASRFactory`/`VADFactory`, `VADSettings` (+ the `me_sidecar` toggle),
+  the `fetch-models` CLI command, and the `onnxruntime` dep (pruned from `uv.lock`/venv with flatbuffers + protobuf; mypy
+  override gone). `build_asr`/`ParakeetBackend` stay -- the post-meeting refine still uses them to re-transcribe each
+  diarizer turn. Tests: deleted `test_segmenter.py` + `test_silero_vad.py`, rewrote `test_pipeline.py` to fake-sidecar
+  routing (+ a no-processor drain test). Docs (README + architecture/pipeline/development) updated to drop Silero/
+  fetch-models/me_sidecar. **`make ci` green: ruff + mypy --strict (63 files) + 125 pytest + swift selftest + pip-audit +
+  licenses.** End state: the Python core runs **no ML models** (numpy only, to pack PCM + read them.wav); all audio-AI is
+  in the Swift sidecars on the ANE. **NEXT: a CLAUDE.md cleanup pass, then merge `feat/fluidaudio-pivot` to `main`.** See
+  [[hearsay-swift-pivot-direction]].
 - **2026-07-01 (bug fix — live pipeline survives a sidecar dying mid-meeting).** During the 3a-tune re-test the user
   refreshed the browser mid-recording; the tap watchdog rebuilt and a live sidecar (`hearsay-me`/`hearsay-live`) died,
   so its stdin pipe broke. `LiveSidecarProcessor.feed` had no error handling around `stdin.drain()`, so the `_consume`
