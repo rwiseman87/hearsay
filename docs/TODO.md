@@ -16,8 +16,9 @@ models CC-BY-4.0, **ungated**) on the **Apple Neural Engine**, in Swift sidecars
 (`hearsay-helper`) is a lean PCM streamer; all AI is in the sidecars. The whole arc (F1-F4, steps 2/3a/3b, the VAD tune,
 the sidecar-death fix, the docs + CLAUDE.md reconciliation) is in the progress log below. [[hearsay-swift-pivot-direction]]
 
-**Pick up here → the two post-pivot features are VALIDATED on-device and MERGED to `main`** (`--no-ff` merge `de7a436`;
-2026-07-01). They were stacked on the now-merged `feat/audio-playback`:
+**Pick up here → the three post-pivot live-UX features are all VALIDATED on-device and MERGED to `main`** (2026-07-01;
+playback + streaming-Me via `de7a436`, streaming-Them + finalize fixes via `be8cb8f`). They were built on `main` after
+the FluidAudio pivot:
 1. **In-browser audio playback** — `MeetingAudioRecorder` writes a mixed `audio.wav`; `GET /api/meetings/{id}/audio`
    serves it; the `TranscriptView` player highlights the current line + seeks on click. **VALIDATED:** the user confirmed
    the player + line-highlight + click-to-seek work and playback "sounded good" (loud + smooth). Objective check on the
@@ -28,25 +29,27 @@ the sidecar-death fix, the docs + CLAUDE.md reconciliation) is in the progress l
    test ("...is it actually gonna stream me? ... it does actually stream me. It just doesn't do the other ones") — live
    Me streaming works; Them-not-streaming is the expected deferred follow-up (next), not a regression.
 
-**Pick up here (3) → Them streaming — CODE-COMPLETE on branch `feat/them-streaming` (commit `fa8b5f9`), needs
-on-device validation, then merge to `main`.** `hearsay-live` now runs a `StreamingUnifiedAsrManager` alongside the
-existing LS-EEND diarizer + batch Parakeet: the in-progress (not-yet-finalized) Them audio is transcribed into growing
-**partial** transcripts (re-anchored to each finalized turn boundary), so Them text appears live as spoken. Partials are
-**speaker-less** (`speaker` -1, broadcast as `Them`) — the diarizer only assigns a speaker at turn end, so attribution is
-deferred to the **final** (the proven per-turn batch path is untouched: batch-transcribe each finalized diarizer turn →
-`Speaker N` + cluster). Sidecar now emits `{kind:"partial|final", speaker, text, start_s, end_s}`; `LiveThemProcessor`
-broadcasts partials to the UI only (never persisted), finals unchanged. Frontend already renders one dimmed partial per
-stream + supersedes it with the stream's next final → **no frontend change**. `make ci` green (ruff + mypy --strict (64
-files) + 138 pytest + swift selftest + audit + licenses); +1 test (`test_partials_broadcast_but_not_persisted` in
-`test_live.py`). **Validate: `serve` + a meeting, have Them talk, watch Them text stream live (dimmed, labeled `Them`)
-then snap to `Speaker N` at turn-end.** Watch for: (a) ANE memory/contention now that `hearsay-live` holds 3 models
-(LS-EEND + batch Parakeet + streaming Parakeet) — though the machine already ran 4 concurrently (me+live), so it should
-be incremental; if it's a problem the fallback is a single-engine token-timing split (heavier); (b) partial "Them" label
-reading oddly next to "Speaker N" — trivial to change. **The optional level meter is DROPPED** (user: "if we're
-streaming them, I don't need the level meter, too"). Longer-horizon forks stay open: Phase 3 (calendar/OCR speaker
-naming), Phase 4 (LLM notes), Phase 5 (packaging), the all-Swift-backend decision, and the deferred higher-fi playback
-(a parallel HQ capture stream). The pivot itself is DONE + merged (`main` @ `00672ef`); the two playback/streaming-Me
-features are DONE + merged (`main` @ `de7a436`).
+3. **Live streaming "Them" captions** — `hearsay-live` runs a `StreamingUnifiedAsrManager` alongside the existing LS-EEND
+   diarizer + batch Parakeet: in-progress (not-yet-finalized) Them audio streams in as growing **partial** transcripts
+   (re-anchored to each finalized turn boundary), **speaker-less** (`speaker` -1, broadcast as `Them`) — the diarizer only
+   assigns a speaker at turn end, so attribution is deferred to the **final** (the proven per-turn batch path is untouched:
+   batch-transcribe each finalized turn → `Speaker N` + cluster). Sidecar emits `{kind:"partial|final", speaker, text,
+   start_s, end_s}`; `LiveThemProcessor` broadcasts partials to the UI only, finals unchanged; no frontend change. Shipped
+   with two finalize-transcript bug fixes surfaced during validation (both frontend): (a) transcript lines **duplicated**
+   after auto-refine — `seed` now replaces the finals on finalize instead of merging; (b) UI **never showed the refined
+   transcript** after stop — `/stop`'s inline refine exceeded the 15s fetch timeout, so the client aborted before
+   `onSuccess` could invalidate; `useStopMeeting` now uses the 600s `REFINE_TIMEOUT_MS`. **VALIDATED on-device** (user:
+   "it's working ok" — streaming works, no dupes, refined transcript loads without a refresh). ANE memory was fine with
+   `hearsay-live` holding 3 models. The optional **level meter is DROPPED** (user declined it once Them streams). **MERGED
+   to `main`** (`--no-ff` merge `be8cb8f`; `make ci` green — 138 pytest + mypy --strict 64 files + swift selftest + audit +
+   licenses; web tsc/build green).
+
+**Next (nothing in flight):** the longer-horizon forks are all that remain open — Phase 3 (calendar roster + OCR
+active-speaker naming), Phase 4 (LLM notes + Bedrock), Phase 5 (packaging/distribution), the all-Swift-backend decision
+(revisit now that Python is ML-free), and the deferred higher-fi playback (a parallel HQ capture stream). The pivot is
+DONE + merged (`main` @ `00672ef`); playback + streaming-Me merged (`main` @ `de7a436`); streaming-Them + the two
+finalize fixes merged (`main` @ `be8cb8f`). A possible small follow-up if the `Them` partial label reads oddly next to
+`Speaker N`: change it to blank or `Speaker …` (trivial).
 
 **Two carry-over notes for whoever picks this up:** (a) the committed VAD-tune config `VadSegmentationConfig(minSilence
 Duration: 0.45, speechPadding: 0.2)` on `main`/earlier commits trips FluidAudio's debug `assert(speechPadding <=
@@ -278,6 +281,15 @@ uv run hearsay live --model base --seconds 60   # real pipeline -> live transcri
 
 ## Progress log
 
+- **2026-07-01 (Them streaming + the two finalize fixes VALIDATED on-device + MERGED to `main`).** User confirmed "it's
+  working ok" — live Them captions stream in speaker-less then snap to `Speaker N` at turn end, no post-stop duplication,
+  and the refined transcript now loads without a manual refresh. ANE was fine with `hearsay-live` holding 3 models
+  (LS-EEND + batch Parakeet + streaming Parakeet). Merged `feat/them-streaming` -> `main` (`--no-ff`, merge `be8cb8f`):
+  the streaming-Them feature (`fa8b5f9`) + the two frontend bug fixes surfaced during validation — the auto-refine
+  duplication (`02554e0`, replace-on-finalize) and the stop-timeout (`ca3f6ae`, 600s `REFINE_TIMEOUT_MS` so the inline
+  refine finishes before the request aborts). Level meter dropped per the user. **NEXT: nothing in flight — only the
+  longer-horizon forks remain (Phase 3 calendar/OCR, Phase 4 LLM notes, Phase 5 packaging, the all-Swift-backend
+  decision, higher-fi playback).** See [[hearsay-swift-pivot-direction]].
 - **2026-07-01 (bug fix — UI never showed the refined transcript after stop; frontend-only).** The user reported the
   transcript "never updates once I hit stop" (stuck on the live/pre-refine version). Diagnosed from the DB: the meeting's
   segments **were** refined server-side (14 rows, Speaker 1/2, matching `transcript.md`), so the backend + segments API
