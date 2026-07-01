@@ -278,6 +278,21 @@ uv run hearsay live --model base --seconds 60   # real pipeline -> live transcri
 
 ## Progress log
 
+- **2026-07-01 (bug fix — UI never showed the refined transcript after stop; frontend-only).** The user reported the
+  transcript "never updates once I hit stop" (stuck on the live/pre-refine version). Diagnosed from the DB: the meeting's
+  segments **were** refined server-side (14 rows, Speaker 1/2, matching `transcript.md`), so the backend + segments API
+  were correct -- the UI just never refetched. Root cause: `/stop` now runs the inline auto-refine (re-diarize +
+  re-transcribe every turn; a **cold Parakeet sidecar load alone is ~11s**), routinely exceeding the fetch wrapper's
+  **15s `DEFAULT_TIMEOUT_MS`**. When it did, the client `AbortSignal` aborted the request -> the `useStopMeeting` mutation
+  errored -> `onSuccess` never fired -> the segments query was never invalidated, so the UI kept the WS-accumulated live
+  finals. (Meanwhile `useMeetings`' 5s poll flips status to finalized, so my earlier replace-on-finalize dedup fix shows
+  the stale live segments -- "no dupes, but never refined." The original "dupes until refresh" was the faster meetings
+  where `/stop` returned within 15s.) Fix (`web/src/api/hooks.ts`): give `useStopMeeting` the same 600s timeout the manual
+  refine uses (hoisted to a shared `REFINE_TIMEOUT_MS`), so `onSuccess` fires after the refine and invalidates the queries
+  -> refined transcript loads without a refresh. Considered a "refetch on recording->finalized transition" safety net but
+  **dropped it**: `stop_meeting` commits `status=finalized` **before** running the refine, so that transition fires
+  mid-refine and would fetch pre-refine data -- the mutation's `onSuccess` is the only correct "refine done" signal. tsc +
+  vite build green. Committed on `feat/them-streaming` (`ca3f6ae`). **Rebuild `web/dist` + restart `serve` to pick it up.**
 - **2026-07-01 (bug fix — transcript lines duplicated after auto-refine at finalize; frontend-only).** On stop, the
   auto-refine replaces the Them segments server-side with new per-turn rows at different `start_s` keys; the transcript
   reducer's `seed` action **merged** the refetched DB segments into `state.finals`, which still held the stale live-WS
