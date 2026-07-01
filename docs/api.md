@@ -110,37 +110,39 @@ Stops capture, flushes the pipeline, rewrites `transcript.md` in timestamp order
 Stops it if active, removes the DB rows (segments cascade), and deletes the on-disk folder.
 Returns `204`, or `404` if unknown.
 
-## ASR model picker
+## ASR status
+
+ASR runs in the Swift `hearsay-asr` sidecar (FluidAudio Parakeet TDT on the ANE). There is one
+bundled model and one backend, so this surface is informational — kept as a seam for a future
+alternate backend.
 
 ### `GET /api/asr/models` — current selection + available models
 
 ```json
 // 200 OK
 {
-  "backend": "whispercpp",
-  "model": "large-v3-turbo",
+  "backend": "parakeet",
+  "model": "large-v3",
   "models": [
-    { "name": "large-v3-turbo", "label": "Large v3 Turbo", "installed": false },
-    { "name": "base", "label": "Base (fast)", "installed": false }
+    { "name": "parakeet-tdt-v3", "label": "Parakeet TDT v3 (ANE)", "installed": true }
   ]
 }
 ```
 
-`models` lists curated models plus any local GGML files found in `models_dir`.
+(`model` echoes the `asr.model` setting, which the Parakeet backend ignores.)
 
-### `PUT /api/asr/model` — switch model (and optionally backend)
+### `PUT /api/asr/model` — update the selection
 
-Updates process settings; takes effect for the **next** meeting (a running meeting keeps the
-backend it started with).
+Updates process settings; would take effect for the **next** meeting. With a single backend and
+one bundled model this is effectively a no-op today.
 
 ```sh
 curl -X PUT http://127.0.0.1:8137/api/asr/model \
   -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
-  -d '{"model": "base"}'
+  -d '{"model": "parakeet-tdt-v3"}'
 ```
 
-Body: `{ "model": "<name|path|repo>", "backend": "whispercpp" | "mlx" (optional) }`. Returns
-the updated `ASRStatus`.
+Body: `{ "model": "<name>", "backend": "parakeet" (optional) }`. Returns the updated `ASRStatus`.
 
 ## Speakers and identities
 
