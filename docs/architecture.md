@@ -32,7 +32,7 @@ flowchart TB
   end
   subgraph Side["Swift sidecars (FluidAudio / ANE)"]
     SL["hearsay-live (Them: diarize + Parakeet)"]
-    SMe["hearsay-me (Me: VAD + Parakeet)"]
+    SMe["hearsay-me (Me: VAD + streaming Parakeet)"]
     SD["hearsay-diarize (offline refine)"]
     SA["hearsay-asr (Parakeet, refine re-transcribe)"]
   end
@@ -178,8 +178,9 @@ The heart of a running meeting.
   implement `_handle` to persist + broadcast one emitted segment.
 - `live.py` — `LiveThemProcessor`: owns `hearsay-live`, maps each emitted turn's 0-based speaker
   to a `Speaker N` label + `Cluster` row, persists + broadcasts it.
-- `live_me.py` — `LiveMeProcessor`: owns `hearsay-me`, persists + broadcasts each Me utterance
-  (always labeled `Me`, never diarized).
+- `live_me.py` — `LiveMeProcessor`: owns `hearsay-me`, streaming the live "Me" transcript —
+  broadcasts partials (UI only) and persists + broadcasts finals (always labeled `Me`, never
+  diarized).
 - `recorder.py` — `ThemAudioRecorder`: streams the Them track to `<folder>/them.wav` (only when
   `diarization.refine` is on) plus an offset sidecar, so the post-meeting refine can map turns
   back onto meeting time.

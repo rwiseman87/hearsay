@@ -24,7 +24,7 @@ flowchart LR
   end
   subgraph Sidecars["Swift sidecars (FluidAudio / ANE)"]
     SL["hearsay-live\nstreaming diarize + Parakeet"]
-    SM["hearsay-me\nstreaming VAD + Parakeet"]
+    SM["hearsay-me\nstreaming VAD + streaming Parakeet\n(partials + final)"]
   end
   Cap -- media.sock --> MC
   Them <-- "stdin PCM / stdout NDJSON" --> SL
@@ -95,8 +95,9 @@ inside the sidecar on the ANE — the Python side never touches a model.
   as each speaker turn finalizes, the sidecar transcribes it and emits
   `{speaker, text, start_s, end_s}`. The processor maps the 0-based `speaker` to a 1-based
   `Speaker N` label, creating a `Cluster` row per ordinal on first sight.
-- **Me → `hearsay-me`** (`LiveMeProcessor`). FluidAudio streaming VAD + Parakeet: it finds
-  speech boundaries and transcribes each utterance, emitting `{text, start_s, end_s}`. Me is
+- **Me → `hearsay-me`** (`LiveMeProcessor`). FluidAudio streaming VAD (utterance boundaries) +
+  streaming Parakeet (`StreamingUnifiedAsrManager`): it emits growing **partial** transcripts as
+  you speak and a **final** when the utterance closes, each `{kind, text, start_s, end_s}`. Me is
   always the local speaker, so there is no diarization — the label is always `Me`.
 
 The pipeline runs no ML itself: it routes each stream's PCM to its processor and does nothing
@@ -112,9 +113,11 @@ re-diarizes; it is the only raw-audio retention and can be turned off.
 
 ### 5. Fan-out per segment
 
-Each sidecar segment is fanned out three ways by its processor's `_handle`: broadcast to the
+Each sidecar **final** is fanned out three ways by its processor's `_handle`: broadcast to the
 WebSocket with its resolved label, persisted as a `Segment` row (DB, Them carries a
-`cluster_id`), and appended to `transcript.md`. The sidecars emit finalized segments only.
+`cluster_id`), and appended to `transcript.md`. `hearsay-me` also emits **partials** as you speak
+— those are broadcast to the WebSocket only (never persisted); the frontend renders them dimmed
+and supersedes them with the final.
 
 ### 6. Finalize: ordered rewrite
 
