@@ -5,7 +5,7 @@
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
-use hearsay_inference::{read_them_channel, SherpaDiarizer};
+use hearsay_inference::{read_them_channel, DiarizeTuning, SherpaDiarizer};
 
 fn repo(rel: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -29,26 +29,22 @@ fn sweep_cluster_threshold() {
         "outputs/recordings/2026-07-01_1833_miguel-kristina-test2/audio.wav",
     ))
     .expect("read Them channel");
-    eprintln!("ground truth: 2 speakers");
-    let embedders = [
-        ("CAM++_LM", emb_model()),
-        (
-            "titanet_small",
-            repo("outputs/models/nemo_en_titanet_small.onnx"),
-        ),
-    ];
-    for (name, model) in &embedders {
-        if !model.exists() {
-            eprintln!("  [{name}] missing, skipping");
-            continue;
-        }
-        for threshold in [0.5_f32, 0.6, 0.7, 0.8, 0.9] {
-            let diarizer = SherpaDiarizer::load_with_threshold(&seg_model(), model, threshold)
-                .expect("load diarizer");
+    eprintln!("ground truth: 2 speakers (TitaNet embedder)");
+    let titanet = repo("outputs/models/nemo_en_titanet_small.onnx");
+    for min_on in [0.3_f32, 0.5, 1.0, 2.0] {
+        for threshold in [0.80_f32, 0.90, 0.95, 0.97] {
+            let tuning = DiarizeTuning {
+                cluster_threshold: threshold,
+                min_duration_on: min_on,
+                min_duration_off: 0.5,
+            };
+            let diarizer =
+                SherpaDiarizer::load_tuned(&seg_model(), &titanet, tuning).expect("load diarizer");
             let result = diarizer.diarize(&them).expect("diarize");
             let speakers: BTreeSet<i64> = result.turns.iter().map(|t| t.speaker).collect();
+            let hit = if speakers.len() == 2 { "  <== 2" } else { "" };
             eprintln!(
-                "  [{name}] threshold {threshold:.2} -> {} speakers, {} turns",
+                "  min_on {min_on:.1} threshold {threshold:.2} -> {} speakers, {} turns{hit}",
                 speakers.len(),
                 result.turns.len()
             );
@@ -61,11 +57,7 @@ fn sweep_cluster_threshold() {
 fn diarizes_real_two_speaker_meeting() {
     let audio = repo("outputs/recordings/2026-07-01_1833_miguel-kristina-test2/audio.wav");
     let them = read_them_channel(&audio).expect("read Them channel");
-    let diarizer = SherpaDiarizer::load(
-        &repo("outputs/models/sherpa-onnx-pyannote-segmentation-3-0/model.onnx"),
-        &repo("outputs/models/wespeaker_en_voxceleb_CAM++_LM.onnx"),
-    )
-    .expect("load diarizer");
+    let diarizer = SherpaDiarizer::load(&seg_model(), &emb_model()).expect("load diarizer");
 
     let result = diarizer.diarize(&them).expect("diarize");
     let speakers: BTreeSet<i64> = result.turns.iter().map(|t| t.speaker).collect();

@@ -20,4 +20,4 @@ pub use asr::{AsrSegment, WhisperAsr};
 pub use audio::{read_them_channel, read_wav_mono_16k, SAMPLE_RATE};
 pub use error::InferenceError;
 pub use refine::{refine_audio_file, refine_them, RefineOutput, RefinedSegment};
-pub use sherpa_diarize::{DiarTurn, SherpaDiarization, SherpaDiarizer};
+pub use sherpa_diarize::{DiarTurn, DiarizeTuning, SherpaDiarization, SherpaDiarizer};

@@ -476,6 +476,21 @@ uv run hearsay live --seconds 60     # real pipeline -> live transcripts (on-dev
 
 ## Progress log
 
+- **2026-07-02 (cross-platform Rust — sherpa diarizer DER-tuning; exhausted under the license gate).** Tried to
+  close the diarization gap to FluidAudio. Added a `DiarizeTuning` surface (cluster_threshold + min_duration_on/
+  off) and swept it on the known 2-speaker clip. Result: with **pyannote-segmentation-3.0** (the *only*
+  permissive sherpa segmentation model) + **TitaNet** (which beats CAM++), the pipeline **plateaus at 3 speakers**
+  — 0.90/0.95/0.97 all give 3, and raising min_duration_on to 2.0 s (down to 7 turns) still gives 3, so the 3rd
+  cluster is high-confidence, not a trimmable blip. It never reaches FluidAudio's clean **2**. The one lever that
+  would matter — a better segmentation model — is blocked: sherpa's only better ones are Rev AI's **reverb-
+  diarization v1/v2**, both under the **"Rev Model Non-Production License"** (§3.2: research/personal/eval in
+  Non-Production only, no commercial use "behind a software layer") — fails the MIT/BSD/Apache gate. **Conclusion:
+  no permissively-licensed model set closes the gap.** This firmly settles the fork: **FluidAudio (pyannote
+  community-1, ANE) stays the macOS accuracy tier; sherpa-onnx is the cross-platform (Windows) fallback —
+  degraded-but-usable (~3 vs 2), default threshold set to 0.9 (best-achievable).** Set `DEFAULT_CLUSTER_THRESHOLD`
+  = 0.9 + documented the finding on the const. **79 gate tests; clippy + rustfmt green.** Committed `800686c`'s
+  follow-up. NEXT (unchanged options): the streaming-ASR half (`OnlineRecognizer`, independent of this gap), and
+  wiring a `Diarizer` seam into `refine_them` (Swift on Mac, sherpa fallback elsewhere).
 - **2026-07-02 (cross-platform Rust — pure-Rust offline diarizer via sherpa-onnx; the Windows inference path
   begins).** Chose the base after live vetting: **`sherpa-onnx` crate 1.13.3** (Apache-2.0, first-party k2-fsa,
   actively maintained) — NOT `sherpa-rs` (deprecated/archived) and not raw `ort` (rc-only, no stable, would mean

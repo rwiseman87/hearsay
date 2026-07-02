@@ -21,12 +21,36 @@ use crate::error::InferenceError;
 /// Contract-fixed track sample rate (Hz).
 const SAMPLE_RATE: i32 = 16_000;
 
-/// Default agglomerative-clustering cosine threshold (sherpa's own default). NOTE: not yet
-/// competitive — on real call audio this pipeline over-clusters (see the `sweep_cluster_threshold`
-/// opt-in test: best case ~3 speakers on a known-2 clip with TitaNet, vs FluidAudio's 2). Higher
-/// merges more (fewer speakers). DER-tuning (segmentation/embedding model + threshold, validated
-/// across labeled clips) is pending before this feeds the refine on non-Mac platforms.
-const DEFAULT_CLUSTER_THRESHOLD: f32 = 0.5;
+/// Default agglomerative-clustering cosine threshold — the best-achievable operating point, not a
+/// competitive one. DER-tuning was exhausted under the MIT/BSD/Apache license gate (see the
+/// `sweep_cluster_threshold` opt-in test): with pyannote-segmentation-3.0 (the only permissive
+/// sherpa segmentation model — the better Rev "reverb" models are Non-Production/non-commercial),
+/// this pipeline plateaus at ~3 speakers on a known-2 clip (0.90/0.95/0.97 all give 3; below ~0.85
+/// it over-clusters badly) vs FluidAudio's clean 2. TitaNet beats CAM++ as the embedder. So on
+/// macOS the Swift/FluidAudio `hearsay-diarize` stays the accuracy tier; this is the cross-platform
+/// (Windows) fallback, degraded-but-usable. Higher merges more (fewer speakers).
+const DEFAULT_CLUSTER_THRESHOLD: f32 = 0.9;
+
+/// Clustering + segmentation-gating knobs for [`SherpaDiarizer`] (the DER-tuning surface).
+#[derive(Clone, Copy, Debug)]
+pub struct DiarizeTuning {
+    /// Agglomerative cosine threshold (higher merges more -> fewer speakers).
+    pub cluster_threshold: f32,
+    /// Drop speech turns shorter than this (seconds); trims short spurious turns before clustering.
+    pub min_duration_on: f32,
+    /// Bridge silence gaps shorter than this (seconds) within a speaker.
+    pub min_duration_off: f32,
+}
+
+impl Default for DiarizeTuning {
+    fn default() -> Self {
+        Self {
+            cluster_threshold: DEFAULT_CLUSTER_THRESHOLD,
+            min_duration_on: 0.3,
+            min_duration_off: 0.5,
+        }
+    }
+}
 
 /// One diarizer turn: a 1-based speaker ordinal over `[start_s, end_s)` (meeting time).
 #[derive(Debug, Clone, PartialEq)]
@@ -52,21 +76,21 @@ pub struct SherpaDiarizer {
 
 impl SherpaDiarizer {
     /// Load the pyannote segmentation model + the speaker-embedding model (both `.onnx`), with the
-    /// default (tuned) clustering threshold.
+    /// default tuning.
     pub fn load(segmentation_model: &Path, embedding_model: &Path) -> Result<Self, InferenceError> {
-        Self::load_with_threshold(
+        Self::load_tuned(
             segmentation_model,
             embedding_model,
-            DEFAULT_CLUSTER_THRESHOLD,
+            DiarizeTuning::default(),
         )
     }
 
-    /// Load with an explicit clustering cosine threshold (higher merges more -> fewer speakers).
-    /// CPU provider by default (portable); accel is a sherpa build concern, not wired here yet.
-    pub fn load_with_threshold(
+    /// Load with explicit [`DiarizeTuning`]. CPU provider by default (portable); accel is a sherpa
+    /// build concern, not wired here yet.
+    pub fn load_tuned(
         segmentation_model: &Path,
         embedding_model: &Path,
-        cluster_threshold: f32,
+        tuning: DiarizeTuning,
     ) -> Result<Self, InferenceError> {
         let embedding = SpeakerEmbeddingExtractorConfig {
             model: Some(embedding_model.to_string_lossy().into_owned()),
@@ -82,9 +106,10 @@ impl SherpaDiarizer {
             embedding: embedding.clone(),
             clustering: FastClusteringConfig {
                 num_clusters: -1,
-                threshold: cluster_threshold,
+                threshold: tuning.cluster_threshold,
             },
-            ..Default::default()
+            min_duration_on: tuning.min_duration_on,
+            min_duration_off: tuning.min_duration_off,
         };
         let diarizer = OfflineSpeakerDiarization::create(&config).ok_or_else(|| {
             InferenceError::Diarize(format!(
