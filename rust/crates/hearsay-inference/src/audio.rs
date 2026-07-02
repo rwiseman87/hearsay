@@ -46,6 +46,43 @@ pub fn read_wav_mono_16k(path: impl AsRef<Path>) -> Result<Vec<f32>, InferenceEr
         .collect())
 }
 
+/// Read the Them (right) channel of the stereo 16 kHz `audio.wav` as mono `f32` (the refine reads
+/// it — it is as clean as a Them-only recording since Me/Them are separate capture devices). Falls
+/// back to a mono file's only channel. Port of Python `read_them_channel`.
+pub fn read_them_channel(path: impl AsRef<Path>) -> Result<Vec<f32>, InferenceError> {
+    let mut reader = hound::WavReader::open(path)
+        .map_err(|e| InferenceError::Audio(format!("open wav: {e}")))?;
+    let spec = reader.spec();
+    if spec.sample_rate != SAMPLE_RATE {
+        return Err(InferenceError::Audio(format!(
+            "expected {SAMPLE_RATE} Hz, got {}",
+            spec.sample_rate
+        )));
+    }
+    let interleaved: Vec<f32> = match (spec.sample_format, spec.bits_per_sample) {
+        (hound::SampleFormat::Int, 16) => reader
+            .samples::<i16>()
+            .map(|s| s.map(|v| v as f32 / 32768.0))
+            .collect::<Result<_, _>>()
+            .map_err(|e| InferenceError::Audio(format!("read samples: {e}")))?,
+        (hound::SampleFormat::Float, 32) => reader
+            .samples::<f32>()
+            .collect::<Result<_, _>>()
+            .map_err(|e| InferenceError::Audio(format!("read samples: {e}")))?,
+        (_, bits) => {
+            return Err(InferenceError::Audio(format!(
+                "unsupported wav sample format ({bits}-bit)"
+            )))
+        }
+    };
+    let channels = spec.channels as usize;
+    if channels <= 1 {
+        return Ok(interleaved);
+    }
+    // Right channel (index 1) of each frame.
+    Ok(interleaved.chunks(channels).map(|frame| frame[1]).collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -13,7 +13,9 @@
 mod asr;
 mod audio;
 mod error;
+mod refine;
 
 pub use asr::{AsrSegment, WhisperAsr};
-pub use audio::{read_wav_mono_16k, SAMPLE_RATE};
+pub use audio::{read_them_channel, read_wav_mono_16k, SAMPLE_RATE};
 pub use error::InferenceError;
+pub use refine::{refine_them, RefinedSegment};

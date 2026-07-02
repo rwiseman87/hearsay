@@ -700,6 +700,8 @@ name = "hearsay-inference"
 version = "0.0.0"
 dependencies = [
  "hound",
+ "serde",
+ "serde_json",
  "tempfile",
  "whisper-rs",
 ]
