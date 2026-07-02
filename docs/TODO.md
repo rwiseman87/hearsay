@@ -20,7 +20,7 @@ OSes** (it is the revived pre-ANE stack).
 **Branch `feat/cross-platform-rust-tauri` (NOT merged to main).** Target design:
 `docs/architecture-cross-platform.md`. Crate map: `rust/README.md`.
 
-**DONE + tested — 34 Rust tests, `cargo test` + `clippy -D warnings` + `rustfmt` green, gated by `make ci`:**
+**DONE + tested — 53 Rust tests, `cargo test` + `clippy -D warnings` + `rustfmt` green, gated by `make ci`:**
 - Rust workspace `rust/` (7 crates) + `make rust-{build,test,lint,fmt}` folded into `make ci`.
 - **`hearsay-ipc`** — media-frame codec (validated byte-for-byte against `shared/fixtures/frames.jsonl`,
   the same golden vectors Python/Swift check) + NDJSON control channel (Command/Reply/Event, sorted-key wire).
@@ -28,11 +28,25 @@ OSes** (it is the revived pre-ANE stack).
   `assign_segment_speaker`), pure logic, zero deps.
 - **`hearsay-db`** — SQLx 0.9 + SQLite: one forward-only baseline migration (meetings/identities/clusters/
   segments), row types + text enums, pool with the `engine.py` pragmas (WAL/busy_timeout/foreign_keys),
-  runtime-checked queries.
+  runtime-checked queries. (Extended with the pagination/join/rename/delete queries `hearsay-core` needs.)
+- **`hearsay-core`** — axum 0.8 HTTP/WS API (port of `src/hearsay/api/`). Full self-contained surface:
+  meetings/segments/speakers/identities queries + the `{total,page,page_size,items}` envelope, pure-DB
+  writes (rename->bind+relabel, delete->DB+folder), audio file serving (Range, query-or-bearer token),
+  static UI + token injection + minimal CSP, loopback Host/Origin hardening + per-session bearer token,
+  and a **utoipa** OpenAPI doc (`GET /openapi.json` + `--dump-openapi`, for OpenAPI->TS). tracing JSON
+  logs; `#[tokio::main]` binds 127.0.0.1 with graceful shutdown. The meeting **lifecycle** (start/stop)
+  and the **live transcript WS** sit behind a `LiveEngine` trait seam (mirrors the Python `create_app`
+  `SessionManager` injection); the built-in `DisabledEngine` answers them 503 / clean-close until
+  `hearsay-orchestrator` implements it. `POST /rediarize` is 404-or-503 (needs `hearsay-inference`).
+  Deps (verified-latest via `cargo add`): axum 0.8.9, tower-http 0.7, tokio 1.52, utoipa 5.5, tracing
+  + tracing-subscriber, serde/serde_json, async-trait 0.1, sqlx 0.9, uuid, chrono, tower (+ tempfile dev).
+  **NB: `hearsay-core` (+ the `hearsay-db` query extensions + these doc edits) is UNCOMMITTED on the
+  branch** — the other three crates are committed; `git status` shows the new `hearsay-core` files as
+  untracked. Suggested commit: `feat(rust): implement hearsay-core (axum API + utoipa + LiveEngine seam)`.
 
 **REMAINING crate stubs (`rust/crates/`):**
-- **`hearsay-orchestrator`** — `tokio::process` supervision + PCM routing on top of `hearsay-ipc`. Verifiable here with fakes.
-- **`hearsay-core`** — axum HTTP/WS API + utoipa (OpenAPI->TS); depends on `hearsay-db`. Verifiable here.
+- **`hearsay-orchestrator`** — `tokio::process` supervision + PCM routing on top of `hearsay-ipc`; implements
+  the `hearsay-core` `LiveEngine` seam (start/stop meeting + live-transcript broadcast). Verifiable here with fakes.
 - **`hearsay-capture`** — cpal per-OS (WASAPI loopback / Core Audio tap). Needs real audio devices / target OS.
 - **`hearsay-inference`** — whisper.cpp + Silero VAD + offline diarization, tiered models. The big one;
   **GATED on the model verification below** — do not build until the model tiers are chosen.
@@ -51,8 +65,9 @@ check is a confirmation, not a redo.
 **Resume the Rust work:** `. "$HOME/.cargo/env"` first (the Bash-tool shell does not auto-source it);
 `make rust-test` / `rust-lint` / `rust-fmt`; per-crate `cargo test --manifest-path rust/crates/<crate>/Cargo.toml`.
 Pin new deps via `cargo add` (verified-latest, never guess). Next verifiable-here crate:
-`hearsay-orchestrator` or `hearsay-core`; `capture`/`inference` wait for target hardware + the model
-decision. Full context: [[hearsay-windows-requirement]].
+`hearsay-orchestrator` (implements the `hearsay-core` `LiveEngine` seam — start/stop + live broadcast —
+over `tokio::process` + PCM routing, testable with fakes); `capture`/`inference` wait for target
+hardware + the model decision. Full context: [[hearsay-windows-requirement]].
 
 **Prior on-main focus (now paused behind this):** the three-item focus below — items 1+2 (dead-code, WAV
 consolidation) merged; **item 3 (post-meeting LLM notes) NOT started** — is paused while the cross-platform
@@ -374,6 +389,28 @@ uv run hearsay live --seconds 60     # real pipeline -> live transcripts (on-dev
 
 ## Progress log
 
+- **2026-07-01 (cross-platform Rust — `hearsay-core` implemented + tested; branch `feat/cross-platform-rust-tauri`,
+  uncommitted).** 4th of 7 crates. With the user, picked `hearsay-core` over `hearsay-orchestrator` as the next
+  verifiable-here crate (self-contained, depends only on the finished `hearsay-db`; unblocks the shared React UI on
+  Rust). Ported `src/hearsay/api/` to axum 0.8: `security.rs` (Host/Origin allowlist + constant-time bearer, unit-tested),
+  `config.rs` (env-resolved `Settings`), `schema.rs` (serde + utoipa `ToSchema` DTOs + the `{total,page,page_size,items}`
+  envelope), `error.rs` (`{detail}` JSON envelope; DB errors -> 500), `state.rs` (`AppState`), and the routers
+  (meetings/speakers/audio/ws/web) + the loopback + token middleware. **Key design:** the capture-dependent routes
+  (start/stop meeting, live WS) sit behind a `LiveEngine` trait seam — the Rust analogue of Python `create_app`'s injected
+  `SessionManager` — with a built-in `DisabledEngine` (503 / clean WS close) so the crate lands complete + tested before
+  `hearsay-orchestrator` exists; every read + pure-DB-write + serving route works now. `POST /rediarize` is 404-or-503
+  (needs `hearsay-inference`). Added a utoipa OpenAPI doc (`/openapi.json` + `--dump-openapi`, emits OpenAPI 3.1.0) for the
+  OpenAPI->TS pipeline. Extended `hearsay-db/queries.rs` with the pagination/count/join(`SpeakerRow`)/`rename_cluster`
+  (transactional bind+relabel)/`delete_meeting` queries the API needs (+3 db tests: pagination, join+relabel, cascade
+  delete). New deps pinned verified-latest via `cargo add`: axum 0.8.9, tower-http 0.7, tower 0.5, tokio 1.52, utoipa 5.5,
+  tracing(+subscriber), serde/serde_json, async-trait 0.1, uuid, chrono, sqlx 0.9 (+ tempfile dev). **`make rust-test` +
+  `rust-lint` (clippy -D warnings) + `rust-fmt --check` all green: 53 Rust tests (16 new in `hearsay-core` — 4 unit
+  security + 12 tower-`oneshot` integration over in-memory SQLite covering auth 401/host 400/origin 403, list/get/404,
+  the page envelope, segment ordering, rename+label resolution, identities, audio token+404, rediarize 404/503, delete
+  204->404, start/stop 503, `/openapi.json`).** NB: uncommitted (the repo commits each crate separately — suggested
+  message `feat(rust): implement hearsay-core (axum API + utoipa + LiveEngine seam)`); await the user. **NEXT
+  verifiable-here crate: `hearsay-orchestrator`** — implement the `LiveEngine` seam (start/stop + live-transcript
+  broadcast) over `tokio::process` supervision + PCM routing, testable with fake sidecars.
 - **2026-07-01 (session wrap — items 1 + 2 of the user's three-item focus done + merged; item 3 not started).** Dead-code
   cleanup (`dfc4fbc`) and the single-stereo-WAV consolidation (`bf2aecb`) are both validated + merged to `main`; working
   tree clean. Item 3 (post-meeting notes + action items, the Phase-4 LLM piece) is **NOT STARTED** — the design shape +

@@ -131,3 +131,84 @@ async fn cluster_centroid_blob_roundtrips() {
     assert_eq!(cluster.centroid, Some(centroid));
     assert!(!cluster.locked);
 }
+
+#[tokio::test]
+async fn list_meetings_paginates_newest_first() {
+    let pool = memory_pool().await;
+    let base = chrono::Utc::now();
+    for (i, title) in ["oldest", "middle", "newest"].iter().enumerate() {
+        let started = base + chrono::Duration::seconds(i as i64);
+        queries::create_meeting(&pool, title, title, started)
+            .await
+            .unwrap();
+    }
+    assert_eq!(queries::count_meetings(&pool).await.unwrap(), 3);
+
+    let page1 = queries::list_meetings(&pool, 2, 0).await.unwrap();
+    assert_eq!(
+        page1.iter().map(|m| m.title.as_str()).collect::<Vec<_>>(),
+        ["newest", "middle"]
+    );
+    let page2 = queries::list_meetings(&pool, 2, 2).await.unwrap();
+    assert_eq!(page2.len(), 1);
+    assert_eq!(page2[0].title, "oldest");
+}
+
+#[tokio::test]
+async fn rename_cluster_binds_relabels_and_joins() {
+    let pool = memory_pool().await;
+    let meeting = queries::create_meeting(&pool, "t", "f", chrono::Utc::now())
+        .await
+        .unwrap();
+    let cluster = queries::create_cluster(&pool, meeting.id, 1, false, None)
+        .await
+        .unwrap();
+    let segment =
+        queries::insert_segment(&pool, meeting.id, Stream::Them, "Speaker 1", "hi", 0.0, 1.0)
+            .await
+            .unwrap();
+    sqlx::query("UPDATE segments SET cluster_id = ? WHERE id = ?")
+        .bind(cluster.id)
+        .bind(segment.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let renamed = queries::rename_cluster(&pool, cluster.id, "  Zed  ")
+        .await
+        .unwrap()
+        .expect("cluster exists");
+    assert_eq!(renamed.display_name.as_deref(), Some("Zed"));
+    assert!(renamed.locked);
+
+    // The join surfaces the bound name; the segment is relabelled; the identity exists once.
+    let rows = queries::list_speaker_rows(&pool, meeting.id).await.unwrap();
+    assert_eq!(rows[0].display_name.as_deref(), Some("Zed"));
+    let segments = queries::list_segments(&pool, meeting.id).await.unwrap();
+    assert_eq!(segments[0].speaker_label, "Zed");
+    assert_eq!(queries::count_identities(&pool).await.unwrap(), 1);
+
+    assert!(queries::rename_cluster(&pool, uuid::Uuid::new_v4(), "X")
+        .await
+        .unwrap()
+        .is_none());
+}
+
+#[tokio::test]
+async fn delete_meeting_removes_clusters_and_reports_missing() {
+    let pool = memory_pool().await;
+    let meeting = queries::create_meeting(&pool, "t", "f", chrono::Utc::now())
+        .await
+        .unwrap();
+    queries::create_cluster(&pool, meeting.id, 1, false, None)
+        .await
+        .unwrap();
+
+    assert!(queries::delete_meeting(&pool, meeting.id).await.unwrap());
+    assert!(queries::list_speaker_rows(&pool, meeting.id)
+        .await
+        .unwrap()
+        .is_empty());
+    assert_eq!(queries::count_meetings(&pool).await.unwrap(), 0);
+    assert!(!queries::delete_meeting(&pool, meeting.id).await.unwrap());
+}

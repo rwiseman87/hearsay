@@ -1,0 +1,110 @@
+//! Speakers (diarization clusters) + identities. Port of `src/hearsay/api/speakers.py`.
+
+use axum::extract::{Path, Query, State};
+use axum::routing::{get, put};
+use axum::{Json, Router};
+use uuid::Uuid;
+
+use hearsay_db::queries;
+
+use crate::error::{ApiError, ApiResult};
+use crate::routes::Pagination;
+use crate::schema::{IdentityRead, Page, SpeakerRead, SpeakerRename};
+use crate::state::AppState;
+
+/// Routes served under the `/api` prefix (token-gated by the caller).
+pub fn router() -> Router<AppState> {
+    Router::new()
+        .route("/meetings/{id}/speakers", get(list_speakers))
+        .route("/meetings/{id}/speakers/{cluster_id}", put(rename_speaker))
+        .route("/meetings/{id}/rediarize", axum::routing::post(rediarize))
+        .route("/identities", get(list_identities))
+}
+
+/// The speakers list is unpaginated (few per meeting); the envelope reports the full set.
+fn speaker_page(items: Vec<SpeakerRead>) -> Page<SpeakerRead> {
+    let total = items.len() as i64;
+    let page_size = items.len().max(1) as u32;
+    Page {
+        total,
+        page: 1,
+        page_size,
+        items,
+    }
+}
+
+#[utoipa::path(
+    get, path = "/api/meetings/{id}/speakers", tag = "speakers",
+    params(("id" = Uuid, Path)),
+    responses((status = 200, body = Page<SpeakerRead>)),
+)]
+pub(crate) async fn list_speakers(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+) -> ApiResult<Json<Page<SpeakerRead>>> {
+    let rows = queries::list_speaker_rows(&state.pool, id).await?;
+    let items = rows.into_iter().map(SpeakerRead::from).collect();
+    Ok(Json(speaker_page(items)))
+}
+
+#[utoipa::path(
+    put, path = "/api/meetings/{id}/speakers/{cluster_id}", tag = "speakers",
+    params(("id" = Uuid, Path), ("cluster_id" = Uuid, Path)),
+    request_body = SpeakerRename,
+    responses((status = 200, body = SpeakerRead), (status = 404), (status = 422)),
+)]
+pub(crate) async fn rename_speaker(
+    State(state): State<AppState>,
+    Path((_meeting_id, cluster_id)): Path<(Uuid, Uuid)>,
+    Json(body): Json<SpeakerRename>,
+) -> ApiResult<Json<SpeakerRead>> {
+    let name = body.display_name.trim();
+    if name.is_empty() || name.chars().count() > 255 {
+        return Err(ApiError::BadRequest(
+            "display_name must be 1..=255 characters".into(),
+        ));
+    }
+    let row = queries::rename_cluster(&state.pool, cluster_id, name)
+        .await?
+        .ok_or(ApiError::NotFound("speaker not found"))?;
+    Ok(Json(row.into()))
+}
+
+#[utoipa::path(
+    post, path = "/api/meetings/{id}/rediarize", tag = "speakers",
+    params(("id" = Uuid, Path)),
+    responses((status = 200, body = Page<SpeakerRead>), (status = 404), (status = 503)),
+)]
+pub(crate) async fn rediarize(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+) -> ApiResult<Json<Page<SpeakerRead>>> {
+    if queries::get_meeting(&state.pool, id).await?.is_none() {
+        return Err(ApiError::NotFound("meeting not found"));
+    }
+    // The refine runs FluidAudio / whisper.cpp diarization offline; that lives in the not-yet-built
+    // inference engine. Until then, re-diarization is unavailable.
+    Err(ApiError::Unavailable(
+        "re-diarization requires the inference engine (build hearsay-inference)".into(),
+    ))
+}
+
+#[utoipa::path(
+    get, path = "/api/identities", tag = "speakers",
+    params(("page" = Option<u32>, Query), ("page_size" = Option<u32>, Query)),
+    responses((status = 200, body = Page<IdentityRead>)),
+)]
+pub(crate) async fn list_identities(
+    State(state): State<AppState>,
+    Query(pagination): Query<Pagination>,
+) -> ApiResult<Json<Page<IdentityRead>>> {
+    let window = pagination.resolve(50, 200);
+    let total = queries::count_identities(&state.pool).await?;
+    let rows = queries::list_identities(&state.pool, window.limit, window.offset).await?;
+    Ok(Json(Page {
+        total,
+        page: window.page,
+        page_size: window.page_size,
+        items: rows.into_iter().map(IdentityRead::from).collect(),
+    }))
+}

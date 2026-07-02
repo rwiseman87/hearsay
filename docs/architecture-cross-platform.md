@@ -115,6 +115,8 @@ No -> FluidAudio stays the Mac tier and we carry two ASR backends (everything el
 ## Rust workspace layout
 
 See `rust/` (`rust/README.md` for the crate map + status). As of 2026-07-01, `hearsay-ipc`,
-`hearsay-attribution`, and `hearsay-db` are implemented + tested (34 tests, gated by `make ci`);
-`hearsay-orchestrator`, `hearsay-capture`, `hearsay-core`, and `hearsay-inference` remain stubs. Crate
-dependencies are pinned to verified latest versions via `cargo add` as each crate is implemented.
+`hearsay-attribution`, `hearsay-db`, and `hearsay-core` are implemented + tested (53 tests, gated by
+`make ci`); `hearsay-orchestrator`, `hearsay-capture`, and `hearsay-inference` remain stubs.
+`hearsay-core` exposes a `LiveEngine` trait seam (with a `DisabledEngine` placeholder) for the
+capture-dependent routes, which `hearsay-orchestrator` will implement. Crate dependencies are pinned to
+verified latest versions via `cargo add` as each crate is implemented.
