@@ -4,14 +4,16 @@
 //! (Me + Them `Speaker N` clusters), the meeting-time offset shift, stop (finalize + clear), the
 //! busy guard, and stopping an unknown meeting.
 
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use hearsay_db::models::MeetingStatus;
 use hearsay_db::{connect_options, queries, MIGRATOR};
 use hearsay_engine::{LiveEngine, LiveError};
-use hearsay_orchestrator::testing::ScriptedBackend;
+use hearsay_orchestrator::testing::{ScriptedBackend, ScriptedRefiner};
 use hearsay_orchestrator::{
-    AudioChunk, Backend, CaptureChunk, Orchestrator, SegmentKind, SidecarSegment, Stream,
+    AudioChunk, Backend, CaptureChunk, Orchestrator, RefinedThemSegment, SegmentKind,
+    SidecarSegment, Stream,
 };
 use serde_json::Value;
 use sqlx::sqlite::SqlitePoolOptions;
@@ -159,6 +161,95 @@ async fn full_lifecycle_routes_persists_and_broadcasts() {
     assert_eq!(speakers.len(), 1);
     assert_eq!(speakers[0].ordinal, 1);
     assert_eq!(them.cluster_id, Some(speakers[0].id));
+}
+
+/// A wired refiner replaces the live Them guesses at stop (auto-refine), and the persisted segments
+/// + clusters reflect the refine's output.
+#[tokio::test]
+async fn stop_auto_refines_them_segments() {
+    let pool = memory_pool().await;
+    let tmp = tempfile::tempdir().unwrap();
+
+    // Live path yields a single Them "Speaker 1" final; the refiner replaces it with two speakers.
+    let chunks = vec![chunk(Stream::Them, 1_000_000_000, &[0.1, 0.2, 0.3])];
+    let them_segments = vec![seg(SegmentKind::Final, "live guess", 0.0, 1.0, Some(0))];
+    let (backend, _fed) = ScriptedBackend::new(chunks, vec![], them_segments);
+
+    let refined = vec![
+        RefinedThemSegment {
+            ordinal: 1,
+            text: "refined one".into(),
+            start_s: 0.0,
+            end_s: 1.0,
+        },
+        RefinedThemSegment {
+            ordinal: 2,
+            text: "refined two".into(),
+            start_s: 1.0,
+            end_s: 2.0,
+        },
+    ];
+    let (refiner, calls) = ScriptedRefiner::new(refined);
+    let orch = orchestrator(pool.clone(), tmp.path(), backend).with_refiner(refiner);
+
+    let meeting = orch.start_meeting(Some("Refine Me".into())).await.unwrap();
+    // Auto-refine runs only when an `audio.wav` exists; the refiner ignores its content.
+    std::fs::write(
+        tmp.path().join(&meeting.folder).join("audio.wav"),
+        b"placeholder",
+    )
+    .unwrap();
+
+    orch.stop_meeting(meeting.id).await.unwrap().unwrap();
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+    // The single live Them final is replaced by the refiner's two speakers.
+    let segments = queries::list_segments(&pool, meeting.id).await.unwrap();
+    let them: Vec<_> = segments
+        .iter()
+        .filter(|s| s.stream == Stream::Them)
+        .collect();
+    assert_eq!(them.len(), 2);
+    assert_eq!(them[0].text, "refined one");
+    assert_eq!(them[0].speaker_label, "Speaker 1");
+    assert_eq!(them[1].speaker_label, "Speaker 2");
+
+    let speakers = queries::list_speaker_rows(&pool, meeting.id).await.unwrap();
+    assert_eq!(speakers.len(), 2);
+}
+
+/// A refine error is best-effort: the stop still finalizes and the live Them segments are kept.
+#[tokio::test]
+async fn stop_auto_refine_error_keeps_live_segments() {
+    let pool = memory_pool().await;
+    let tmp = tempfile::tempdir().unwrap();
+
+    let chunks = vec![chunk(Stream::Them, 1_000_000_000, &[0.1, 0.2, 0.3])];
+    let them_segments = vec![seg(SegmentKind::Final, "live guess", 0.0, 1.0, Some(0))];
+    let (backend, _fed) = ScriptedBackend::new(chunks, vec![], them_segments);
+
+    let (refiner, calls) = ScriptedRefiner::failing("diarize sidecar exploded");
+    let orch = orchestrator(pool.clone(), tmp.path(), backend).with_refiner(refiner);
+
+    let meeting = orch.start_meeting(None).await.unwrap();
+    std::fs::write(
+        tmp.path().join(&meeting.folder).join("audio.wav"),
+        b"placeholder",
+    )
+    .unwrap();
+
+    let stopped = orch.stop_meeting(meeting.id).await.unwrap().unwrap();
+    assert_eq!(stopped.status, MeetingStatus::Finalized);
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+    // The live guess survives (refine failed, so nothing was replaced).
+    let segments = queries::list_segments(&pool, meeting.id).await.unwrap();
+    let them: Vec<_> = segments
+        .iter()
+        .filter(|s| s.stream == Stream::Them)
+        .collect();
+    assert_eq!(them.len(), 1);
+    assert_eq!(them[0].text, "live guess");
 }
 
 #[tokio::test]

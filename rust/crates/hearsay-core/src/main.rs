@@ -2,16 +2,20 @@
 //! serve the API + UI. `--dump-openapi` prints the OpenAPI document and exits (for the TS codegen);
 //! `--synthetic` runs the capture helper in synthetic mode (generated audio, no TCC prompts).
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use async_trait::async_trait;
 use tokio::net::TcpListener;
 use utoipa::OpenApi as _;
 use uuid::Uuid;
 
 use hearsay_capture::SwiftHelperSource;
 use hearsay_core::{create_app, ApiDoc, AppState, Settings};
-use hearsay_orchestrator::{Backend, BackendInstance, Orchestrator, ProcessTranscriber};
+use hearsay_orchestrator::{
+    Backend, BackendInstance, Orchestrator, OrchestratorError, ProcessTranscriber,
+    RefinedThemSegment, Refiner,
+};
 
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
@@ -36,6 +40,49 @@ impl Backend for MacBackend {
                 self.helper_path.with_file_name("hearsay-live"),
             )),
         }
+    }
+}
+
+/// The post-meeting offline refine backend: re-diarize the Them track with the Swift
+/// `hearsay-diarize` FluidAudio sidecar + re-transcribe with whisper (`hearsay-inference`). Wired
+/// into the orchestrator so a meeting auto-refines at stop (the same path as the `/rediarize`
+/// button).
+struct MacRefiner {
+    diarize_path: PathBuf,
+    model: PathBuf,
+}
+
+#[async_trait]
+impl Refiner for MacRefiner {
+    async fn refine(
+        &self,
+        audio_path: &Path,
+    ) -> Result<Vec<RefinedThemSegment>, OrchestratorError> {
+        if !self.diarize_path.exists() {
+            return Err(OrchestratorError::Backend(format!(
+                "hearsay-diarize sidecar not found at {} (build it with `make swift-build`)",
+                self.diarize_path.display()
+            )));
+        }
+        let audio = audio_path.to_path_buf();
+        let diarize = self.diarize_path.clone();
+        let model = self.model.clone();
+        // whisper + the diarize subprocess are blocking — run off the async runtime.
+        let refined = tokio::task::spawn_blocking(move || {
+            hearsay_inference::refine_audio_file(&audio, &diarize, &model)
+        })
+        .await
+        .map_err(|e| OrchestratorError::Backend(format!("refine task panicked: {e}")))?
+        .map_err(|e| OrchestratorError::Backend(format!("refine failed: {e}")))?;
+        Ok(refined
+            .into_iter()
+            .map(|s| RefinedThemSegment {
+                ordinal: s.ordinal,
+                text: s.text,
+                start_s: s.start_s,
+                end_s: s.end_s,
+            })
+            .collect())
     }
 }
 
@@ -65,11 +112,14 @@ async fn main() -> Result<(), BoxError> {
         helper_path: settings.helper_path.clone(),
         synthetic,
     });
-    let engine = Arc::new(Orchestrator::new(
-        pool.clone(),
-        settings.output_dir.clone(),
-        backend,
-    ));
+    let mut orchestrator = Orchestrator::new(pool.clone(), settings.output_dir.clone(), backend);
+    if settings.auto_refine {
+        orchestrator = orchestrator.with_refiner(Arc::new(MacRefiner {
+            diarize_path: settings.helper_path.with_file_name("hearsay-diarize"),
+            model: settings.refine_model.clone(),
+        }));
+    }
+    let engine = Arc::new(orchestrator);
     let state = AppState::new(pool, settings, token.clone(), engine);
     let app = create_app(state);
 

@@ -3,13 +3,17 @@
 //! list of chunks and transcribers that record what they were fed and emit a fixed list of segments
 //! on close.
 
+use std::path::Path;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use tokio::sync::{mpsc, oneshot};
 
+use hearsay_db::queries::RefinedThemSegment;
+
 use crate::error::OrchestratorError;
-use crate::traits::{AudioSource, Backend, BackendInstance, Transcriber};
+use crate::traits::{AudioSource, Backend, BackendInstance, Refiner, Transcriber};
 use crate::types::{CaptureChunk, SidecarSegment};
 
 /// A capture source that replays `chunks`, then holds the channel open (as a live capture would)
@@ -143,6 +147,48 @@ impl ScriptedBackend {
                 them: them_fed,
             },
         )
+    }
+}
+
+/// A [`Refiner`] that yields a fixed set of refined segments (or a fixed error), ignoring the audio
+/// file, and counts how many times it ran — for testing auto-refine-at-stop without whisper.
+pub struct ScriptedRefiner {
+    result: Result<Vec<RefinedThemSegment>, String>,
+    calls: Arc<AtomicUsize>,
+}
+
+impl ScriptedRefiner {
+    /// A refiner that replaces the Them track with `segments` on each call. Returns it plus a
+    /// shared call counter.
+    pub fn new(segments: Vec<RefinedThemSegment>) -> (Arc<Self>, Arc<AtomicUsize>) {
+        Self::from_result(Ok(segments))
+    }
+
+    /// A refiner that fails with `message` (to prove a refine error never fails the stop).
+    pub fn failing(message: &str) -> (Arc<Self>, Arc<AtomicUsize>) {
+        Self::from_result(Err(message.to_string()))
+    }
+
+    fn from_result(
+        result: Result<Vec<RefinedThemSegment>, String>,
+    ) -> (Arc<Self>, Arc<AtomicUsize>) {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let refiner = Arc::new(ScriptedRefiner {
+            result,
+            calls: calls.clone(),
+        });
+        (refiner, calls)
+    }
+}
+
+#[async_trait]
+impl Refiner for ScriptedRefiner {
+    async fn refine(
+        &self,
+        _audio_path: &Path,
+    ) -> Result<Vec<RefinedThemSegment>, OrchestratorError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        self.result.clone().map_err(OrchestratorError::Backend)
     }
 }
 

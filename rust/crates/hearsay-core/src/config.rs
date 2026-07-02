@@ -26,10 +26,24 @@ pub struct Settings {
     pub helper_path: PathBuf,
     /// GGML whisper model for the offline refine (re-transcribing diarized turns at re-diarization).
     pub refine_model: PathBuf,
+    /// Auto-run the offline refine when a meeting stops (`HEARSAY_AUTO_REFINE`, default on). The
+    /// manual `/rediarize` route works regardless.
+    pub auto_refine: bool,
 }
 
 fn env_or(key: &str, default: impl Into<String>) -> String {
     env::var(key).unwrap_or_else(|_| default.into())
+}
+
+/// Parse a boolean env var (`1`/`true`/`yes`/`on` -> true, case-insensitive); `default` when unset.
+fn env_bool(key: &str, default: bool) -> bool {
+    match env::var(key) {
+        Ok(value) => matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        ),
+        Err(_) => default,
+    }
 }
 
 impl Settings {
@@ -57,6 +71,7 @@ impl Settings {
                 "HEARSAY_REFINE_MODEL",
                 "outputs/models/ggml-large-v3-turbo.bin",
             )),
+            auto_refine: env_bool("HEARSAY_AUTO_REFINE", true),
         }
     }
 }

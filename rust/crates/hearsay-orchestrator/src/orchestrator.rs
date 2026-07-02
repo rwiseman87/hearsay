@@ -17,7 +17,7 @@ use hearsay_engine::{LiveEngine, LiveError};
 
 use crate::error::OrchestratorError;
 use crate::pipeline::{self, Pipeline};
-use crate::traits::Backend;
+use crate::traits::{Backend, Refiner};
 
 /// The single active recording session: its meeting id and the running pipeline.
 struct ActiveSession {
@@ -32,6 +32,9 @@ pub struct Orchestrator {
     backend: Arc<dyn Backend>,
     /// Record the stereo `audio.wav` per meeting (for playback + the offline refine). Default on.
     record_audio: bool,
+    /// The post-meeting refine, run at stop when set (auto-refine). `None` disables it (the manual
+    /// `/rediarize` route still works — it drives the refine directly).
+    refiner: Option<Arc<dyn Refiner>>,
     /// Serializes `start_meeting` / `stop_meeting` (so the busy-check and the set never race).
     op_lock: tokio::sync::Mutex<()>,
     /// The active session, readable by the sync `active_meeting` / `subscribe` accessors.
@@ -48,6 +51,7 @@ impl Orchestrator {
             output_dir,
             backend,
             record_audio: true,
+            refiner: None,
             op_lock: tokio::sync::Mutex::new(()),
             active: Mutex::new(None),
         }
@@ -57,6 +61,14 @@ impl Orchestrator {
     /// wires `audio.record` here).
     pub fn with_audio_recording(mut self, record: bool) -> Self {
         self.record_audio = record;
+        self
+    }
+
+    /// Wire the post-meeting [`Refiner`] so a meeting auto-refines at stop (Python
+    /// `SessionManager._maybe_auto_refine`). Without it, stop just finalizes; the manual
+    /// `/rediarize` route drives the refine directly.
+    pub fn with_refiner(mut self, refiner: Arc<dyn Refiner>) -> Self {
+        self.refiner = Some(refiner);
         self
     }
 
@@ -100,6 +112,39 @@ impl Orchestrator {
             Err(err) => tracing::error!(error = %err, "failed to read segments for transcript"),
         }
     }
+
+    /// Best-effort post-meeting refine (Python `_maybe_auto_refine`): if a [`Refiner`] is wired and
+    /// the meeting recorded an `audio.wav`, re-diarize + re-transcribe the Them track and replace
+    /// its live segments. Never fails the stop — a missing recording (`audio.record` off) or a
+    /// refine error is logged and skipped, leaving the live finals as the transcript.
+    async fn maybe_auto_refine(&self, meeting: &Meeting) {
+        let Some(refiner) = self.refiner.as_ref() else {
+            return;
+        };
+        let audio = self.output_dir.join(&meeting.folder).join("audio.wav");
+        if !audio.exists() {
+            tracing::debug!(meeting = %meeting.id, "auto-refine skipped: no recorded audio");
+            return;
+        }
+        match refiner.refine(&audio).await {
+            Ok(refined) => {
+                match queries::replace_them_segments(&self.pool, meeting.id, &refined).await {
+                    Ok(()) => tracing::info!(
+                        meeting = %meeting.id,
+                        segments = refined.len(),
+                        "auto-refined Them segments at stop"
+                    ),
+                    Err(err) => tracing::warn!(
+                        error = %err,
+                        "auto-refine: failed to persist refined segments; keeping live segments"
+                    ),
+                }
+            }
+            Err(err) => {
+                tracing::warn!(error = %err, "auto-refine failed; keeping live segments");
+            }
+        }
+    }
 }
 
 #[async_trait]
@@ -138,12 +183,13 @@ impl LiveEngine for Orchestrator {
         queries::finalize_meeting(&self.pool, meeting_id, Utc::now())
             .await
             .map_err(OrchestratorError::from)?;
-        // TODO(refine): offline re-diarize the recording here once hearsay-inference lands
-        // (Python `_maybe_auto_refine`). Finals already persisted live are the transcript today.
         let finalized = queries::get_meeting(&self.pool, meeting_id)
             .await
             .map_err(OrchestratorError::from)?;
         if let Some(meeting) = &finalized {
+            // Auto-refine (best-effort) before writing the transcript so it reflects the refined
+            // speakers; the manual `/rediarize` route drives the same refine when auto is off.
+            self.maybe_auto_refine(meeting).await;
             self.write_transcript(meeting).await;
         }
         Ok(finalized)

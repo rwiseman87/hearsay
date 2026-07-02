@@ -106,6 +106,20 @@ pub fn refine_them(
     Ok(segments)
 }
 
+/// Refine a recorded meeting's `audio.wav` end-to-end: read the Them (right) channel, load the
+/// whisper model, then re-diarize (`diarize_binary`) + re-transcribe. The single ML entry point
+/// shared by the manual `/rediarize` route and the orchestrator's auto-refine-at-stop. Blocking
+/// (whisper + subprocess) — call via `spawn_blocking` from async code.
+pub fn refine_audio_file(
+    audio_path: &Path,
+    diarize_binary: &Path,
+    model: &Path,
+) -> Result<Vec<RefinedSegment>, InferenceError> {
+    let them = crate::audio::read_them_channel(audio_path)?;
+    let asr = WhisperAsr::load(model)?;
+    refine_them(&asr, diarize_binary, &them)
+}
+
 fn write_mono_wav(path: &Path, samples: &[f32]) -> Result<(), InferenceError> {
     let spec = hound::WavSpec {
         channels: 1,

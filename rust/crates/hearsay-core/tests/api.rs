@@ -43,6 +43,7 @@ async fn setup() -> (Router, SqlitePool, tempfile::TempDir) {
         environment: "test".into(),
         helper_path: tmp.path().join("no-helper"),
         refine_model: tmp.path().join("no-model"),
+        auto_refine: false,
     };
     let state = AppState::new(
         pool.clone(),

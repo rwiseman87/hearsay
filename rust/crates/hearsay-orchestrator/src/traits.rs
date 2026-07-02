@@ -2,8 +2,12 @@
 //! meeting. Kept behind traits so the [`Orchestrator`](crate::Orchestrator) lifecycle is testable
 //! with fakes ([`crate::testing`]) before `hearsay-capture` / `hearsay-inference` exist.
 
+use std::path::Path;
+
 use async_trait::async_trait;
 use tokio::sync::mpsc;
+
+use hearsay_db::queries::RefinedThemSegment;
 
 use crate::error::OrchestratorError;
 use crate::types::{CaptureChunk, SidecarSegment, Stream};
@@ -33,6 +37,18 @@ pub trait Transcriber: Send {
     /// Signal end-of-input and drain the sidecar's finalized tail. The segment channel closes once
     /// the sidecar exits.
     async fn close(&mut self);
+}
+
+/// The post-meeting offline refine of the Them track. Behind a trait so the orchestrator does not
+/// depend on `hearsay-inference` (whisper.cpp / cmake) and stays testable with fakes; the
+/// production impl (in the `hearsay-core` binary) wraps `hearsay_inference::refine_audio_file`
+/// (re-diarize via the Swift `hearsay-diarize` sidecar + re-transcribe with whisper).
+#[async_trait]
+pub trait Refiner: Send + Sync {
+    /// Re-diarize + re-transcribe the Them channel of `audio_path` (the stereo `audio.wav`),
+    /// returning the refined `Speaker N` segments to persist in place of the live guesses.
+    async fn refine(&self, audio_path: &Path)
+        -> Result<Vec<RefinedThemSegment>, OrchestratorError>;
 }
 
 /// The capture + transcription backends for one meeting.

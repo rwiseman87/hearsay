@@ -18,9 +18,11 @@
 //!   (faithful to `live_base.py`); [`testing`] has scripted fakes.
 //!
 //! The pipeline records one timeline-accurate stereo `audio.wav` per meeting (Me=L / Them=R) when
-//! recording is enabled. Deferred (tracked in `docs/TODO.md`): the `transcript.md` markdown sink,
-//! and the offline refine at stop (the latter gated on `hearsay-inference`). Finals persist to the
-//! database (the API's source of truth) today. See `docs/architecture-cross-platform.md`.
+//! recording is enabled, and writes `transcript.md` + `meeting.json` at stop. When a [`Refiner`] is
+//! wired, [`Orchestrator::stop_meeting`] auto-runs the post-meeting refine (re-diarize +
+//! re-transcribe the Them track, replacing the live guesses) before writing the transcript —
+//! best-effort, so a missing recording or a refine error never fails the stop. See
+//! `docs/architecture-cross-platform.md`.
 
 mod error;
 mod markdown;
@@ -35,9 +37,10 @@ mod wav_source;
 pub mod testing;
 
 pub use error::OrchestratorError;
+pub use hearsay_db::queries::RefinedThemSegment;
 pub use markdown::write_meeting_files;
 pub use orchestrator::Orchestrator;
-pub use traits::{AudioSource, Backend, BackendInstance, Transcriber};
+pub use traits::{AudioSource, Backend, BackendInstance, Refiner, Transcriber};
 pub use transcriber::ProcessTranscriber;
 pub use types::{AudioChunk, CaptureChunk, SegmentKind, SidecarSegment, Stream};
 pub use wav_source::WavFileSource;

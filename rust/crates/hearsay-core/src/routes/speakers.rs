@@ -99,13 +99,9 @@ pub(crate) async fn rediarize(
     let model = state.settings.refine_model.clone();
 
     // Read the Them track, re-diarize (hearsay-diarize) + re-transcribe (whisper) — all blocking.
-    let refined = tokio::task::spawn_blocking(
-        move || -> Result<Vec<hearsay_inference::RefinedSegment>, hearsay_inference::InferenceError> {
-            let them = hearsay_inference::read_them_channel(&audio)?;
-            let asr = hearsay_inference::WhisperAsr::load(&model)?;
-            hearsay_inference::refine_them(&asr, &diarize, &them)
-        },
-    )
+    let refined = tokio::task::spawn_blocking(move || {
+        hearsay_inference::refine_audio_file(&audio, &diarize, &model)
+    })
     .await
     .map_err(|e| ApiError::Internal(format!("refine task panicked: {e}")))?
     .map_err(|e| ApiError::Internal(format!("refine failed: {e}")))?;

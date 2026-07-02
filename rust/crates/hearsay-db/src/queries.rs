@@ -336,6 +336,7 @@ pub async fn rename_cluster(
 }
 
 /// A refined Them segment produced by the offline diarize + re-transcribe pass.
+#[derive(Debug, Clone)]
 pub struct RefinedThemSegment {
     pub ordinal: i64,
     pub text: String,

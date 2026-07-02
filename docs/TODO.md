@@ -30,8 +30,8 @@ FluidAudio/ANE on Mac** (fast, proven), the Rust whisper path is for **Windows**
 `hearsay-inference` = whisper offline ASR (Mac-verified) + the refine (diarize via Swift `hearsay-diarize`
 + re-transcribe). **Remaining:** the Windows path (cpal capture + a pure-Rust streaming `Transcriber` +
 diarizer, using the whisper harness) — the real cross-platform payoff, needs Windows hardware; plus small
-Mac follow-ups (auto-refine-at-stop, cross-meeting voiceprints, carry-forward of locked labels). Blow-by-blow
-in the progress log below.
+Mac follow-ups (**auto-refine-at-stop DONE 2026-07-02** via a `Refiner` trait seam, not yet on-device-validated;
+still open: cross-meeting voiceprints, carry-forward of locked labels). Blow-by-blow in the progress log below.
 
 **DONE + tested — 71 Rust tests (+ opt-in `--ignored`: jfk ASR, synthetic capture, real-recording refine),
 `cargo test` + `clippy -D warnings` + `rustfmt` green, gated by `make ci`:**
@@ -68,9 +68,9 @@ in the progress log below.
   with scripted fakes over in-memory SQLite (9 tests: full route/persist/broadcast/offset, busy guard, stop
   unknown, slugify/folder-name, feed framing + segment parse). Real `tokio::process` `ProcessTranscriber`
   (faithful to `live_base.py` stdio: `<u32 len><f32 pcm>` in, NDJSON segments out) is included for when
-  `hearsay-inference` ships the sidecar binaries. **Deferred (documented TODO):** only the offline refine at
-  stop (gated on `hearsay-inference`; finals persist to the DB — the API's source of truth — today). The
-  stereo `audio.wav` recorder + the `transcript.md`/`meeting.json` output are now DONE (2026-07-02 entries).
+  `hearsay-inference` ships the sidecar binaries. The offline refine at stop (auto-refine) is now DONE
+  (2026-07-02, via a `Refiner` trait seam — see the progress-log entry). The
+  stereo `audio.wav` recorder + the `transcript.md`/`meeting.json` output are also DONE (2026-07-02 entries).
   Also extended the
   `hearsay-core` seam: `LiveError::Internal` / `ApiError::Internal` (500) so a real engine can surface DB
   errors, and `hearsay-db insert_segment` gained a `cluster_id` param (Them finals bind a cluster). Deps:
@@ -150,10 +150,10 @@ binary runs the full live app on the Mac (real capture + streaming captions + li
 neither blocking the other:** (1) **the Windows path** (the real cross-platform payoff, needs Windows
 hardware): `hearsay-capture` cpal (WASAPI loopback Them + mic Me) + a pure-Rust streaming `Transcriber`
 (Silero VAD + streaming ASR + Segmenter) + a pure-Rust offline diarizer (ONNX via `ort`), so non-Mac needs no
-Swift; (2) **small Mac follow-ups:** auto-refine-at-stop (the orchestrator `// TODO(refine)` — currently the
-refine is the manual `/rediarize` button), cross-meeting voiceprints (the diarizer returns embeddings;
-`hearsay-attribution` has the cosine matcher ready), carry-forward of locked manual labels. Full context:
-[[hearsay-windows-requirement]].
+Swift; (2) **small Mac follow-ups:** ~~auto-refine-at-stop~~ **DONE 2026-07-02** (a `Refiner` trait seam;
+`stop_meeting` best-effort refines before writing the transcript — on-device validation still pending), then
+cross-meeting voiceprints (the diarizer returns embeddings; `hearsay-attribution` has the cosine matcher
+ready), carry-forward of locked manual labels. Full context: [[hearsay-windows-requirement]].
 
 **Prior on-main focus (now paused behind this):** the three-item focus below — items 1+2 (dead-code, WAV
 consolidation) merged; **item 3 (post-meeting LLM notes) NOT started** — is paused while the cross-platform
@@ -475,6 +475,26 @@ uv run hearsay live --seconds 60     # real pipeline -> live transcripts (on-dev
 
 ## Progress log
 
+- **2026-07-02 (cross-platform Rust — auto-refine-at-stop).** Wired the offline refine to run automatically
+  when a meeting stops (Python `SessionManager._maybe_auto_refine`), so the Rust core now matches the Python
+  behavior the frontend already expects (`useStopMeeting` uses the 600s `REFINE_TIMEOUT_MS` precisely because
+  stop auto-refines — no frontend change). Design: since `hearsay-orchestrator` is deliberately ML-dep-free
+  (whisper.cpp/cmake stays out; the lifecycle is fake-tested), auto-refine goes through a new **`Refiner`
+  trait seam** (sibling of `Backend`): the orchestrator calls it, the real impl lives in the `hearsay-core`
+  binary. `Orchestrator::stop_meeting` now runs `maybe_auto_refine` after finalize + before the transcript
+  write — **best-effort**: skipped (logged) when no `audio.wav` (retention off) or no refiner, and a refine
+  error is logged + swallowed (the live finals stay as the transcript), so a refine failure never fails the
+  stop. On success it `replace_them_segments` and the transcript reflects the refined speakers. The manual
+  `/rediarize` route is unchanged (still validated on-device); to avoid two ASR code paths both callers now
+  share one **`hearsay_inference::refine_audio_file`** entry point (read Them channel + load whisper +
+  `refine_them`). New `MacRefiner` (in `main.rs`, alongside `MacBackend`) wraps it via `spawn_blocking`;
+  wired into the orchestrator when the new `HEARSAY_AUTO_REFINE` setting (default on) is set. `RefinedThemSegment`
+  gained `Clone`; a `ScriptedRefiner` fake (+ call counter, success/failing modes) drives 2 new lifecycle
+  tests (auto-refine replaces the live Them segments; a refine error keeps them + the stop still finalizes).
+  **71 -> 73 Rust tests; `cargo test` + `clippy -D warnings` + `rustfmt --check` green.** NB: not yet
+  validated on-device (a real stop should auto-refine); the two remaining Mac follow-ups are cross-meeting
+  voiceprints + carry-forward of locked manual labels. NEXT: on-device validation, those two follow-ups, or
+  the Windows path.
 - **2026-07-02 (cross-platform Rust — offline refine, wired to `POST /rediarize`).** Built the post-meeting
   refine (Python `refine.py` core) in `hearsay-inference`: `read_them_channel` (right channel of the stereo
   `audio.wav`) + `refine_them(asr, hearsay-diarize, samples)` — write the Them track to a temp wav, run the
