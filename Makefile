@@ -1,8 +1,11 @@
-.PHONY: help install sync dev pytest swift-build swift-test rust-build rust-test rust-lint rust-fmt test typecheck lint fmt codegen web-install web-typecheck web-build web-codegen-check web-ci audit licenses ci build package notarize clean serve
+.PHONY: help install sync dev pytest swift-build swift-test rust-build rust-test rust-lint rust-fmt test typecheck lint fmt codegen web-install web-typecheck web-build web-codegen-check web-ci audit licenses ci build package notarize clean serve rust-serve
 
 PKG := helper
 RUST := rust
 FIXTURES := shared/fixtures/frames.jsonl
+# Rust core serve: its own DB (separate migration system from the Python core's) + a stable port.
+RUST_DB := sqlite://$(CURDIR)/outputs/db/hearsay-rust.db
+RUST_PORT ?= 8799
 # Copyleft families we refuse (open-license gate; see CLAUDE.md).
 DENY_LICENSES := GPL;AGPL;LGPL;MPL;EUPL;SSPL;CC-BY-SA
 
@@ -85,5 +88,10 @@ build package notarize: ## Distribution targets (Phase 5; deferred for internal 
 clean: ## Remove build artifacts
 	rm -rf $(PKG)/.build $(RUST)/target
 
-serve: ## Serve the application
+serve: ## Serve the Python core (loopback API + WS + web UI)
 	uv run hearsay serve
+
+rust-serve: ## Serve the Rust core (SYNTHETIC=1 for no-permission plumbing; needs swift-build + web-build for a live run)
+	@mkdir -p outputs/db
+	HEARSAY_SERVER_PORT=$(RUST_PORT) DATABASE_URL="$(RUST_DB)" \
+		cargo run --manifest-path $(RUST)/Cargo.toml -p hearsay-core $(if $(SYNTHETIC),-- --synthetic)
