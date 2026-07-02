@@ -28,10 +28,15 @@ diarization via the `hearsay-live`/`hearsay-me` FluidAudio sidecars, which the R
 spawns directly — identical stdio protocol) — so the whisper-vs-FluidAudio fork is effectively **taken:
 FluidAudio/ANE on Mac** (fast, proven), the Rust whisper path is for **Windows** + the offline refine.
 `hearsay-inference` = whisper offline ASR (Mac-verified) + the refine (diarize via Swift `hearsay-diarize`
-+ re-transcribe). **Remaining:** the Windows path (cpal capture + a pure-Rust streaming `Transcriber` +
-diarizer, using the whisper harness) — the real cross-platform payoff, needs Windows hardware. **All three
-small Mac follow-ups are now DONE 2026-07-02** (auto-refine-at-stop, carry-forward of locked manual labels,
-cross-meeting voiceprints) — none yet on-device-validated end-to-end. Blow-by-blow in the progress log below.
++ re-transcribe). **All three small Mac follow-ups are DONE 2026-07-02** (auto-refine-at-stop, carry-forward of
+locked manual labels, cross-meeting voiceprints) — not yet on-device-validated end-to-end. **The Windows
+inference path is also DONE + proven end-to-end on the Mac (2026-07-02):** the pure-Rust engines (sherpa-onnx
+streaming ASR live + offline diarizer, whisper offline refine) + the `SherpaTranscriber` adapter run the full
+`WavFileSource -> Orchestrator -> SQLite` pipeline with **no Swift** (capstone: real recording -> 7 finalized
+transcript segments). Diarization accuracy is bounded (~3 vs FluidAudio's 2; better models are non-commercial —
+FluidAudio stays the Mac tier). **The ONLY remaining piece is real capture: a cpal `AudioSource` (WASAPI
+loopback Them + mic Me) + a `WindowsBackend` — genuinely needs Windows hardware.** Blow-by-blow in the progress
+log below.
 
 **DONE + tested — 71 Rust tests (+ opt-in `--ignored`: jfk ASR, synthetic capture, real-recording refine),
 `cargo test` + `clippy -D warnings` + `rustfmt` green, gated by `make ci`:**
