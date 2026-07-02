@@ -453,6 +453,22 @@ uv run hearsay live --seconds 60     # real pipeline -> live transcripts (on-dev
 
 ## Progress log
 
+- **2026-07-02 (cross-platform Rust — offline refine, wired to `POST /rediarize`).** Built the post-meeting
+  refine (Python `refine.py` core) in `hearsay-inference`: `read_them_channel` (right channel of the stereo
+  `audio.wav`) + `refine_them(asr, hearsay-diarize, samples)` — write the Them track to a temp wav, run the
+  Swift `hearsay-diarize` FluidAudio sidecar (offline speaker turns; reuses the proven diarizer like the live
+  path reuses the sidecars), map labels -> `Speaker N` by first appearance, re-transcribe each turn with
+  whisper. **Validated on a real recording** (opt-in `--features metal --ignored`): the miguel-kristina clip
+  -> 16 segments / 4 speakers, coherent large-v3-turbo text, ~11s. Then **wired it into the app**:
+  `hearsay-db replace_them_segments` (transactional: drop Them segments + clusters, keep Me, one unlocked
+  cluster per ordinal; +test), `hearsay-orchestrator::write_meeting_files` made pub (rewrite transcript.md
+  after refine), `Settings.refine_model` (`HEARSAY_REFINE_MODEL`, default ggml-large-v3-turbo), and the
+  `POST /api/meetings/{id}/rediarize` route now runs the refine (spawn_blocking) + returns the refreshed
+  speakers -> **the frontend "Refine speakers" button works on the Mac.** **71 Rust tests; clippy + rustfmt
+  green.** Deferred: auto-refine-at-stop (this is the manual button; the orchestrator `// TODO(refine)`
+  stays), cross-meeting voiceprints (the diarizer returns embeddings; `hearsay-attribution` has the cosine
+  matching ready), and carry-forward of locked manual labels. NEXT: the Windows path (cpal capture +
+  pure-Rust streaming `Transcriber` + diarizer), or auto-refine-at-stop.
 - **2026-07-02 (cross-platform Rust — the macOS live path runs end-to-end through the Rust core).** User
   chose "full streaming + diarization, testable in the frontend." Key insight: the Rust `ProcessTranscriber`
   already speaks the exact stdio protocol (`<u32 len><f32 pcm>` in, `{kind,text,start_s,end_s,speaker}` NDJSON
