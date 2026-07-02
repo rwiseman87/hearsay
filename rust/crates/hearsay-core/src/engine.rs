@@ -20,6 +20,8 @@ pub enum LiveError {
     Unavailable,
     /// A meeting is already recording (409).
     Busy(String),
+    /// An unexpected failure in the engine (e.g. a database or spawn error) (500).
+    Internal(String),
 }
 
 /// Drives the live capture + inference pipeline behind the core's lifecycle routes.

@@ -1,0 +1,188 @@
+//! [`Orchestrator`]: the [`LiveEngine`] implementation. Owns the single active meeting (Phase 1
+//! records one at a time), serialized by an async op-lock; the sync accessors read the active
+//! session behind a std mutex. Port of `hearsay.transcript.session.SessionManager`.
+
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
+
+use async_trait::async_trait;
+use chrono::{DateTime, Utc};
+use sqlx::SqlitePool;
+use tokio::sync::broadcast;
+use uuid::Uuid;
+
+use hearsay_core::{LiveEngine, LiveError};
+use hearsay_db::models::Meeting;
+use hearsay_db::queries;
+
+use crate::error::OrchestratorError;
+use crate::pipeline::{self, Pipeline};
+use crate::traits::Backend;
+
+/// The single active recording session: its meeting id and the running pipeline.
+struct ActiveSession {
+    meeting_id: Uuid,
+    pipeline: Pipeline,
+}
+
+/// Drives the meeting lifecycle + live transcript broadcast behind `hearsay-core`'s routes.
+pub struct Orchestrator {
+    pool: SqlitePool,
+    output_dir: PathBuf,
+    backend: Arc<dyn Backend>,
+    /// Serializes `start_meeting` / `stop_meeting` (so the busy-check and the set never race).
+    op_lock: tokio::sync::Mutex<()>,
+    /// The active session, readable by the sync `active_meeting` / `subscribe` accessors.
+    active: Mutex<Option<ActiveSession>>,
+}
+
+impl Orchestrator {
+    /// Build the orchestrator over a database pool, the per-meeting output root, and the capture +
+    /// transcription backend factory.
+    pub fn new(pool: SqlitePool, output_dir: PathBuf, backend: Arc<dyn Backend>) -> Self {
+        Orchestrator {
+            pool,
+            output_dir,
+            backend,
+            op_lock: tokio::sync::Mutex::new(()),
+            active: Mutex::new(None),
+        }
+    }
+
+    async fn start_meeting_inner(
+        &self,
+        title: Option<String>,
+    ) -> Result<Meeting, OrchestratorError> {
+        let when = Utc::now();
+        let title = title.unwrap_or_else(|| default_title(when));
+        let folder_name = meeting_folder_name(&title, when);
+
+        let meeting = queries::create_meeting(&self.pool, &title, &folder_name, when).await?;
+        tokio::fs::create_dir_all(self.output_dir.join(&folder_name)).await?;
+
+        let pipeline = pipeline::spawn(self.backend.build(), self.pool.clone(), meeting.id).await?;
+        *self.active.lock().unwrap() = Some(ActiveSession {
+            meeting_id: meeting.id,
+            pipeline,
+        });
+        Ok(meeting)
+    }
+}
+
+#[async_trait]
+impl LiveEngine for Orchestrator {
+    async fn start_meeting(&self, title: Option<String>) -> Result<Meeting, LiveError> {
+        let _op = self.op_lock.lock().await;
+        if self.active.lock().unwrap().is_some() {
+            return Err(LiveError::Busy("a meeting is already recording".into()));
+        }
+        Ok(self.start_meeting_inner(title).await?)
+    }
+
+    async fn stop_meeting(&self, meeting_id: Uuid) -> Result<Option<Meeting>, LiveError> {
+        let _op = self.op_lock.lock().await;
+        // Take + close the active session if it is this meeting (stopping a non-active meeting id
+        // still finalizes its row, matching the Python SessionManager).
+        let session = {
+            let mut guard = self.active.lock().unwrap();
+            if guard.as_ref().is_some_and(|s| s.meeting_id == meeting_id) {
+                guard.take()
+            } else {
+                None
+            }
+        };
+        if let Some(session) = session {
+            session.pipeline.close().await;
+        }
+
+        if queries::get_meeting(&self.pool, meeting_id)
+            .await
+            .map_err(OrchestratorError::from)?
+            .is_none()
+        {
+            return Ok(None);
+        }
+        queries::finalize_meeting(&self.pool, meeting_id, Utc::now())
+            .await
+            .map_err(OrchestratorError::from)?;
+        // TODO(refine): offline re-diarize the recording here once hearsay-inference lands
+        // (Python `_maybe_auto_refine`). Finals already persisted live are the transcript today.
+        let finalized = queries::get_meeting(&self.pool, meeting_id)
+            .await
+            .map_err(OrchestratorError::from)?;
+        Ok(finalized)
+    }
+
+    fn active_meeting(&self) -> Option<Uuid> {
+        self.active.lock().unwrap().as_ref().map(|s| s.meeting_id)
+    }
+
+    fn subscribe(&self, meeting_id: Uuid) -> Option<broadcast::Receiver<String>> {
+        let guard = self.active.lock().unwrap();
+        match guard.as_ref() {
+            Some(s) if s.meeting_id == meeting_id => Some(s.pipeline.broadcast_tx.subscribe()),
+            _ => None,
+        }
+    }
+}
+
+/// Default meeting title when the caller does not supply one (matches Python `_default_title`).
+fn default_title(when: DateTime<Utc>) -> String {
+    format!("Meeting {}", when.format("%Y-%m-%d %H:%M"))
+}
+
+/// `<YYYY-MM-DD_HHMM>_<slug>` — the per-meeting on-disk folder name (matches Python
+/// `meeting_folder_name`).
+fn meeting_folder_name(title: &str, when: DateTime<Utc>) -> String {
+    format!("{}_{}", when.format("%Y-%m-%d_%H%M"), slugify(title))
+}
+
+/// Lowercase, collapse every run of non-`[a-z0-9]` to a single `-`, trim `-`; empty -> `"meeting"`.
+/// Matches Python `slugify` (`re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")`).
+fn slugify(title: &str) -> String {
+    let mut out = String::with_capacity(title.len());
+    let mut pending_dash = false;
+    for ch in title.chars() {
+        if ch.is_ascii_alphanumeric() {
+            if pending_dash && !out.is_empty() {
+                out.push('-');
+            }
+            pending_dash = false;
+            out.push(ch.to_ascii_lowercase());
+        } else {
+            pending_dash = true;
+        }
+    }
+    if out.is_empty() {
+        "meeting".to_string()
+    } else {
+        out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn slugify_matches_python_semantics() {
+        assert_eq!(slugify("Standup: Q3 Planning!"), "standup-q3-planning");
+        assert_eq!(slugify("  hello  world  "), "hello-world");
+        assert_eq!(slugify("Team--Sync"), "team-sync");
+        assert_eq!(slugify("!!!"), "meeting");
+        assert_eq!(slugify(""), "meeting");
+        assert_eq!(slugify("café"), "caf");
+    }
+
+    #[test]
+    fn folder_name_is_timestamp_then_slug() {
+        let when = DateTime::parse_from_rfc3339("2026-07-02T09:05:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        assert_eq!(
+            meeting_folder_name("Weekly Sync", when),
+            "2026-07-02_0905_weekly-sync"
+        );
+        assert_eq!(default_title(when), "Meeting 2026-07-02 09:05");
+    }
+}

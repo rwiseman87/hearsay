@@ -21,6 +21,8 @@ pub enum ApiError {
     Conflict(String),
     /// 503 — a capability whose backing engine is not yet wired (capture / inference).
     Unavailable(String),
+    /// 500 — an unexpected engine failure (e.g. a sidecar spawn error).
+    Internal(String),
     /// 500 — an unexpected database error.
     Db(sqlx::Error),
 }
@@ -40,6 +42,7 @@ impl std::fmt::Display for ApiError {
             ApiError::NotFound(m) => write!(f, "{m}"),
             ApiError::Conflict(m) => write!(f, "{m}"),
             ApiError::Unavailable(m) => write!(f, "{m}"),
+            ApiError::Internal(_) => write!(f, "internal error"),
             ApiError::Db(_) => write!(f, "internal error"),
         }
     }
@@ -56,6 +59,10 @@ impl IntoResponse for ApiError {
             ApiError::NotFound(_) => StatusCode::NOT_FOUND,
             ApiError::Conflict(_) => StatusCode::CONFLICT,
             ApiError::Unavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
+            ApiError::Internal(ref msg) => {
+                tracing::error!(error = %msg, "engine error");
+                StatusCode::INTERNAL_SERVER_ERROR
+            }
             ApiError::Db(ref err) => {
                 tracing::error!(error = %err, "database error");
                 StatusCode::INTERNAL_SERVER_ERROR

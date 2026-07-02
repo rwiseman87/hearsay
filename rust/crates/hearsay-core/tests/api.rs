@@ -144,9 +144,18 @@ async fn lists_segments_ordered_by_start() {
     let meeting = queries::create_meeting(&pool, "M", "f", chrono::Utc::now())
         .await
         .unwrap();
-    queries::insert_segment(&pool, meeting.id, Stream::Me, "Me", "second", 5.0, 6.0)
-        .await
-        .unwrap();
+    queries::insert_segment(
+        &pool,
+        meeting.id,
+        Stream::Me,
+        "Me",
+        "second",
+        5.0,
+        6.0,
+        None,
+    )
+    .await
+    .unwrap();
     queries::insert_segment(
         &pool,
         meeting.id,
@@ -155,6 +164,7 @@ async fn lists_segments_ordered_by_start() {
         "first",
         1.0,
         2.0,
+        None,
     )
     .await
     .unwrap();

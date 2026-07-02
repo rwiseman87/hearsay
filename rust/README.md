@@ -3,19 +3,28 @@
 Cross-platform (macOS + Windows) foundation for Hearsay. Target architecture:
 [`../docs/architecture-cross-platform.md`](../docs/architecture-cross-platform.md).
 
-**Status (2026-07-01): 4 of 7 crates implemented + tested; 3 stubs remain.**
+**Status (2026-07-02): 5 of 7 crates implemented + tested; 2 stubs remain.**
 
 - **Implemented + tested** (`cargo test` + `clippy -D warnings` + `rustfmt`, gated by `make ci`):
-  `hearsay-ipc`, `hearsay-attribution`, `hearsay-db`, `hearsay-core`.
-- **Stubs** (responsibilities below, ported incrementally): `hearsay-orchestrator`, `hearsay-capture`,
-  `hearsay-inference`.
+  `hearsay-ipc`, `hearsay-attribution`, `hearsay-db`, `hearsay-core`, `hearsay-orchestrator`.
+- **Stubs** (responsibilities below, ported incrementally): `hearsay-capture`, `hearsay-inference`.
 
 `hearsay-core` runs the full self-contained API surface — meetings/segments/speakers/identities
 queries, pure-DB writes (rename, delete), audio file serving with Range, static UI + token
 injection + CSP, loopback Host/Origin hardening, per-session bearer token, and a utoipa OpenAPI
 document (`GET /openapi.json` / `--dump-openapi`). The meeting *lifecycle* (start/stop) and the live
-transcript WebSocket sit behind the `LiveEngine` trait seam; until `hearsay-orchestrator` implements
-it, the built-in `DisabledEngine` answers those routes with 503 / a clean WebSocket close.
+transcript WebSocket sit behind the `LiveEngine` trait seam; `hearsay-orchestrator` implements it
+(the built-in `DisabledEngine` is the fallback until the orchestrator is wired into the binary).
+
+`hearsay-orchestrator` is the `LiveEngine` implementation: it creates the meeting row + folder,
+drives an `AudioSource` (capture), routes each stream's PCM to its `Transcriber`, and persists +
+broadcasts the partial/final segments the transcribers emit (Them binds `Speaker N` clusters). The
+two external backends are behind traits (`AudioSource` from `hearsay-capture`; `Transcriber` from
+`hearsay-inference`, with a real `tokio::process` `ProcessTranscriber` faithful to the Python
+sidecar stdio), so the whole lifecycle is tested with scripted fakes over in-memory SQLite. The
+stereo `audio.wav` recorder, the `transcript.md` sink, and the offline refine at stop are deferred
+until `hearsay-capture` / `hearsay-inference` land (finals persist to the DB — the API's source of
+truth — today).
 
 Dependencies are pinned to verified latest stable versions via `cargo add` at implementation time
 (never guessed here). Run the gate with `make rust-test` / `make rust-lint` (source `~/.cargo/env`

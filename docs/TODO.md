@@ -20,7 +20,7 @@ OSes** (it is the revived pre-ANE stack).
 **Branch `feat/cross-platform-rust-tauri` (NOT merged to main).** Target design:
 `docs/architecture-cross-platform.md`. Crate map: `rust/README.md`.
 
-**DONE + tested — 53 Rust tests, `cargo test` + `clippy -D warnings` + `rustfmt` green, gated by `make ci`:**
+**DONE + tested — 62 Rust tests, `cargo test` + `clippy -D warnings` + `rustfmt` green, gated by `make ci`:**
 - Rust workspace `rust/` (7 crates) + `make rust-{build,test,lint,fmt}` folded into `make ci`.
 - **`hearsay-ipc`** — media-frame codec (validated byte-for-byte against `shared/fixtures/frames.jsonl`,
   the same golden vectors Python/Swift check) + NDJSON control channel (Command/Reply/Event, sorted-key wire).
@@ -40,16 +40,33 @@ OSes** (it is the revived pre-ANE stack).
   `hearsay-orchestrator` implements it. `POST /rediarize` is 404-or-503 (needs `hearsay-inference`).
   Deps (verified-latest via `cargo add`): axum 0.8.9, tower-http 0.7, tokio 1.52, utoipa 5.5, tracing
   + tracing-subscriber, serde/serde_json, async-trait 0.1, sqlx 0.9, uuid, chrono, tower (+ tempfile dev).
-  **NB: `hearsay-core` (+ the `hearsay-db` query extensions + these doc edits) is UNCOMMITTED on the
-  branch** — the other three crates are committed; `git status` shows the new `hearsay-core` files as
-  untracked. Suggested commit: `feat(rust): implement hearsay-core (axum API + utoipa + LiveEngine seam)`.
+  Committed `81c0b9b`.
+- **`hearsay-orchestrator`** — the `LiveEngine` implementation (port of `src/hearsay/transcript/` +
+  `helper/supervisor.py`). Creates the meeting row + folder, drives an `AudioSource`, routes each stream's
+  PCM to its `Transcriber`, and persists + broadcasts the partial/final segments they emit (Them binds
+  `Speaker N` clusters; segment times shifted by the stream's first-fed offset; broadcast JSON matches the
+  Python `TranscriptEvent` `{kind,stream,speaker_label,text,start_s,end_s}` byte-for-byte). The two external
+  backends are behind traits — `AudioSource` (capture) + `Transcriber` (sidecar) — so the lifecycle is tested
+  with scripted fakes over in-memory SQLite (9 tests: full route/persist/broadcast/offset, busy guard, stop
+  unknown, slugify/folder-name, feed framing + segment parse). Real `tokio::process` `ProcessTranscriber`
+  (faithful to `live_base.py` stdio: `<u32 len><f32 pcm>` in, NDJSON segments out) is included for when
+  `hearsay-inference` ships the sidecar binaries. **Deferred (documented TODOs):** the stereo `audio.wav`
+  recorder, the `transcript.md` sink, and the offline refine at stop (all gated on `hearsay-capture`/
+  `hearsay-inference`; finals persist to the DB — the API's source of truth — today). Also extended the
+  `hearsay-core` seam: `LiveError::Internal` / `ApiError::Internal` (500) so a real engine can surface DB
+  errors, and `hearsay-db insert_segment` gained a `cluster_id` param (Them finals bind a cluster). Deps:
+  tokio (process/io-util/sync/rt/time), async-trait, serde/serde_json, sqlx, uuid, chrono, tracing
+  (+ tempfile/tokio-macros dev). Wiring the orchestrator into the `hearsay-core` binary (replacing
+  `DisabledEngine`) is a later step — it needs the trait moved to a shared crate or the binary split out, to
+  break the would-be `core -> orchestrator -> core` cycle (orchestrator depends on core for the `LiveEngine`
+  trait today, which is cycle-free while the binary keeps `DisabledEngine`).
 
 **REMAINING crate stubs (`rust/crates/`):**
-- **`hearsay-orchestrator`** — `tokio::process` supervision + PCM routing on top of `hearsay-ipc`; implements
-  the `hearsay-core` `LiveEngine` seam (start/stop meeting + live-transcript broadcast). Verifiable here with fakes.
 - **`hearsay-capture`** — cpal per-OS (WASAPI loopback / Core Audio tap). Needs real audio devices / target OS.
+  Implements the orchestrator's `AudioSource` trait.
 - **`hearsay-inference`** — whisper.cpp + Silero VAD + offline diarization, tiered models. The big one;
-  **GATED on the model verification below** — do not build until the model tiers are chosen.
+  **GATED on the model verification below** — do not build until the model tiers are chosen. Provides the
+  orchestrator's `Transcriber` (the sidecar binaries `ProcessTranscriber` spawns) + the offline refine.
 - Deferred: the **Tauri shell** (`cargo tauri init`; hosts the React UI; bundler + signing + notarization +
   updater). Validate the `externalBin`-breaks-macOS-notarization bug early (the app is sidecar-based).
 
@@ -64,10 +81,14 @@ check is a confirmation, not a redo.
 
 **Resume the Rust work:** `. "$HOME/.cargo/env"` first (the Bash-tool shell does not auto-source it);
 `make rust-test` / `rust-lint` / `rust-fmt`; per-crate `cargo test --manifest-path rust/crates/<crate>/Cargo.toml`.
-Pin new deps via `cargo add` (verified-latest, never guess). Next verifiable-here crate:
-`hearsay-orchestrator` (implements the `hearsay-core` `LiveEngine` seam — start/stop + live broadcast —
-over `tokio::process` + PCM routing, testable with fakes); `capture`/`inference` wait for target
-hardware + the model decision. Full context: [[hearsay-windows-requirement]].
+Pin new deps via `cargo add` (verified-latest, never guess). **`hearsay-orchestrator` is now done +
+committed** — the two remaining crates both need real hardware / the model decision: `hearsay-capture`
+(implements the orchestrator's `AudioSource`; needs a target OS + audio device) and `hearsay-inference`
+(provides the `Transcriber` sidecar binaries + refine; **gated on the model verification**). The next
+purely-here step is a small refactor to **wire the orchestrator into the `hearsay-core` binary** (replace
+`DisabledEngine`) — this needs the `LiveEngine` trait moved to a shared crate (or the binary split from the
+`hearsay-core` lib) to break the `core -> orchestrator -> core` cycle, plus a real `Backend` that can only
+be exercised once capture/inference exist. Full context: [[hearsay-windows-requirement]].
 
 **Prior on-main focus (now paused behind this):** the three-item focus below — items 1+2 (dead-code, WAV
 consolidation) merged; **item 3 (post-meeting LLM notes) NOT started** — is paused while the cross-platform
@@ -389,6 +410,36 @@ uv run hearsay live --seconds 60     # real pipeline -> live transcripts (on-dev
 
 ## Progress log
 
+- **2026-07-02 (cross-platform Rust — `hearsay-core` committed + `hearsay-orchestrator` implemented + tested;
+  branch `feat/cross-platform-rust-tauri`).** Committed the finished `hearsay-core` (`81c0b9b`), then built the
+  5th of 7 crates: **`hearsay-orchestrator`**, the `LiveEngine` implementation (port of
+  `src/hearsay/transcript/` `SessionManager` + pipeline + the two sidecar processors, and
+  `helper/supervisor.py`). It creates the meeting row + folder (ports `slugify`/`meeting_folder_name`/
+  `_default_title`), drives an `AudioSource`, demuxes the capture channel onto a shared epoch clock, routes
+  each stream's PCM to its `Transcriber`, and — per stream — broadcasts partials (UI only) and persists +
+  broadcasts finals (Me = "Me"; Them = `Speaker N` + a get-or-create per-ordinal cluster), shifting sidecar
+  times by the stream's first-fed offset. The broadcast JSON matches the Python `TranscriptEvent`
+  (`{kind,stream,speaker_label,text,start_s,end_s}`). **Design:** the two external backends sit behind traits
+  (`AudioSource` <- `hearsay-capture`; `Transcriber` <- `hearsay-inference`) built per meeting by a `Backend`
+  factory, so the whole lifecycle is verifiable here with scripted fakes (`testing::ScriptedBackend`) over
+  in-memory SQLite. Included the real `ProcessTranscriber` (`tokio::process`, faithful to `live_base.py`:
+  `<u32 len><f32 pcm>` on stdin, NDJSON segments on stdout) for when the sidecar binaries exist. Active state
+  is a std-mutex `Option<ActiveSession>` (sync `active_meeting`/`subscribe`) guarded by an async op-lock
+  (serializes start/stop); stop closes the pipeline (source.stop -> tasks drain each transcriber's tail),
+  finalizes the row, and works for a non-active id too (matches Python). **Seam extensions:** added
+  `LiveError::Internal` + `ApiError::Internal` (500) to `hearsay-core` so a real engine surfaces DB errors,
+  and a `cluster_id` param to `hearsay-db insert_segment` (Them finals bind a cluster) — updated the 5 test
+  call sites. **Deferred (documented TODOs, gated on capture/inference):** the stereo `audio.wav` recorder,
+  the `transcript.md` sink, and the offline refine at stop; finals persist to the DB (the API's source of
+  truth) today. New deps pinned to the workspace-common versions: tokio (process/io-util/sync/rt/time),
+  async-trait 0.1, serde/serde_json, sqlx 0.9, uuid, chrono, tracing (+ tempfile/tokio-macros dev). **`make
+  rust-test` + `rust-lint` (clippy -D warnings) + `rust-fmt --check` all green: 62 Rust tests (9 new —
+  6 unit: slugify/folder-name, feed framing, segment parse; 3 integration: full route/persist/broadcast/
+  offset lifecycle, busy guard, stop-unknown).** Committed `80933bb` (per the per-crate workflow, same as
+  `hearsay-core` earlier this session). **NEXT:** wiring the
+  orchestrator into the `hearsay-core` binary (a small refactor to break the `core -> orchestrator -> core`
+  cycle — move the `LiveEngine` trait to a shared crate or split the binary out) is the only purely-here step
+  left; `hearsay-capture` + `hearsay-inference` need real hardware + the model decision.
 - **2026-07-01 (cross-platform Rust — `hearsay-core` implemented + tested; branch `feat/cross-platform-rust-tauri`,
   uncommitted).** 4th of 7 crates. With the user, picked `hearsay-core` over `hearsay-orchestrator` as the next
   verifiable-here crate (self-contained, depends only on the finished `hearsay-db`; unblocks the shared React UI on

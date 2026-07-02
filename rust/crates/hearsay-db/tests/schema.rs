@@ -36,10 +36,11 @@ async fn meeting_and_segments_roundtrip_ordered() {
         "hello",
         5.0,
         6.0,
+        None,
     )
     .await
     .unwrap();
-    queries::insert_segment(&pool, meeting.id, Stream::Me, "Me", "hi", 0.0, 1.0)
+    queries::insert_segment(&pool, meeting.id, Stream::Me, "Me", "hi", 0.0, 1.0, None)
         .await
         .unwrap();
 
@@ -94,7 +95,7 @@ async fn foreign_key_cascade_deletes_segments() {
     let meeting = queries::create_meeting(&pool, "t", "f", chrono::Utc::now())
         .await
         .unwrap();
-    queries::insert_segment(&pool, meeting.id, Stream::Me, "Me", "x", 0.0, 1.0)
+    queries::insert_segment(&pool, meeting.id, Stream::Me, "Me", "x", 0.0, 1.0, None)
         .await
         .unwrap();
     sqlx::query("DELETE FROM meetings WHERE id = ?")
@@ -163,10 +164,18 @@ async fn rename_cluster_binds_relabels_and_joins() {
     let cluster = queries::create_cluster(&pool, meeting.id, 1, false, None)
         .await
         .unwrap();
-    let segment =
-        queries::insert_segment(&pool, meeting.id, Stream::Them, "Speaker 1", "hi", 0.0, 1.0)
-            .await
-            .unwrap();
+    let segment = queries::insert_segment(
+        &pool,
+        meeting.id,
+        Stream::Them,
+        "Speaker 1",
+        "hi",
+        0.0,
+        1.0,
+        None,
+    )
+    .await
+    .unwrap();
     sqlx::query("UPDATE segments SET cluster_id = ? WHERE id = ?")
         .bind(cluster.id)
         .bind(segment.id)

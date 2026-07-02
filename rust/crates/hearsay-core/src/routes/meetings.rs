@@ -65,6 +65,7 @@ pub(crate) async fn start_meeting(
         Ok(meeting) => Ok((StatusCode::CREATED, Json(meeting.into()))),
         Err(LiveError::Busy(msg)) => Err(ApiError::Conflict(msg)),
         Err(LiveError::Unavailable) => Err(unavailable()),
+        Err(LiveError::Internal(msg)) => Err(ApiError::Internal(msg)),
     }
 }
 
@@ -121,6 +122,7 @@ pub(crate) async fn stop_meeting(
         Ok(None) => Err(ApiError::NotFound("meeting not found")),
         Err(LiveError::Unavailable) => Err(unavailable()),
         Err(LiveError::Busy(msg)) => Err(ApiError::Conflict(msg)),
+        Err(LiveError::Internal(msg)) => Err(ApiError::Internal(msg)),
     }
 }
 

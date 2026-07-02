@@ -78,7 +78,8 @@ pub async fn finalize_meeting(
     Ok(())
 }
 
-/// Insert a transcript segment and return the inserted row.
+/// Insert a transcript segment and return the inserted row. `cluster_id` binds the segment to a
+/// speaker cluster (Them finals); it is `None` for Me and for as-yet-unclustered rows.
 #[allow(clippy::too_many_arguments)]
 pub async fn insert_segment(
     pool: &SqlitePool,
@@ -88,12 +89,13 @@ pub async fn insert_segment(
     text: &str,
     start_s: f64,
     end_s: f64,
+    cluster_id: Option<Uuid>,
 ) -> Result<Segment, sqlx::Error> {
     let now = Utc::now();
     let segment = Segment {
         id: Uuid::new_v4(),
         meeting_id,
-        cluster_id: None,
+        cluster_id,
         stream,
         speaker_label: speaker_label.to_string(),
         text: text.to_string(),
