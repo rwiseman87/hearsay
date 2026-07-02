@@ -481,6 +481,26 @@ uv run hearsay live --seconds 60     # real pipeline -> live transcripts (on-dev
 
 ## Progress log
 
+- **2026-07-02 (packaging — unsigned macOS .app via a Tauri 2 shell; the app bundles + runs).** First real
+  package (user chose **unsigned** — no Apple Developer cert on this machine: `security find-identity` = 0
+  identities, and notarization needs a paid Developer ID, deferred). Scaffolded a Tauri 2.11 shell at
+  `web/src-tauri/` (standalone crate, not in the `rust/` workspace). **Design = sidecar** (verified best via
+  research vs in-process): the shell bundles + spawns the existing `hearsay-core` binary via
+  `tauri-plugin-shell` (zero core changes), reads its `open: http://127.0.0.1:…?token=…` stdout line, and
+  `WebviewWindow::navigate`s to it; it sets bundle-resolved env (`HEARSAY_HELPER_PATH` -> the sibling Swift
+  sidecar in `Contents/MacOS`, `HEARSAY_WEB_DIR` -> the bundled `web-dist` resource, `DATABASE_URL` /
+  `HEARSAY_OUTPUT_DIR` -> a user-writable `app_data_dir`), and kills the core (+ its Swift children) on quit.
+  All 5 executables (`hearsay-core` + `hearsay-helper`/`live`/`me`/`diarize`) are `bundle.externalBin` (land in
+  `Contents/MacOS`, ad-hoc signed); `web/dist` is a `bundle.resources` map; `Info.plist` merges the mic usage
+  string. **`cargo tauri build --bundles app` produces `Hearsay.app` (72 MB, ad-hoc `Signature=adhoc`).**
+  **Verified the bundle works** (headless, minus the GUI window I can't see): ran the bundled `hearsay-core`
+  with the shell's exact env -> it binds, prints its URL, and `GET /` serves the bundled UI (**HTTP 200**). New
+  `make mac-app` target stages the (debug) binaries + builds. **NEXT (all deferred/optional):** on-device
+  launch of `Hearsay.app` (grant mic/screen, run a meeting — you do this, it's the GUI I can't see); then for a
+  *distributable* build: release binaries (currently debug), bundle the whisper refine model (1.5 GB — or
+  download-on-first-run; auto-refine is skipped gracefully without it), and — if/when you enroll in the Apple
+  Developer Program — Developer-ID sign + notarize (the `externalBin` sidecars each need hardened-runtime +
+  entitlements; research captured the exact steps).
 - **2026-07-02 (cross-platform Rust — pure-Rust live pipeline works END-TO-END on the Mac, no Swift).** Built
   the `Transcriber`-trait adapter and proved the whole thing. **`SherpaTranscriber`** (in `hearsay-core`, which
   has both deps; neither orchestrator nor inference can) implements the orchestrator's `Transcriber` over a

@@ -1,4 +1,4 @@
-.PHONY: help install sync dev pytest swift-build swift-test rust-build rust-test rust-lint rust-fmt test typecheck lint fmt codegen web-install web-typecheck web-build web-codegen-check web-ci audit licenses ci build package notarize clean serve rust-serve
+.PHONY: help install sync dev pytest swift-build swift-test rust-build rust-test rust-lint rust-fmt test typecheck lint fmt codegen web-install web-typecheck web-build web-codegen-check web-ci audit licenses ci build package notarize clean serve rust-serve mac-app
 
 PKG := helper
 RUST := rust
@@ -95,3 +95,15 @@ rust-serve: ## Serve the Rust core (SYNTHETIC=1 for no-permission plumbing; need
 	@mkdir -p outputs/db
 	HEARSAY_SERVER_PORT=$(RUST_PORT) DATABASE_URL="$(RUST_DB)" \
 		cargo run --manifest-path $(RUST)/Cargo.toml -p hearsay-core $(if $(SYNTHETIC),-- --synthetic)
+
+mac-app: ## Build the UNSIGNED macOS .app (Tauri shell + hearsay-core + Swift sidecars); needs `cargo install tauri-cli`
+	cd web && npm run build
+	$(MAKE) swift-build
+	cargo build --manifest-path $(RUST)/Cargo.toml -p hearsay-core
+	@mkdir -p web/src-tauri/binaries
+	cp $(RUST)/target/debug/hearsay-core web/src-tauri/binaries/hearsay-core-aarch64-apple-darwin
+	@for b in hearsay-helper hearsay-live hearsay-me hearsay-diarize; do \
+		cp helper/.build/arm64-apple-macosx/debug/$$b web/src-tauri/binaries/$$b-aarch64-apple-darwin; \
+	done
+	cd web/src-tauri && cargo tauri build --bundles app
+	@echo "built (unsigned/ad-hoc): web/src-tauri/target/release/bundle/macos/Hearsay.app"

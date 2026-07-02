@@ -1,0 +1,16 @@
+[package]
+name = "hearsay-app"
+version = "0.1.0"
+edition = "2021"
+description = "Hearsay desktop shell (Tauri)"
+publish = false
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-shell = "2"
+
+# Standalone from the `rust/` workspace: this crate only bundles + spawns the built binaries.
+[workspace]
