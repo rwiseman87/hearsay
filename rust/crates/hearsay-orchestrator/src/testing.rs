@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use tokio::sync::{mpsc, oneshot};
 
-use hearsay_db::queries::RefinedThemSegment;
+use hearsay_db::queries::{RefineResult, RefinedThemSegment};
 
 use crate::error::OrchestratorError;
 use crate::traits::{AudioSource, Backend, BackendInstance, Refiner, Transcriber};
@@ -150,18 +150,21 @@ impl ScriptedBackend {
     }
 }
 
-/// A [`Refiner`] that yields a fixed set of refined segments (or a fixed error), ignoring the audio
-/// file, and counts how many times it ran — for testing auto-refine-at-stop without whisper.
+/// A [`Refiner`] that yields a fixed [`RefineResult`] (or a fixed error), ignoring the audio file,
+/// and counts how many times it ran — for testing auto-refine-at-stop without whisper.
 pub struct ScriptedRefiner {
-    result: Result<Vec<RefinedThemSegment>, String>,
+    result: Result<RefineResult, String>,
     calls: Arc<AtomicUsize>,
 }
 
 impl ScriptedRefiner {
-    /// A refiner that replaces the Them track with `segments` on each call. Returns it plus a
-    /// shared call counter.
+    /// A refiner that replaces the Them track with `segments` (no voiceprints) on each call. Returns
+    /// it plus a shared call counter.
     pub fn new(segments: Vec<RefinedThemSegment>) -> (Arc<Self>, Arc<AtomicUsize>) {
-        Self::from_result(Ok(segments))
+        Self::from_result(Ok(RefineResult {
+            segments,
+            ..Default::default()
+        }))
     }
 
     /// A refiner that fails with `message` (to prove a refine error never fails the stop).
@@ -169,9 +172,7 @@ impl ScriptedRefiner {
         Self::from_result(Err(message.to_string()))
     }
 
-    fn from_result(
-        result: Result<Vec<RefinedThemSegment>, String>,
-    ) -> (Arc<Self>, Arc<AtomicUsize>) {
+    fn from_result(result: Result<RefineResult, String>) -> (Arc<Self>, Arc<AtomicUsize>) {
         let calls = Arc::new(AtomicUsize::new(0));
         let refiner = Arc::new(ScriptedRefiner {
             result,
@@ -183,10 +184,7 @@ impl ScriptedRefiner {
 
 #[async_trait]
 impl Refiner for ScriptedRefiner {
-    async fn refine(
-        &self,
-        _audio_path: &Path,
-    ) -> Result<Vec<RefinedThemSegment>, OrchestratorError> {
+    async fn refine(&self, _audio_path: &Path) -> Result<RefineResult, OrchestratorError> {
         self.calls.fetch_add(1, Ordering::SeqCst);
         self.result.clone().map_err(OrchestratorError::Backend)
     }

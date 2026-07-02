@@ -13,7 +13,7 @@ use uuid::Uuid;
 use hearsay_capture::SwiftHelperSource;
 use hearsay_core::{create_app, ApiDoc, AppState, Settings};
 use hearsay_orchestrator::{
-    Backend, BackendInstance, Orchestrator, OrchestratorError, ProcessTranscriber,
+    Backend, BackendInstance, Orchestrator, OrchestratorError, ProcessTranscriber, RefineResult,
     RefinedThemSegment, Refiner,
 };
 
@@ -54,10 +54,7 @@ struct MacRefiner {
 
 #[async_trait]
 impl Refiner for MacRefiner {
-    async fn refine(
-        &self,
-        audio_path: &Path,
-    ) -> Result<Vec<RefinedThemSegment>, OrchestratorError> {
+    async fn refine(&self, audio_path: &Path) -> Result<RefineResult, OrchestratorError> {
         if !self.diarize_path.exists() {
             return Err(OrchestratorError::Backend(format!(
                 "hearsay-diarize sidecar not found at {} (build it with `make swift-build`)",
@@ -68,21 +65,25 @@ impl Refiner for MacRefiner {
         let diarize = self.diarize_path.clone();
         let model = self.model.clone();
         // whisper + the diarize subprocess are blocking — run off the async runtime.
-        let refined = tokio::task::spawn_blocking(move || {
+        let output = tokio::task::spawn_blocking(move || {
             hearsay_inference::refine_audio_file(&audio, &diarize, &model)
         })
         .await
         .map_err(|e| OrchestratorError::Backend(format!("refine task panicked: {e}")))?
         .map_err(|e| OrchestratorError::Backend(format!("refine failed: {e}")))?;
-        Ok(refined
-            .into_iter()
-            .map(|s| RefinedThemSegment {
-                ordinal: s.ordinal,
-                text: s.text,
-                start_s: s.start_s,
-                end_s: s.end_s,
-            })
-            .collect())
+        Ok(RefineResult {
+            segments: output
+                .segments
+                .into_iter()
+                .map(|s| RefinedThemSegment {
+                    ordinal: s.ordinal,
+                    text: s.text,
+                    start_s: s.start_s,
+                    end_s: s.end_s,
+                })
+                .collect(),
+            centroids: output.centroids,
+        })
     }
 }
 

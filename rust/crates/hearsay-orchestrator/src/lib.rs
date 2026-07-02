@@ -37,7 +37,7 @@ mod wav_source;
 pub mod testing;
 
 pub use error::OrchestratorError;
-pub use hearsay_db::queries::RefinedThemSegment;
+pub use hearsay_db::queries::{RefineResult, RefinedThemSegment};
 pub use markdown::write_meeting_files;
 pub use orchestrator::Orchestrator;
 pub use traits::{AudioSource, Backend, BackendInstance, Refiner, Transcriber};

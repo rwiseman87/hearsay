@@ -99,23 +99,27 @@ pub(crate) async fn rediarize(
     let model = state.settings.refine_model.clone();
 
     // Read the Them track, re-diarize (hearsay-diarize) + re-transcribe (whisper) — all blocking.
-    let refined = tokio::task::spawn_blocking(move || {
+    let output = tokio::task::spawn_blocking(move || {
         hearsay_inference::refine_audio_file(&audio, &diarize, &model)
     })
     .await
     .map_err(|e| ApiError::Internal(format!("refine task panicked: {e}")))?
     .map_err(|e| ApiError::Internal(format!("refine failed: {e}")))?;
 
-    let rows: Vec<queries::RefinedThemSegment> = refined
-        .into_iter()
-        .map(|s| queries::RefinedThemSegment {
-            ordinal: s.ordinal,
-            text: s.text,
-            start_s: s.start_s,
-            end_s: s.end_s,
-        })
-        .collect();
-    queries::replace_them_segments(&state.pool, id, &rows).await?;
+    let result = queries::RefineResult {
+        segments: output
+            .segments
+            .into_iter()
+            .map(|s| queries::RefinedThemSegment {
+                ordinal: s.ordinal,
+                text: s.text,
+                start_s: s.start_s,
+                end_s: s.end_s,
+            })
+            .collect(),
+        centroids: output.centroids,
+    };
+    queries::replace_them_segments(&state.pool, id, &result).await?;
 
     // Regenerate transcript.md + meeting.json from the refined (+ Me) segments.
     let segments = queries::list_segments(&state.pool, id).await?;

@@ -3,7 +3,11 @@
 //! A single-connection memory pool is used so every query hits the same database (each
 //! connection to `sqlite::memory:` is otherwise a distinct database).
 
+use std::collections::HashMap;
+
+use hearsay_attribution::{centroid_from_bytes, centroid_to_bytes};
 use hearsay_db::models::{MeetingStatus, Stream};
+use hearsay_db::queries::{RefineResult, RefinedThemSegment};
 use hearsay_db::{connect_options, queries, MIGRATOR};
 use sqlx::sqlite::SqlitePoolOptions;
 use sqlx::SqlitePool;
@@ -16,6 +20,14 @@ async fn memory_pool() -> SqlitePool {
         .unwrap();
     MIGRATOR.run(&pool).await.unwrap();
     pool
+}
+
+/// Wrap refined segments (no voiceprints) as a [`RefineResult`] for `replace_them_segments`.
+fn refine_result(segments: Vec<RefinedThemSegment>) -> RefineResult {
+    RefineResult {
+        segments,
+        ..Default::default()
+    }
 }
 
 #[tokio::test]
@@ -268,7 +280,7 @@ async fn replace_them_segments_swaps_clusters_keeps_me() {
             end_s: 5.0,
         },
     ];
-    queries::replace_them_segments(&pool, meeting.id, &refined)
+    queries::replace_them_segments(&pool, meeting.id, &refine_result(refined))
         .await
         .unwrap();
 
@@ -336,7 +348,7 @@ async fn replace_them_segments_carries_forward_locked_names() {
             end_s: 5.0,
         },
     ];
-    queries::replace_them_segments(&pool, meeting.id, &refined)
+    queries::replace_them_segments(&pool, meeting.id, &refine_result(refined))
         .await
         .unwrap();
 
@@ -382,7 +394,7 @@ async fn replace_them_segments_empty_is_noop() {
     .unwrap();
 
     // A refine that produced nothing must leave the transcript intact (never wipe it).
-    queries::replace_them_segments(&pool, meeting.id, &[])
+    queries::replace_them_segments(&pool, meeting.id, &RefineResult::default())
         .await
         .unwrap();
 
@@ -396,4 +408,120 @@ async fn replace_them_segments_empty_is_noop() {
             .len(),
         1
     );
+}
+
+/// A prior meeting names + locks "Alice" with a voiceprint; a later refine stores each speaker's
+/// voiceprint and auto-recognizes the returning Alice (bound but unlocked — provisional).
+#[tokio::test]
+async fn replace_them_segments_stores_and_recognizes_voiceprints() {
+    let pool = memory_pool().await;
+
+    // Prior meeting: Alice named + locked with a stored voiceprint.
+    let prior = queries::create_meeting(&pool, "prior", "p", chrono::Utc::now())
+        .await
+        .unwrap();
+    let ac = queries::create_cluster(
+        &pool,
+        prior.id,
+        1,
+        false,
+        Some(centroid_to_bytes(&[1.0, 0.0, 0.0])),
+    )
+    .await
+    .unwrap();
+    queries::rename_cluster(&pool, ac.id, "Alice")
+        .await
+        .unwrap()
+        .expect("cluster exists");
+
+    // New meeting: refine yields two speakers; ordinal 1's voiceprint is close to Alice's, ordinal
+    // 2's is unknown.
+    let meeting = queries::create_meeting(&pool, "new", "n", chrono::Utc::now())
+        .await
+        .unwrap();
+    let result = RefineResult {
+        segments: vec![
+            RefinedThemSegment {
+                ordinal: 1,
+                text: "hey".into(),
+                start_s: 0.0,
+                end_s: 1.0,
+            },
+            RefinedThemSegment {
+                ordinal: 2,
+                text: "yo".into(),
+                start_s: 1.0,
+                end_s: 2.0,
+            },
+        ],
+        centroids: HashMap::from([(1, vec![0.9, 0.1, 0.0]), (2, vec![0.0, 0.0, 1.0])]),
+    };
+    queries::replace_them_segments(&pool, meeting.id, &result)
+        .await
+        .unwrap();
+
+    // Ordinal 1 recognized as Alice, bound but NOT locked (a manual rename can still override).
+    let speakers = queries::list_speaker_rows(&pool, meeting.id).await.unwrap();
+    let ord1 = speakers.iter().find(|s| s.ordinal == 1).unwrap();
+    assert_eq!(ord1.display_name.as_deref(), Some("Alice"));
+    assert!(!ord1.locked);
+    let ord2 = speakers.iter().find(|s| s.ordinal == 2).unwrap();
+    assert_eq!(ord2.display_name, None);
+    assert_eq!(queries::count_identities(&pool).await.unwrap(), 1); // Alice reused
+
+    // The recognized name labels its segment.
+    let segments = queries::list_segments(&pool, meeting.id).await.unwrap();
+    assert!(segments.iter().any(|s| s.speaker_label == "Alice"));
+
+    // Both speakers' voiceprints are stored on their clusters for the next meeting.
+    let stored: Option<Vec<u8>> =
+        sqlx::query_scalar("SELECT centroid FROM clusters WHERE meeting_id = ? AND ordinal = ?")
+            .bind(meeting.id)
+            .bind(2_i64)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(centroid_from_bytes(&stored.unwrap()), vec![0.0, 0.0, 1.0]);
+}
+
+#[tokio::test]
+async fn known_voiceprints_excludes_current_and_requires_locked_centroid() {
+    let pool = memory_pool().await;
+    let m1 = queries::create_meeting(&pool, "m1", "1", chrono::Utc::now())
+        .await
+        .unwrap();
+    let m2 = queries::create_meeting(&pool, "m2", "2", chrono::Utc::now())
+        .await
+        .unwrap();
+
+    // m1: Alice locked + voiceprint (a candidate); Bob locked but no voiceprint (excluded).
+    let alice =
+        queries::create_cluster(&pool, m1.id, 1, false, Some(centroid_to_bytes(&[1.0, 0.0])))
+            .await
+            .unwrap();
+    queries::rename_cluster(&pool, alice.id, "Alice")
+        .await
+        .unwrap()
+        .unwrap();
+    let bob = queries::create_cluster(&pool, m1.id, 2, false, None)
+        .await
+        .unwrap();
+    queries::rename_cluster(&pool, bob.id, "Bob")
+        .await
+        .unwrap()
+        .unwrap();
+
+    // m2: Carol locked + voiceprint, but she is in the meeting being refined (excluded).
+    let carol =
+        queries::create_cluster(&pool, m2.id, 1, false, Some(centroid_to_bytes(&[0.0, 1.0])))
+            .await
+            .unwrap();
+    queries::rename_cluster(&pool, carol.id, "Carol")
+        .await
+        .unwrap()
+        .unwrap();
+
+    let known = queries::known_voiceprints(&pool, m2.id).await.unwrap();
+    assert_eq!(known.len(), 1);
+    assert_eq!(known[0].0, "Alice");
 }

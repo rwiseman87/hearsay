@@ -7,7 +7,7 @@ use std::path::Path;
 use async_trait::async_trait;
 use tokio::sync::mpsc;
 
-use hearsay_db::queries::RefinedThemSegment;
+use hearsay_db::queries::RefineResult;
 
 use crate::error::OrchestratorError;
 use crate::types::{CaptureChunk, SidecarSegment, Stream};
@@ -46,9 +46,9 @@ pub trait Transcriber: Send {
 #[async_trait]
 pub trait Refiner: Send + Sync {
     /// Re-diarize + re-transcribe the Them channel of `audio_path` (the stereo `audio.wav`),
-    /// returning the refined `Speaker N` segments to persist in place of the live guesses.
-    async fn refine(&self, audio_path: &Path)
-        -> Result<Vec<RefinedThemSegment>, OrchestratorError>;
+    /// returning the refined `Speaker N` segments + per-speaker voiceprints to persist in place of
+    /// the live guesses.
+    async fn refine(&self, audio_path: &Path) -> Result<RefineResult, OrchestratorError>;
 }
 
 /// The capture + transcription backends for one meeting.

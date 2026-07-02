@@ -127,11 +127,12 @@ impl Orchestrator {
             return;
         }
         match refiner.refine(&audio).await {
-            Ok(refined) => {
-                match queries::replace_them_segments(&self.pool, meeting.id, &refined).await {
+            Ok(result) => {
+                let count = result.segments.len();
+                match queries::replace_them_segments(&self.pool, meeting.id, &result).await {
                     Ok(()) => tracing::info!(
                         meeting = %meeting.id,
-                        segments = refined.len(),
+                        segments = count,
                         "auto-refined Them segments at stop"
                     ),
                     Err(err) => tracing::warn!(

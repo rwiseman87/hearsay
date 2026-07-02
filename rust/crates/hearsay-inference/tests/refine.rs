@@ -22,13 +22,15 @@ fn refines_real_meeting_them_track() {
     let asr = WhisperAsr::load(repo("outputs/models/ggml-large-v3-turbo.bin")).expect("load model");
     let diarize = repo("helper/.build/arm64-apple-macosx/debug/hearsay-diarize");
 
-    let segments = refine_them(&asr, &diarize, &them).expect("refine");
+    let output = refine_them(&asr, &diarize, &them).expect("refine");
+    let segments = &output.segments;
 
     let speakers: BTreeSet<i64> = segments.iter().map(|s| s.ordinal).collect();
     eprintln!(
-        "{} refined segments, {} speakers",
+        "{} refined segments, {} speakers, {} voiceprints",
         segments.len(),
-        speakers.len()
+        speakers.len(),
+        output.centroids.len()
     );
     for seg in segments.iter().take(8) {
         eprintln!(
@@ -41,5 +43,11 @@ fn refines_real_meeting_them_track() {
         speakers.len() >= 2,
         "expected >= 2 speakers, got {}",
         speakers.len()
+    );
+    // Each recognized speaker should carry a stored voiceprint (FluidAudio emits per-speaker means).
+    assert_eq!(
+        output.centroids.len(),
+        speakers.len(),
+        "expected one voiceprint per speaker"
     );
 }

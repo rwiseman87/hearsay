@@ -4,9 +4,21 @@
 use std::collections::{HashMap, HashSet};
 
 use chrono::{DateTime, Utc};
-use hearsay_attribution::{assign_segment_speaker, SpeakerTurn};
+use hearsay_attribution::{
+    assign_segment_speaker, centroid_from_bytes, centroid_to_bytes, match_identity, SpeakerTurn,
+};
 use sqlx::{FromRow, SqlitePool};
 use uuid::Uuid;
+
+/// Cosine threshold above which a new speaker's voiceprint is auto-matched to a person named in a
+/// prior meeting (mirrors the Python `diarization.recognition_threshold` default).
+const RECOGNITION_THRESHOLD: f64 = 0.6;
+
+/// SQL for the known cross-meeting voiceprints: every person named + locked in another meeting with
+/// a stored centroid.
+const KNOWN_VOICEPRINTS_SQL: &str = "SELECT i.display_name, c.centroid FROM clusters c \
+     JOIN identities i ON i.id = c.identity_id \
+     WHERE c.locked = 1 AND c.centroid IS NOT NULL AND c.meeting_id != ?";
 
 use crate::models::{Cluster, Identity, Meeting, MeetingStatus, Segment, Stream};
 
@@ -356,6 +368,64 @@ pub struct RefinedThemSegment {
     pub end_s: f64,
 }
 
+/// The offline refine's output persisted by [`replace_them_segments`]: the re-transcribed segments
+/// plus each speaker's L2-normalized voiceprint by 1-based ordinal (empty when the diarizer emits
+/// none). Mirrors the `turn_segments` + `ordinal_centroids` the Python `apply_turn_diarization` takes.
+#[derive(Debug, Clone, Default)]
+pub struct RefineResult {
+    pub segments: Vec<RefinedThemSegment>,
+    pub centroids: HashMap<i64, Vec<f32>>,
+}
+
+/// `(display_name, centroid bytes)` for every person named + locked in a *different* meeting with a
+/// stored voiceprint — the candidates a refine matches a returning speaker against. Port of
+/// `SpeakerService.known_voiceprints`.
+pub async fn known_voiceprints(
+    pool: &SqlitePool,
+    exclude_meeting_id: Uuid,
+) -> Result<Vec<(String, Vec<u8>)>, sqlx::Error> {
+    sqlx::query_as(KNOWN_VOICEPRINTS_SQL)
+        .bind(exclude_meeting_id)
+        .fetch_all(pool)
+        .await
+}
+
+/// Auto-name returning speakers by matching each ordinal's voiceprint against people named + locked
+/// in prior meetings (cosine `>= RECOGNITION_THRESHOLD`). A manual carry-forward (`manual`) wins, so
+/// those ordinals are skipped. Reads on the refine transaction; returns `ordinal -> recognized name`
+/// (bound but *not* locked — a manual rename can still override). Port of `refine.py::_recognize_speakers`.
+async fn recognize_speakers(
+    conn: &mut sqlx::SqliteConnection,
+    meeting_id: Uuid,
+    centroids: &HashMap<i64, Vec<f32>>,
+    manual: &HashMap<i64, String>,
+) -> Result<HashMap<i64, String>, sqlx::Error> {
+    let mut recognized = HashMap::new();
+    if centroids.is_empty() {
+        return Ok(recognized);
+    }
+    let known_bytes: Vec<(String, Vec<u8>)> = sqlx::query_as(KNOWN_VOICEPRINTS_SQL)
+        .bind(meeting_id)
+        .fetch_all(&mut *conn)
+        .await?;
+    if known_bytes.is_empty() {
+        return Ok(recognized);
+    }
+    let known: Vec<(String, Vec<f32>)> = known_bytes
+        .into_iter()
+        .map(|(name, blob)| (name, centroid_from_bytes(&blob)))
+        .collect();
+    for (&ordinal, centroid) in centroids {
+        if manual.contains_key(&ordinal) {
+            continue; // a manual carry-forward name wins over auto-recognition
+        }
+        if let Some(name) = match_identity(centroid, &known, RECOGNITION_THRESHOLD) {
+            recognized.insert(ordinal, name.to_string());
+        }
+    }
+    Ok(recognized)
+}
+
 /// Carry each prior *locked* manual name forward onto the new turn ordinal its old segments most
 /// overlap, so a re-diarize never drops a manual binding (one name <-> one ordinal). Port of
 /// `refine.py::_carry_forward_names`. Reads on `conn` (the refine transaction) before the old
@@ -437,24 +507,32 @@ async fn carry_forward_locked_names(
 
 /// Replace a meeting's Them segments + clusters with the refine's output, in one transaction: drop
 /// the existing Them segments (Me is untouched) + all clusters, create one cluster per distinct
-/// ordinal, and insert the refined segments bound to them. Prior *locked* manual labels are carried
-/// forward by time overlap ([`carry_forward_locked_names`]): the ordinal a locked name lands on is
-/// re-bound + re-locked, its segments keep the name, and everything else is a fresh unlocked
-/// "Speaker N". Mirrors `refine.py` + `SpeakerService.apply_turn_diarization` (voiceprints are a
-/// follow-up). A refine that produced nothing is a no-op — never wipe the transcript.
+/// ordinal, and insert the refined segments bound to them. Applies, in precedence order:
+/// 1. **Manual carry-forward** — a prior *locked* name is voted onto the new ordinal its old
+///    segments most overlap ([`carry_forward_locked_names`]); that cluster is re-bound + re-locked.
+/// 2. **Cross-meeting recognition** — an unclaimed ordinal whose voiceprint matches a person named
+///    in a prior meeting ([`recognize_speakers`]) is bound to them but left *unlocked* (provisional).
+/// 3. Otherwise a fresh unlocked `"Speaker N"`.
+///
+/// Each ordinal's voiceprint (`result.centroids`) is stored on its cluster so a later meeting can
+/// recognize the speaker. Mirrors `refine.py` + `SpeakerService.apply_turn_diarization`. A refine
+/// that produced no segments is a no-op — never wipe the transcript.
 pub async fn replace_them_segments(
     pool: &SqlitePool,
     meeting_id: Uuid,
-    refined: &[RefinedThemSegment],
+    result: &RefineResult,
 ) -> Result<(), sqlx::Error> {
-    if refined.is_empty() {
+    if result.segments.is_empty() {
         return Ok(());
     }
     let now = Utc::now();
     let mut tx = pool.begin().await?;
 
-    // Compute the carry-forward before the old clusters/segments are dropped.
-    let ordinal_names = carry_forward_locked_names(&mut tx, meeting_id, refined).await?;
+    // Resolve names before the old clusters/segments are dropped: manual carry-forward first, then
+    // recognition for the ordinals a manual name did not claim.
+    let ordinal_names = carry_forward_locked_names(&mut tx, meeting_id, &result.segments).await?;
+    let recognized =
+        recognize_speakers(&mut tx, meeting_id, &result.centroids, &ordinal_names).await?;
 
     // Them segments reference clusters, so delete them before the clusters (Me segments are NULL).
     sqlx::query("DELETE FROM segments WHERE meeting_id = ? AND stream = ?")
@@ -468,29 +546,40 @@ pub async fn replace_them_segments(
         .await?;
 
     let mut cluster_ids: HashMap<i64, Uuid> = HashMap::new();
-    for seg in refined {
+    for seg in &result.segments {
         let cluster_id = match cluster_ids.get(&seg.ordinal) {
             Some(id) => *id,
             None => {
                 let id = Uuid::new_v4();
-                // A carried-forward locked name binds + locks the new cluster; else fresh + unlocked.
-                let (identity_id, locked) = match ordinal_names.get(&seg.ordinal) {
-                    Some(name) => (
+                // Precedence: manual (locked) > recognized (bound, unlocked) > fresh unlocked.
+                let (identity_id, locked) = if let Some(name) = ordinal_names.get(&seg.ordinal) {
+                    (
                         Some(get_or_create_identity(&mut tx, name, now).await?),
                         true,
-                    ),
-                    None => (None, false),
+                    )
+                } else if let Some(name) = recognized.get(&seg.ordinal) {
+                    (
+                        Some(get_or_create_identity(&mut tx, name, now).await?),
+                        false,
+                    )
+                } else {
+                    (None, false)
                 };
+                let centroid = result
+                    .centroids
+                    .get(&seg.ordinal)
+                    .map(|c| centroid_to_bytes(c));
                 sqlx::query(
                     "INSERT INTO clusters \
                      (id, meeting_id, ordinal, identity_id, locked, centroid, created_at, updated_at) \
-                     VALUES (?, ?, ?, ?, ?, NULL, ?, ?)",
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 )
                 .bind(id)
                 .bind(meeting_id)
                 .bind(seg.ordinal)
                 .bind(identity_id)
                 .bind(locked)
+                .bind(centroid)
                 .bind(now)
                 .bind(now)
                 .execute(&mut *tx)
@@ -499,10 +588,11 @@ pub async fn replace_them_segments(
                 id
             }
         };
-        let label = match ordinal_names.get(&seg.ordinal) {
-            Some(name) => name.clone(),
-            None => format!("Speaker {}", seg.ordinal),
-        };
+        let label = ordinal_names
+            .get(&seg.ordinal)
+            .or_else(|| recognized.get(&seg.ordinal))
+            .cloned()
+            .unwrap_or_else(|| format!("Speaker {}", seg.ordinal));
         sqlx::query(
             "INSERT INTO segments \
              (id, meeting_id, cluster_id, stream, speaker_label, text, start_s, end_s, created_at, updated_at) \

@@ -18,4 +18,4 @@ mod refine;
 pub use asr::{AsrSegment, WhisperAsr};
 pub use audio::{read_them_channel, read_wav_mono_16k, SAMPLE_RATE};
 pub use error::InferenceError;
-pub use refine::{refine_audio_file, refine_them, RefinedSegment};
+pub use refine::{refine_audio_file, refine_them, RefineOutput, RefinedSegment};

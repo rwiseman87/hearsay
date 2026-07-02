@@ -29,9 +29,9 @@ spawns directly — identical stdio protocol) — so the whisper-vs-FluidAudio f
 FluidAudio/ANE on Mac** (fast, proven), the Rust whisper path is for **Windows** + the offline refine.
 `hearsay-inference` = whisper offline ASR (Mac-verified) + the refine (diarize via Swift `hearsay-diarize`
 + re-transcribe). **Remaining:** the Windows path (cpal capture + a pure-Rust streaming `Transcriber` +
-diarizer, using the whisper harness) — the real cross-platform payoff, needs Windows hardware; plus small
-Mac follow-ups (**auto-refine-at-stop + carry-forward of locked manual labels DONE 2026-07-02**, neither yet
-on-device-validated; the last open one is cross-meeting voiceprints). Blow-by-blow in the progress log below.
+diarizer, using the whisper harness) — the real cross-platform payoff, needs Windows hardware. **All three
+small Mac follow-ups are now DONE 2026-07-02** (auto-refine-at-stop, carry-forward of locked manual labels,
+cross-meeting voiceprints) — none yet on-device-validated end-to-end. Blow-by-blow in the progress log below.
 
 **DONE + tested — 71 Rust tests (+ opt-in `--ignored`: jfk ASR, synthetic capture, real-recording refine),
 `cargo test` + `clippy -D warnings` + `rustfmt` green, gated by `make ci`:**
@@ -150,12 +150,11 @@ binary runs the full live app on the Mac (real capture + streaming captions + li
 neither blocking the other:** (1) **the Windows path** (the real cross-platform payoff, needs Windows
 hardware): `hearsay-capture` cpal (WASAPI loopback Them + mic Me) + a pure-Rust streaming `Transcriber`
 (Silero VAD + streaming ASR + Segmenter) + a pure-Rust offline diarizer (ONNX via `ort`), so non-Mac needs no
-Swift; (2) **small Mac follow-ups:** ~~auto-refine-at-stop~~ **DONE 2026-07-02** (a `Refiner` trait seam;
-`stop_meeting` best-effort refines before writing the transcript) + ~~carry-forward of locked manual labels~~
-**DONE 2026-07-02** (in `replace_them_segments`, so both refine paths keep it — on-device validation of both
-still pending), leaving **cross-meeting voiceprints** (the diarizer returns embeddings; `hearsay-attribution`
-has the cosine matcher ready — needs `hearsay-diarize` to emit embeddings). Full context:
-[[hearsay-windows-requirement]].
+Swift; (2) **small Mac follow-ups — ALL DONE 2026-07-02** (on-device end-to-end validation still pending):
+~~auto-refine-at-stop~~ (a `Refiner` trait seam; `stop_meeting` best-effort refines before writing the
+transcript), ~~carry-forward of locked manual labels~~ + ~~cross-meeting voiceprints~~ (both in
+`replace_them_segments`, so both refine paths get them). The Windows path is the only remaining cross-platform
+work. Full context: [[hearsay-windows-requirement]].
 
 **Prior on-main focus (now paused behind this):** the three-item focus below — items 1+2 (dead-code, WAV
 consolidation) merged; **item 3 (post-meeting LLM notes) NOT started** — is paused while the cross-platform
@@ -477,6 +476,26 @@ uv run hearsay live --seconds 60     # real pipeline -> live transcripts (on-dev
 
 ## Progress log
 
+- **2026-07-02 (cross-platform Rust — cross-meeting voiceprints).** The last small Mac follow-up. Turned out
+  to be **pure Rust** — the Swift `hearsay-diarize` sidecar *already emits per-speaker embeddings*
+  (`speakers:[{speaker, embedding}]`, FluidAudio's mean-of-segments speaker database), and the
+  `hearsay_attribution::voiceprint` primitives (`cosine`/`match_identity`/`centroid_{to,from}_bytes`) were
+  already built + tested; the Rust refine just ignored the embeddings. Wired them end-to-end: (1)
+  **`hearsay-inference`** — `refine_them`/`refine_audio_file` now return `RefineOutput { segments, centroids }`,
+  parsing the `speakers` field, mapping each to its 1-based ordinal, and L2-normalizing (`build_centroids` +
+  `l2_normalize`, f64 norm matching Python). (2) **`hearsay-db`** — `RefineResult { segments, centroids }`;
+  `replace_them_segments` now stores each ordinal's voiceprint on its cluster and **recognizes returning
+  speakers** (`recognize_speakers`: match each centroid against `known_voiceprints` — people named + locked in
+  *other* meetings, cosine >= 0.6 `RECOGNITION_THRESHOLD`), binding the identity but leaving it **unlocked**
+  (provisional; a manual rename still overrides). Precedence: **manual carry-forward (locked) > recognized
+  (unlocked) > `Speaker N`**. Ports `refine.py::_recognize_speakers` + `SpeakerService.{known_voiceprints,
+  apply_turn_diarization}`. (3) The `Refiner` trait + both callers (`/rediarize` route, `MacRefiner`) thread
+  the centroids through. Provisional recognitions never become a *source* voiceprint (only locked clusters are
+  `known_voiceprints`), so an auto-recognition error can't propagate across meetings. +4 tests (`l2_normalize`/
+  `build_centroids`; `replace_them_segments` stores + recognizes a returning Alice as unlocked-bound;
+  `known_voiceprints` exclude/locked/centroid filters), and the `#[ignore]` real-recording refine now asserts
+  one voiceprint per speaker. **75 -> 79 Rust tests; clippy -D warnings + rustfmt --check green.** No Swift
+  change was needed. Not yet validated on-device (a returning, previously-named speaker being auto-recognized).
 - **2026-07-02 (cross-platform Rust — carry-forward of locked manual labels).** A re-diarize (manual
   `/rediarize` or the new auto-refine-at-stop) previously dropped every cluster and rebuilt fresh unlocked
   `Speaker N` clusters, so a manually renamed + locked speaker was **wiped** — a data-loss bug the auto-refine

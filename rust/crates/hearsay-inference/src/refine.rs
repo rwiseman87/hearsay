@@ -3,10 +3,9 @@
 //! re-transcribe each speaker turn with whisper → accurate `Speaker N` segments. Port of the
 //! diarize + re-transcribe core of `src/hearsay/transcript/refine.py`.
 //!
-//! Carry-forward of locked manual labels (so a re-diarize never drops a rename) lives in
-//! `hearsay_db::replace_them_segments`, which both this refine's callers persist through. Deferred
-//! follow-up (as in the Python, tracked in `docs/TODO.md`): storing each speaker's voiceprint (the
-//! diarizer also returns embeddings) for cross-meeting recognition.
+//! [`refine_them`] also returns each speaker's voiceprint (from the diarizer's per-speaker mean
+//! embedding); persistence, cross-meeting recognition, and carry-forward of locked manual labels
+//! all live in `hearsay_db::replace_them_segments`, which both this refine's callers go through.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -30,9 +29,22 @@ pub struct RefinedSegment {
     pub end_s: f64,
 }
 
+/// The refine's full output: the re-transcribed `Speaker N` segments + each speaker's L2-normalized
+/// voiceprint by 1-based ordinal (for cross-meeting recognition + storage). `centroids` is empty
+/// when the diarizer emits no embeddings.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct RefineOutput {
+    pub segments: Vec<RefinedSegment>,
+    pub centroids: HashMap<i64, Vec<f32>>,
+}
+
 #[derive(Deserialize)]
 struct DiarizeOutput {
     turns: Vec<DiarizeTurn>,
+    /// Per-speaker mean voiceprint (FluidAudio's speaker database); absent for a model that emits
+    /// none, so default to empty rather than fail the parse.
+    #[serde(default)]
+    speakers: Vec<SpeakerEmbedding>,
 }
 
 #[derive(Deserialize)]
@@ -42,6 +54,12 @@ struct DiarizeTurn {
     end_s: f64,
 }
 
+#[derive(Deserialize)]
+struct SpeakerEmbedding {
+    speaker: String,
+    embedding: Vec<f32>,
+}
+
 /// Re-diarize + re-transcribe the Them track. `diarize_binary` is the Swift `hearsay-diarize`
 /// sidecar; `them_samples` is the 16 kHz mono right channel of `audio.wav`. Blocking (whisper +
 /// subprocess) — call via `spawn_blocking` from async code.
@@ -49,7 +67,7 @@ pub fn refine_them(
     asr: &WhisperAsr,
     diarize_binary: &Path,
     them_samples: &[f32],
-) -> Result<Vec<RefinedSegment>, InferenceError> {
+) -> Result<RefineOutput, InferenceError> {
     // hearsay-diarize is file-based: write the Them track to a temp wav.
     let tmp = tempfile::Builder::new().suffix(".wav").tempfile()?;
     write_mono_wav(tmp.path(), them_samples)?;
@@ -104,7 +122,53 @@ pub fn refine_them(
             end_s: turn.end_s,
         });
     }
-    Ok(segments)
+
+    let centroids = build_centroids(&ordinal, &diarized.speakers);
+    Ok(RefineOutput {
+        segments,
+        centroids,
+    })
+}
+
+/// L2-normalize each speaker's embedding and key it by its 1-based ordinal (unknown speakers or
+/// empty embeddings are skipped). Port of `refine.py::_recognize_speakers`'s centroid step.
+fn build_centroids(
+    ordinal: &HashMap<String, i64>,
+    speakers: &[SpeakerEmbedding],
+) -> HashMap<i64, Vec<f32>> {
+    let mut centroids = HashMap::new();
+    for speaker in speakers {
+        let Some(&ord) = ordinal.get(&speaker.speaker) else {
+            continue;
+        };
+        if let Some(centroid) = l2_normalize(&speaker.embedding) {
+            centroids.insert(ord, centroid);
+        }
+    }
+    centroids
+}
+
+/// Unit-length a voiceprint so stored centroids match the cosine convention (norm computed in f64,
+/// matching the Python path). `None` for an empty vector; a zero vector is returned unchanged.
+fn l2_normalize(vector: &[f32]) -> Option<Vec<f32>> {
+    if vector.is_empty() {
+        return None;
+    }
+    let norm = vector
+        .iter()
+        .map(|&v| f64::from(v) * f64::from(v))
+        .sum::<f64>()
+        .sqrt();
+    if norm > 0.0 {
+        Some(
+            vector
+                .iter()
+                .map(|&v| (f64::from(v) / norm) as f32)
+                .collect(),
+        )
+    } else {
+        Some(vector.to_vec())
+    }
 }
 
 /// Refine a recorded meeting's `audio.wav` end-to-end: read the Them (right) channel, load the
@@ -115,7 +179,7 @@ pub fn refine_audio_file(
     audio_path: &Path,
     diarize_binary: &Path,
     model: &Path,
-) -> Result<Vec<RefinedSegment>, InferenceError> {
+) -> Result<RefineOutput, InferenceError> {
     let them = crate::audio::read_them_channel(audio_path)?;
     let asr = WhisperAsr::load(model)?;
     refine_them(&asr, diarize_binary, &them)
@@ -140,4 +204,41 @@ fn write_mono_wav(path: &Path, samples: &[f32]) -> Result<(), InferenceError> {
         .finalize()
         .map_err(|e| InferenceError::Audio(format!("finalize temp wav: {e}")))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn l2_normalize_unit_lengths_and_handles_edges() {
+        let unit = l2_normalize(&[3.0, 4.0]).unwrap();
+        assert!((unit[0] - 0.6).abs() < 1e-6 && (unit[1] - 0.8).abs() < 1e-6);
+        // A zero vector is returned unchanged; an empty vector is dropped.
+        assert_eq!(l2_normalize(&[0.0, 0.0]), Some(vec![0.0, 0.0]));
+        assert_eq!(l2_normalize(&[]), None);
+    }
+
+    #[test]
+    fn build_centroids_keys_by_ordinal_and_skips_unknown() {
+        let ordinal = HashMap::from([("A".to_string(), 1_i64), ("B".to_string(), 2_i64)]);
+        let speakers = vec![
+            SpeakerEmbedding {
+                speaker: "A".into(),
+                embedding: vec![3.0, 4.0],
+            },
+            SpeakerEmbedding {
+                speaker: "B".into(),
+                embedding: vec![], // empty -> skipped
+            },
+            SpeakerEmbedding {
+                speaker: "C".into(), // not a diarized ordinal -> skipped
+                embedding: vec![1.0],
+            },
+        ];
+        let centroids = build_centroids(&ordinal, &speakers);
+        assert_eq!(centroids.len(), 1);
+        let a = &centroids[&1];
+        assert!((a[0] - 0.6).abs() < 1e-6 && (a[1] - 0.8).abs() < 1e-6);
+    }
 }
