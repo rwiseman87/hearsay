@@ -1,9 +1,13 @@
 # Cross-platform architecture (macOS + Windows) — target
 
-**Status:** design target, not yet built. The project is pre-ship (POC). This document is the
-agreed foundation for making Hearsay run on both macOS and Windows and ship as a single, signed,
-one-click installer per OS to technical **and** non-technical users. It supersedes the macOS-only
-assumptions in `CLAUDE.md` where they conflict. Canonical roadmap: `docs/TODO.md`.
+**Status (2026-07-02):** the **macOS foundation is built and validated end-to-end** on branch
+`feat/cross-platform-rust-tauri` (all 8 Rust crates implemented; `hearsay-core` runs the full live app
+on the Mac — capture + streaming captions + diarization + offline refine — confirmed in the frontend).
+The **Windows path is the remaining work** (cpal capture + a pure-Rust streaming transcriber/diarizer).
+Not merged to `main`; the project is pre-ship (POC). This document is the agreed foundation for making
+Hearsay run on both macOS and Windows and ship as a single, signed, one-click installer per OS to
+technical **and** non-technical users. It supersedes the macOS-only assumptions in `CLAUDE.md` where they
+conflict. Canonical roadmap + progress: `docs/TODO.md`.
 
 ## Constraints this design is built to satisfy
 
@@ -114,12 +118,18 @@ No -> FluidAudio stays the Mac tier and we carry two ASR backends (everything el
 
 ## Rust workspace layout
 
-See `rust/` (`rust/README.md` for the crate map + status). As of 2026-07-02, `hearsay-ipc`,
-`hearsay-attribution`, `hearsay-db`, `hearsay-engine`, `hearsay-core`, and `hearsay-orchestrator` are
-implemented + tested (62 tests, gated by `make ci`); `hearsay-capture` and `hearsay-inference` remain
-stubs. The `LiveEngine` trait seam (with a `DisabledEngine` placeholder) lives in the neutral
-`hearsay-engine` crate — `hearsay-core` consumes it for the capture-dependent routes and
-`hearsay-orchestrator` implements it, without a dependency cycle. `hearsay-orchestrator` drives an
-`AudioSource` (from `hearsay-capture`) + a `Transcriber` (from `hearsay-inference`) behind traits, so
-its whole lifecycle is tested today with scripted fakes. Crate dependencies are pinned to verified
-latest versions via `cargo add` as each crate is implemented.
+See `rust/` (`rust/README.md` for the crate map + status). As of 2026-07-02, **all 8 crates are
+implemented (71 tests, gated by `make ci`) and the macOS live path runs end-to-end** — validated in the
+frontend through `hearsay-core`'s binary. The `LiveEngine` trait seam (with a `DisabledEngine` placeholder)
+lives in the neutral `hearsay-engine` crate — `hearsay-core` consumes it for the capture-dependent routes
+and `hearsay-orchestrator` implements it, without a dependency cycle. `hearsay-orchestrator` drives an
+`AudioSource` + `Transcriber`s behind traits, tested with scripted fakes.
+
+**macOS reuses the proven Swift stack** (the "FluidAudio as macOS tier" side of the fork below):
+`hearsay-capture`'s `SwiftHelperSource` drives the Swift `hearsay-helper` over the `hearsay-ipc` sockets, and
+the orchestrator's `ProcessTranscriber` spawns the built `hearsay-live`/`hearsay-me` FluidAudio sidecars
+directly (identical stdio protocol) for live streaming + diarization; the offline refine reuses
+`hearsay-diarize` + re-transcribes with `hearsay-inference` (whisper). **`hearsay-inference` = whisper offline
+ASR (Mac-verified: jfk clip verbatim, ~50x RT CPU / ~25x RT Metal) + the refine.** The Windows path (cpal
+capture + a pure-Rust streaming `Transcriber` + ONNX diarizer, no Swift) is the remaining work. Crate
+dependencies are pinned to verified latest versions via `cargo add` as each crate is implemented.
