@@ -70,9 +70,15 @@ async fn wav_through_process_sidecars_persists_segments() {
     let orch = Orchestrator::new(pool.clone(), tmp.path().to_path_buf(), backend);
 
     let meeting = orch.start_meeting(Some("e2e".into())).await.unwrap();
-    // stop drains capture -> both sidecars -> persistence before it returns.
+    // stop drains capture -> both sidecars -> persistence + the audio.wav write before it returns.
     let stopped = orch.stop_meeting(meeting.id).await.unwrap().unwrap();
     assert!(stopped.ended_at.is_some());
+
+    // The recorder wrote a stereo audio.wav (re-encoding the input through the pipeline).
+    let audio = tmp.path().join(&meeting.folder).join("audio.wav");
+    let reader = hound::WavReader::open(&audio).expect("audio.wav written");
+    assert_eq!(reader.spec().channels, 2);
+    assert_eq!(reader.spec().sample_rate, 16_000);
 
     let segments = queries::list_segments(&pool, meeting.id).await.unwrap();
     assert!(

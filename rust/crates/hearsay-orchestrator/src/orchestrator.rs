@@ -30,6 +30,8 @@ pub struct Orchestrator {
     pool: SqlitePool,
     output_dir: PathBuf,
     backend: Arc<dyn Backend>,
+    /// Record the stereo `audio.wav` per meeting (for playback + the offline refine). Default on.
+    record_audio: bool,
     /// Serializes `start_meeting` / `stop_meeting` (so the busy-check and the set never race).
     op_lock: tokio::sync::Mutex<()>,
     /// The active session, readable by the sync `active_meeting` / `subscribe` accessors.
@@ -38,15 +40,24 @@ pub struct Orchestrator {
 
 impl Orchestrator {
     /// Build the orchestrator over a database pool, the per-meeting output root, and the capture +
-    /// transcription backend factory.
+    /// transcription backend factory. Records `audio.wav` by default (see
+    /// [`with_audio_recording`](Self::with_audio_recording)).
     pub fn new(pool: SqlitePool, output_dir: PathBuf, backend: Arc<dyn Backend>) -> Self {
         Orchestrator {
             pool,
             output_dir,
             backend,
+            record_audio: true,
             op_lock: tokio::sync::Mutex::new(()),
             active: Mutex::new(None),
         }
+    }
+
+    /// Set whether to record the per-meeting `audio.wav` (the retention toggle; the eventual config
+    /// wires `audio.record` here).
+    pub fn with_audio_recording(mut self, record: bool) -> Self {
+        self.record_audio = record;
+        self
     }
 
     async fn start_meeting_inner(
@@ -58,9 +69,17 @@ impl Orchestrator {
         let folder_name = meeting_folder_name(&title, when);
 
         let meeting = queries::create_meeting(&self.pool, &title, &folder_name, when).await?;
-        tokio::fs::create_dir_all(self.output_dir.join(&folder_name)).await?;
+        let folder = self.output_dir.join(&folder_name);
+        tokio::fs::create_dir_all(&folder).await?;
 
-        let pipeline = pipeline::spawn(self.backend.build(), self.pool.clone(), meeting.id).await?;
+        let audio_path = self.record_audio.then(|| folder.join("audio.wav"));
+        let pipeline = pipeline::spawn(
+            self.backend.build(),
+            self.pool.clone(),
+            meeting.id,
+            audio_path,
+        )
+        .await?;
         *self.active.lock().unwrap() = Some(ActiveSession {
             meeting_id: meeting.id,
             pipeline,

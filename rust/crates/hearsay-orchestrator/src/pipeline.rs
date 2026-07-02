@@ -10,6 +10,7 @@
 //!   cluster). Segment times are shifted by the stream's offset (its first fed `t0_s`).
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 
 use serde::Serialize;
 use sqlx::SqlitePool;
@@ -20,6 +21,7 @@ use uuid::Uuid;
 use hearsay_db::queries;
 
 use crate::error::OrchestratorError;
+use crate::recorder::MeetingAudioRecorder;
 use crate::traits::{AudioSource, BackendInstance, StreamRole, Transcriber};
 use crate::types::{CaptureChunk, SegmentKind, SidecarSegment, Stream};
 
@@ -44,11 +46,13 @@ impl Pipeline {
     }
 }
 
-/// Start the source + both transcribers and spawn the routing/handling tasks.
+/// Start the source + both transcribers and spawn the routing/handling tasks. `audio_path` is the
+/// `audio.wav` to record (Me=L / Them=R) when recording is enabled, else `None`.
 pub(crate) async fn spawn(
     instance: BackendInstance,
     pool: SqlitePool,
     meeting_id: Uuid,
+    audio_path: Option<PathBuf>,
 ) -> Result<Pipeline, OrchestratorError> {
     let BackendInstance {
         mut source,
@@ -64,7 +68,8 @@ pub(crate) async fn spawn(
     let (me_tx, me_rx) = mpsc::unbounded_channel::<(f64, Vec<f32>)>();
     let (them_tx, them_rx) = mpsc::unbounded_channel::<(f64, Vec<f32>)>();
 
-    let demux = tokio::spawn(demux(capture_rx, me_tx, them_tx));
+    let recorder = audio_path.map(MeetingAudioRecorder::new);
+    let demux = tokio::spawn(demux(capture_rx, me_tx, them_tx, recorder));
     let me_task = tokio::spawn(stream_loop(
         StreamRole::Me,
         me,
@@ -91,23 +96,34 @@ pub(crate) async fn spawn(
     })
 }
 
-/// Read capture, anchor the shared epoch on the first chunk, and forward each chunk to its stream's
-/// task as meeting-relative `(t0_s, samples)`. Both streams anchor to the same epoch so their
-/// timelines align (alignment is by timestamp, never sample index).
+/// Read capture, anchor the shared epoch on the first chunk, record the stereo `audio.wav` (if
+/// enabled), and forward each chunk to its stream's task as meeting-relative `(t0_s, samples)`. Both
+/// streams anchor to the same epoch so their timelines align (alignment is by timestamp, never
+/// sample index). The recorder is finalized once capture ends.
 async fn demux(
     mut capture_rx: mpsc::Receiver<CaptureChunk>,
     me_tx: mpsc::UnboundedSender<(f64, Vec<f32>)>,
     them_tx: mpsc::UnboundedSender<(f64, Vec<f32>)>,
+    mut recorder: Option<MeetingAudioRecorder>,
 ) {
     let mut epoch_ns: Option<u64> = None;
     while let Some(cap) = capture_rx.recv().await {
         let epoch = *epoch_ns.get_or_insert(cap.chunk.host_ts);
         let t0_s = cap.chunk.host_ts.saturating_sub(epoch) as f64 / 1e9;
+        if let Some(rec) = recorder.as_mut() {
+            rec.write(&cap.chunk.samples, t0_s, cap.stream);
+        }
         let sender = match cap.stream {
             Stream::Me => &me_tx,
             Stream::Them => &them_tx,
         };
         let _ = sender.send((t0_s, cap.chunk.samples));
+    }
+    // Capture ended: write the WAV. Best-effort — a failure never fails the meeting stop.
+    if let Some(rec) = recorder.take() {
+        if let Err(err) = rec.close() {
+            tracing::error!(error = %err, "failed to write meeting audio.wav");
+        }
     }
 }
 

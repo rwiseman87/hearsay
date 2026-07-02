@@ -17,14 +17,15 @@
 //!   `hearsay-inference`. [`ProcessTranscriber`] is the real `tokio::process` implementation
 //!   (faithful to `live_base.py`); [`testing`] has scripted fakes.
 //!
-//! Deferred (tracked in `docs/TODO.md`, gated on `hearsay-capture` / `hearsay-inference`): the
-//! stereo `audio.wav` recorder, the `transcript.md` markdown sink, and the offline refine at stop.
-//! Finals persist to the database (the API's source of truth) today. See
-//! `docs/architecture-cross-platform.md`.
+//! The pipeline records one timeline-accurate stereo `audio.wav` per meeting (Me=L / Them=R) when
+//! recording is enabled. Deferred (tracked in `docs/TODO.md`): the `transcript.md` markdown sink,
+//! and the offline refine at stop (the latter gated on `hearsay-inference`). Finals persist to the
+//! database (the API's source of truth) today. See `docs/architecture-cross-platform.md`.
 
 mod error;
 mod orchestrator;
 mod pipeline;
+mod recorder;
 mod traits;
 mod transcriber;
 mod types;

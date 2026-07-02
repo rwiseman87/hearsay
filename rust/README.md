@@ -27,10 +27,11 @@ two external backends are behind traits (`AudioSource` from `hearsay-capture`; `
 sidecar stdio), so the whole lifecycle is tested with scripted fakes over in-memory SQLite. It also
 ships a `WavFileSource` (a file-backed `AudioSource`) so the full pipeline can run end-to-end from a
 recorded `audio.wav` with no hardware — the capstone test drives a WAV through two real
-`ProcessTranscriber` sidecars (a `mock_sidecar` fixture) into SQLite. The stereo `audio.wav`
-recorder, the `transcript.md` sink, and the offline refine at stop are deferred until
-`hearsay-capture` / `hearsay-inference` land (finals persist to the DB — the API's source of truth
-— today).
+`ProcessTranscriber` sidecars (a `mock_sidecar` fixture) into SQLite and out to a re-encoded
+`audio.wav`. It records one timeline-accurate stereo `audio.wav` per meeting (Me=L / Them=R,
+normalized for playback). Still deferred: the `transcript.md` markdown sink, and the offline refine
+at stop (gated on `hearsay-inference`). Finals persist to the DB — the API's source of truth —
+today.
 
 Dependencies are pinned to verified latest stable versions via `cargo add` at implementation time
 (never guessed here). Run the gate with `make rust-test` / `make rust-lint` (source `~/.cargo/env`
