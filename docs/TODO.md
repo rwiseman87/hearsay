@@ -476,6 +476,19 @@ uv run hearsay live --seconds 60     # real pipeline -> live transcripts (on-dev
 
 ## Progress log
 
+- **2026-07-02 (cross-platform Rust — endpointed streaming session; live partials/finals).** Turned the batch
+  streaming ASR into a live session. `StreamingAsr::session()` -> **`StreamingSession`**: `feed(&[f32]) ->
+  Vec<StreamEvent>` (growing **Partial**s; a **Final** + `reset` when sherpa's endpointer fires on trailing
+  silence) + `finish()` (flush the trailing utterance). Events carry stream-relative times (the orchestrator
+  re-anchors). The recognizer is held behind an `Arc` so the session is `Send` (drives from async). **Verified
+  on-device** (opt-in): feeding the JFK clip in 0.5 s chunks -> **12 partials, 2 finals** (a pause split it),
+  reconstructing the full transcript, in 0.41 s. This is the "wrapper" that makes the streaming ASR usable as a
+  live transcriber. **79 gate tests (+1 `#[ignore]`d); clippy + rustfmt green.** Remaining to actually *run* the
+  Windows live path (both need Windows hardware, so deferred): a thin `Transcriber`-trait adapter mapping
+  `StreamEvent` -> the orchestrator's `SidecarSegment` (speaker-less; ~30 lines, lives in `hearsay-core` which
+  has both deps — kept out until it's exercised), + a **cpal `AudioSource`** (WASAPI loopback Them + mic Me).
+  With those two, `hearsay-core` runs a fully pure-Rust live pipeline (sherpa streaming live + whisper/sherpa
+  offline refine) with no Swift — the Windows app.
 - **2026-07-02 (cross-platform Rust — streaming ASR via sherpa-onnx; a clean win).** The other half of the
   pure-Rust inference path, and — unlike the diarizer — it's genuinely good. Built **`StreamingAsr`** in
   `hearsay-inference` wrapping sherpa's `OnlineRecognizer` (streaming zipformer transducer, greedy, endpointing
