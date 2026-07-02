@@ -7,6 +7,8 @@ pub enum InferenceError {
     Whisper(String),
     /// A sherpa-onnx diarization / speaker-embedding failure.
     Diarize(String),
+    /// A sherpa-onnx streaming-ASR (online recognizer) failure.
+    Streaming(String),
     /// An audio I/O / format problem.
     Audio(String),
     /// An underlying I/O error.
@@ -18,6 +20,7 @@ impl std::fmt::Display for InferenceError {
         match self {
             InferenceError::Whisper(m) => write!(f, "whisper error: {m}"),
             InferenceError::Diarize(m) => write!(f, "diarize error: {m}"),
+            InferenceError::Streaming(m) => write!(f, "streaming asr error: {m}"),
             InferenceError::Audio(m) => write!(f, "audio error: {m}"),
             InferenceError::Io(e) => write!(f, "io error: {e}"),
         }

@@ -476,6 +476,21 @@ uv run hearsay live --seconds 60     # real pipeline -> live transcripts (on-dev
 
 ## Progress log
 
+- **2026-07-02 (cross-platform Rust — streaming ASR via sherpa-onnx; a clean win).** The other half of the
+  pure-Rust inference path, and — unlike the diarizer — it's genuinely good. Built **`StreamingAsr`** in
+  `hearsay-inference` wrapping sherpa's `OnlineRecognizer` (streaming zipformer transducer, greedy, endpointing
+  on): `load(StreamingModel{encoder,decoder,joiner,tokens})` + `transcribe(&[f32]) -> String`. Downloaded the
+  **20M English streaming zipformer** (`sherpa-onnx-streaming-zipformer-en-20M-2023-02-17`, int8) into
+  `outputs/models/` — the "light live model" the Windows floor calls for. **Verified on-device** (opt-in
+  `--ignored`): the JFK clip -> "...AMERICANS ASK NOT WHAT YOUR COUNTRY CAN DO FOR YOU ASK WHAT YOU CAN DO FOR
+  YOUR COUNTRY" (near-verbatim; only "My fellow" -> "UL" garbled), in **0.42 s** for an ~11 s clip (~26x RT, CPU,
+  int8). So live captions on the Windows floor are viable, and the offline refine (whisper) re-transcribes at
+  stop for the high-quality final anyway. Added a `Streaming` error variant + 1 opt-in test. NB: the 20M model
+  has no LICENSE in its tarball — it's an icefall/k2-fsa model (Apache-2.0), but confirm before distribution; a
+  larger `en-2023-06-26` model is the accuracy option. **79 gate tests (+1 `#[ignore]`d); clippy + rustfmt
+  green.** This slice is batch `transcribe` (WER); NEXT: the partial/final *endpointed* session (is_endpoint +
+  reset -> growing partials + finals) wrapped in the orchestrator's `Transcriber` trait, so the Windows live path
+  runs without a Swift sidecar (paired with a cpal `AudioSource`, which needs Windows hardware).
 - **2026-07-02 (cross-platform Rust — sherpa diarizer DER-tuning; exhausted under the license gate).** Tried to
   close the diarization gap to FluidAudio. Added a `DiarizeTuning` surface (cluster_threshold + min_duration_on/
   off) and swept it on the known 2-speaker clip. Result: with **pyannote-segmentation-3.0** (the *only*
