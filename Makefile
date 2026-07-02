@@ -33,10 +33,10 @@ rust-test: ## Run the Rust workspace tests (cargo test)
 
 rust-lint: ## Lint Rust (clippy with warnings denied + rustfmt --check)
 	cargo clippy --manifest-path $(RUST)/Cargo.toml --all-targets -- -D warnings
-	cargo fmt --manifest-path $(RUST)/Cargo.toml --check
+	cargo fmt --manifest-path $(RUST)/Cargo.toml --all --check
 
 rust-fmt: ## Format Rust (rustfmt)
-	cargo fmt --manifest-path $(RUST)/Cargo.toml
+	cargo fmt --manifest-path $(RUST)/Cargo.toml --all
 
 test: swift-build pytest swift-test rust-test ## Run all tests (Python + Swift + Rust; build first so the integration test runs)
 
