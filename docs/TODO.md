@@ -476,6 +476,21 @@ uv run hearsay live --seconds 60     # real pipeline -> live transcripts (on-dev
 
 ## Progress log
 
+- **2026-07-02 (cross-platform Rust — pure-Rust live pipeline works END-TO-END on the Mac, no Swift).** Built
+  the `Transcriber`-trait adapter and proved the whole thing. **`SherpaTranscriber`** (in `hearsay-core`, which
+  has both deps; neither orchestrator nor inference can) implements the orchestrator's `Transcriber` over a
+  sherpa `StreamingSession`: a dedicated OS thread owns the session (sherpa decode is blocking CPU), PCM chunks
+  arrive on a std channel, partial/final `StreamEvent`s leave as speaker-less `SidecarSegment`s on a tokio
+  channel (the offline refine assigns speakers at stop). **Capstone** (`hearsay-core/tests/streaming_pipeline.rs`,
+  opt-in): a recorded stereo `audio.wav` (`WavFileSource`) drives **two** `SherpaTranscriber`s through the real
+  `Orchestrator` into SQLite — **no Swift, no capture hardware**. Result: **7 finalized Them segments of real,
+  readable meeting transcript** ("...GOING TO BE MY FIRST TEST HERE... FIGURED OUT MIGUEL AND IT'S PERSISTED
+  THAT THROUGH LIKE THREE DIFFERENT ONES NOW..."), bound to `Speaker 1` (live is speaker-less by design),
+  `transcript.md` + `meeting.json` written, in **2.1 s**. So the **entire Windows inference + orchestration
+  chain is proven in pure Rust**; the only remaining piece is real capture. **79 gate tests (+1 `#[ignore]`d
+  capstone); clippy + rustfmt green.** NEXT — the last piece, and the only Windows-hardware-blocked one: a
+  **cpal `AudioSource`** (WASAPI loopback Them + mic Me) + a `WindowsBackend` (`cpal source` +
+  `SherpaTranscriber`s + the sherpa/whisper refine). With that, `hearsay-core` is a running Windows app.
 - **2026-07-02 (cross-platform Rust — endpointed streaming session; live partials/finals).** Turned the batch
   streaming ASR into a live session. `StreamingAsr::session()` -> **`StreamingSession`**: `feed(&[f32]) ->
   Vec<StreamEvent>` (growing **Partial**s; a **Final** + `reset` when sherpa's endpointer fires on trailing
