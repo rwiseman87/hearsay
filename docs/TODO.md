@@ -435,7 +435,7 @@ uv run hearsay live --seconds 60     # real pipeline -> live transcripts (on-dev
   async-trait 0.1, serde/serde_json, sqlx 0.9, uuid, chrono, tracing (+ tempfile/tokio-macros dev). **`make
   rust-test` + `rust-lint` (clippy -D warnings) + `rust-fmt --check` all green: 62 Rust tests (9 new —
   6 unit: slugify/folder-name, feed framing, segment parse; 3 integration: full route/persist/broadcast/
-  offset lifecycle, busy guard, stop-unknown).** Committed `80933bb` (per the per-crate workflow, same as
+  offset lifecycle, busy guard, stop-unknown).** Committed `d34453e` (per the per-crate workflow, same as
   `hearsay-core` earlier this session). **NEXT:** wiring the
   orchestrator into the `hearsay-core` binary (a small refactor to break the `core -> orchestrator -> core`
   cycle — move the `LiveEngine` trait to a shared crate or split the binary out) is the only purely-here step
