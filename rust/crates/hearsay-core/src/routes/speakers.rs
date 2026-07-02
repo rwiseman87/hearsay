@@ -79,14 +79,58 @@ pub(crate) async fn rediarize(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
 ) -> ApiResult<Json<Page<SpeakerRead>>> {
-    if queries::get_meeting(&state.pool, id).await?.is_none() {
-        return Err(ApiError::NotFound("meeting not found"));
+    let meeting = queries::get_meeting(&state.pool, id)
+        .await?
+        .ok_or(ApiError::NotFound("meeting not found"))?;
+
+    let dir = state.settings.output_dir.join(&meeting.folder);
+    let audio = dir.join("audio.wav");
+    if !audio.exists() {
+        return Err(ApiError::Unavailable(
+            "no recorded audio to re-diarize (audio.record was off)".into(),
+        ));
     }
-    // The refine runs FluidAudio / whisper.cpp diarization offline; that lives in the not-yet-built
-    // inference engine. Until then, re-diarization is unavailable.
-    Err(ApiError::Unavailable(
-        "re-diarization requires the inference engine (build hearsay-inference)".into(),
-    ))
+    let diarize = state.settings.helper_path.with_file_name("hearsay-diarize");
+    if !diarize.exists() {
+        return Err(ApiError::Unavailable(
+            "hearsay-diarize sidecar not found (build it with `make swift-build`)".into(),
+        ));
+    }
+    let model = state.settings.refine_model.clone();
+
+    // Read the Them track, re-diarize (hearsay-diarize) + re-transcribe (whisper) — all blocking.
+    let refined = tokio::task::spawn_blocking(
+        move || -> Result<Vec<hearsay_inference::RefinedSegment>, hearsay_inference::InferenceError> {
+            let them = hearsay_inference::read_them_channel(&audio)?;
+            let asr = hearsay_inference::WhisperAsr::load(&model)?;
+            hearsay_inference::refine_them(&asr, &diarize, &them)
+        },
+    )
+    .await
+    .map_err(|e| ApiError::Internal(format!("refine task panicked: {e}")))?
+    .map_err(|e| ApiError::Internal(format!("refine failed: {e}")))?;
+
+    let rows: Vec<queries::RefinedThemSegment> = refined
+        .into_iter()
+        .map(|s| queries::RefinedThemSegment {
+            ordinal: s.ordinal,
+            text: s.text,
+            start_s: s.start_s,
+            end_s: s.end_s,
+        })
+        .collect();
+    queries::replace_them_segments(&state.pool, id, &rows).await?;
+
+    // Regenerate transcript.md + meeting.json from the refined (+ Me) segments.
+    let segments = queries::list_segments(&state.pool, id).await?;
+    if let Err(err) = hearsay_orchestrator::write_meeting_files(&dir, &meeting, &segments) {
+        tracing::warn!(error = %err, "failed to rewrite transcript after rediarize");
+    }
+
+    let speakers = queries::list_speaker_rows(&state.pool, id).await?;
+    Ok(Json(speaker_page(
+        speakers.into_iter().map(SpeakerRead::from).collect(),
+    )))
 }
 
 #[utoipa::path(

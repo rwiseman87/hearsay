@@ -21,9 +21,11 @@ pub struct Settings {
     pub server_port: u16,
     /// Deployment environment (`development` | `staging` | `production`).
     pub environment: String,
-    /// Path to the Swift `hearsay-helper` capture binary (the `hearsay-live` / `hearsay-me`
-    /// sidecars are resolved as siblings). Used by the macOS live-capture backend.
+    /// Path to the Swift `hearsay-helper` capture binary (the `hearsay-live` / `hearsay-me` /
+    /// `hearsay-diarize` sidecars are resolved as siblings). Used by the macOS live-capture backend.
     pub helper_path: PathBuf,
+    /// GGML whisper model for the offline refine (re-transcribing diarized turns at re-diarization).
+    pub refine_model: PathBuf,
 }
 
 fn env_or(key: &str, default: impl Into<String>) -> String {
@@ -50,6 +52,10 @@ impl Settings {
             helper_path: PathBuf::from(env_or(
                 "HEARSAY_HELPER_PATH",
                 "helper/.build/arm64-apple-macosx/debug/hearsay-helper",
+            )),
+            refine_model: PathBuf::from(env_or(
+                "HEARSAY_REFINE_MODEL",
+                "outputs/models/ggml-large-v3-turbo.bin",
             )),
         }
     }

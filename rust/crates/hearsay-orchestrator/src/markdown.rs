@@ -63,7 +63,7 @@ fn write_atomic(path: &Path, contents: &str) -> std::io::Result<()> {
 }
 
 /// Write `transcript.md` (rendered from `segments`) + `meeting.json` (folder metadata) into `dir`.
-pub(crate) fn write_meeting_files(
+pub fn write_meeting_files(
     dir: &Path,
     meeting: &Meeting,
     segments: &[Segment],

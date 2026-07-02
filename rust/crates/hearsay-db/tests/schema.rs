@@ -221,3 +221,74 @@ async fn delete_meeting_removes_clusters_and_reports_missing() {
     assert_eq!(queries::count_meetings(&pool).await.unwrap(), 0);
     assert!(!queries::delete_meeting(&pool, meeting.id).await.unwrap());
 }
+
+#[tokio::test]
+async fn replace_them_segments_swaps_clusters_keeps_me() {
+    let pool = memory_pool().await;
+    let meeting = queries::create_meeting(&pool, "t", "f", chrono::Utc::now())
+        .await
+        .unwrap();
+    // Seed: a Me segment (untouched by the refine) + an old Them segment on an old cluster.
+    queries::insert_segment(&pool, meeting.id, Stream::Me, "Me", "hi", 0.0, 1.0, None)
+        .await
+        .unwrap();
+    let old = queries::create_cluster(&pool, meeting.id, 5, false, None)
+        .await
+        .unwrap();
+    queries::insert_segment(
+        &pool,
+        meeting.id,
+        Stream::Them,
+        "Speaker 5",
+        "old",
+        0.0,
+        1.0,
+        Some(old.id),
+    )
+    .await
+    .unwrap();
+
+    let refined = vec![
+        queries::RefinedThemSegment {
+            ordinal: 1,
+            text: "hello".into(),
+            start_s: 0.0,
+            end_s: 2.0,
+        },
+        queries::RefinedThemSegment {
+            ordinal: 2,
+            text: "world".into(),
+            start_s: 2.0,
+            end_s: 4.0,
+        },
+        queries::RefinedThemSegment {
+            ordinal: 1,
+            text: "again".into(),
+            start_s: 4.0,
+            end_s: 5.0,
+        },
+    ];
+    queries::replace_them_segments(&pool, meeting.id, &refined)
+        .await
+        .unwrap();
+
+    let segments = queries::list_segments(&pool, meeting.id).await.unwrap();
+    let me: Vec<_> = segments.iter().filter(|s| s.stream == Stream::Me).collect();
+    let them: Vec<_> = segments
+        .iter()
+        .filter(|s| s.stream == Stream::Them)
+        .collect();
+    assert_eq!(me.len(), 1, "Me segment preserved");
+    assert_eq!(them.len(), 3, "old Them replaced by 3 refined");
+    assert!(them.iter().all(|s| s.cluster_id.is_some()));
+
+    // One cluster per distinct ordinal; the two ordinal-1 segments share it.
+    let speakers = queries::list_speaker_rows(&pool, meeting.id).await.unwrap();
+    assert_eq!(speakers.len(), 2);
+    let ord1: Vec<_> = them
+        .iter()
+        .filter(|s| s.speaker_label == "Speaker 1")
+        .collect();
+    assert_eq!(ord1.len(), 2);
+    assert_eq!(ord1[0].cluster_id, ord1[1].cluster_id);
+}

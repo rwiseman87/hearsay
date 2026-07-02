@@ -35,6 +35,7 @@ mod wav_source;
 pub mod testing;
 
 pub use error::OrchestratorError;
+pub use markdown::write_meeting_files;
 pub use orchestrator::Orchestrator;
 pub use traits::{AudioSource, Backend, BackendInstance, Transcriber};
 pub use transcriber::ProcessTranscriber;

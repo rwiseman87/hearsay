@@ -335,6 +335,82 @@ pub async fn rename_cluster(
     }))
 }
 
+/// A refined Them segment produced by the offline diarize + re-transcribe pass.
+pub struct RefinedThemSegment {
+    pub ordinal: i64,
+    pub text: String,
+    pub start_s: f64,
+    pub end_s: f64,
+}
+
+/// Replace a meeting's Them segments + clusters with the refine's output, in one transaction: drop
+/// the existing Them segments (Me is untouched) + all clusters, create one unlocked cluster per
+/// distinct ordinal, and insert the refined segments bound to them. Mirrors `refine.py`'s
+/// cluster+segment replacement (voiceprints + locked-label carry-forward are follow-ups).
+pub async fn replace_them_segments(
+    pool: &SqlitePool,
+    meeting_id: Uuid,
+    refined: &[RefinedThemSegment],
+) -> Result<(), sqlx::Error> {
+    let now = Utc::now();
+    let mut tx = pool.begin().await?;
+
+    // Them segments reference clusters, so delete them before the clusters (Me segments are NULL).
+    sqlx::query("DELETE FROM segments WHERE meeting_id = ? AND stream = ?")
+        .bind(meeting_id)
+        .bind(Stream::Them)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("DELETE FROM clusters WHERE meeting_id = ?")
+        .bind(meeting_id)
+        .execute(&mut *tx)
+        .await?;
+
+    let mut cluster_ids: std::collections::HashMap<i64, Uuid> = std::collections::HashMap::new();
+    for seg in refined {
+        let cluster_id = match cluster_ids.get(&seg.ordinal) {
+            Some(id) => *id,
+            None => {
+                let id = Uuid::new_v4();
+                sqlx::query(
+                    "INSERT INTO clusters \
+                     (id, meeting_id, ordinal, identity_id, locked, centroid, created_at, updated_at) \
+                     VALUES (?, ?, ?, NULL, 0, NULL, ?, ?)",
+                )
+                .bind(id)
+                .bind(meeting_id)
+                .bind(seg.ordinal)
+                .bind(now)
+                .bind(now)
+                .execute(&mut *tx)
+                .await?;
+                cluster_ids.insert(seg.ordinal, id);
+                id
+            }
+        };
+        let label = format!("Speaker {}", seg.ordinal);
+        sqlx::query(
+            "INSERT INTO segments \
+             (id, meeting_id, cluster_id, stream, speaker_label, text, start_s, end_s, created_at, updated_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(Uuid::new_v4())
+        .bind(meeting_id)
+        .bind(cluster_id)
+        .bind(Stream::Them)
+        .bind(&label)
+        .bind(&seg.text)
+        .bind(seg.start_s)
+        .bind(seg.end_s)
+        .bind(now)
+        .bind(now)
+        .execute(&mut *tx)
+        .await?;
+    }
+    tx.commit().await?;
+    Ok(())
+}
+
 /// Total identity count (for the paginated list envelope).
 pub async fn count_identities(pool: &SqlitePool) -> Result<i64, sqlx::Error> {
     sqlx::query_scalar("SELECT COUNT(*) FROM identities")
