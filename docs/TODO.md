@@ -476,6 +476,30 @@ uv run hearsay live --seconds 60     # real pipeline -> live transcripts (on-dev
 
 ## Progress log
 
+- **2026-07-02 (cross-platform Rust — pure-Rust offline diarizer via sherpa-onnx; the Windows inference path
+  begins).** Chose the base after live vetting: **`sherpa-onnx` crate 1.13.3** (Apache-2.0, first-party k2-fsa,
+  actively maintained) — NOT `sherpa-rs` (deprecated/archived) and not raw `ort` (rc-only, no stable, would mean
+  hand-building the whole pipeline that already failed here once). One dep gives BOTH deliverables of this path:
+  offline diarization (pyannote-seg-3.0 + embedding + FastClustering) + streaming ASR (`OnlineRecognizer`). Its
+  `sherpa-onnx-sys` build.rs **downloads a prebuilt static lib** (ureq/tar), so it links in ~16 s on the Mac (no
+  giant C++ compile) — the native-dep risk is retired. Built **`SherpaDiarizer`** in `hearsay-inference`
+  (`OfflineSpeakerDiarization` + `SpeakerEmbeddingExtractor`): `diarize(&[f32]) -> {turns, embeddings}` — turns
+  (1-based ordinal by first appearance) + a per-speaker mean voiceprint (diarization exposes only
+  (start,end,speaker), so each speaker's embedding is computed separately, matching FluidAudio's output shape).
+  Downloaded the pyannote-segmentation-3.0 ONNX (MIT, non-gated) into `outputs/models/`; reuses the already-present
+  wespeaker CAM++ embedding model. **Verified end-to-end on-device** (opt-in `--ignored` tests): the pipeline runs
+  (512-dim voiceprints, one per speaker, ~12 s on the miguel-kristina clip). **KEY FINDING (resolves the
+  whisper/ONNX-vs-FluidAudio fork with a real number): out-of-box accuracy is NOT competitive** — on the known
+  **2-speaker** clip it **over-clusters** (12 speakers at sherpa's default threshold 0.5; a sweep gives 9/9/6/4 at
+  0.6/0.7/0.8/0.9). Swapping the embedder **CAM++ -> NeMo TitaNet-small roughly halves it** (6/5/5/5/3 across the
+  same sweep) — so the embedder matters a lot — but neither hits 2 in a safe threshold range, vs **FluidAudio's
+  clean 2**. **Implication:** keep **FluidAudio as the macOS high-accuracy tier**; sherpa-onnx is the **Windows/
+  non-Mac path**, and getting its DER competitive is real tuning work (better segmentation model e.g. pyannote
+  community-1 ONNX + embedder + threshold, validated across labeled clips) — pending before it feeds the refine.
+  Not yet wired into `refine_them` (that seam is next). Added a `Diarize` error variant + 2 opt-in tests (a
+  2-speaker smoke + a threshold/embedder sweep harness). **79 gate tests (+2 `#[ignore]`d); clippy -D warnings +
+  rustfmt --check green.** NEXT: DER-tuning the diarizer, and/or the streaming ASR half (`OnlineRecognizer`), and
+  wiring a `Diarizer` seam into `refine_them` (Swift on Mac, sherpa elsewhere).
 - **2026-07-02 (cross-platform Rust — cross-meeting voiceprints).** The last small Mac follow-up. Turned out
   to be **pure Rust** — the Swift `hearsay-diarize` sidecar *already emits per-speaker embeddings*
   (`speakers:[{speaker, embedding}]`, FluidAudio's mean-of-segments speaker database), and the
