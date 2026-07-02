@@ -20,7 +20,7 @@ OSes** (it is the revived pre-ANE stack).
 **Branch `feat/cross-platform-rust-tauri` (NOT merged to main).** Target design:
 `docs/architecture-cross-platform.md`. Crate map: `rust/README.md`.
 
-**DONE + tested — 62 Rust tests, `cargo test` + `clippy -D warnings` + `rustfmt` green, gated by `make ci`:**
+**DONE + tested — 65 Rust tests, `cargo test` + `clippy -D warnings` + `rustfmt` green, gated by `make ci`:**
 - Rust workspace `rust/` (8 crates) + `make rust-{build,test,lint,fmt}` folded into `make ci`.
 - **`hearsay-ipc`** — media-frame codec (validated byte-for-byte against `shared/fixtures/frames.jsonl`,
   the same golden vectors Python/Swift check) + NDJSON control channel (Command/Reply/Event, sorted-key wire).
@@ -65,7 +65,14 @@ OSes** (it is the revived pre-ANE stack).
     `hearsay-orchestrator` now depends on `hearsay-engine` (not `hearsay-core`) — it no longer pulls in the
     axum/tower/utoipa web stack, and `hearsay-core`'s binary can construct the orchestrator without a cycle.
     The final swap (main.rs `DisabledEngine` -> `Orchestrator`) still waits on a real `Backend` (capture +
-    inference). Behavior-neutral refactor; 62 tests still green.
+    inference). Behavior-neutral refactor; 62 tests still green. Committed `d778191`.
+  - **Hardening + a hardware-free dev path (2026-07-02):** added a `WavFileSource` (a file-backed
+    `AudioSource`: reads the stereo 16 kHz `audio.wav`, Me=L/Them=R, streams timed chunks, holds open until
+    stop; `hound` 3.5.1, Apache-2.0) so the whole real pipeline runs end-to-end from a recording without
+    capture hardware. Plus a `mock_sidecar` fixture bin (speaks the real `<u32 len><f32 pcm>`-in / NDJSON-out
+    contract) driving 3 new integration tests: `ProcessTranscriber` spawn/feed/drain end-to-end (was only
+    codec-unit-tested), `WavFileSource` stereo framing, and a **capstone** running a WAV through two real
+    `ProcessTranscriber` sidecars into SQLite (only the device + model are stand-ins). 65 tests green.
 
 **REMAINING crate stubs (`rust/crates/`):**
 - **`hearsay-capture`** — cpal per-OS (WASAPI loopback / Core Audio tap). Needs real audio devices / target OS.
@@ -416,6 +423,18 @@ uv run hearsay live --seconds 60     # real pipeline -> live transcripts (on-dev
 
 ## Progress log
 
+- **2026-07-02 (cross-platform Rust — orchestrator hardening + a hardware-free dev path).** Two additions on
+  top of `hearsay-orchestrator`: (1) a **`WavFileSource`** — a file-backed `AudioSource` that reads the
+  canonical stereo 16 kHz `audio.wav` (Me=L/Them=R), streams it as timed chunks on the shared `host_ts`
+  clock, and holds the channel open until stop (mono -> Them). Adds `hound` 3.5.1 (Apache-2.0, verified). It
+  lets the whole real pipeline run from a recording with no capture hardware. (2) A **`mock_sidecar`** fixture
+  bin (`src/bin/`, std-only) that speaks the real sidecar stdio contract (`<u32 len><f32 pcm>` in, NDJSON
+  segments out), used to lift `ProcessTranscriber` from codec-unit-tested to a real spawn/feed/drain
+  integration test. New tests (3): `ProcessTranscriber` e2e, `WavFileSource` stereo framing, and a
+  **capstone** (`tests/end_to_end.rs`) that drives a WAV through two real `ProcessTranscriber` sidecars into
+  SQLite via the `Orchestrator` — only the audio device + the ML model are stand-ins, proving the real
+  source + real transcriber + real orchestrator compose + persist. **62 -> 65 Rust tests; clippy + rustfmt
+  green.**
 - **2026-07-02 (cross-platform Rust — extracted `hearsay-engine`, broke the `core -> orchestrator` cycle;
   branch `feat/cross-platform-rust-tauri`).** Moved the `LiveEngine` trait + `LiveError` + `DisabledEngine`
   out of `hearsay-core` into a new lean crate **`hearsay-engine`** (deps: hearsay-db + async-trait +

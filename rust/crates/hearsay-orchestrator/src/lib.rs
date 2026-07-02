@@ -11,7 +11,8 @@
 //! The two external backends are behind traits so the whole lifecycle is testable without real
 //! audio or model sidecars:
 //! - [`AudioSource`] — capture (per-OS: WASAPI loopback / Core Audio tap), provided later by
-//!   `hearsay-capture`.
+//!   `hearsay-capture`. [`WavFileSource`] is a file-backed source for offline / dev runs (replay a
+//!   recorded `audio.wav` through the pipeline without hardware).
 //! - [`Transcriber`] — a streaming VAD/diarization + ASR sidecar, provided later by
 //!   `hearsay-inference`. [`ProcessTranscriber`] is the real `tokio::process` implementation
 //!   (faithful to `live_base.py`); [`testing`] has scripted fakes.
@@ -27,6 +28,7 @@ mod pipeline;
 mod traits;
 mod transcriber;
 mod types;
+mod wav_source;
 
 pub mod testing;
 
@@ -35,3 +37,4 @@ pub use orchestrator::Orchestrator;
 pub use traits::{AudioSource, Backend, BackendInstance, Transcriber};
 pub use transcriber::ProcessTranscriber;
 pub use types::{AudioChunk, CaptureChunk, SegmentKind, SidecarSegment, Stream};
+pub use wav_source::WavFileSource;

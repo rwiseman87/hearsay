@@ -24,10 +24,13 @@ drives an `AudioSource` (capture), routes each stream's PCM to its `Transcriber`
 broadcasts the partial/final segments the transcribers emit (Them binds `Speaker N` clusters). The
 two external backends are behind traits (`AudioSource` from `hearsay-capture`; `Transcriber` from
 `hearsay-inference`, with a real `tokio::process` `ProcessTranscriber` faithful to the Python
-sidecar stdio), so the whole lifecycle is tested with scripted fakes over in-memory SQLite. The
-stereo `audio.wav` recorder, the `transcript.md` sink, and the offline refine at stop are deferred
-until `hearsay-capture` / `hearsay-inference` land (finals persist to the DB — the API's source of
-truth — today).
+sidecar stdio), so the whole lifecycle is tested with scripted fakes over in-memory SQLite. It also
+ships a `WavFileSource` (a file-backed `AudioSource`) so the full pipeline can run end-to-end from a
+recorded `audio.wav` with no hardware — the capstone test drives a WAV through two real
+`ProcessTranscriber` sidecars (a `mock_sidecar` fixture) into SQLite. The stereo `audio.wav`
+recorder, the `transcript.md` sink, and the offline refine at stop are deferred until
+`hearsay-capture` / `hearsay-inference` land (finals persist to the DB — the API's source of truth
+— today).
 
 Dependencies are pinned to verified latest stable versions via `cargo add` at implementation time
 (never guessed here). Run the gate with `make rust-test` / `make rust-lint` (source `~/.cargo/env`
