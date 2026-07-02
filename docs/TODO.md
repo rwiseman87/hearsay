@@ -85,8 +85,8 @@ OSes** (it is the revived pre-ANE stack).
   FluidAudio sidecars — identical stdio protocol, so live streaming + diarization reuse the Swift stack).
   Smoke-tested: `hearsay-core --synthetic` -> start meeting (helper spawns) -> stop -> finalized. `web/dist`
   built + FluidAudio models cached, so it's frontend-ready. Windows cpal capture is the remaining half of the
-  trait. **NEXT (user, on-device):** run `./rust/target/debug/hearsay-core` from repo root, open the printed
-  `?token=` URL, grant mic/screen perms, verify live captions + diarization in the browser.
+  trait. **VALIDATED on-device in the frontend (2026-07-02, user: "seems fine")** — live captions +
+  diarization work in the browser through the Rust core. The macOS cross-platform stack is proven end-to-end.
 - **`hearsay-inference`** — whisper.cpp + Silero VAD + offline diarization, tiered models. The big one;
   provides the orchestrator's `Transcriber` (the sidecar binaries `ProcessTranscriber` spawns) + the offline
   refine. **Started (2026-07-02) — the offline ASR slice is DONE + verified on the Mac.** `whisper-rs` 0.16
