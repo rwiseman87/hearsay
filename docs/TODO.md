@@ -20,7 +20,7 @@ OSes** (it is the revived pre-ANE stack).
 **Branch `feat/cross-platform-rust-tauri` (NOT merged to main).** Target design:
 `docs/architecture-cross-platform.md`. Crate map: `rust/README.md`.
 
-**DONE + tested — 68 Rust tests, `cargo test` + `clippy -D warnings` + `rustfmt` green, gated by `make ci`:**
+**DONE + tested — 70 Rust tests, `cargo test` + `clippy -D warnings` + `rustfmt` green, gated by `make ci`:**
 - Rust workspace `rust/` (8 crates) + `make rust-{build,test,lint,fmt}` folded into `make ci`.
 - **`hearsay-ipc`** — media-frame codec (validated byte-for-byte against `shared/fixtures/frames.jsonl`,
   the same golden vectors Python/Swift check) + NDJSON control channel (Command/Reply/Event, sorted-key wire).
@@ -80,11 +80,20 @@ OSes** (it is the revived pre-ANE stack).
   Implements the orchestrator's `AudioSource` trait.
 - **`hearsay-inference`** — whisper.cpp + Silero VAD + offline diarization, tiered models. The big one;
   provides the orchestrator's `Transcriber` (the sidecar binaries `ProcessTranscriber` spawns) + the offline
-  refine. **NOT gated — buildable now on the Mac** (2026-07-02, corrected): model accuracy (WER/DER) is
-  hardware-independent, so building the whisper.cpp/ONNX path on Metal and running it on the Mac *is* the
-  accuracy-verification harness. The per-OS accel backend (Metal/Vulkan/CUDA) is a swappable detail behind
-  shared code; only the **225U real-time throughput confirmation** genuinely needs Windows hardware, and that
-  is separately deferred. Start minimal (offline ASR: WAV -> text on Metal) and measure.
+  refine. **Started (2026-07-02) — the offline ASR slice is DONE + verified on the Mac.** `whisper-rs` 0.16
+  (Unlicense) + `hound`: `WhisperAsr::load(ggml)` + `transcribe(&[f32]) -> Vec<AsrSegment>` (16 kHz mono,
+  centisecond bounds), a `read_wav_mono_16k` helper, and a `hearsay-inference <model> <wav>` CLI (the manual
+  accuracy tool). CPU by default (portable); `metal`/`vulkan`/`cuda` are opt-in Cargo features forwarding to
+  `whisper-rs` — the per-OS accel is a build flag, not a fork. Verified: `outputs/models/ggml-base.bin
+  outputs/jfk.wav` -> verbatim JFK quote at ~50x RT (CPU); `ggml-large-v3-turbo` + `--features metal` ->
+  verbatim at ~25x RT. Models live in `outputs/models/` (gitignored: ggml-base/large-v3-turbo/large-v3 +
+  silero_vad.onnx + wespeaker CAM++). Tests: +2 unit (WAV downmix, reject-non-16k) in the gate; an
+  `#[ignore]`d `transcribes_jfk_clip` smoke (opt-in, needs the gitignored model). **NEXT slices:** offline
+  diarization (Silero VAD ONNX + wespeaker/pyannote ONNX) + WER/DER scoring against references, then the
+  streaming `Transcriber` sidecar (VAD + streaming ASR + pure-Rust Segmenter) that `ProcessTranscriber`
+  spawns. NB: adding `whisper-rs` means `make rust-{build,test,lint}` now compiles whisper.cpp (cmake + C++)
+  — ~15 s cold, cached after; needs `cmake` + a C++ toolchain (present via Xcode CLT). Cosmetic: whisper.cpp
+  logs some lines to stderr (a `whisper-rs` log hook can silence it later).
 - Deferred: the **Tauri shell** (`cargo tauri init`; hosts the React UI; bundler + signing + notarization +
   updater). Validate the `externalBin`-breaks-macOS-notarization bug early (the app is sidecar-based).
 
@@ -107,10 +116,11 @@ can't choose model tiers without running the models. Split the two concerns:
 `make rust-test` / `rust-lint` / `rust-fmt`; per-crate `cargo test --manifest-path rust/crates/<crate>/Cargo.toml`.
 Pin new deps via `cargo add` (verified-latest, never guess). **`hearsay-orchestrator` is done + committed,
 and the `core -> orchestrator` dependency cycle is already broken** (the `LiveEngine` trait now lives in the
-neutral `hearsay-engine` crate). Two crates remain: **`hearsay-inference` is the next to build — on the Mac,
-now** (whisper.cpp on Metal + ONNX; NOT gated — see "MODEL VERIFICATION" above; start with offline ASR
-WAV->text, then diarization + WER/DER scoring, then the streaming `Transcriber`); `hearsay-capture` still
-needs a target OS + audio device. Once inference exists, a real `Backend` can be assembled and the one-line
+neutral `hearsay-engine` crate). **`hearsay-inference` is now in progress on the Mac — the offline ASR slice
+is DONE + verified** (whisper.cpp via `whisper-rs`; jfk clip verbatim on CPU + Metal; see the crate bullet
+above). NEXT inference slices: offline diarization (Silero VAD ONNX + wespeaker/pyannote ONNX) + WER/DER
+scoring, then the streaming `Transcriber` sidecar. `hearsay-capture` still needs a target OS + audio device.
+Once inference has the streaming `Transcriber`, a real `Backend` can be assembled and the one-line
 swap in `hearsay-core`'s `main.rs` (`DisabledEngine` -> `Orchestrator::new(pool, output_dir, backend)`)
 wires it in — no structural blocker left. Full context: [[hearsay-windows-requirement]].
 
@@ -434,6 +444,19 @@ uv run hearsay live --seconds 60     # real pipeline -> live transcripts (on-dev
 
 ## Progress log
 
+- **2026-07-02 (cross-platform Rust — `hearsay-inference` offline ASR, on the Mac).** After the user
+  corrected the "gated on a Windows determination" framing (accuracy is hardware-independent + Mac-verifiable;
+  only 225U real-time perf is deferred — tracker + `[[hearsay-windows-requirement]]` fixed), started
+  `hearsay-inference`. Offline ASR slice: `whisper-rs` 0.16 (Unlicense, verified) + `hound`; `WhisperAsr`
+  loads a GGML model and `transcribe(&[f32])` returns timestamped `AsrSegment`s (English greedy, centisecond
+  bounds), plus `read_wav_mono_16k` (downmix) and a `hearsay-inference <model> <wav>` CLI (the manual accuracy
+  tool). Per-OS accel is opt-in Cargo features (`metal`/`vulkan`/`cuda` -> `whisper-rs`), default CPU/portable
+  — proving "where it runs is a feature flag, not a fork." **Verified on the Mac:** `ggml-base.bin` + `jfk.wav`
+  -> verbatim JFK quote, ~50x RT (CPU); `ggml-large-v3-turbo` + `--features metal` -> verbatim, ~25x RT.
+  whisper.cpp built clean via cmake in ~15 s (needs `cmake` + Xcode CLT). Tests: +2 unit (downmix,
+  reject-non-16k) in the gate + an `#[ignore]`d jfk smoke (opt-in; needs the gitignored model). **68 -> 70
+  Rust tests; clippy + rustfmt green.** The accuracy harness the user wanted is live. NEXT: diarization
+  (Silero VAD + wespeaker/pyannote ONNX) + WER/DER scoring, then the streaming `Transcriber`.
 - **2026-07-02 (cross-platform Rust — `transcript.md` + `meeting.json` output).** Ported the
   `LocalMarkdownSink` render (`src/hearsay/export/local_markdown.py`) to a `markdown` module: at stop the
   orchestrator writes the meeting folder's `transcript.md` (`# {title}`, then a `### HH:MM:SS — Speaker`

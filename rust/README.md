@@ -3,12 +3,17 @@
 Cross-platform (macOS + Windows) foundation for Hearsay. Target architecture:
 [`../docs/architecture-cross-platform.md`](../docs/architecture-cross-platform.md).
 
-**Status (2026-07-02): 6 of 8 crates implemented + tested; 2 stubs remain.**
+**Status (2026-07-02): 6 crates done; `hearsay-inference` started (offline ASR); `hearsay-capture` the last stub.**
 
 - **Implemented + tested** (`cargo test` + `clippy -D warnings` + `rustfmt`, gated by `make ci`):
   `hearsay-ipc`, `hearsay-attribution`, `hearsay-db`, `hearsay-engine`, `hearsay-core`,
   `hearsay-orchestrator`.
-- **Stubs** (responsibilities below, ported incrementally): `hearsay-capture`, `hearsay-inference`.
+- **`hearsay-inference` — in progress:** the offline ASR slice landed (whisper.cpp via `whisper-rs`;
+  loads a GGML model, transcribes 16 kHz mono audio → timestamped segments; CPU by default, GPU via
+  the `metal`/`vulkan`/`cuda` features). Verified on the Mac (`jfk.wav`: verbatim, ~50x realtime CPU
+  base / ~25x realtime Metal large-v3-turbo). Diarization (Silero VAD + speaker-embedding ONNX) +
+  the streaming `Transcriber` sidecar are next.
+- **Stub:** `hearsay-capture`.
 
 `hearsay-core` runs the full self-contained API surface — meetings/segments/speakers/identities
 queries, pure-DB writes (rename, delete), audio file serving with Range, static UI + token
@@ -48,7 +53,7 @@ first if `cargo` is not on PATH).
 | `hearsay-orchestrator` | Implements `LiveEngine`: spawns/supervises the capture + inference sidecars, routes 16 kHz PCM (Me/Them), owns the live transcription pipeline state machine (partials/finals, offline refine at stop) | `src/hearsay/helper/supervisor.py`, `src/hearsay/transcript/` |
 | `hearsay-capture` | Cross-platform audio capture behind one trait. `cfg(windows)`: WASAPI loopback (Them) + mic (Me) via cpal. `cfg(macos)`: Core Audio process tap (Swift helper fallback) / cpal. Resample to 16 kHz mono; monotonic `host_ts` | Swift `hearsay-helper` capture |
 | `hearsay-core` | Application binary: axum HTTP + WebSocket API (loopback + session token), wires db + orchestrator + attribution, serves the React UI (or runs under Tauri) | `src/hearsay/api/`, app entrypoint |
-| `hearsay-inference` | Local-only inference sidecar: Silero VAD (ONNX) + pure-Rust Segmenter (partial/final) + whisper.cpp ASR (Metal/Vulkan/CUDA/CPU) + offline diarization (sherpa-onnx / pyannote ONNX); tiered model selection by detected hardware. Speaks the `hearsay-ipc` contract | Replaces the FluidAudio Swift sidecars on the unified path |
+| `hearsay-inference` | Local-only inference. **Done:** offline ASR (whisper.cpp via `whisper-rs`, GGML model -> timestamped segments; CPU + `metal`/`vulkan`/`cuda` features) — the accuracy harness + refine. **Next:** Silero VAD (ONNX) + pure-Rust Segmenter + offline diarization (speaker-embedding ONNX) + the streaming `Transcriber` sidecar; tiered model selection by hardware | Replaces the FluidAudio Swift sidecars on the unified path |
 
 The **Tauri shell** (`hearsay-app`, with `src-tauri/` + `tauri.conf.json`) is added via `cargo tauri
 init` when the desktop shell work starts; it hosts the React UI in the system webview and bundles the

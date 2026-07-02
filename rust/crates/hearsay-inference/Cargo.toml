@@ -4,3 +4,16 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+hound = "3.5.1"
+whisper-rs = "0.16.0"
+
+# Per-OS GPU acceleration is opt-in (default = portable CPU). The installer/build selects the
+# backend for the target: `--features metal` on macOS, `vulkan` on the Intel Arc iGPU, `cuda` on
+# discrete NVIDIA. Same code, per-OS accel (see docs/architecture-cross-platform.md).
+[features]
+metal = ["whisper-rs/metal"]
+vulkan = ["whisper-rs/vulkan"]
+cuda = ["whisper-rs/cuda"]
+
+[dev-dependencies]
+tempfile = "3.27.0"
