@@ -21,6 +21,9 @@ pub struct Settings {
     pub server_port: u16,
     /// Deployment environment (`development` | `staging` | `production`).
     pub environment: String,
+    /// Path to the Swift `hearsay-helper` capture binary (the `hearsay-live` / `hearsay-me`
+    /// sidecars are resolved as siblings). Used by the macOS live-capture backend.
+    pub helper_path: PathBuf,
 }
 
 fn env_or(key: &str, default: impl Into<String>) -> String {
@@ -44,6 +47,10 @@ impl Settings {
             server_host: env_or("HEARSAY_SERVER_HOST", "127.0.0.1"),
             server_port,
             environment: env_or("ENVIRONMENT", "development"),
+            helper_path: PathBuf::from(env_or(
+                "HEARSAY_HELPER_PATH",
+                "helper/.build/arm64-apple-macosx/debug/hearsay-helper",
+            )),
         }
     }
 }
