@@ -464,8 +464,8 @@ uv run hearsay live --seconds 60     # real pipeline -> live transcripts (on-dev
   cluster per ordinal; +test), `hearsay-orchestrator::write_meeting_files` made pub (rewrite transcript.md
   after refine), `Settings.refine_model` (`HEARSAY_REFINE_MODEL`, default ggml-large-v3-turbo), and the
   `POST /api/meetings/{id}/rediarize` route now runs the refine (spawn_blocking) + returns the refreshed
-  speakers -> **the frontend "Refine speakers" button works on the Mac.** **71 Rust tests; clippy + rustfmt
-  green.** Deferred: auto-refine-at-stop (this is the manual button; the orchestrator `// TODO(refine)`
+  speakers -> **the frontend "Refine speakers" button works on the Mac — VALIDATED on-device (2026-07-02,
+  user: "looks pretty good").** **71 Rust tests; clippy + rustfmt green.** Deferred: auto-refine-at-stop (this is the manual button; the orchestrator `// TODO(refine)`
   stays), cross-meeting voiceprints (the diarizer returns embeddings; `hearsay-attribution` has the cosine
   matching ready), and carry-forward of locked manual labels. NEXT: the Windows path (cpal capture +
   pure-Rust streaming `Transcriber` + diarizer), or auto-refine-at-stop.
