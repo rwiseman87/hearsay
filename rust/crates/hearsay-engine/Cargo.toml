@@ -1,0 +1,10 @@
+[package]
+name = "hearsay-engine"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+hearsay-db = { path = "../hearsay-db" }
+async-trait = "0.1.89"
+tokio = { version = "1.52.3", features = ["sync"] }
+uuid = "1.23.4"

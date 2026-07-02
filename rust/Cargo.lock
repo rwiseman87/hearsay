@@ -589,6 +589,7 @@ dependencies = [
  "axum",
  "chrono",
  "hearsay-db",
+ "hearsay-engine",
  "serde",
  "serde_json",
  "sqlx",
@@ -613,6 +614,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "hearsay-engine"
+version = "0.0.0"
+dependencies = [
+ "async-trait",
+ "hearsay-db",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "hearsay-inference"
 version = "0.0.0"
 
@@ -630,8 +641,8 @@ version = "0.0.0"
 dependencies = [
  "async-trait",
  "chrono",
- "hearsay-core",
  "hearsay-db",
+ "hearsay-engine",
  "serde",
  "serde_json",
  "sqlx",

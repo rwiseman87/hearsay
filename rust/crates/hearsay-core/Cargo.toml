@@ -5,6 +5,7 @@ edition.workspace = true
 
 [dependencies]
 hearsay-db = { path = "../hearsay-db" }
+hearsay-engine = { path = "../hearsay-engine" }
 axum = { version = "0.8.9", features = ["ws", "macros"] }
 tower-http = { version = "0.7.0", features = ["fs"] }
 tokio = { version = "1.52.3", features = ["macros", "rt-multi-thread", "net", "signal", "fs", "sync", "time"] }

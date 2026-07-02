@@ -21,11 +21,15 @@ OSes** (it is the revived pre-ANE stack).
 `docs/architecture-cross-platform.md`. Crate map: `rust/README.md`.
 
 **DONE + tested — 62 Rust tests, `cargo test` + `clippy -D warnings` + `rustfmt` green, gated by `make ci`:**
-- Rust workspace `rust/` (7 crates) + `make rust-{build,test,lint,fmt}` folded into `make ci`.
+- Rust workspace `rust/` (8 crates) + `make rust-{build,test,lint,fmt}` folded into `make ci`.
 - **`hearsay-ipc`** — media-frame codec (validated byte-for-byte against `shared/fixtures/frames.jsonl`,
   the same golden vectors Python/Swift check) + NDJSON control channel (Command/Reply/Event, sorted-key wire).
 - **`hearsay-attribution`** — voiceprint cosine matching + diarization mapping (`order_speakers`,
   `assign_segment_speaker`), pure logic, zero deps.
+- **`hearsay-engine`** — the neutral `LiveEngine` trait seam (meeting lifecycle + live-transcript subscribe)
+  + the `DisabledEngine` stub. Consumed by `hearsay-core`, implemented by `hearsay-orchestrator` — a tiny
+  lean crate (hearsay-db + async-trait + tokio-sync + uuid) so neither adapter depends on the other (breaks
+  the would-be `core -> orchestrator -> core` cycle, and keeps the orchestrator off the axum/web stack).
 - **`hearsay-db`** — SQLx 0.9 + SQLite: one forward-only baseline migration (meetings/identities/clusters/
   segments), row types + text enums, pool with the `engine.py` pragmas (WAL/busy_timeout/foreign_keys),
   runtime-checked queries. (Extended with the pagination/join/rename/delete queries `hearsay-core` needs.)
@@ -56,10 +60,12 @@ OSes** (it is the revived pre-ANE stack).
   `hearsay-core` seam: `LiveError::Internal` / `ApiError::Internal` (500) so a real engine can surface DB
   errors, and `hearsay-db insert_segment` gained a `cluster_id` param (Them finals bind a cluster). Deps:
   tokio (process/io-util/sync/rt/time), async-trait, serde/serde_json, sqlx, uuid, chrono, tracing
-  (+ tempfile/tokio-macros dev). Wiring the orchestrator into the `hearsay-core` binary (replacing
-  `DisabledEngine`) is a later step — it needs the trait moved to a shared crate or the binary split out, to
-  break the would-be `core -> orchestrator -> core` cycle (orchestrator depends on core for the `LiveEngine`
-  trait today, which is cycle-free while the binary keeps `DisabledEngine`).
+  (+ tempfile/tokio-macros dev). Committed `d34453e` (+ tracker fixup `5d1245b`).
+  - **Cycle broken (2026-07-02):** the `LiveEngine` trait moved to the new lean `hearsay-engine` crate, so
+    `hearsay-orchestrator` now depends on `hearsay-engine` (not `hearsay-core`) — it no longer pulls in the
+    axum/tower/utoipa web stack, and `hearsay-core`'s binary can construct the orchestrator without a cycle.
+    The final swap (main.rs `DisabledEngine` -> `Orchestrator`) still waits on a real `Backend` (capture +
+    inference). Behavior-neutral refactor; 62 tests still green.
 
 **REMAINING crate stubs (`rust/crates/`):**
 - **`hearsay-capture`** — cpal per-OS (WASAPI loopback / Core Audio tap). Needs real audio devices / target OS.
@@ -81,14 +87,14 @@ check is a confirmation, not a redo.
 
 **Resume the Rust work:** `. "$HOME/.cargo/env"` first (the Bash-tool shell does not auto-source it);
 `make rust-test` / `rust-lint` / `rust-fmt`; per-crate `cargo test --manifest-path rust/crates/<crate>/Cargo.toml`.
-Pin new deps via `cargo add` (verified-latest, never guess). **`hearsay-orchestrator` is now done +
-committed** — the two remaining crates both need real hardware / the model decision: `hearsay-capture`
-(implements the orchestrator's `AudioSource`; needs a target OS + audio device) and `hearsay-inference`
-(provides the `Transcriber` sidecar binaries + refine; **gated on the model verification**). The next
-purely-here step is a small refactor to **wire the orchestrator into the `hearsay-core` binary** (replace
-`DisabledEngine`) — this needs the `LiveEngine` trait moved to a shared crate (or the binary split from the
-`hearsay-core` lib) to break the `core -> orchestrator -> core` cycle, plus a real `Backend` that can only
-be exercised once capture/inference exist. Full context: [[hearsay-windows-requirement]].
+Pin new deps via `cargo add` (verified-latest, never guess). **`hearsay-orchestrator` is done + committed,
+and the `core -> orchestrator` dependency cycle is already broken** (the `LiveEngine` trait now lives in the
+neutral `hearsay-engine` crate). So the two remaining crates are the only substantial work, and both need
+real hardware / the model decision: `hearsay-capture` (implements the orchestrator's `AudioSource`; needs a
+target OS + audio device) and `hearsay-inference` (provides the `Transcriber` sidecar binaries + the offline
+refine; **gated on the model verification**). Once either exists, a real `Backend` can be assembled and the
+one-line swap in `hearsay-core`'s `main.rs` (`DisabledEngine` -> `Orchestrator::new(pool, output_dir,
+backend)`) wires it in — there is no structural blocker left. Full context: [[hearsay-windows-requirement]].
 
 **Prior on-main focus (now paused behind this):** the three-item focus below — items 1+2 (dead-code, WAV
 consolidation) merged; **item 3 (post-meeting LLM notes) NOT started** — is paused while the cross-platform
@@ -410,6 +416,19 @@ uv run hearsay live --seconds 60     # real pipeline -> live transcripts (on-dev
 
 ## Progress log
 
+- **2026-07-02 (cross-platform Rust — extracted `hearsay-engine`, broke the `core -> orchestrator` cycle;
+  branch `feat/cross-platform-rust-tauri`).** Moved the `LiveEngine` trait + `LiveError` + `DisabledEngine`
+  out of `hearsay-core` into a new lean crate **`hearsay-engine`** (deps: hearsay-db + async-trait +
+  tokio-sync + uuid — no web stack). `hearsay-core` now `pub use`s them from there (external API unchanged),
+  and `hearsay-orchestrator` depends on `hearsay-engine` instead of `hearsay-core` — so the orchestrator no
+  longer compiles axum/tower/utoipa, and the `hearsay-core` binary can construct the orchestrator without the
+  would-be `core -> orchestrator -> core` cycle. This was the one purely-here step the previous entry flagged.
+  8th crate; the graph is now cycle-free and the final `main.rs` swap (`DisabledEngine` -> `Orchestrator`)
+  only waits on a real `Backend` (capture + inference). Behavior-neutral: **62 Rust tests + clippy + rustfmt
+  still green.** Repointed 3 `hearsay-core` imports (lib re-export, `state.rs`, `routes/meetings.rs`) + 3
+  `hearsay-orchestrator` imports (`orchestrator.rs`, `error.rs`, `tests/lifecycle.rs`); `routes/ws.rs`
+  unchanged (calls the trait-object method, no import needed). NEXT: `hearsay-capture` / `hearsay-inference`
+  (both need real hardware / the model decision) are the only substantial work left.
 - **2026-07-02 (cross-platform Rust — `hearsay-core` committed + `hearsay-orchestrator` implemented + tested;
   branch `feat/cross-platform-rust-tauri`).** Committed the finished `hearsay-core` (`81c0b9b`), then built the
   5th of 7 crates: **`hearsay-orchestrator`**, the `LiveEngine` implementation (port of

@@ -7,7 +7,6 @@
 //! `docs/architecture-cross-platform.md`.
 
 pub mod config;
-pub mod engine;
 pub mod error;
 pub mod openapi;
 pub mod routes;
@@ -21,7 +20,7 @@ use axum::{Json, Router};
 use utoipa::OpenApi as _;
 
 pub use config::Settings;
-pub use engine::{DisabledEngine, LiveEngine, LiveError};
+pub use hearsay_engine::{DisabledEngine, LiveEngine, LiveError};
 pub use openapi::ApiDoc;
 pub use state::AppState;
 

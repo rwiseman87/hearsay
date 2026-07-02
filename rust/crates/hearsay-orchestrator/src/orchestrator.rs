@@ -11,9 +11,9 @@ use sqlx::SqlitePool;
 use tokio::sync::broadcast;
 use uuid::Uuid;
 
-use hearsay_core::{LiveEngine, LiveError};
 use hearsay_db::models::Meeting;
 use hearsay_db::queries;
+use hearsay_engine::{LiveEngine, LiveError};
 
 use crate::error::OrchestratorError;
 use crate::pipeline::{self, Pipeline};

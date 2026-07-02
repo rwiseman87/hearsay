@@ -1,7 +1,7 @@
-//! The orchestrator's internal error type. Surfaces to the core's [`LiveError::Internal`] (500)
-//! when a lifecycle operation fails.
+//! The orchestrator's internal error type. Surfaces as [`LiveError::Internal`] (500) when a
+//! lifecycle operation fails.
 
-use hearsay_core::LiveError;
+use hearsay_engine::LiveError;
 
 /// An unexpected failure while starting or running a meeting.
 #[derive(Debug)]

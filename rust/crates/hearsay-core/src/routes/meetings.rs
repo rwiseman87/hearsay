@@ -8,11 +8,11 @@ use uuid::Uuid;
 
 use hearsay_db::queries;
 
-use crate::engine::LiveError;
 use crate::error::{ApiError, ApiResult};
 use crate::routes::Pagination;
 use crate::schema::{MeetingCreate, MeetingRead, Page, SegmentRead};
 use crate::state::AppState;
+use hearsay_engine::LiveError;
 
 /// Routes served under the `/api` prefix (token-gated by the caller).
 pub fn router() -> Router<AppState> {

@@ -5,7 +5,7 @@
 //!
 //! Rust port of `src/hearsay/transcript/` (the `SessionManager` + pipeline + sidecar processors)
 //! and `src/hearsay/helper/supervisor.py`. The [`Orchestrator`] implements the
-//! [`hearsay_core::LiveEngine`] seam, so wiring it into the core replaces the built-in
+//! [`hearsay_engine::LiveEngine`] seam, so wiring it into `hearsay-core` replaces the built-in
 //! `DisabledEngine`.
 //!
 //! The two external backends are behind traits so the whole lifecycle is testable without real

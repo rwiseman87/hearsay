@@ -1,11 +1,12 @@
-//! The live-capture seam.
+//! The live-capture seam — the neutral port shared by the API and the orchestrator.
 //!
 //! The meeting *lifecycle* (start / stop) and the live transcript stream require a running capture
-//! and inference pipeline — the job of `hearsay-orchestrator` (and, under it, `hearsay-capture` +
-//! `hearsay-inference`), which are not built yet. The core depends on this trait, not on those
-//! crates, exactly as the Python `create_app` takes an injected `SessionManager`. Until the
-//! orchestrator lands, [`DisabledEngine`] answers those routes with 503 / a clean WebSocket close;
-//! every read + pure-DB-write + serving route works without it.
+//! and inference pipeline. `hearsay-core` (the HTTP/WS API) depends on this [`LiveEngine`] trait,
+//! and `hearsay-orchestrator` implements it — exactly as the Python `create_app` takes an injected
+//! `SessionManager`. Keeping the trait here (not in either crate) lets the core consume it and the
+//! orchestrator implement it without a dependency cycle, and keeps the orchestrator off the web
+//! stack. Until the orchestrator is wired into the binary, [`DisabledEngine`] answers those routes
+//! with 503 / a clean WebSocket close; every read + pure-DB-write + serving route works without it.
 
 use async_trait::async_trait;
 use tokio::sync::broadcast;
@@ -41,7 +42,7 @@ pub trait LiveEngine: Send + Sync {
     fn subscribe(&self, meeting_id: Uuid) -> Option<broadcast::Receiver<String>>;
 }
 
-/// The placeholder engine used until `hearsay-orchestrator` is built: no capture, no active
+/// The placeholder engine used until `hearsay-orchestrator` is wired in: no capture, no active
 /// session. Lifecycle routes return 503; the live WebSocket accepts then closes cleanly.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct DisabledEngine;

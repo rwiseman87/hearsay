@@ -5,7 +5,7 @@ use std::sync::Arc;
 use sqlx::SqlitePool;
 
 use crate::config::Settings;
-use crate::engine::LiveEngine;
+use hearsay_engine::LiveEngine;
 
 /// Per-process application state. Cheap to clone (a pool handle + `Arc`s).
 #[derive(Clone)]

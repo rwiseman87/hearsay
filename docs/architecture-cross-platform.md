@@ -114,9 +114,12 @@ No -> FluidAudio stays the Mac tier and we carry two ASR backends (everything el
 
 ## Rust workspace layout
 
-See `rust/` (`rust/README.md` for the crate map + status). As of 2026-07-01, `hearsay-ipc`,
-`hearsay-attribution`, `hearsay-db`, and `hearsay-core` are implemented + tested (53 tests, gated by
-`make ci`); `hearsay-orchestrator`, `hearsay-capture`, and `hearsay-inference` remain stubs.
-`hearsay-core` exposes a `LiveEngine` trait seam (with a `DisabledEngine` placeholder) for the
-capture-dependent routes, which `hearsay-orchestrator` will implement. Crate dependencies are pinned to
-verified latest versions via `cargo add` as each crate is implemented.
+See `rust/` (`rust/README.md` for the crate map + status). As of 2026-07-02, `hearsay-ipc`,
+`hearsay-attribution`, `hearsay-db`, `hearsay-engine`, `hearsay-core`, and `hearsay-orchestrator` are
+implemented + tested (62 tests, gated by `make ci`); `hearsay-capture` and `hearsay-inference` remain
+stubs. The `LiveEngine` trait seam (with a `DisabledEngine` placeholder) lives in the neutral
+`hearsay-engine` crate — `hearsay-core` consumes it for the capture-dependent routes and
+`hearsay-orchestrator` implements it, without a dependency cycle. `hearsay-orchestrator` drives an
+`AudioSource` (from `hearsay-capture`) + a `Transcriber` (from `hearsay-inference`) behind traits, so
+its whole lifecycle is tested today with scripted fakes. Crate dependencies are pinned to verified
+latest versions via `cargo add` as each crate is implemented.

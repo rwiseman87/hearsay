@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
-hearsay-core = { path = "../hearsay-core" }
+hearsay-engine = { path = "../hearsay-engine" }
 hearsay-db = { path = "../hearsay-db" }
 tokio = { version = "1.52.3", features = ["process", "io-util", "sync", "rt", "time"] }
 async-trait = "0.1.89"

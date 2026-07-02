@@ -6,9 +6,9 @@
 
 use std::sync::Arc;
 
-use hearsay_core::{LiveEngine, LiveError};
 use hearsay_db::models::MeetingStatus;
 use hearsay_db::{connect_options, queries, MIGRATOR};
+use hearsay_engine::{LiveEngine, LiveError};
 use hearsay_orchestrator::testing::ScriptedBackend;
 use hearsay_orchestrator::{
     AudioChunk, Backend, CaptureChunk, Orchestrator, SegmentKind, SidecarSegment, Stream,
