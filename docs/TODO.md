@@ -79,30 +79,40 @@ OSes** (it is the revived pre-ANE stack).
 - **`hearsay-capture`** — cpal per-OS (WASAPI loopback / Core Audio tap). Needs real audio devices / target OS.
   Implements the orchestrator's `AudioSource` trait.
 - **`hearsay-inference`** — whisper.cpp + Silero VAD + offline diarization, tiered models. The big one;
-  **GATED on the model verification below** — do not build until the model tiers are chosen. Provides the
-  orchestrator's `Transcriber` (the sidecar binaries `ProcessTranscriber` spawns) + the offline refine.
+  provides the orchestrator's `Transcriber` (the sidecar binaries `ProcessTranscriber` spawns) + the offline
+  refine. **NOT gated — buildable now on the Mac** (2026-07-02, corrected): model accuracy (WER/DER) is
+  hardware-independent, so building the whisper.cpp/ONNX path on Metal and running it on the Mac *is* the
+  accuracy-verification harness. The per-OS accel backend (Metal/Vulkan/CUDA) is a swappable detail behind
+  shared code; only the **225U real-time throughput confirmation** genuinely needs Windows hardware, and that
+  is separately deferred. Start minimal (offline ASR: WAV -> text on Metal) and measure.
 - Deferred: the **Tauri shell** (`cargo tauri init`; hosts the React UI; bundler + signing + notarization +
   updater). Validate the `externalBin`-breaks-macOS-notarization bug early (the app is sidecar-based).
 
-**OPEN VERIFICATION GATE (the user runs this, in parallel):** model size + accuracy on the Windows floor.
-The user does **not** have a 225U; they verify **accuracy on their AMD 9700X desktop** (WER/DER/memory are
-hardware-independent — only real-time iGPU perf needs the target, deferred to a borrowed 225U or **Intel
-Tiber AI Cloud**'s free Core Ultra access). Quick non-technical check: **Buzz** (whisper.cpp + Vulkan) on
-the 225U — time a Small + Large model on a 5-min clip. This resolves the one open fork: **unify on ONE
-whisper.cpp/ONNX model family both platforms, vs keep FluidAudio/ANE as a macOS high-accuracy tier.** Bias
-model choice to the lighter end (zipformer-live + turbo/distil-large-refine) so the deferred iGPU perf
-check is a confirmation, not a redo.
+**MODEL VERIFICATION (corrected 2026-07-02 — NOT a build gate; it is Mac-doable work).** The earlier
+framing wrongly treated a *Windows-floor* determination as a hard gate on building `hearsay-inference`. It
+is not: **model accuracy (WER/DER) + memory are hardware-independent and verifiable on the Mac now**, and
+building the inference path (whisper.cpp on Metal + ONNX) is exactly how you run that verification — you
+can't choose model tiers without running the models. Split the two concerns:
+- **Accuracy / model choice (do it on the Mac, now):** build the whisper.cpp/ONNX path, transcribe known
+  audio on Metal, score WER (ASR) + DER (diarization), pick the tiers. This also resolves the one design
+  fork — **unify on ONE whisper.cpp/ONNX family both platforms, vs keep FluidAudio/ANE as a macOS
+  high-accuracy tier** — from real numbers. Bias to the lighter end (zipformer-live + turbo/distil-large
+  refine).
+- **225U real-time throughput (genuinely deferred):** whether the chosen models hold real-time on the
+  Windows floor's iGPU. Needs the target (a borrowed 225U or **Intel Tiber AI Cloud**'s free Core Ultra),
+  or the quick **Buzz** (whisper.cpp + Vulkan) timing check. A confirmation of a Mac-made choice, not a
+  blocker for it.
 
 **Resume the Rust work:** `. "$HOME/.cargo/env"` first (the Bash-tool shell does not auto-source it);
 `make rust-test` / `rust-lint` / `rust-fmt`; per-crate `cargo test --manifest-path rust/crates/<crate>/Cargo.toml`.
 Pin new deps via `cargo add` (verified-latest, never guess). **`hearsay-orchestrator` is done + committed,
 and the `core -> orchestrator` dependency cycle is already broken** (the `LiveEngine` trait now lives in the
-neutral `hearsay-engine` crate). So the two remaining crates are the only substantial work, and both need
-real hardware / the model decision: `hearsay-capture` (implements the orchestrator's `AudioSource`; needs a
-target OS + audio device) and `hearsay-inference` (provides the `Transcriber` sidecar binaries + the offline
-refine; **gated on the model verification**). Once either exists, a real `Backend` can be assembled and the
-one-line swap in `hearsay-core`'s `main.rs` (`DisabledEngine` -> `Orchestrator::new(pool, output_dir,
-backend)`) wires it in — there is no structural blocker left. Full context: [[hearsay-windows-requirement]].
+neutral `hearsay-engine` crate). Two crates remain: **`hearsay-inference` is the next to build — on the Mac,
+now** (whisper.cpp on Metal + ONNX; NOT gated — see "MODEL VERIFICATION" above; start with offline ASR
+WAV->text, then diarization + WER/DER scoring, then the streaming `Transcriber`); `hearsay-capture` still
+needs a target OS + audio device. Once inference exists, a real `Backend` can be assembled and the one-line
+swap in `hearsay-core`'s `main.rs` (`DisabledEngine` -> `Orchestrator::new(pool, output_dir, backend)`)
+wires it in — no structural blocker left. Full context: [[hearsay-windows-requirement]].
 
 **Prior on-main focus (now paused behind this):** the three-item focus below — items 1+2 (dead-code, WAV
 consolidation) merged; **item 3 (post-meeting LLM notes) NOT started** — is paused while the cross-platform
