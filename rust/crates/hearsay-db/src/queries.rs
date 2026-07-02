@@ -1,7 +1,10 @@
 //! Typed queries over the schema. Runtime-checked (`sqlx::query`/`query_as`); the compile-time
 //! `query!` macros (offline `.sqlx` cache) are a future upgrade. Grows as the services are ported.
 
+use std::collections::{HashMap, HashSet};
+
 use chrono::{DateTime, Utc};
+use hearsay_attribution::{assign_segment_speaker, SpeakerTurn};
 use sqlx::{FromRow, SqlitePool};
 use uuid::Uuid;
 
@@ -289,28 +292,7 @@ pub async fn rename_cluster(
     };
 
     let now = Utc::now();
-    let existing: Option<Uuid> =
-        sqlx::query_scalar("SELECT id FROM identities WHERE display_name = ?")
-            .bind(name)
-            .fetch_optional(&mut *tx)
-            .await?;
-    let identity_id = match existing {
-        Some(id) => id,
-        None => {
-            let id = Uuid::new_v4();
-            sqlx::query(
-                "INSERT INTO identities (id, display_name, email, created_at, updated_at) \
-                 VALUES (?, ?, NULL, ?, ?)",
-            )
-            .bind(id)
-            .bind(name)
-            .bind(now)
-            .bind(now)
-            .execute(&mut *tx)
-            .await?;
-            id
-        }
-    };
+    let identity_id = get_or_create_identity(&mut tx, name, now).await?;
 
     sqlx::query("UPDATE clusters SET identity_id = ?, locked = 1, updated_at = ? WHERE id = ?")
         .bind(identity_id)
@@ -335,6 +317,36 @@ pub async fn rename_cluster(
     }))
 }
 
+/// Get an identity id by display name, creating the identity if it does not exist. Runs on a
+/// transaction connection so callers stay atomic. Shared by [`rename_cluster`] and the refine's
+/// locked-label carry-forward.
+async fn get_or_create_identity(
+    conn: &mut sqlx::SqliteConnection,
+    name: &str,
+    now: DateTime<Utc>,
+) -> Result<Uuid, sqlx::Error> {
+    let existing: Option<Uuid> =
+        sqlx::query_scalar("SELECT id FROM identities WHERE display_name = ?")
+            .bind(name)
+            .fetch_optional(&mut *conn)
+            .await?;
+    if let Some(id) = existing {
+        return Ok(id);
+    }
+    let id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO identities (id, display_name, email, created_at, updated_at) \
+         VALUES (?, ?, NULL, ?, ?)",
+    )
+    .bind(id)
+    .bind(name)
+    .bind(now)
+    .bind(now)
+    .execute(&mut *conn)
+    .await?;
+    Ok(id)
+}
+
 /// A refined Them segment produced by the offline diarize + re-transcribe pass.
 #[derive(Debug, Clone)]
 pub struct RefinedThemSegment {
@@ -344,17 +356,105 @@ pub struct RefinedThemSegment {
     pub end_s: f64,
 }
 
+/// Carry each prior *locked* manual name forward onto the new turn ordinal its old segments most
+/// overlap, so a re-diarize never drops a manual binding (one name <-> one ordinal). Port of
+/// `refine.py::_carry_forward_names`. Reads on `conn` (the refine transaction) before the old
+/// clusters are dropped; returns `new ordinal -> display_name`.
+async fn carry_forward_locked_names(
+    conn: &mut sqlx::SqliteConnection,
+    meeting_id: Uuid,
+    refined: &[RefinedThemSegment],
+) -> Result<HashMap<i64, String>, sqlx::Error> {
+    // Prior locked bindings: old cluster id -> its manual name.
+    let prior: Vec<(Uuid, String)> = sqlx::query_as(
+        "SELECT c.id, i.display_name FROM clusters c \
+         JOIN identities i ON i.id = c.identity_id \
+         WHERE c.meeting_id = ? AND c.locked = 1",
+    )
+    .bind(meeting_id)
+    .fetch_all(&mut *conn)
+    .await?;
+    if prior.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let prior_name: HashMap<Uuid, String> = prior.into_iter().collect();
+
+    // Old Them segments that were bound to a cluster (their time spans drive the vote).
+    let old: Vec<(Uuid, f64, f64)> = sqlx::query_as(
+        "SELECT cluster_id, start_s, end_s FROM segments \
+         WHERE meeting_id = ? AND stream = ? AND cluster_id IS NOT NULL",
+    )
+    .bind(meeting_id)
+    .bind(Stream::Them)
+    .fetch_all(&mut *conn)
+    .await?;
+
+    // The refine's turns, keyed by ordinal-as-label, so `assign_segment_speaker` maps an old
+    // segment's span onto the new ordinal it most overlaps (the Them channel is timeline-anchored,
+    // so both are in meeting time -> offset 0).
+    let turns: Vec<SpeakerTurn> = refined
+        .iter()
+        .map(|s| SpeakerTurn {
+            speaker: s.ordinal.to_string(),
+            start_s: s.start_s,
+            end_s: s.end_s,
+        })
+        .collect();
+
+    // Vote (new ordinal, prior name) for each old segment that carried a locked name.
+    let mut votes: HashMap<(i64, String), usize> = HashMap::new();
+    for (cluster_id, start_s, end_s) in old {
+        let Some(name) = prior_name.get(&cluster_id) else {
+            continue;
+        };
+        let Some(label) = assign_segment_speaker(start_s, end_s, &turns, 0.0) else {
+            continue;
+        };
+        let Ok(ordinal) = label.parse::<i64>() else {
+            continue;
+        };
+        *votes.entry((ordinal, name.clone())).or_insert(0) += 1;
+    }
+
+    // Resolve to one name <-> one ordinal, highest vote first (deterministic tiebreak: more votes,
+    // then lower ordinal, then name).
+    let mut ranked: Vec<((i64, String), usize)> = votes.into_iter().collect();
+    ranked.sort_by(|a, b| {
+        b.1.cmp(&a.1)
+            .then(a.0 .0.cmp(&b.0 .0))
+            .then(a.0 .1.cmp(&b.0 .1))
+    });
+    let mut ordinal_names: HashMap<i64, String> = HashMap::new();
+    let mut used_names: HashSet<String> = HashSet::new();
+    for ((ordinal, name), _votes) in ranked {
+        if !ordinal_names.contains_key(&ordinal) && !used_names.contains(&name) {
+            used_names.insert(name.clone());
+            ordinal_names.insert(ordinal, name);
+        }
+    }
+    Ok(ordinal_names)
+}
+
 /// Replace a meeting's Them segments + clusters with the refine's output, in one transaction: drop
-/// the existing Them segments (Me is untouched) + all clusters, create one unlocked cluster per
-/// distinct ordinal, and insert the refined segments bound to them. Mirrors `refine.py`'s
-/// cluster+segment replacement (voiceprints + locked-label carry-forward are follow-ups).
+/// the existing Them segments (Me is untouched) + all clusters, create one cluster per distinct
+/// ordinal, and insert the refined segments bound to them. Prior *locked* manual labels are carried
+/// forward by time overlap ([`carry_forward_locked_names`]): the ordinal a locked name lands on is
+/// re-bound + re-locked, its segments keep the name, and everything else is a fresh unlocked
+/// "Speaker N". Mirrors `refine.py` + `SpeakerService.apply_turn_diarization` (voiceprints are a
+/// follow-up). A refine that produced nothing is a no-op — never wipe the transcript.
 pub async fn replace_them_segments(
     pool: &SqlitePool,
     meeting_id: Uuid,
     refined: &[RefinedThemSegment],
 ) -> Result<(), sqlx::Error> {
+    if refined.is_empty() {
+        return Ok(());
+    }
     let now = Utc::now();
     let mut tx = pool.begin().await?;
+
+    // Compute the carry-forward before the old clusters/segments are dropped.
+    let ordinal_names = carry_forward_locked_names(&mut tx, meeting_id, refined).await?;
 
     // Them segments reference clusters, so delete them before the clusters (Me segments are NULL).
     sqlx::query("DELETE FROM segments WHERE meeting_id = ? AND stream = ?")
@@ -367,20 +467,30 @@ pub async fn replace_them_segments(
         .execute(&mut *tx)
         .await?;
 
-    let mut cluster_ids: std::collections::HashMap<i64, Uuid> = std::collections::HashMap::new();
+    let mut cluster_ids: HashMap<i64, Uuid> = HashMap::new();
     for seg in refined {
         let cluster_id = match cluster_ids.get(&seg.ordinal) {
             Some(id) => *id,
             None => {
                 let id = Uuid::new_v4();
+                // A carried-forward locked name binds + locks the new cluster; else fresh + unlocked.
+                let (identity_id, locked) = match ordinal_names.get(&seg.ordinal) {
+                    Some(name) => (
+                        Some(get_or_create_identity(&mut tx, name, now).await?),
+                        true,
+                    ),
+                    None => (None, false),
+                };
                 sqlx::query(
                     "INSERT INTO clusters \
                      (id, meeting_id, ordinal, identity_id, locked, centroid, created_at, updated_at) \
-                     VALUES (?, ?, ?, NULL, 0, NULL, ?, ?)",
+                     VALUES (?, ?, ?, ?, ?, NULL, ?, ?)",
                 )
                 .bind(id)
                 .bind(meeting_id)
                 .bind(seg.ordinal)
+                .bind(identity_id)
+                .bind(locked)
                 .bind(now)
                 .bind(now)
                 .execute(&mut *tx)
@@ -389,7 +499,10 @@ pub async fn replace_them_segments(
                 id
             }
         };
-        let label = format!("Speaker {}", seg.ordinal);
+        let label = match ordinal_names.get(&seg.ordinal) {
+            Some(name) => name.clone(),
+            None => format!("Speaker {}", seg.ordinal),
+        };
         sqlx::query(
             "INSERT INTO segments \
              (id, meeting_id, cluster_id, stream, speaker_label, text, start_s, end_s, created_at, updated_at) \

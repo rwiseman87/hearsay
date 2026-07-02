@@ -292,3 +292,108 @@ async fn replace_them_segments_swaps_clusters_keeps_me() {
     assert_eq!(ord1.len(), 2);
     assert_eq!(ord1[0].cluster_id, ord1[1].cluster_id);
 }
+
+#[tokio::test]
+async fn replace_them_segments_carries_forward_locked_names() {
+    let pool = memory_pool().await;
+    let meeting = queries::create_meeting(&pool, "t", "f", chrono::Utc::now())
+        .await
+        .unwrap();
+    // An old Them cluster (ordinal 5) with a segment late in the meeting, manually named + locked.
+    let old = queries::create_cluster(&pool, meeting.id, 5, false, None)
+        .await
+        .unwrap();
+    queries::insert_segment(
+        &pool,
+        meeting.id,
+        Stream::Them,
+        "Speaker 5",
+        "old",
+        3.0,
+        4.0,
+        Some(old.id),
+    )
+    .await
+    .unwrap();
+    queries::rename_cluster(&pool, old.id, "Alice")
+        .await
+        .unwrap()
+        .expect("cluster exists");
+
+    // Refine into two speakers. Alice's old segment [3,4] overlaps ordinal 2's turn [3,5], not
+    // ordinal 1's [0,2] — so the name must follow the overlap, not the ordinal number.
+    let refined = vec![
+        queries::RefinedThemSegment {
+            ordinal: 1,
+            text: "hi".into(),
+            start_s: 0.0,
+            end_s: 2.0,
+        },
+        queries::RefinedThemSegment {
+            ordinal: 2,
+            text: "there".into(),
+            start_s: 3.0,
+            end_s: 5.0,
+        },
+    ];
+    queries::replace_them_segments(&pool, meeting.id, &refined)
+        .await
+        .unwrap();
+
+    // Alice carried onto ordinal 2, re-bound + re-locked; ordinal 1 is a fresh unlocked speaker.
+    let speakers = queries::list_speaker_rows(&pool, meeting.id).await.unwrap();
+    let ord2 = speakers.iter().find(|s| s.ordinal == 2).unwrap();
+    assert_eq!(ord2.display_name.as_deref(), Some("Alice"));
+    assert!(ord2.locked);
+    let ord1 = speakers.iter().find(|s| s.ordinal == 1).unwrap();
+    assert_eq!(ord1.display_name, None);
+    assert!(!ord1.locked);
+
+    // The carried name labels its segment; the identity is reused, not duplicated.
+    let segments = queries::list_segments(&pool, meeting.id).await.unwrap();
+    let alice_seg = segments
+        .iter()
+        .find(|s| s.speaker_label == "Alice")
+        .expect("a segment labelled Alice");
+    assert_eq!(alice_seg.text, "there");
+    assert_eq!(queries::count_identities(&pool).await.unwrap(), 1);
+}
+
+#[tokio::test]
+async fn replace_them_segments_empty_is_noop() {
+    let pool = memory_pool().await;
+    let meeting = queries::create_meeting(&pool, "t", "f", chrono::Utc::now())
+        .await
+        .unwrap();
+    let cluster = queries::create_cluster(&pool, meeting.id, 1, false, None)
+        .await
+        .unwrap();
+    queries::insert_segment(
+        &pool,
+        meeting.id,
+        Stream::Them,
+        "Speaker 1",
+        "keep me",
+        0.0,
+        1.0,
+        Some(cluster.id),
+    )
+    .await
+    .unwrap();
+
+    // A refine that produced nothing must leave the transcript intact (never wipe it).
+    queries::replace_them_segments(&pool, meeting.id, &[])
+        .await
+        .unwrap();
+
+    let segments = queries::list_segments(&pool, meeting.id).await.unwrap();
+    assert_eq!(segments.len(), 1);
+    assert_eq!(segments[0].text, "keep me");
+    assert_eq!(
+        queries::list_speaker_rows(&pool, meeting.id)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+}

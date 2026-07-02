@@ -681,6 +681,7 @@ name = "hearsay-db"
 version = "0.0.0"
 dependencies = [
  "chrono",
+ "hearsay-attribution",
  "sqlx",
  "tokio",
  "uuid",

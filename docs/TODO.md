@@ -30,8 +30,8 @@ FluidAudio/ANE on Mac** (fast, proven), the Rust whisper path is for **Windows**
 `hearsay-inference` = whisper offline ASR (Mac-verified) + the refine (diarize via Swift `hearsay-diarize`
 + re-transcribe). **Remaining:** the Windows path (cpal capture + a pure-Rust streaming `Transcriber` +
 diarizer, using the whisper harness) — the real cross-platform payoff, needs Windows hardware; plus small
-Mac follow-ups (**auto-refine-at-stop DONE 2026-07-02** via a `Refiner` trait seam, not yet on-device-validated;
-still open: cross-meeting voiceprints, carry-forward of locked labels). Blow-by-blow in the progress log below.
+Mac follow-ups (**auto-refine-at-stop + carry-forward of locked manual labels DONE 2026-07-02**, neither yet
+on-device-validated; the last open one is cross-meeting voiceprints). Blow-by-blow in the progress log below.
 
 **DONE + tested — 71 Rust tests (+ opt-in `--ignored`: jfk ASR, synthetic capture, real-recording refine),
 `cargo test` + `clippy -D warnings` + `rustfmt` green, gated by `make ci`:**
@@ -151,9 +151,11 @@ neither blocking the other:** (1) **the Windows path** (the real cross-platform 
 hardware): `hearsay-capture` cpal (WASAPI loopback Them + mic Me) + a pure-Rust streaming `Transcriber`
 (Silero VAD + streaming ASR + Segmenter) + a pure-Rust offline diarizer (ONNX via `ort`), so non-Mac needs no
 Swift; (2) **small Mac follow-ups:** ~~auto-refine-at-stop~~ **DONE 2026-07-02** (a `Refiner` trait seam;
-`stop_meeting` best-effort refines before writing the transcript — on-device validation still pending), then
-cross-meeting voiceprints (the diarizer returns embeddings; `hearsay-attribution` has the cosine matcher
-ready), carry-forward of locked manual labels. Full context: [[hearsay-windows-requirement]].
+`stop_meeting` best-effort refines before writing the transcript) + ~~carry-forward of locked manual labels~~
+**DONE 2026-07-02** (in `replace_them_segments`, so both refine paths keep it — on-device validation of both
+still pending), leaving **cross-meeting voiceprints** (the diarizer returns embeddings; `hearsay-attribution`
+has the cosine matcher ready — needs `hearsay-diarize` to emit embeddings). Full context:
+[[hearsay-windows-requirement]].
 
 **Prior on-main focus (now paused behind this):** the three-item focus below — items 1+2 (dead-code, WAV
 consolidation) merged; **item 3 (post-meeting LLM notes) NOT started** — is paused while the cross-platform
@@ -475,6 +477,25 @@ uv run hearsay live --seconds 60     # real pipeline -> live transcripts (on-dev
 
 ## Progress log
 
+- **2026-07-02 (cross-platform Rust — carry-forward of locked manual labels).** A re-diarize (manual
+  `/rediarize` or the new auto-refine-at-stop) previously dropped every cluster and rebuilt fresh unlocked
+  `Speaker N` clusters, so a manually renamed + locked speaker was **wiped** — a data-loss bug the auto-refine
+  made worse (now every stop). Fixed by porting Python `refine.py::_carry_forward_names` +
+  `SpeakerService.apply_turn_diarization`'s name-application into **`hearsay_db::replace_them_segments`**
+  (the single chokepoint both refine paths call, so both get it atomically): before dropping the old clusters,
+  read the prior *locked* bindings (cluster -> identity name) + the old Them segments, then **vote each locked
+  name onto the new turn ordinal its old segments most overlap** (reusing `hearsay_attribution::
+  assign_segment_speaker` — hence a new hearsay-db -> hearsay-attribution dep, pure/zero-dep), one name <-> one
+  ordinal by highest vote. On rebuild, a carried ordinal is re-bound + **re-locked** to its identity and its
+  segments keep the name; everything else stays a fresh unlocked `Speaker N`. So the name follows the speaker
+  by **audio overlap**, not by ordinal number (a re-diarize can reorder speakers). Also added an **empty-refine
+  guard**: `replace_them_segments(&[])` is now a no-op (never wipe the transcript when the diarizer/ASR yields
+  nothing — matches Python's "leaving transcript as-is"; important now that refine runs automatically at stop).
+  Extracted a shared `get_or_create_identity` helper (rename + carry-forward both use it; identities are reused,
+  not duplicated). +2 hearsay-db tests (carry-forward follows overlap onto a *different* ordinal + reuses the
+  identity; empty is a no-op). **73 -> 75 Rust tests; clippy -D warnings + rustfmt --check green.** Not yet
+  validated on-device. Voiceprints (the diarizer emitting embeddings + cross-meeting recognition) is the last
+  open Mac follow-up.
 - **2026-07-02 (cross-platform Rust — auto-refine-at-stop).** Wired the offline refine to run automatically
   when a meeting stops (Python `SessionManager._maybe_auto_refine`), so the Rust core now matches the Python
   behavior the frontend already expects (`useStopMeeting` uses the 600s `REFINE_TIMEOUT_MS` precisely because

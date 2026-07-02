@@ -3,9 +3,10 @@
 //! re-transcribe each speaker turn with whisper → accurate `Speaker N` segments. Port of the
 //! diarize + re-transcribe core of `src/hearsay/transcript/refine.py`.
 //!
-//! Deferred follow-ups (as in the Python, tracked in `docs/TODO.md`): storing each speaker's
-//! voiceprint (the diarizer also returns embeddings) for cross-meeting recognition, and carrying
-//! forward locked manual labels so a re-diarize never drops a rename.
+//! Carry-forward of locked manual labels (so a re-diarize never drops a rename) lives in
+//! `hearsay_db::replace_them_segments`, which both this refine's callers persist through. Deferred
+//! follow-up (as in the Python, tracked in `docs/TODO.md`): storing each speaker's voiceprint (the
+//! diarizer also returns embeddings) for cross-meeting recognition.
 
 use std::collections::HashMap;
 use std::path::Path;
