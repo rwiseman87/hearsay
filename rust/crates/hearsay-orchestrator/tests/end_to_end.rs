@@ -74,11 +74,21 @@ async fn wav_through_process_sidecars_persists_segments() {
     let stopped = orch.stop_meeting(meeting.id).await.unwrap().unwrap();
     assert!(stopped.ended_at.is_some());
 
+    let folder = tmp.path().join(&meeting.folder);
+
     // The recorder wrote a stereo audio.wav (re-encoding the input through the pipeline).
-    let audio = tmp.path().join(&meeting.folder).join("audio.wav");
-    let reader = hound::WavReader::open(&audio).expect("audio.wav written");
+    let reader = hound::WavReader::open(folder.join("audio.wav")).expect("audio.wav written");
     assert_eq!(reader.spec().channels, 2);
     assert_eq!(reader.spec().sample_rate, 16_000);
+
+    // transcript.md renders the finalized turns; meeting.json describes the folder.
+    let transcript = std::fs::read_to_string(folder.join("transcript.md")).unwrap();
+    assert!(transcript.starts_with("# e2e\n"));
+    assert!(transcript.contains("### "));
+    assert!(transcript.contains("Speaker 1"));
+    assert!(transcript.contains("chunk 0"));
+    let meta = std::fs::read_to_string(folder.join("meeting.json")).unwrap();
+    assert!(meta.contains("\"status\": \"finalized\""));
 
     let segments = queries::list_segments(&pool, meeting.id).await.unwrap();
     assert!(

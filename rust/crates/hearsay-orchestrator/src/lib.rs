@@ -23,6 +23,7 @@
 //! database (the API's source of truth) today. See `docs/architecture-cross-platform.md`.
 
 mod error;
+mod markdown;
 mod orchestrator;
 mod pipeline;
 mod recorder;

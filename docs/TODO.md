@@ -20,7 +20,7 @@ OSes** (it is the revived pre-ANE stack).
 **Branch `feat/cross-platform-rust-tauri` (NOT merged to main).** Target design:
 `docs/architecture-cross-platform.md`. Crate map: `rust/README.md`.
 
-**DONE + tested — 67 Rust tests, `cargo test` + `clippy -D warnings` + `rustfmt` green, gated by `make ci`:**
+**DONE + tested — 68 Rust tests, `cargo test` + `clippy -D warnings` + `rustfmt` green, gated by `make ci`:**
 - Rust workspace `rust/` (8 crates) + `make rust-{build,test,lint,fmt}` folded into `make ci`.
 - **`hearsay-ipc`** — media-frame codec (validated byte-for-byte against `shared/fixtures/frames.jsonl`,
   the same golden vectors Python/Swift check) + NDJSON control channel (Command/Reply/Event, sorted-key wire).
@@ -54,10 +54,10 @@ OSes** (it is the revived pre-ANE stack).
   with scripted fakes over in-memory SQLite (9 tests: full route/persist/broadcast/offset, busy guard, stop
   unknown, slugify/folder-name, feed framing + segment parse). Real `tokio::process` `ProcessTranscriber`
   (faithful to `live_base.py` stdio: `<u32 len><f32 pcm>` in, NDJSON segments out) is included for when
-  `hearsay-inference` ships the sidecar binaries. **Deferred (documented TODOs):** the `transcript.md` sink,
-  and the offline refine at stop (gated on `hearsay-inference`; finals persist to the DB — the API's source
-  of truth — today). The stereo `audio.wav` recorder is now DONE (see the 2026-07-02 hardening entry). Also
-  extended the
+  `hearsay-inference` ships the sidecar binaries. **Deferred (documented TODO):** only the offline refine at
+  stop (gated on `hearsay-inference`; finals persist to the DB — the API's source of truth — today). The
+  stereo `audio.wav` recorder + the `transcript.md`/`meeting.json` output are now DONE (2026-07-02 entries).
+  Also extended the
   `hearsay-core` seam: `LiveError::Internal` / `ApiError::Internal` (500) so a real engine can surface DB
   errors, and `hearsay-db insert_segment` gained a `cluster_id` param (Them finals bind a cluster). Deps:
   tokio (process/io-util/sync/rt/time), async-trait, serde/serde_json, sqlx, uuid, chrono, tracing
@@ -424,6 +424,18 @@ uv run hearsay live --seconds 60     # real pipeline -> live transcripts (on-dev
 
 ## Progress log
 
+- **2026-07-02 (cross-platform Rust — `transcript.md` + `meeting.json` output).** Ported the
+  `LocalMarkdownSink` render (`src/hearsay/export/local_markdown.py`) to a `markdown` module: at stop the
+  orchestrator writes the meeting folder's `transcript.md` (`# {title}`, then a `### HH:MM:SS — Speaker`
+  header at each speaker change followed by the turn text) + a `meeting.json` (id/title/folder/status/
+  started_at/ended_at), both atomic (temp + rename). Rendered from the finalized DB segments (already ordered
+  by `start_s`), best-effort (a write failure never fails the stop). **Finalize-only** for now — the Python
+  sink's mid-meeting live-append (crash-safety) is deferred (the live transcript is on the WS + in the DB).
+  This un-defers the transcript sink (it only needs the finals in the DB). Tests: +1 unit (`hhmmss`); the
+  capstone now asserts `transcript.md` (header + `### ` turns + `Speaker 1` + text) and `meeting.json`
+  (`"status": "finalized"`). **67 -> 68 Rust tests; clippy + rustfmt green.** With this + the recorder, the
+  orchestrator's whole output-folder story (audio.wav + transcript.md + meeting.json) is complete; only the
+  inference-gated offline refine remains deferred.
 - **2026-07-02 (cross-platform Rust — `audio.wav` recorder in the orchestrator pipeline).** Ported
   `MeetingAudioRecorder` (`src/hearsay/transcript/recorder.py`) to Rust: one timeline-accurate stereo WAV per
   meeting (Me=L / Them=R), each stream placed by meeting time (sample N = t N/16000), written contiguously

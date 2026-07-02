@@ -86,6 +86,20 @@ impl Orchestrator {
         });
         Ok(meeting)
     }
+
+    /// Write the meeting's `transcript.md` + `meeting.json` from its finalized segments. Best-effort:
+    /// a read/write failure is logged, never surfaced (the stop already succeeded).
+    async fn write_transcript(&self, meeting: &Meeting) {
+        match queries::list_segments(&self.pool, meeting.id).await {
+            Ok(segments) => {
+                let dir = self.output_dir.join(&meeting.folder);
+                if let Err(err) = crate::markdown::write_meeting_files(&dir, meeting, &segments) {
+                    tracing::error!(error = %err, "failed to write meeting transcript files");
+                }
+            }
+            Err(err) => tracing::error!(error = %err, "failed to read segments for transcript"),
+        }
+    }
 }
 
 #[async_trait]
@@ -129,6 +143,9 @@ impl LiveEngine for Orchestrator {
         let finalized = queries::get_meeting(&self.pool, meeting_id)
             .await
             .map_err(OrchestratorError::from)?;
+        if let Some(meeting) = &finalized {
+            self.write_transcript(meeting).await;
+        }
         Ok(finalized)
     }
 
