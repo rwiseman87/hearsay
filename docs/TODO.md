@@ -75,9 +75,18 @@ OSes** (it is the revived pre-ANE stack).
     codec-unit-tested), `WavFileSource` stereo framing, and a **capstone** running a WAV through two real
     `ProcessTranscriber` sidecars into SQLite (only the device + model are stand-ins). 65 tests green.
 
-**REMAINING crate stubs (`rust/crates/`):**
-- **`hearsay-capture`** — cpal per-OS (WASAPI loopback / Core Audio tap). Needs real audio devices / target OS.
-  Implements the orchestrator's `AudioSource` trait.
+**CRATES 7-8 (in progress):**
+- **`hearsay-capture` (macOS) — DONE (2026-07-02).** `SwiftHelperSource` implements the orchestrator's
+  `AudioSource` by driving the proven Swift `hearsay-helper` over the `hearsay-ipc` sockets (bind control +
+  media, spawn `serve --socket-dir [--synthetic]`, handshake hello + `start_capture`, pump 28-byte media
+  frames -> `CaptureChunk`s). Verified end-to-end against the real helper `--synthetic` (Me + Them frames).
+  **The Rust core is now wired to run live on the Mac** (`hearsay-core` `main.rs` = `Orchestrator` +
+  `MacBackend`: `SwiftHelperSource` + `ProcessTranscriber`s spawning the built `hearsay-live`/`hearsay-me`
+  FluidAudio sidecars — identical stdio protocol, so live streaming + diarization reuse the Swift stack).
+  Smoke-tested: `hearsay-core --synthetic` -> start meeting (helper spawns) -> stop -> finalized. `web/dist`
+  built + FluidAudio models cached, so it's frontend-ready. Windows cpal capture is the remaining half of the
+  trait. **NEXT (user, on-device):** run `./rust/target/debug/hearsay-core` from repo root, open the printed
+  `?token=` URL, grant mic/screen perms, verify live captions + diarization in the browser.
 - **`hearsay-inference`** — whisper.cpp + Silero VAD + offline diarization, tiered models. The big one;
   provides the orchestrator's `Transcriber` (the sidecar binaries `ProcessTranscriber` spawns) + the offline
   refine. **Started (2026-07-02) — the offline ASR slice is DONE + verified on the Mac.** `whisper-rs` 0.16
@@ -444,6 +453,24 @@ uv run hearsay live --seconds 60     # real pipeline -> live transcripts (on-dev
 
 ## Progress log
 
+- **2026-07-02 (cross-platform Rust — the macOS live path runs end-to-end through the Rust core).** User
+  chose "full streaming + diarization, testable in the frontend." Key insight: the Rust `ProcessTranscriber`
+  already speaks the exact stdio protocol (`<u32 len><f32 pcm>` in, `{kind,text,start_s,end_s,speaker}` NDJSON
+  out) of the existing Swift FluidAudio sidecars (`hearsay-live`/`hearsay-me`, already built), so the fastest
+  path is to **reuse the proven Swift capture + sidecars** on the Mac rather than rebuild them in Rust — the
+  "FluidAudio as macOS tier" fork side; the Rust whisper is the Windows path + refine. Built **`hearsay-capture`**:
+  `SwiftHelperSource` (an `AudioSource`) spawns `hearsay-helper`, binds control+media Unix sockets, handshakes
+  (hello + `start_capture`), and pumps media frames via the `hearsay-ipc` codec into `CaptureChunk`s (port of
+  supervisor/media_channel/control_channel.py). Verified against the real helper `--synthetic` (Me+Them
+  frames). Then **wired the binary**: `hearsay-core` `main.rs` runs the real `Orchestrator` + a `MacBackend`
+  (`SwiftHelperSource` + two `ProcessTranscriber`s -> `hearsay-live`/`hearsay-me`), `--synthetic` flag, new
+  `helper_path` setting. **Smoke-tested live:** `hearsay-core --synthetic` -> `POST /api/meetings` starts a
+  recording (helper spawns) -> `POST /stop` finalizes. `web/dist` is built + FluidAudio models cached, so
+  it's ready to test in the browser (grant mic/screen perms, real capture). **70 gate tests + 3 opt-in
+  (`--ignored`: jfk transcription, synthetic capture) green; clippy + rustfmt clean.** This is the milestone
+  the user asked for: streaming + diarization, testable in the frontend, all through the Rust core. NEXT:
+  on-device browser validation (user); then the Windows path (cpal capture + pure-Rust streaming
+  `Transcriber` + diarizer) + the offline refine.
 - **2026-07-02 (cross-platform Rust — `hearsay-inference` offline ASR, on the Mac).** After the user
   corrected the "gated on a Windows determination" framing (accuracy is hardware-independent + Mac-verifiable;
   only 225U real-time perf is deferred — tracker + `[[hearsay-windows-requirement]]` fixed), started

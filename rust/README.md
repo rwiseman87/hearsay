@@ -3,17 +3,35 @@
 Cross-platform (macOS + Windows) foundation for Hearsay. Target architecture:
 [`../docs/architecture-cross-platform.md`](../docs/architecture-cross-platform.md).
 
-**Status (2026-07-02): 6 crates done; `hearsay-inference` started (offline ASR); `hearsay-capture` the last stub.**
+**Status (2026-07-02): the macOS live path runs end-to-end through the Rust core.**
 
 - **Implemented + tested** (`cargo test` + `clippy -D warnings` + `rustfmt`, gated by `make ci`):
-  `hearsay-ipc`, `hearsay-attribution`, `hearsay-db`, `hearsay-engine`, `hearsay-core`,
-  `hearsay-orchestrator`.
-- **`hearsay-inference` — in progress:** the offline ASR slice landed (whisper.cpp via `whisper-rs`;
-  loads a GGML model, transcribes 16 kHz mono audio → timestamped segments; CPU by default, GPU via
-  the `metal`/`vulkan`/`cuda` features). Verified on the Mac (`jfk.wav`: verbatim, ~50x realtime CPU
-  base / ~25x realtime Metal large-v3-turbo). Diarization (Silero VAD + speaker-embedding ONNX) +
-  the streaming `Transcriber` sidecar are next.
-- **Stub:** `hearsay-capture`.
+  `hearsay-ipc`, `hearsay-attribution`, `hearsay-db`, `hearsay-engine`, `hearsay-orchestrator`,
+  `hearsay-capture`, `hearsay-core` (binary wires the real `Orchestrator` + a macOS `Backend`).
+- **`hearsay-capture` (macOS):** `SwiftHelperSource` reuses the proven Swift `hearsay-helper` (Core
+  Audio tap + mic) over the `hearsay-ipc` sockets → `CaptureChunk`s. Verified against the real helper
+  in `--synthetic` mode. The Rust `ProcessTranscriber` spawns the built `hearsay-live` / `hearsay-me`
+  FluidAudio sidecars directly (identical stdio protocol), so **live streaming + diarization on the
+  Mac reuse the working Swift stack** (the "FluidAudio as macOS tier" fork). Windows cpal capture is
+  the other half, later.
+- **`hearsay-inference` — offline ASR done:** whisper.cpp via `whisper-rs` (GGML → timestamped
+  segments; CPU + `metal`/`vulkan`/`cuda` features). Verified on the Mac (`jfk.wav` verbatim, ~50x RT
+  CPU / ~25x RT Metal). This is the accuracy harness + the (Windows/refine) ASR; a pure-Rust streaming
+  `Transcriber` + diarizer are the Windows-path follow-ups.
+
+## Run it (macOS)
+
+```sh
+make swift-build                     # build hearsay-helper + the FluidAudio sidecars (once)
+cd web && npm ci && npm run build && cd ..   # build web/dist (once)
+cargo build --manifest-path rust/Cargo.toml -p hearsay-core
+# from the repo root (so helper_path + web_dir resolve):
+HEARSAY_SERVER_PORT=8799 ./rust/target/debug/hearsay-core            # real capture (grants mic/screen perms)
+HEARSAY_SERVER_PORT=8799 ./rust/target/debug/hearsay-core --synthetic  # generated audio, no permissions
+```
+
+Open the printed `http://127.0.0.1:8799/?token=...` URL, start a meeting, and Me/Them captions stream
+in live (diarization + refine at stop). `HEARSAY_HELPER_PATH` overrides the helper location.
 
 `hearsay-core` runs the full self-contained API surface — meetings/segments/speakers/identities
 queries, pure-DB writes (rename, delete), audio file serving with Range, static UI + token
