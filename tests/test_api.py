@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import create_engine as create_sync_engine
 from starlette.websockets import WebSocketDisconnect
 
+from hearsay import __version__
 from hearsay.api import create_app
 from hearsay.config.settings import Settings
 from hearsay.db import Database
@@ -185,6 +186,14 @@ def test_settings_read_and_update(client: TestClient) -> None:
 
     # The override persists and is reflected on the next read.
     assert client.get("/api/settings", headers=AUTH).json()["recording"]["record"] is False
+
+
+def test_settings_includes_about(client: TestClient) -> None:
+    about = client.get("/api/settings", headers=AUTH).json()["about"]
+    assert about["app_version"] == __version__
+    assert about["environment"] == "development"  # Settings default in the test fixture
+    assert about["protocol_version"] == 1
+    assert about["database_path"].endswith(".db")
 
 
 def test_settings_requires_token(client: TestClient) -> None:

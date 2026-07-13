@@ -1,6 +1,35 @@
 {
   "components": {
     "schemas": {
+      "AboutInfo": {
+        "description": "Read-only build/runtime facts for the About panel (no persistence).\n\n``protocol_version`` is the core's IPC frame-protocol constant; the helper reports\nits own copy on connect (surfaced by the Permissions panel), and a mismatch signals\na helper/core version drift.",
+        "properties": {
+          "app_version": {
+            "title": "App Version",
+            "type": "string"
+          },
+          "database_path": {
+            "title": "Database Path",
+            "type": "string"
+          },
+          "environment": {
+            "title": "Environment",
+            "type": "string"
+          },
+          "protocol_version": {
+            "title": "Protocol Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "app_version",
+          "environment",
+          "protocol_version",
+          "database_path"
+        ],
+        "title": "AboutInfo",
+        "type": "object"
+      },
       "HTTPValidationError": {
         "properties": {
           "detail": {
@@ -342,8 +371,11 @@
         "type": "object"
       },
       "SettingsRead": {
-        "description": "The full editable settings, one field per panel/section (extended as panels land).\n\n``storage_info`` is read-only context for the Storage panel (not an editable section).",
+        "description": "The full editable settings, one field per panel/section (extended as panels land).\n\n``storage_info`` and ``about`` are read-only context (not editable sections).",
         "properties": {
+          "about": {
+            "$ref": "#/components/schemas/AboutInfo"
+          },
           "recording": {
             "$ref": "#/components/schemas/RecordingSettings"
           },
@@ -361,7 +393,8 @@
           "recording",
           "speakers",
           "storage",
-          "storage_info"
+          "storage_info",
+          "about"
         ],
         "title": "SettingsRead",
         "type": "object"

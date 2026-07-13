@@ -17,6 +17,7 @@ const PANELS = [
   { id: "recording", label: "Recording & Privacy" },
   { id: "speakers", label: "Speakers" },
   { id: "storage", label: "Storage" },
+  { id: "about", label: "About" },
 ] as const;
 type PanelId = (typeof PANELS)[number]["id"];
 
@@ -208,6 +209,39 @@ function StoragePanel() {
   );
 }
 
+function AboutPanel() {
+  const settings = useSettings();
+  const about = settings.data?.about;
+
+  if (settings.isLoading || !about) return <p className="muted">Loading…</p>;
+
+  return (
+    <div className="settings__panel">
+      <h3 className="settings__panel-title">About</h3>
+      <dl className="settings__facts">
+        <div>
+          <dt>Version</dt>
+          <dd>{about.app_version}</dd>
+        </div>
+        <div>
+          <dt>Environment</dt>
+          <dd>{about.environment}</dd>
+        </div>
+        <div>
+          <dt>IPC protocol</dt>
+          <dd>v{about.protocol_version}</dd>
+        </div>
+        <div>
+          <dt>Database</dt>
+          <dd>
+            <code>{about.database_path}</code>
+          </dd>
+        </div>
+      </dl>
+    </div>
+  );
+}
+
 export default function SettingsPage({ onClose }: Props) {
   const [active, setActive] = useState<PanelId>("recording");
 
@@ -250,6 +284,7 @@ export default function SettingsPage({ onClose }: Props) {
             {active === "recording" ? <RecordingPanel /> : null}
             {active === "speakers" ? <SpeakersPanel /> : null}
             {active === "storage" ? <StoragePanel /> : null}
+            {active === "about" ? <AboutPanel /> : null}
           </div>
         </div>
       </div>
