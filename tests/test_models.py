@@ -9,7 +9,7 @@ from hearsay.models import Meeting, Segment
 
 
 async def test_meeting_roundtrip_sets_uuid_and_timestamps(session: AsyncSession) -> None:
-    meeting = Meeting(title="Standup", folder="2026-06-26_0900_standup")
+    meeting = Meeting(title="Standup", folder="2026-06-26_0900_standup", storage_root="/out")
     session.add(meeting)
     await session.commit()
 
@@ -21,7 +21,7 @@ async def test_meeting_roundtrip_sets_uuid_and_timestamps(session: AsyncSession)
 
 
 async def test_segments_ordered_by_start(session: AsyncSession) -> None:
-    meeting = Meeting(title="Sync", folder="2026-06-26_1000_sync")
+    meeting = Meeting(title="Sync", folder="2026-06-26_1000_sync", storage_root="/out")
     meeting.segments = [
         Segment(stream=Stream.THEM, speaker_label="Them", text="second", start_s=2.0, end_s=3.0),
         Segment(stream=Stream.ME, speaker_label="Me", text="first", start_s=0.0, end_s=1.0),
@@ -42,7 +42,7 @@ async def test_segments_ordered_by_start(session: AsyncSession) -> None:
 
 
 async def test_enum_columns_persist_values_not_names(session: AsyncSession) -> None:
-    meeting = Meeting(title="X", folder="f")
+    meeting = Meeting(title="X", folder="f", storage_root="/out")
     meeting.segments = [
         Segment(stream=Stream.THEM, speaker_label="Them", text="hi", start_s=0.0, end_s=1.0)
     ]
@@ -60,7 +60,7 @@ async def test_enum_columns_persist_values_not_names(session: AsyncSession) -> N
 
 
 async def test_delete_meeting_cascades_to_segments(session: AsyncSession) -> None:
-    meeting = Meeting(title="Y", folder="g")
+    meeting = Meeting(title="Y", folder="g", storage_root="/out")
     meeting.segments = [
         Segment(stream=Stream.ME, speaker_label="Me", text="a", start_s=0.0, end_s=1.0)
     ]

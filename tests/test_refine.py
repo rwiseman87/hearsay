@@ -111,7 +111,9 @@ async def test_rediarize_relabels_segments_and_transcript(tmp_path: Path) -> Non
 
     async with database.session() as session:
         meetings = MeetingService(session)
-        meeting = await meetings.create(title="T", folder="mtg", started_at=datetime.now(UTC))
+        meeting = await meetings.create(
+            title="T", folder="mtg", storage_root=str(tmp_path), started_at=datetime.now(UTC)
+        )
         # One Me segment (must stay untouched) + Them segments from the live (wrong) labels.
         await meetings.add_segment(
             meeting.id, stream=Stream.ME, speaker_label="Me", text="mine", start_s=0.0, end_s=2.0
@@ -163,7 +165,9 @@ async def test_rediarize_preserves_manual_rename(tmp_path: Path) -> None:
     async with database.session() as session:
         meetings = MeetingService(session)
         speakers = SpeakerService(session)
-        meeting = await meetings.create(title="T", folder="mtg", started_at=datetime.now(UTC))
+        meeting = await meetings.create(
+            title="T", folder="mtg", storage_root=str(tmp_path), started_at=datetime.now(UTC)
+        )
         seg_ids = []
         for start, end in [(0.0, 2.0), (2.0, 4.0), (4.0, 6.0)]:
             seg = await meetings.add_segment(
@@ -211,7 +215,7 @@ async def test_rediarize_recognizes_returning_speaker(tmp_path: Path) -> None:
     async with database.session() as session:
         speakers = SpeakerService(session)
         m1 = await MeetingService(session).create(
-            title="M1", folder="m1", started_at=datetime.now(UTC)
+            title="M1", folder="m1", storage_root=str(tmp_path), started_at=datetime.now(UTC)
         )
         cluster = await speakers.create_cluster(m1.id, ordinal=1)
         await speakers.bind_cluster(cluster.id, display_name="Alice")
@@ -221,7 +225,9 @@ async def test_rediarize_recognizes_returning_speaker(tmp_path: Path) -> None:
     # Meeting 2: a fresh recording whose first speaker's voiceprint matches Alice's.
     async with database.session() as session:
         meetings = MeetingService(session)
-        m2 = await meetings.create(title="M2", folder="m2", started_at=datetime.now(UTC))
+        m2 = await meetings.create(
+            title="M2", folder="m2", storage_root=str(tmp_path), started_at=datetime.now(UTC)
+        )
         for start, end in [(0.0, 4.0), (4.0, 6.0)]:
             await meetings.add_segment(
                 m2.id, stream=Stream.THEM, speaker_label="Them", text="x", start_s=start, end_s=end
@@ -268,7 +274,7 @@ async def test_rediarize_skips_when_no_them_segments(tmp_path: Path) -> None:
 
     async with database.session() as session:
         meeting = await MeetingService(session).create(
-            title="T", folder="mtg", started_at=datetime.now(UTC)
+            title="T", folder="mtg", storage_root=str(tmp_path), started_at=datetime.now(UTC)
         )
         await MeetingService(session).add_segment(
             meeting.id, stream=Stream.ME, speaker_label="Me", text="mine", start_s=0.0, end_s=2.0

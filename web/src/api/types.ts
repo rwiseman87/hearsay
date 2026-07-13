@@ -6,6 +6,7 @@ type Schemas = components["schemas"];
 
 export type MeetingRead = Schemas["MeetingRead"];
 export type MeetingCreate = Schemas["MeetingCreate"];
+export type MeetingRelocate = Schemas["MeetingRelocate"];
 export type SegmentRead = Schemas["SegmentRead"];
 export type Stream = Schemas["Stream"];
 export type PageMeeting = Schemas["Page_MeetingRead_"];

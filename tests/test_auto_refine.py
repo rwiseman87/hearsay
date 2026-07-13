@@ -56,7 +56,10 @@ async def _finalized_candidate(
 ) -> Meeting:
     async with database.session() as session:
         meeting = await MeetingService(session).create(
-            title="M", folder=folder, started_at=datetime.now(UTC)
+            title="M",
+            folder=folder,
+            storage_root=str(settings.output_dir),
+            started_at=datetime.now(UTC),
         )
     meeting_dir = settings.output_dir / folder
     meeting_dir.mkdir(parents=True, exist_ok=True)

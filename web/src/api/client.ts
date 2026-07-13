@@ -5,11 +5,15 @@ import { getToken } from "./token";
 
 export class ApiError extends Error {
   readonly status: number;
+  // The raw `detail` from the error envelope. Usually a string, but some endpoints return a
+  // structured object (e.g. relocation returns `{ message, missing }`) the UI renders richly.
+  readonly detail: unknown;
 
-  constructor(status: number, message: string) {
+  constructor(status: number, message: string, detail?: unknown) {
     super(message);
     this.name = "ApiError";
     this.status = status;
+    this.detail = detail;
   }
 }
 
@@ -55,7 +59,11 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
   const text = await response.text();
   const data: unknown = text ? JSON.parse(text) : undefined;
   if (!response.ok) {
-    throw new ApiError(response.status, describeError(data, response.statusText));
+    const detail =
+      data && typeof data === "object" && "detail" in data
+        ? (data as { detail: unknown }).detail
+        : undefined;
+    throw new ApiError(response.status, describeError(data, response.statusText), detail);
   }
   return data as T;
 }

@@ -15,7 +15,7 @@ from fastapi.responses import FileResponse
 
 from hearsay.api.context import AppContext
 from hearsay.api.security import bearer_token, token_matches
-from hearsay.services import MeetingService
+from hearsay.services import MeetingService, meeting_dir
 
 router = APIRouter(prefix="/meetings", tags=["audio"])
 
@@ -32,7 +32,7 @@ async def get_meeting_audio(meeting_id: UUID, request: Request) -> FileResponse:
         meeting = await MeetingService(session).get(meeting_id)
     if meeting is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="meeting not found")
-    audio_path = context.settings.output_dir / meeting.folder / "audio.wav"
+    audio_path = meeting_dir(meeting) / "audio.wav"
     if not audio_path.exists():
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="no audio recorded for this meeting"

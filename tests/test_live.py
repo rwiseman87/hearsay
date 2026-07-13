@@ -55,7 +55,7 @@ async def database(tmp_path: Path) -> AsyncIterator[Database]:
 async def test_handle_persists_labels_and_reuses_clusters(database: Database) -> None:
     async with database.session() as session:
         meeting = await MeetingService(session).create(
-            title="M", folder="m", started_at=datetime.now(UTC)
+            title="M", folder="m", storage_root="/out", started_at=datetime.now(UTC)
         )
     sink = _FakeSink()
     processor = LiveThemProcessor(
@@ -92,7 +92,7 @@ async def test_handle_persists_labels_and_reuses_clusters(database: Database) ->
 async def test_partials_broadcast_but_not_persisted(database: Database) -> None:
     async with database.session() as session:
         meeting = await MeetingService(session).create(
-            title="M", folder="m", started_at=datetime.now(UTC)
+            title="M", folder="m", storage_root="/out", started_at=datetime.now(UTC)
         )
     sink = _FakeSink()
     broadcaster = Broadcaster()

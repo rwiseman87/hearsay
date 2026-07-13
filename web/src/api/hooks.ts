@@ -93,6 +93,17 @@ export function useRenameSpeaker(meetingId: string) {
   });
 }
 
+// Re-point a meeting's storage to a directory its artifacts were moved to. The server validates
+// (does not move files); on success the stored root changes, so refresh the meetings tree.
+export function useRelocateMeeting(meetingId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (newRoot: string) =>
+      api.put<MeetingRead>(`/api/meetings/${meetingId}/storage`, { new_root: newRoot }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: queryKeys.meetings.all }),
+  });
+}
+
 // Post-meeting re-diarization. Slow, so it gets a long timeout; on success the transcript +
 // speaker labels are rewritten server-side, so refresh both trees.
 export function useRediarize(meetingId: string) {

@@ -101,6 +101,10 @@
           "status": {
             "$ref": "#/components/schemas/MeetingStatus"
           },
+          "storage_root": {
+            "title": "Storage Root",
+            "type": "string"
+          },
           "title": {
             "title": "Title",
             "type": "string"
@@ -115,6 +119,7 @@
           "id",
           "title",
           "folder",
+          "storage_root",
           "status",
           "started_at",
           "ended_at",
@@ -122,6 +127,22 @@
           "updated_at"
         ],
         "title": "MeetingRead",
+        "type": "object"
+      },
+      "MeetingRelocate": {
+        "description": "Re-point a meeting's storage to ``new_root`` (an absolute directory the artifacts moved\nto). The app validates the artifacts are there and updates the stored root; it does not move\nfiles.",
+        "properties": {
+          "new_root": {
+            "maxLength": 1024,
+            "minLength": 1,
+            "title": "New Root",
+            "type": "string"
+          }
+        },
+        "required": [
+          "new_root"
+        ],
+        "title": "MeetingRelocate",
         "type": "object"
       },
       "MeetingStatus": {
@@ -965,6 +986,60 @@
           }
         },
         "summary": "Stop Meeting",
+        "tags": [
+          "meetings"
+        ]
+      }
+    },
+    "/api/meetings/{meeting_id}/storage": {
+      "put": {
+        "description": "Re-point a meeting's storage to a directory its artifacts were moved to (validate, don't\nmove). 409 while it is recording; 422 if the target does not hold the artifacts.",
+        "operationId": "relocate_meeting_api_meetings__meeting_id__storage_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "meeting_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Meeting Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MeetingRelocate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MeetingRead"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Relocate Meeting",
         "tags": [
           "meetings"
         ]

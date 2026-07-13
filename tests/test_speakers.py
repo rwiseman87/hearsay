@@ -13,7 +13,7 @@ from hearsay.services import SpeakerService
 
 
 async def _meeting(session: AsyncSession) -> Meeting:
-    meeting = Meeting(title="Sync", folder="f")
+    meeting = Meeting(title="Sync", folder="f", storage_root="/out")
     session.add(meeting)
     await session.commit()
     return meeting

@@ -4,6 +4,7 @@ import wave
 from array import array
 from collections.abc import Iterator
 from pathlib import Path
+from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
@@ -130,6 +131,46 @@ def test_delete_meeting(client: TestClient, tmp_path: Path) -> None:
     assert client.delete(f"/api/meetings/{meeting_id}", headers=AUTH).status_code == 204
     assert client.get(f"/api/meetings/{meeting_id}", headers=AUTH).status_code == 404
     assert not folder.exists()
+
+
+def test_relocate_meeting(client: TestClient, tmp_path: Path) -> None:
+    created = _start(client)
+    meeting_id = str(created["id"])
+    client.post(f"/api/meetings/{meeting_id}/stop", headers=AUTH)
+
+    # The user moved the meeting folder to a new root and points the app at it.
+    dst_root = tmp_path / "archive"
+    dst = dst_root / str(created["folder"])
+    dst.mkdir(parents=True, exist_ok=True)
+    (dst / "transcript.md").write_text("# T\n", encoding="utf-8")
+
+    ok = client.put(
+        f"/api/meetings/{meeting_id}/storage", json={"new_root": str(dst_root)}, headers=AUTH
+    )
+    assert ok.status_code == 200, ok.text
+    assert ok.json()["storage_root"] == str(dst_root.resolve())
+
+    # A target that does not hold the artifacts is a 422 naming what is missing.
+    missing = client.put(
+        f"/api/meetings/{meeting_id}/storage",
+        json={"new_root": str(tmp_path / "nowhere")},
+        headers=AUTH,
+    )
+    assert missing.status_code == 422
+    assert "transcript.md" in missing.json()["detail"]["missing"]
+
+    # A non-absolute path is rejected before touching the filesystem.
+    relative = client.put(
+        f"/api/meetings/{meeting_id}/storage", json={"new_root": "relative/dir"}, headers=AUTH
+    )
+    assert relative.status_code == 422
+
+
+def test_relocate_missing_meeting_404(client: TestClient) -> None:
+    response = client.put(
+        f"/api/meetings/{uuid4()}/storage", json={"new_root": "/tmp/anywhere"}, headers=AUTH
+    )
+    assert response.status_code == 404
 
 
 def test_get_missing_meeting_404(client: TestClient) -> None:
