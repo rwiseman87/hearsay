@@ -155,19 +155,20 @@ class SessionManager:
             when = datetime.now(UTC)
             resolved_title = title or _default_title(when)
             folder_name = meeting_folder_name(resolved_title, when)
-            # Stamp the current output root onto the row so a later output-dir change never
-            # repoints this meeting away from where its artifacts get written.
-            storage_root = str(self._settings.output_dir.resolve())
             async with self._db.session() as session:
+                svc = SettingsService(session)
+                # Stamp the effective output root (UI-set overlay over the env default) onto the
+                # row so a later output-dir change never repoints this meeting's artifacts.
+                output_dir = await svc.effective_output_dir(self._settings)
+                storage_root = str(output_dir.resolve())
                 meeting = await MeetingService(session).create(
                     title=resolved_title,
                     folder=folder_name,
                     storage_root=storage_root,
                     started_at=when,
                 )
-                # Resolve the audio-retention switch from the editable overlay (UI-set) over the
-                # env default, so a Settings-page toggle takes effect on the next meeting.
-                record = await SettingsService(session).effective_audio_record(self._settings)
+                # The audio-retention switch, likewise resolved so a Settings toggle takes effect.
+                record = await svc.effective_audio_record(self._settings)
             broadcaster = Broadcaster()
             meta = MeetingMeta(
                 id=meeting.id,

@@ -254,6 +254,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/settings/storage": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Update Storage */
+        put: operations["update_storage_api_settings_storage_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -412,10 +429,14 @@ export interface components {
         /**
          * SettingsRead
          * @description The full editable settings, one field per panel/section (extended as panels land).
+         *
+         *     ``storage_info`` is read-only context for the Storage panel (not an editable section).
          */
         SettingsRead: {
             recording: components["schemas"]["RecordingSettings"];
             speakers: components["schemas"]["SpeakerSettings"];
+            storage: components["schemas"]["StorageSettings"];
+            storage_info: components["schemas"]["StorageInfo"];
         };
         /**
          * SpeakerRead
@@ -461,6 +482,30 @@ export interface components {
              * @default 0.6
              */
             recognition_threshold: number;
+        };
+        /**
+         * StorageInfo
+         * @description Read-only storage facts shown alongside the editable section.
+         */
+        StorageInfo: {
+            /** Database Path */
+            database_path: string;
+            /** Meeting Count */
+            meeting_count: number;
+            /** Output Dir */
+            output_dir: string;
+            /** Tracked Bytes */
+            tracked_bytes: number;
+        };
+        /**
+         * StorageSettings
+         * @description Storage location. ``output_dir`` is the default root new meetings are written under
+         *     (existing meetings keep their stamped location); relocate an individual meeting from its
+         *     own view.
+         */
+        StorageSettings: {
+            /** Output Dir */
+            output_dir: string;
         };
         /**
          * Stream
@@ -969,6 +1014,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["SpeakerSettings"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_storage_api_settings_storage_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["StorageSettings"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StorageSettings"];
                 };
             };
             /** @description Validation Error */

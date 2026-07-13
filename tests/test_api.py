@@ -215,6 +215,29 @@ def test_settings_speakers_threshold_out_of_range_422(client: TestClient) -> Non
     assert response.status_code == 422  # Field(ge=0, le=1) rejected at the boundary
 
 
+def test_settings_storage_read_and_update(client: TestClient, tmp_path: Path) -> None:
+    read = client.get("/api/settings", headers=AUTH).json()
+    assert read["storage"]["output_dir"] == str(tmp_path / "out")  # default from Settings
+    assert read["storage_info"]["meeting_count"] == 0
+    assert read["storage_info"]["database_path"].endswith(".db")
+
+    dest = tmp_path / "recordings2"
+    dest.mkdir()
+    updated = client.put("/api/settings/storage", json={"output_dir": str(dest)}, headers=AUTH)
+    assert updated.status_code == 200
+    assert updated.json()["output_dir"] == str(dest.resolve())
+    assert client.get("/api/settings", headers=AUTH).json()["storage"]["output_dir"] == str(
+        dest.resolve()
+    )
+
+
+def test_settings_storage_rejects_missing_dir_422(client: TestClient, tmp_path: Path) -> None:
+    response = client.put(
+        "/api/settings/storage", json={"output_dir": str(tmp_path / "nope")}, headers=AUTH
+    )
+    assert response.status_code == 422
+
+
 def test_get_missing_meeting_404(client: TestClient) -> None:
     missing = "00000000-0000-0000-0000-000000000000"
     assert client.get(f"/api/meetings/{missing}", headers=AUTH).status_code == 404

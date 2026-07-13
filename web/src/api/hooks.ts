@@ -13,6 +13,7 @@ import type {
   SettingsRead,
   SpeakerRead,
   SpeakerSettings,
+  StorageSettings,
 } from "./types";
 
 export function useMeetings(page = 1, pageSize = 50) {
@@ -153,6 +154,20 @@ export function useUpdateSpeakers() {
     onSuccess: (speakers) => {
       qc.setQueryData<SettingsRead>(queryKeys.settings.all, (old) =>
         old ? { ...old, speakers } : old,
+      );
+    },
+  });
+}
+
+// Update the default storage location; server validates the directory (422 on bad path). Patch
+// the section, then refetch so storage_info (usage, DB path) reflects the change.
+export function useUpdateStorage() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: StorageSettings) => api.put<StorageSettings>("/api/settings/storage", body),
+    onSuccess: (storage) => {
+      qc.setQueryData<SettingsRead>(queryKeys.settings.all, (old) =>
+        old ? { ...old, storage } : old,
       );
     },
   });

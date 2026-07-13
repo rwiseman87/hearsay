@@ -1,6 +1,11 @@
 import { useEffect, useState } from "react";
 
-import { useSettings, useUpdateRecording, useUpdateSpeakers } from "../api/hooks";
+import {
+  useSettings,
+  useUpdateRecording,
+  useUpdateSpeakers,
+  useUpdateStorage,
+} from "../api/hooks";
 import type { SpeakerSettings } from "../api/types";
 
 interface Props {
@@ -11,8 +16,21 @@ interface Props {
 const PANELS = [
   { id: "recording", label: "Recording & Privacy" },
   { id: "speakers", label: "Speakers" },
+  { id: "storage", label: "Storage" },
 ] as const;
 type PanelId = (typeof PANELS)[number]["id"];
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  const units = ["KB", "MB", "GB", "TB"];
+  let value = bytes / 1024;
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit += 1;
+  }
+  return `${value.toFixed(1)} ${units[unit]}`;
+}
 
 function RecordingPanel() {
   const settings = useSettings();
@@ -118,6 +136,78 @@ function SpeakersPanel() {
   );
 }
 
+function StoragePanel() {
+  const settings = useSettings();
+  const update = useUpdateStorage();
+  const storage = settings.data?.storage;
+  const info = settings.data?.storage_info;
+  const [dir, setDir] = useState("");
+
+  useEffect(() => {
+    if (storage) setDir(storage.output_dir);
+  }, [storage?.output_dir]);
+
+  if (settings.isLoading || !storage || !info) return <p className="muted">Loading…</p>;
+
+  const onSave = () => {
+    const trimmed = dir.trim();
+    if (trimmed) update.mutate({ output_dir: trimmed });
+  };
+
+  return (
+    <div className="settings__panel">
+      <h3 className="settings__panel-title">Storage</h3>
+      <div className="settings__field">
+        <span className="settings__row-label">Default recordings location</span>
+        <div className="settings__inline">
+          <input
+            value={dir}
+            spellCheck={false}
+            disabled={update.isPending}
+            aria-label="Default recordings location"
+            onChange={(event) => setDir(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") onSave();
+            }}
+          />
+          <button
+            type="button"
+            onClick={onSave}
+            disabled={update.isPending || dir.trim() === storage.output_dir}
+          >
+            {update.isPending ? "Checking…" : "Save"}
+          </button>
+        </div>
+        <span className="settings__row-hint muted">
+          Where new meetings are written. Existing meetings keep their location — relocate one
+          from its own view. Must be an existing, writable folder.
+        </span>
+        {update.isError ? (
+          <p className="settings__error" role="alert">
+            {(update.error as Error).message}
+          </p>
+        ) : null}
+      </div>
+      <dl className="settings__facts">
+        <div>
+          <dt>Recorded data</dt>
+          <dd>
+            {formatBytes(info.tracked_bytes)} across {info.meeting_count}{" "}
+            {info.meeting_count === 1 ? "meeting" : "meetings"}
+          </dd>
+        </div>
+        <div>
+          <dt>Database</dt>
+          <dd>
+            <code>{info.database_path}</code>
+            <span className="settings__row-hint muted"> — change via env + restart</span>
+          </dd>
+        </div>
+      </dl>
+    </div>
+  );
+}
+
 export default function SettingsPage({ onClose }: Props) {
   const [active, setActive] = useState<PanelId>("recording");
 
@@ -159,6 +249,7 @@ export default function SettingsPage({ onClose }: Props) {
           <div className="settings__content">
             {active === "recording" ? <RecordingPanel /> : null}
             {active === "speakers" ? <SpeakersPanel /> : null}
+            {active === "storage" ? <StoragePanel /> : null}
           </div>
         </div>
       </div>

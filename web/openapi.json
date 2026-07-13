@@ -342,18 +342,26 @@
         "type": "object"
       },
       "SettingsRead": {
-        "description": "The full editable settings, one field per panel/section (extended as panels land).",
+        "description": "The full editable settings, one field per panel/section (extended as panels land).\n\n``storage_info`` is read-only context for the Storage panel (not an editable section).",
         "properties": {
           "recording": {
             "$ref": "#/components/schemas/RecordingSettings"
           },
           "speakers": {
             "$ref": "#/components/schemas/SpeakerSettings"
+          },
+          "storage": {
+            "$ref": "#/components/schemas/StorageSettings"
+          },
+          "storage_info": {
+            "$ref": "#/components/schemas/StorageInfo"
           }
         },
         "required": [
           "recording",
-          "speakers"
+          "speakers",
+          "storage",
+          "storage_info"
         ],
         "title": "SettingsRead",
         "type": "object"
@@ -434,6 +442,50 @@
           }
         },
         "title": "SpeakerSettings",
+        "type": "object"
+      },
+      "StorageInfo": {
+        "description": "Read-only storage facts shown alongside the editable section.",
+        "properties": {
+          "database_path": {
+            "title": "Database Path",
+            "type": "string"
+          },
+          "meeting_count": {
+            "title": "Meeting Count",
+            "type": "integer"
+          },
+          "output_dir": {
+            "title": "Output Dir",
+            "type": "string"
+          },
+          "tracked_bytes": {
+            "title": "Tracked Bytes",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "output_dir",
+          "database_path",
+          "tracked_bytes",
+          "meeting_count"
+        ],
+        "title": "StorageInfo",
+        "type": "object"
+      },
+      "StorageSettings": {
+        "description": "Storage location. ``output_dir`` is the default root new meetings are written under\n(existing meetings keep their stamped location); relocate an individual meeting from its\nown view.",
+        "properties": {
+          "output_dir": {
+            "minLength": 1,
+            "title": "Output Dir",
+            "type": "string"
+          }
+        },
+        "required": [
+          "output_dir"
+        ],
+        "title": "StorageSettings",
         "type": "object"
       },
       "Stream": {
@@ -1191,6 +1243,47 @@
           }
         },
         "summary": "Update Speakers",
+        "tags": [
+          "settings"
+        ]
+      }
+    },
+    "/api/settings/storage": {
+      "put": {
+        "operationId": "update_storage_api_settings_storage_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StorageSettings"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StorageSettings"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update Storage",
         "tags": [
           "settings"
         ]

@@ -17,3 +17,5 @@ export type PageIdentity = Schemas["Page_IdentityRead_"];
 export type SettingsRead = Schemas["SettingsRead"];
 export type RecordingSettings = Schemas["RecordingSettings"];
 export type SpeakerSettings = Schemas["SpeakerSettings"];
+export type StorageSettings = Schemas["StorageSettings"];
+export type StorageInfo = Schemas["StorageInfo"];
