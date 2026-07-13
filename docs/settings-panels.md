@@ -120,21 +120,48 @@ Permissions and About do not follow the editable-panel recipe above (no Preferen
 
 ## Remaining panels
 
-### Models (large, verification-gated)
+### Models (large) — verification done (FluidAudio 0.15.4)
 
-- Models are currently hard-pinned in the Swift sidecars, not configurable:
-  - `helper/Sources/hearsay-live/main.swift` — `LSEENDModel.loadFromHuggingFace(variant:.ami,...)`
-    (line ~72) and `AsrModels.downloadAndLoad(version:.v3)` (line ~75).
-  - `helper/Sources/hearsay-asr/main.swift` — `AsrModels.downloadAndLoad(version:.v3)` (line ~40).
-  - `helper/Sources/hearsay-diarize/main.swift` — `OfflineDiarizerManager()` (line ~63).
-  - `helper/Sources/hearsay-me/main.swift` — `StreamingUnifiedAsrManager` + `VadManager`.
-- Plan (from the design discussion): a code-defined model catalog (per phase, tier, min-RAM,
-  Apple-Silicon flag), a capability probe (`sysctl hw.memsize` / `machdep.cpu.brand_string`), a
-  preset (Fast/Balanced/Accurate) with per-phase advanced override, then thread the chosen model
-  ids through `Settings`/overlay -> sidecar CLI args -> Swift arg parsing, and `make swift-build`.
-- Verify first: FluidAudio's actual model variants per phase; whether
-  `StreamingUnifiedAsrManager.loadModels()` accepts a version (live-Me may not be swappable);
-  whether model-download progress is observable. Do not ship invented model names.
+Verification is **complete** (read the pinned checkout at `helper/.build/checkouts/FluidAudio`:
+`ModelNames.swift` + each manager's `load*`). No invented model names are needed.
+
+Exact load call sites today:
+
+- `hearsay-live/main.swift` — `LSEENDModel.loadFromHuggingFace(variant: .ami, stepSize: .step500ms,
+  computeUnits: .cpuOnly)`; `AsrModels.downloadAndLoad(version: .v3)`; `StreamingUnifiedAsrManager()`.
+- `hearsay-asr/main.swift` — `AsrModels.downloadAndLoad(version: .v3)`.
+- `hearsay-me/main.swift` — `VadManager()`; `StreamingUnifiedAsrManager()`.
+- `hearsay-diarize/main.swift` — `OfflineDiarizerManager()` (`.process(url)`).
+
+Key finding: **only 2 of the 5 model slots are actually swappable.**
+
+| Phase | Sidecar | Load API | Swappable | Real options |
+| --- | --- | --- | --- | --- |
+| Live Them — diarization | live | `LSEENDModel.loadFromHuggingFace(variant:stepSize:)` | yes | variant {ami, callhome, dihard2, dihard3} × step {100/200/300/400/500 ms} |
+| Live + batch — final ASR | live, asr | `AsrModels.downloadAndLoad(version:)` | yes | Parakeet TDT `.v2` / `.v3` (`AsrModelVersion`) |
+| Live — partial ASR | live, me | `StreamingUnifiedAsrManager.loadModels()` | no | fixed "Parakeet Unified 0.6B"; only latency + `encoderPrecision` int8/fp16 |
+| Live Me — VAD | me | `VadManager()` | no | single Silero VAD; `VadConfig` tuning only |
+| Offline refine — diarization | diarize | `OfflineDiarizerManager(config:)` | no | single pyannote community-1; `OfflineDiarizerConfig` thresholds only |
+
+Answers to the three gated questions:
+
+1. **Variants per phase** — real, defined in `Repo` / `ModelNames.LSEEND` (see table). Batch/final
+   ASR is `AsrModelVersion.{v2,v3}`; live diarization is `LSEENDVariant × LSEENDStepSize`.
+2. **Does `StreamingUnifiedAsrManager.loadModels()` accept a version?** — **No.** The streaming ASR
+   is one fixed unified model, so **live Me and the live-Them partials are not model-swappable**;
+   only `AsrManager` (batch TDT) and LSEEND diarization are.
+3. **Is download progress observable?** — **Yes.** `DownloadUtils.ProgressHandler =
+   @Sendable (DownloadProgress) -> Void` (`fractionCompleted: Double` + a `.downloading`/`.compiling`
+   phase), accepted by every `download*` / `load*` entry point above.
+
+Revised plan (smaller than the original Fast/Balanced/Accurate preset idea, since 3 of 5 slots are
+fixed): expose **two** real selectors — Transcription model (Parakeet TDT v2 vs v3; shared by the
+`hearsay-asr` + `hearsay-live` finals) and Live diarization (LSEEND variant × step) — and render the
+fixed slots read-only. Wiring: a `models` overlay section (`Settings` + `SettingsService`) -> sidecar
+CLI args (e.g. `--asr-version v3`, `--diar-variant ami --diar-step 500ms`) -> `CommandLine.arguments`
+parsing in the four sidecars mapping strings to the FluidAudio enums -> `make swift-build`. A download
+can emit a progress NDJSON line via `progressHandler` for a future "downloading model…" UI.
+
 - Note: the Tauri `mac-app` bundle targets the separate in-progress Rust core, which does not have
   any of this Python-core settings work.
 
