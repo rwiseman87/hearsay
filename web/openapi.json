@@ -346,10 +346,14 @@
         "properties": {
           "recording": {
             "$ref": "#/components/schemas/RecordingSettings"
+          },
+          "speakers": {
+            "$ref": "#/components/schemas/SpeakerSettings"
           }
         },
         "required": [
-          "recording"
+          "recording",
+          "speakers"
         ],
         "title": "SettingsRead",
         "type": "object"
@@ -411,6 +415,25 @@
           "display_name"
         ],
         "title": "SpeakerRename",
+        "type": "object"
+      },
+      "SpeakerSettings": {
+        "description": "Speaker diarization. ``auto_refine`` re-diarizes each meeting at finalize;\n``recognition_threshold`` is the cosine at/above which a refined speaker is auto-matched\nto a person named in a previous meeting (higher = stricter).",
+        "properties": {
+          "auto_refine": {
+            "default": true,
+            "title": "Auto Refine",
+            "type": "boolean"
+          },
+          "recognition_threshold": {
+            "default": 0.6,
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Recognition Threshold",
+            "type": "number"
+          }
+        },
+        "title": "SpeakerSettings",
         "type": "object"
       },
       "Stream": {
@@ -1127,6 +1150,47 @@
           }
         },
         "summary": "Update Recording",
+        "tags": [
+          "settings"
+        ]
+      }
+    },
+    "/api/settings/speakers": {
+      "put": {
+        "operationId": "update_speakers_api_settings_speakers_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SpeakerSettings"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SpeakerSettings"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update Speakers",
         "tags": [
           "settings"
         ]

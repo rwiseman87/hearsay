@@ -36,7 +36,13 @@ from hearsay.enums import MeetingStatus, Stream
 from hearsay.export import LocalMarkdownSink, MeetingMeta, TranscriptLine
 from hearsay.log import get_logger
 from hearsay.models import Cluster, Meeting, Segment
-from hearsay.services import MeetingService, SpeakerService, TurnSegment, meeting_dir
+from hearsay.services import (
+    MeetingService,
+    SettingsService,
+    SpeakerService,
+    TurnSegment,
+    meeting_dir,
+)
 from hearsay.transcript.recorder import read_them_channel
 
 _log = get_logger("hearsay.refine")
@@ -62,7 +68,7 @@ def _l2_normalize(vector: Sequence[float]) -> list[float]:
 async def _recognize_speakers(
     *,
     database: Database,
-    settings: Settings,
+    threshold: float,
     meeting_id: UUID,
     embeddings: dict[str, list[float]],
     label_to_ordinal: dict[str, int],
@@ -77,7 +83,6 @@ async def _recognize_speakers(
     async with database.session() as session:
         known_bytes = await SpeakerService(session).known_voiceprints(exclude_meeting_id=meeting_id)
     known = [(name, centroid_from_bytes(blob)) for name, blob in known_bytes]
-    threshold = settings.diarization.recognition_threshold
     for label, ordinal in label_to_ordinal.items():
         vector = embeddings.get(label)
         if not vector:
@@ -223,9 +228,11 @@ async def rediarize_meeting(
 
     # Voiceprints: store each speaker's centroid (from the diarizer) and auto-name a returning
     # person by matching against people named in prior meetings (manual carry-forward wins).
+    async with database.session() as session:
+        threshold = await SettingsService(session).effective_recognition_threshold(settings)
     ordinal_centroids, recognized = await _recognize_speakers(
         database=database,
-        settings=settings,
+        threshold=threshold,
         meeting_id=meeting_id,
         embeddings=diarization.embeddings,
         label_to_ordinal=label_to_ordinal,
