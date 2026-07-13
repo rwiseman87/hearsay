@@ -234,6 +234,19 @@ body {
   height: 34px;
 }
 
+/* One volume control only: hide the native volume/mute (they can't boost past 100% anyway) and let
+   the gain slider below be it. Separate rules so an unknown pseudo-element can't drop the others;
+   targets the media-control shadow DOM in the app's webviews (WKWebView / WebView2). */
+.transcript__audio::-webkit-media-controls-mute-button {
+  display: none;
+}
+.transcript__audio::-webkit-media-controls-volume-slider {
+  display: none;
+}
+.transcript__audio::-webkit-media-controls-volume-control-container {
+  display: none;
+}
+
 .transcript__volume {
   display: flex;
   align-items: center;
