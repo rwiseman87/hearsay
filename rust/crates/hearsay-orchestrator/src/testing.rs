@@ -85,8 +85,8 @@ impl Transcriber for ScriptedTranscriber {
         Ok(rx)
     }
 
-    async fn feed(&mut self, samples: &[f32]) {
-        self.fed.lock().unwrap().extend_from_slice(samples);
+    async fn feed(&mut self, samples: Vec<f32>) {
+        self.fed.lock().unwrap().extend_from_slice(&samples);
     }
 
     async fn close(&mut self) {

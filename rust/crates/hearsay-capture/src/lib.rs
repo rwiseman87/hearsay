@@ -29,6 +29,10 @@ use hearsay_orchestrator::{AudioChunk, AudioSource, CaptureChunk, OrchestratorEr
 
 /// Contract-fixed capture sample rate (Hz), mono per stream.
 const SAMPLE_RATE: u32 = 16_000;
+/// Reject a media frame whose declared payload exceeds this — 1 s of f32 (16k * 4 B), a generous
+/// ceiling over the contract's 320-640 samples/frame — so a malformed/hostile helper header cannot
+/// force a giant pre-read allocation (`shared/protocol/ipc.md`).
+const MAX_FRAME_PAYLOAD_BYTES: usize = SAMPLE_RATE as usize * 4;
 /// How long to wait for the helper to connect + say hello.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// The first `start_capture` blocks on the macOS TCC permission prompts, so allow ample time.
@@ -176,6 +180,14 @@ async fn media_pump(conn: UnixStream, tx: mpsc::Sender<CaptureChunk>) {
             Ok(n) => n,
             Err(_) => break,
         };
+        if payload_len > MAX_FRAME_PAYLOAD_BYTES {
+            tracing::warn!(
+                payload_len,
+                max = MAX_FRAME_PAYLOAD_BYTES,
+                "media frame declares an oversized payload; closing capture stream"
+            );
+            break;
+        }
         let mut buf = vec![0u8; HEADER_SIZE + payload_len];
         buf[..HEADER_SIZE].copy_from_slice(&header);
         if payload_len > 0 && reader.read_exact(&mut buf[HEADER_SIZE..]).await.is_err() {

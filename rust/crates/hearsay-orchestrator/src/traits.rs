@@ -31,8 +31,9 @@ pub trait Transcriber: Send {
     async fn start(&mut self)
         -> Result<mpsc::UnboundedReceiver<SidecarSegment>, OrchestratorError>;
 
-    /// Feed one chunk of this stream's PCM (normalized mono `f32`).
-    async fn feed(&mut self, samples: &[f32]);
+    /// Feed one chunk of this stream's PCM (normalized mono `f32`). Takes ownership so the caller's
+    /// buffer moves straight through to the sidecar/worker without a per-frame copy.
+    async fn feed(&mut self, samples: Vec<f32>);
 
     /// Signal end-of-input and drain the sidecar's finalized tail. The segment channel closes once
     /// the sidecar exits.

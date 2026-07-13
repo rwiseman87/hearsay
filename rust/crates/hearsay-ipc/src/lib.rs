@@ -22,8 +22,6 @@ pub const MAGIC: u8 = 0xA7;
 pub const VERSION: u8 = 1;
 /// Fixed header size in bytes.
 pub const HEADER_SIZE: usize = 28;
-/// Contract-fixed capture sample rate (Hz), mono. Not carried per-frame.
-pub const SAMPLE_RATE: u32 = 16_000;
 
 /// Frame kind. Wire codes: `audio`=0, `hello`=1, `heartbeat`=2, `eos`=3.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -163,11 +161,6 @@ impl MediaFrame {
         }
         (self.payload.len() / self.format.bytes_per_sample()) as u32
     }
-}
-
-/// Bytes carried by one mono sample in the given format.
-pub fn bytes_per_sample(format: SampleFormat) -> usize {
-    format.bytes_per_sample()
 }
 
 /// A byte sequence that does not conform to the IPC frame contract.

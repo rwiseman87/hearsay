@@ -91,14 +91,14 @@ impl Transcriber for ProcessTranscriber {
         Ok(rx)
     }
 
-    async fn feed(&mut self, samples: &[f32]) {
+    async fn feed(&mut self, samples: Vec<f32>) {
         if self.broken {
             return;
         }
         let Some(stdin) = self.stdin.as_mut() else {
             return;
         };
-        if let Err(err) = stdin.write_all(&encode_feed(samples)).await {
+        if let Err(err) = stdin.write_all(&encode_feed(&samples)).await {
             // The sidecar exited/crashed; stop feeding a dead pipe so it never fails the meeting.
             // Segments it already emitted are kept.
             self.broken = true;

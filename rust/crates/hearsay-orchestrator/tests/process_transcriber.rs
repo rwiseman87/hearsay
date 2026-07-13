@@ -12,8 +12,8 @@ async fn process_transcriber_spawns_feeds_and_drains() {
         ProcessTranscriber::new(PathBuf::from(env!("CARGO_BIN_EXE_mock_sidecar")));
     let mut rx = transcriber.start().await.unwrap();
 
-    transcriber.feed(&[0.1, 0.2]).await;
-    transcriber.feed(&[0.3]).await;
+    transcriber.feed(vec![0.1, 0.2]).await;
+    transcriber.feed(vec![0.3]).await;
     transcriber.close().await; // EOF -> per-frame finals + a tail, then the channel closes
 
     let mut segments = Vec::new();

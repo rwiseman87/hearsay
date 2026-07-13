@@ -43,8 +43,7 @@ pub struct Orchestrator {
 
 impl Orchestrator {
     /// Build the orchestrator over a database pool, the per-meeting output root, and the capture +
-    /// transcription backend factory. Records `audio.wav` by default (see
-    /// [`with_audio_recording`](Self::with_audio_recording)).
+    /// transcription backend factory. Records the per-meeting `audio.wav`.
     pub fn new(pool: SqlitePool, output_dir: PathBuf, backend: Arc<dyn Backend>) -> Self {
         Orchestrator {
             pool,
@@ -55,13 +54,6 @@ impl Orchestrator {
             op_lock: tokio::sync::Mutex::new(()),
             active: Mutex::new(None),
         }
-    }
-
-    /// Set whether to record the per-meeting `audio.wav` (the retention toggle; the eventual config
-    /// wires `audio.record` here).
-    pub fn with_audio_recording(mut self, record: bool) -> Self {
-        self.record_audio = record;
-        self
     }
 
     /// Wire the post-meeting [`Refiner`] so a meeting auto-refines at stop (Python
@@ -105,8 +97,17 @@ impl Orchestrator {
         match queries::list_segments(&self.pool, meeting.id).await {
             Ok(segments) => {
                 let dir = self.output_dir.join(&meeting.folder);
-                if let Err(err) = crate::markdown::write_meeting_files(&dir, meeting, &segments) {
-                    tracing::error!(error = %err, "failed to write meeting transcript files");
+                let meeting = meeting.clone();
+                let write = tokio::task::spawn_blocking(move || {
+                    crate::markdown::write_meeting_files(&dir, &meeting, &segments)
+                })
+                .await;
+                match write {
+                    Ok(Err(err)) => {
+                        tracing::error!(error = %err, "failed to write meeting transcript files")
+                    }
+                    Err(err) => tracing::error!(error = %err, "transcript writer panicked"),
+                    Ok(Ok(())) => {}
                 }
             }
             Err(err) => tracing::error!(error = %err, "failed to read segments for transcript"),
