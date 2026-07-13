@@ -9,6 +9,8 @@ import type {
   PageMeeting,
   PageSegment,
   PageSpeaker,
+  RecordingSettings,
+  SettingsRead,
   SpeakerRead,
 } from "./types";
 
@@ -116,6 +118,28 @@ export function useRediarize(meetingId: string) {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: queryKeys.meetings.all });
       qc.invalidateQueries({ queryKey: queryKeys.identities.all });
+    },
+  });
+}
+
+// Editable settings (the writable overlay over the env defaults).
+export function useSettings() {
+  return useQuery({
+    queryKey: queryKeys.settings.all,
+    queryFn: () => api.get<SettingsRead>("/api/settings"),
+  });
+}
+
+// Update the recording/privacy section; the response is the new section, so patch the cache.
+export function useUpdateRecording() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: RecordingSettings) =>
+      api.put<RecordingSettings>("/api/settings/recording", body),
+    onSuccess: (recording) => {
+      qc.setQueryData<SettingsRead>(queryKeys.settings.all, (old) =>
+        old ? { ...old, recording } : old,
+      );
     },
   });
 }

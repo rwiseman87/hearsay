@@ -278,6 +278,18 @@
         "title": "Page[SpeakerRead]",
         "type": "object"
       },
+      "RecordingSettings": {
+        "description": "Recording & privacy. ``record`` is the single audio-retention switch: keep one\ntimeline-accurate WAV per meeting (needed for playback + the post-meeting refine).",
+        "properties": {
+          "record": {
+            "default": true,
+            "title": "Record",
+            "type": "boolean"
+          }
+        },
+        "title": "RecordingSettings",
+        "type": "object"
+      },
       "SegmentRead": {
         "properties": {
           "cluster_id": {
@@ -327,6 +339,19 @@
           "end_s"
         ],
         "title": "SegmentRead",
+        "type": "object"
+      },
+      "SettingsRead": {
+        "description": "The full editable settings, one field per panel/section (extended as panels land).",
+        "properties": {
+          "recording": {
+            "$ref": "#/components/schemas/RecordingSettings"
+          }
+        },
+        "required": [
+          "recording"
+        ],
+        "title": "SettingsRead",
         "type": "object"
       },
       "SpeakerRead": {
@@ -1042,6 +1067,68 @@
         "summary": "Relocate Meeting",
         "tags": [
           "meetings"
+        ]
+      }
+    },
+    "/api/settings": {
+      "get": {
+        "operationId": "read_settings_api_settings_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SettingsRead"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Read Settings",
+        "tags": [
+          "settings"
+        ]
+      }
+    },
+    "/api/settings/recording": {
+      "put": {
+        "operationId": "update_recording_api_settings_recording_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RecordingSettings"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RecordingSettings"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update Recording",
+        "tags": [
+          "settings"
         ]
       }
     }

@@ -22,7 +22,13 @@ from hearsay.export import LocalMarkdownSink, MeetingMeta, TranscriptSink
 from hearsay.log import get_logger
 from hearsay.models import Cluster, Meeting
 from hearsay.schemas import TranscriptEvent
-from hearsay.services import MeetingService, SpeakerService, meeting_dir, meeting_folder_name
+from hearsay.services import (
+    MeetingService,
+    SettingsService,
+    SpeakerService,
+    meeting_dir,
+    meeting_folder_name,
+)
 from hearsay.transcript.broadcast import Broadcaster
 from hearsay.transcript.capture import Capture, HelperCapture
 from hearsay.transcript.live import LiveThemProcessor
@@ -110,7 +116,7 @@ class SessionManager:
         return self._active
 
     def _make_pipeline_factory(
-        self, meeting_id: UUID, broadcaster: Broadcaster, folder: Path
+        self, meeting_id: UUID, broadcaster: Broadcaster, folder: Path, *, record: bool
     ) -> PipelineFactory:
         def make() -> TranscriptionPipeline:
             sink = self._sink_factory()
@@ -130,9 +136,7 @@ class SessionManager:
                 broadcaster=broadcaster,
                 sink=sink,
             )
-            audio_recorder = (
-                MeetingAudioRecorder(folder / "audio.wav") if self._settings.audio.record else None
-            )
+            audio_recorder = MeetingAudioRecorder(folder / "audio.wav") if record else None
             return TranscriptionPipeline(
                 meeting_id=meeting_id,
                 database=self._db,
@@ -161,6 +165,9 @@ class SessionManager:
                     storage_root=storage_root,
                     started_at=when,
                 )
+                # Resolve the audio-retention switch from the editable overlay (UI-set) over the
+                # env default, so a Settings-page toggle takes effect on the next meeting.
+                record = await SettingsService(session).effective_audio_record(self._settings)
             broadcaster = Broadcaster()
             meta = MeetingMeta(
                 id=meeting.id,
@@ -172,7 +179,9 @@ class SessionManager:
                 meta=meta,
                 capture=self._capture_factory(),
                 broadcaster=broadcaster,
-                pipeline_factory=self._make_pipeline_factory(meeting.id, broadcaster, meta.folder),
+                pipeline_factory=self._make_pipeline_factory(
+                    meeting.id, broadcaster, meta.folder, record=record
+                ),
             )
             await session_obj.start()
             self._active = session_obj

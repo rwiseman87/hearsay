@@ -425,3 +425,130 @@ button:not(:disabled):hover {
   padding: 4px 8px;
   font-size: 12px;
 }
+
+.app__settings {
+  padding: 4px 12px;
+  font-size: 13px;
+}
+
+.settings-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+
+.settings-overlay__backdrop {
+  position: absolute;
+  inset: 0;
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  background: rgba(0, 0, 0, 0.55);
+  cursor: default;
+}
+
+.settings {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  width: min(720px, 100%);
+  max-height: min(560px, 100%);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  overflow: hidden;
+}
+
+.settings__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.settings__header h2 {
+  margin: 0;
+  font-size: 16px;
+}
+
+.settings__close {
+  padding: 2px 8px;
+}
+
+.settings__body {
+  display: grid;
+  grid-template-columns: 180px 1fr;
+  min-height: 0;
+  flex: 1;
+}
+
+.settings__nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 10px;
+  border-right: 1px solid var(--border);
+  background: var(--surface-2);
+}
+
+.settings__nav-item {
+  padding: 8px 10px;
+  border: none;
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  font-size: 13px;
+}
+
+.settings__nav-item.is-active {
+  background: var(--surface);
+  color: var(--accent);
+}
+
+.settings__content {
+  padding: 16px;
+  overflow-y: auto;
+}
+
+.settings__panel-title {
+  margin: 0 0 12px;
+  font-size: 14px;
+}
+
+.settings__row {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+}
+
+.settings__row input {
+  margin-top: 2px;
+}
+
+.settings__row-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.settings__row-label {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.settings__row-hint {
+  padding: 0;
+  font-size: 12px;
+}
+
+.settings__error {
+  margin: 10px 0 0;
+  color: var(--danger);
+  font-size: 12px;
+}

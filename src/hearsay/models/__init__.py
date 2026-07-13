@@ -11,6 +11,7 @@ from hearsay.models.base import Base
 from hearsay.models.cluster import Cluster
 from hearsay.models.identity import Identity
 from hearsay.models.meeting import Meeting
+from hearsay.models.preference import Preference
 from hearsay.models.segment import Segment
 
-__all__ = ["Base", "Cluster", "Identity", "Meeting", "MeetingAsset", "Segment"]
+__all__ = ["Base", "Cluster", "Identity", "Meeting", "MeetingAsset", "Preference", "Segment"]

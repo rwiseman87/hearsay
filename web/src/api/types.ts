@@ -14,3 +14,5 @@ export type PageSegment = Schemas["Page_SegmentRead_"];
 export type SpeakerRead = Schemas["SpeakerRead"];
 export type PageSpeaker = Schemas["Page_SpeakerRead_"];
 export type PageIdentity = Schemas["Page_IdentityRead_"];
+export type SettingsRead = Schemas["SettingsRead"];
+export type RecordingSettings = Schemas["RecordingSettings"];
