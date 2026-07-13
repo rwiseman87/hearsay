@@ -21,8 +21,30 @@ class SpeakerSettings(BaseModel):
     recognition_threshold: float = Field(default=0.6, ge=0.0, le=1.0)
 
 
+class StorageSettings(BaseModel):
+    """Storage location. ``output_dir`` is the default root new meetings are written under
+    (existing meetings keep their stamped location); relocate an individual meeting from its
+    own view."""
+
+    output_dir: str = Field(min_length=1)
+
+
+class StorageInfo(BaseModel):
+    """Read-only storage facts shown alongside the editable section."""
+
+    output_dir: str
+    database_path: str
+    tracked_bytes: int
+    meeting_count: int
+
+
 class SettingsRead(BaseModel):
-    """The full editable settings, one field per panel/section (extended as panels land)."""
+    """The full editable settings, one field per panel/section (extended as panels land).
+
+    ``storage_info`` is read-only context for the Storage panel (not an editable section).
+    """
 
     recording: RecordingSettings
     speakers: SpeakerSettings
+    storage: StorageSettings
+    storage_info: StorageInfo

@@ -8,17 +8,55 @@ edits the overlay; feature code reads the resolved value.
 
 from __future__ import annotations
 
+import asyncio
+from pathlib import Path
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from hearsay.config.settings import Settings
-from hearsay.models import Preference
-from hearsay.schemas import RecordingSettings, SettingsRead, SpeakerSettings
+from hearsay.models import Meeting, MeetingAsset, Preference
+from hearsay.schemas import (
+    RecordingSettings,
+    SettingsRead,
+    SpeakerSettings,
+    StorageInfo,
+    StorageSettings,
+)
 
 _RECORDING = "recording"
 _SPEAKERS = "speakers"
+_STORAGE = "storage"
+
+
+class SettingsValidationError(ValueError):
+    """A settings value was rejected (e.g. an output directory that is missing or not writable)."""
+
+
+def _validate_output_dir(path_str: str) -> Path:
+    """Resolve ``path_str`` to an absolute, existing, writable directory or raise."""
+    path = Path(path_str).expanduser()
+    if not path.is_absolute():
+        raise SettingsValidationError("output_dir must be an absolute path")
+    resolved = path.resolve()
+    if not resolved.is_dir():
+        raise SettingsValidationError(f"{resolved} is not an existing directory")
+    probe = resolved / ".hearsay-write-test"
+    try:
+        probe.touch()
+        probe.unlink()
+    except OSError as exc:
+        raise SettingsValidationError(f"{resolved} is not writable") from exc
+    return resolved
+
+
+def _database_path(settings: Settings) -> str:
+    """The local DB file path for display; avoid leaking credentials for a remote DB URL."""
+    url = settings.database_url or ""
+    if url.startswith("sqlite"):
+        return url.split(":///", 1)[-1]
+    return "(external database)"
 
 
 class SettingsService:
@@ -30,6 +68,8 @@ class SettingsService:
         return SettingsRead(
             recording=await self.recording(settings),
             speakers=await self.speakers(settings),
+            storage=await self.storage(settings),
+            storage_info=await self.storage_info(settings),
         )
 
     async def recording(self, settings: Settings) -> RecordingSettings:
@@ -66,6 +106,34 @@ class SettingsService:
     async def effective_recognition_threshold(self, settings: Settings) -> float:
         """The cosine threshold the refine uses to auto-match a returning speaker."""
         return (await self.speakers(settings)).recognition_threshold
+
+    async def storage(self, settings: Settings) -> StorageSettings:
+        stored = await self._section(_STORAGE)
+        if stored is not None:
+            return StorageSettings.model_validate(stored)
+        return StorageSettings(output_dir=str(settings.output_dir))
+
+    async def set_storage(self, patch: StorageSettings) -> StorageSettings:
+        """Validate the target directory (absolute, existing, writable) and store it."""
+        resolved = await asyncio.to_thread(_validate_output_dir, patch.output_dir)
+        stored = StorageSettings(output_dir=str(resolved))
+        await self._upsert(_STORAGE, stored.model_dump())
+        return stored
+
+    async def effective_output_dir(self, settings: Settings) -> Path:
+        """The default root new meetings are stamped under."""
+        return Path((await self.storage(settings)).output_dir)
+
+    async def storage_info(self, settings: Settings) -> StorageInfo:
+        """Read-only storage facts: default root, DB path, and totals from the manifest."""
+        tracked = await self._session.scalar(select(func.sum(MeetingAsset.size_bytes))) or 0
+        count = await self._session.scalar(select(func.count()).select_from(Meeting)) or 0
+        return StorageInfo(
+            output_dir=str((await self.storage(settings)).output_dir),
+            database_path=_database_path(settings),
+            tracked_bytes=int(tracked),
+            meeting_count=int(count),
+        )
 
     async def _section(self, section: str) -> dict[str, Any] | None:
         pref = await self._session.scalar(select(Preference).where(Preference.section == section))
