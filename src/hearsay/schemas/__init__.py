@@ -7,6 +7,7 @@ from hearsay.schemas.meeting import MeetingCreate, MeetingRead, MeetingRelocate
 from hearsay.schemas.segment import SegmentRead, TranscriptEvent
 from hearsay.schemas.settings import (
     AboutInfo,
+    PermissionsInfo,
     RecordingSettings,
     SettingsRead,
     SpeakerSettings,
@@ -22,6 +23,7 @@ __all__ = [
     "MeetingRead",
     "MeetingRelocate",
     "Page",
+    "PermissionsInfo",
     "RecordingSettings",
     "SegmentRead",
     "SettingsRead",

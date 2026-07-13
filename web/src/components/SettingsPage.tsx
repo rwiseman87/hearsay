@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 
 import {
+  usePermissions,
   useSettings,
   useUpdateRecording,
   useUpdateSpeakers,
@@ -17,9 +18,52 @@ const PANELS = [
   { id: "recording", label: "Recording & Privacy" },
   { id: "speakers", label: "Speakers" },
   { id: "storage", label: "Storage" },
+  { id: "permissions", label: "Permissions" },
   { id: "about", label: "About" },
 ] as const;
 type PanelId = (typeof PANELS)[number]["id"];
+
+// Each permission maps to a label, a one-line rationale, and the macOS System Settings
+// deep link for its Privacy pane. `key` indexes the PermissionsInfo status fields.
+const PERMISSION_ROWS = [
+  {
+    key: "microphone",
+    label: "Microphone",
+    hint: "Captures your voice — the Me stream.",
+    url: "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone",
+  },
+  {
+    key: "audio_capture",
+    label: "System audio",
+    hint: "Captures the other participants — the Them stream.",
+    url: "x-apple.systempreferences:com.apple.preference.security?Privacy",
+  },
+  {
+    key: "screen_recording",
+    label: "Screen recording",
+    hint: "Reads on-screen active-speaker hints (later phase).",
+    url: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture",
+  },
+  {
+    key: "accessibility",
+    label: "Accessibility",
+    hint: "Opt-in Zoom active-speaker path (later phase).",
+    url: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility",
+  },
+  {
+    key: "calendar",
+    label: "Calendar",
+    hint: "Reads the meeting roster to help label speakers (later phase).",
+    url: "x-apple.systempreferences:com.apple.preference.security?Privacy_Calendars",
+  },
+] as const;
+
+const STATUS_META: Record<string, { label: string; kind: string }> = {
+  granted: { label: "Granted", kind: "granted" },
+  denied: { label: "Denied", kind: "denied" },
+  undetermined: { label: "Not requested", kind: "undetermined" },
+  unknown: { label: "Unknown", kind: "unknown" },
+};
 
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -209,6 +253,54 @@ function StoragePanel() {
   );
 }
 
+function PermissionsPanel() {
+  const perms = usePermissions();
+  const data = perms.data;
+
+  return (
+    <div className="settings__panel">
+      <h3 className="settings__panel-title">Permissions</h3>
+      <div className="settings__perm-bar">
+        <span className="muted">
+          {perms.isLoading
+            ? "Checking the capture helper…"
+            : data?.helper_available
+              ? `Capture helper v${data.helper_version ?? "?"}`
+              : "Capture helper not found — build it to see live status."}
+        </span>
+        <button type="button" onClick={() => perms.refetch()} disabled={perms.isFetching}>
+          {perms.isFetching ? "Checking…" : "Recheck"}
+        </button>
+      </div>
+      {perms.isError ? (
+        <p className="settings__error" role="alert">
+          {(perms.error as Error).message}
+        </p>
+      ) : null}
+      <div className="settings__perms">
+        {PERMISSION_ROWS.map((row) => {
+          const status = data ? data[row.key] : "unknown";
+          const meta = STATUS_META[status] ?? STATUS_META.unknown;
+          return (
+            <div key={row.key} className="settings__perm">
+              <div className="settings__perm-head">
+                <span className="settings__row-label">{row.label}</span>
+                <span className={`settings__status settings__status--${meta.kind}`}>
+                  {meta.label}
+                </span>
+              </div>
+              <span className="settings__row-hint muted">{row.hint}</span>
+              <a className="settings__perm-link" href={row.url}>
+                Open in System Settings
+              </a>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function AboutPanel() {
   const settings = useSettings();
   const about = settings.data?.about;
@@ -284,6 +376,7 @@ export default function SettingsPage({ onClose }: Props) {
             {active === "recording" ? <RecordingPanel /> : null}
             {active === "speakers" ? <SpeakersPanel /> : null}
             {active === "storage" ? <StoragePanel /> : null}
+            {active === "permissions" ? <PermissionsPanel /> : null}
             {active === "about" ? <AboutPanel /> : null}
           </div>
         </div>

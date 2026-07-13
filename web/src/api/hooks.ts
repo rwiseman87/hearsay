@@ -9,6 +9,7 @@ import type {
   PageMeeting,
   PageSegment,
   PageSpeaker,
+  PermissionsInfo,
   RecordingSettings,
   SettingsRead,
   SpeakerRead,
@@ -129,6 +130,17 @@ export function useSettings() {
   return useQuery({
     queryKey: queryKeys.settings.all,
     queryFn: () => api.get<SettingsRead>("/api/settings"),
+  });
+}
+
+// Live TCC permission status. Each fetch briefly spawns the capture helper, so this never
+// auto-refetches: it loads when the panel mounts and only re-runs on an explicit Recheck.
+export function usePermissions() {
+  return useQuery({
+    queryKey: queryKeys.settings.permissions,
+    queryFn: () => api.get<PermissionsInfo>("/api/settings/permissions"),
+    staleTime: Infinity,
+    refetchOnWindowFocus: false,
   });
 }
 

@@ -9,6 +9,7 @@ from hearsay.services.meetings import (
     meeting_folder_name,
     slugify,
 )
+from hearsay.services.permissions import probe_permissions
 from hearsay.services.settings import SettingsService, SettingsValidationError
 from hearsay.services.speakers import SpeakerService, TurnSegment
 
@@ -21,5 +22,6 @@ __all__ = [
     "TurnSegment",
     "meeting_dir",
     "meeting_folder_name",
+    "probe_permissions",
     "slugify",
 ]

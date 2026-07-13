@@ -220,6 +220,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/settings/permissions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read Permissions
+         * @description Live TCC permission status (briefly spawns the helper); never a stored preference.
+         */
+        get: operations["read_permissions_api_settings_permissions_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/settings/recording": {
         parameters: {
             query?: never;
@@ -412,6 +432,32 @@ export interface components {
             page_size: number;
             /** Total */
             total: number;
+        };
+        /**
+         * PermissionsInfo
+         * @description Live TCC permission status probed from the capture helper (not a stored preference).
+         *
+         *     Each permission is ``granted`` / ``denied`` / ``undetermined`` (from the helper's
+         *     ``check_permissions``), or ``unknown`` when the helper is unavailable. Only the
+         *     microphone has a real status today; ``audio_capture`` / ``screen_recording`` /
+         *     ``accessibility`` / ``calendar`` are ``undetermined`` stubs until their capture phases
+         *     land. ``helper_version`` is the connected helper's build; ``None`` when unavailable.
+         */
+        PermissionsInfo: {
+            /** Accessibility */
+            accessibility: string;
+            /** Audio Capture */
+            audio_capture: string;
+            /** Calendar */
+            calendar: string;
+            /** Helper Available */
+            helper_available: boolean;
+            /** Helper Version */
+            helper_version?: string | null;
+            /** Microphone */
+            microphone: string;
+            /** Screen Recording */
+            screen_recording: string;
         };
         /**
          * RecordingSettings
@@ -976,6 +1022,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["SettingsRead"];
+                };
+            };
+        };
+    };
+    read_permissions_api_settings_permissions_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PermissionsInfo"];
                 };
             };
         };

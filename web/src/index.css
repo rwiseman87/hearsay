@@ -615,3 +615,66 @@ button:not(:disabled):hover {
   font-size: 13px;
   word-break: break-all;
 }
+
+.settings__perm-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 16px;
+}
+
+.settings__perms {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.settings__perm {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.settings__perm-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.settings__status {
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.settings__status--granted {
+  color: var(--them);
+  border-color: var(--them);
+}
+
+.settings__status--denied {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+
+.settings__status--undetermined {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.settings__perm-link {
+  align-self: flex-start;
+  color: var(--accent);
+  font-size: 12px;
+  text-decoration: none;
+}
+
+.settings__perm-link:hover {
+  text-decoration: underline;
+}
