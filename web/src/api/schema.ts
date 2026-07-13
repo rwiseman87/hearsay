@@ -275,6 +275,24 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /**
+         * AboutInfo
+         * @description Read-only build/runtime facts for the About panel (no persistence).
+         *
+         *     ``protocol_version`` is the core's IPC frame-protocol constant; the helper reports
+         *     its own copy on connect (surfaced by the Permissions panel), and a mismatch signals
+         *     a helper/core version drift.
+         */
+        AboutInfo: {
+            /** App Version */
+            app_version: string;
+            /** Database Path */
+            database_path: string;
+            /** Environment */
+            environment: string;
+            /** Protocol Version */
+            protocol_version: number;
+        };
         /** HTTPValidationError */
         HTTPValidationError: {
             /** Detail */
@@ -430,9 +448,10 @@ export interface components {
          * SettingsRead
          * @description The full editable settings, one field per panel/section (extended as panels land).
          *
-         *     ``storage_info`` is read-only context for the Storage panel (not an editable section).
+         *     ``storage_info`` and ``about`` are read-only context (not editable sections).
          */
         SettingsRead: {
+            about: components["schemas"]["AboutInfo"];
             recording: components["schemas"]["RecordingSettings"];
             speakers: components["schemas"]["SpeakerSettings"];
             storage: components["schemas"]["StorageSettings"];

@@ -19,3 +19,4 @@ export type RecordingSettings = Schemas["RecordingSettings"];
 export type SpeakerSettings = Schemas["SpeakerSettings"];
 export type StorageSettings = Schemas["StorageSettings"];
 export type StorageInfo = Schemas["StorageInfo"];
+export type AboutInfo = Schemas["AboutInfo"];

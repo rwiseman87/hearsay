@@ -6,8 +6,10 @@ from pathlib import Path
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from hearsay import __version__
 from hearsay.config.settings import Settings
 from hearsay.enums import AssetKind
+from hearsay.helper.protocol import VERSION as PROTOCOL_VERSION
 from hearsay.models import MeetingAsset
 from hearsay.schemas import RecordingSettings, SpeakerSettings, StorageSettings
 from hearsay.services import MeetingService, SettingsService, SettingsValidationError
@@ -104,3 +106,17 @@ async def test_storage_info_totals_from_manifest(session: AsyncSession, tmp_path
     assert info.tracked_bytes == 1000
     assert info.meeting_count == 1
     assert info.database_path.endswith(".db")
+
+
+async def test_about_reports_build_facts(session: AsyncSession, tmp_path: Path) -> None:
+    settings = Settings(output_dir=tmp_path / "out")
+    about = SettingsService(session).about(settings)
+    assert about.app_version == __version__
+    assert about.environment == settings.environment.value
+    assert about.protocol_version == PROTOCOL_VERSION
+    assert about.database_path.endswith(".db")
+
+
+async def test_read_all_includes_about(session: AsyncSession) -> None:
+    result = await SettingsService(session).read_all(Settings())
+    assert result.about.app_version == __version__

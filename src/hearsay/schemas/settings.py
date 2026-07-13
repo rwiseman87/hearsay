@@ -38,13 +38,28 @@ class StorageInfo(BaseModel):
     meeting_count: int
 
 
+class AboutInfo(BaseModel):
+    """Read-only build/runtime facts for the About panel (no persistence).
+
+    ``protocol_version`` is the core's IPC frame-protocol constant; the helper reports
+    its own copy on connect (surfaced by the Permissions panel), and a mismatch signals
+    a helper/core version drift.
+    """
+
+    app_version: str
+    environment: str
+    protocol_version: int
+    database_path: str
+
+
 class SettingsRead(BaseModel):
     """The full editable settings, one field per panel/section (extended as panels land).
 
-    ``storage_info`` is read-only context for the Storage panel (not an editable section).
+    ``storage_info`` and ``about`` are read-only context (not editable sections).
     """
 
     recording: RecordingSettings
     speakers: SpeakerSettings
     storage: StorageSettings
     storage_info: StorageInfo
+    about: AboutInfo

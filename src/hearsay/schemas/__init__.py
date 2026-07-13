@@ -6,6 +6,7 @@ from hearsay.schemas.common import Page
 from hearsay.schemas.meeting import MeetingCreate, MeetingRead, MeetingRelocate
 from hearsay.schemas.segment import SegmentRead, TranscriptEvent
 from hearsay.schemas.settings import (
+    AboutInfo,
     RecordingSettings,
     SettingsRead,
     SpeakerSettings,
@@ -15,6 +16,7 @@ from hearsay.schemas.settings import (
 from hearsay.schemas.speaker import IdentityRead, SpeakerRead, SpeakerRename
 
 __all__ = [
+    "AboutInfo",
     "IdentityRead",
     "MeetingCreate",
     "MeetingRead",

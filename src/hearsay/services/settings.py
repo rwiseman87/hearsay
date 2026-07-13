@@ -15,9 +15,12 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from hearsay import __version__
 from hearsay.config.settings import Settings
+from hearsay.helper.protocol import VERSION as PROTOCOL_VERSION
 from hearsay.models import Meeting, MeetingAsset, Preference
 from hearsay.schemas import (
+    AboutInfo,
     RecordingSettings,
     SettingsRead,
     SpeakerSettings,
@@ -70,6 +73,16 @@ class SettingsService:
             speakers=await self.speakers(settings),
             storage=await self.storage(settings),
             storage_info=await self.storage_info(settings),
+            about=self.about(settings),
+        )
+
+    def about(self, settings: Settings) -> AboutInfo:
+        """Read-only build/runtime facts (app version, environment, IPC protocol, DB path)."""
+        return AboutInfo(
+            app_version=__version__,
+            environment=settings.environment.value,
+            protocol_version=PROTOCOL_VERSION,
+            database_path=_database_path(settings),
         )
 
     async def recording(self, settings: Settings) -> RecordingSettings:
