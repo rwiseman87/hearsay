@@ -307,6 +307,56 @@
         "title": "Page[SpeakerRead]",
         "type": "object"
       },
+      "PermissionsInfo": {
+        "description": "Live TCC permission status probed from the capture helper (not a stored preference).\n\nEach permission is ``granted`` / ``denied`` / ``undetermined`` (from the helper's\n``check_permissions``), or ``unknown`` when the helper is unavailable. Only the\nmicrophone has a real status today; ``audio_capture`` / ``screen_recording`` /\n``accessibility`` / ``calendar`` are ``undetermined`` stubs until their capture phases\nland. ``helper_version`` is the connected helper's build; ``None`` when unavailable.",
+        "properties": {
+          "accessibility": {
+            "title": "Accessibility",
+            "type": "string"
+          },
+          "audio_capture": {
+            "title": "Audio Capture",
+            "type": "string"
+          },
+          "calendar": {
+            "title": "Calendar",
+            "type": "string"
+          },
+          "helper_available": {
+            "title": "Helper Available",
+            "type": "boolean"
+          },
+          "helper_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Helper Version"
+          },
+          "microphone": {
+            "title": "Microphone",
+            "type": "string"
+          },
+          "screen_recording": {
+            "title": "Screen Recording",
+            "type": "string"
+          }
+        },
+        "required": [
+          "helper_available",
+          "microphone",
+          "audio_capture",
+          "screen_recording",
+          "accessibility",
+          "calendar"
+        ],
+        "title": "PermissionsInfo",
+        "type": "object"
+      },
       "RecordingSettings": {
         "description": "Recording & privacy. ``record`` is the single audio-retention switch: keep one\ntimeline-accurate WAV per meeting (needed for playback + the post-meeting refine).",
         "properties": {
@@ -1194,6 +1244,28 @@
           }
         },
         "summary": "Read Settings",
+        "tags": [
+          "settings"
+        ]
+      }
+    },
+    "/api/settings/permissions": {
+      "get": {
+        "description": "Live TCC permission status (briefly spawns the helper); never a stored preference.",
+        "operationId": "read_permissions_api_settings_permissions_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PermissionsInfo"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Read Permissions",
         "tags": [
           "settings"
         ]

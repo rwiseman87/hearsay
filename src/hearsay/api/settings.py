@@ -9,8 +9,14 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException, status
 
 from hearsay.api.deps import ContextDep, SessionDep, require_token
-from hearsay.schemas import RecordingSettings, SettingsRead, SpeakerSettings, StorageSettings
-from hearsay.services import SettingsService, SettingsValidationError
+from hearsay.schemas import (
+    PermissionsInfo,
+    RecordingSettings,
+    SettingsRead,
+    SpeakerSettings,
+    StorageSettings,
+)
+from hearsay.services import SettingsService, SettingsValidationError, probe_permissions
 
 router = APIRouter(prefix="/settings", tags=["settings"], dependencies=[Depends(require_token)])
 
@@ -18,6 +24,12 @@ router = APIRouter(prefix="/settings", tags=["settings"], dependencies=[Depends(
 @router.get("", response_model=SettingsRead)
 async def read_settings(context: ContextDep, session: SessionDep) -> SettingsRead:
     return await SettingsService(session).read_all(context.settings)
+
+
+@router.get("/permissions", response_model=PermissionsInfo)
+async def read_permissions(context: ContextDep) -> PermissionsInfo:
+    """Live TCC permission status (briefly spawns the helper); never a stored preference."""
+    return await probe_permissions(context.settings)
 
 
 @router.put("/recording", response_model=RecordingSettings)

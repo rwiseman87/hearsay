@@ -52,6 +52,25 @@ class AboutInfo(BaseModel):
     database_path: str
 
 
+class PermissionsInfo(BaseModel):
+    """Live TCC permission status probed from the capture helper (not a stored preference).
+
+    Each permission is ``granted`` / ``denied`` / ``undetermined`` (from the helper's
+    ``check_permissions``), or ``unknown`` when the helper is unavailable. Only the
+    microphone has a real status today; ``audio_capture`` / ``screen_recording`` /
+    ``accessibility`` / ``calendar`` are ``undetermined`` stubs until their capture phases
+    land. ``helper_version`` is the connected helper's build; ``None`` when unavailable.
+    """
+
+    helper_available: bool
+    helper_version: str | None = None
+    microphone: str
+    audio_capture: str
+    screen_recording: str
+    accessibility: str
+    calendar: str
+
+
 class SettingsRead(BaseModel):
     """The full editable settings, one field per panel/section (extended as panels land).
 

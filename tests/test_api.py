@@ -199,6 +199,28 @@ def test_settings_includes_about(client: TestClient) -> None:
 def test_settings_requires_token(client: TestClient) -> None:
     assert client.get("/api/settings").status_code == 401
     assert client.put("/api/settings/recording", json={"record": True}).status_code == 401
+    # require_token gates the probe before any helper spawn.
+    assert client.get("/api/settings/permissions").status_code == 401
+
+
+def test_settings_permissions_helper_missing(tmp_path: Path) -> None:
+    db_file = tmp_path / "perms.db"
+    sync_engine = create_sync_engine(f"sqlite:///{db_file}")
+    Base.metadata.create_all(sync_engine)
+    sync_engine.dispose()
+
+    # Point helper_path at a missing binary so the probe degrades deterministically
+    # (no real helper spawn, regardless of local build state).
+    settings = Settings(output_dir=tmp_path / "out", helper_path=tmp_path / "no-helper")
+    database = Database(f"sqlite+aiosqlite:///{db_file}")
+    app = create_app(settings, database=database, session_token=TOKEN, capture_factory=FakeCapture)
+    with TestClient(app, base_url="http://127.0.0.1:8000") as tc:
+        response = tc.get("/api/settings/permissions", headers=AUTH)
+        assert response.status_code == 200
+        body = response.json()
+        assert body["helper_available"] is False
+        assert body["helper_version"] is None
+        assert body["microphone"] == "unknown"
 
 
 def test_settings_speakers_round_trip(client: TestClient) -> None:
