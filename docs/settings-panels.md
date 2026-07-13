@@ -7,18 +7,22 @@ A resumable handoff for the Settings page and the per-meeting storage work. Both
 
 Merged to `main` (newest first):
 
+- `edcb134` settings permissions panel (live TCC status + System Settings deep links)
+- `a00f931` settings about panel (read-only build/runtime facts)
 - `2afe557` settings storage panel (default location + usage)
 - `fd9fec6` settings speakers panel (auto-refine + recognition threshold)
 - `c6986b3` settings framework + recording/privacy panel
 - `9d22fa9` per-meeting storage tracking + validated relocation
 
-The Settings page (header **Settings** button, lazy-loaded overlay) has three working panels:
+The Settings page (header **Settings** button, lazy-loaded overlay) has five working panels:
 
 | Panel | Editable | Read-only |
 | --- | --- | --- |
 | Recording & Privacy | `record` (keep meeting audio) | — |
 | Speakers | `auto_refine`, `recognition_threshold` | — |
 | Storage | `output_dir` (default recordings location, validated) | DB path, tracked bytes, meeting count |
+| Permissions | — | live TCC status (helper `check_permissions`) + helper version; deep links |
+| About | — | app version, environment, IPC protocol version, DB path |
 
 Per-meeting storage (separate from the Settings page): each meeting stamps a `storage_root` at
 creation; `PUT /api/meetings/{id}/storage` re-points a meeting to a moved folder after validating
@@ -37,15 +41,24 @@ flowchart LR
   resolve["SettingsService: stored override else default"] --> feature["feature code reads effective value"]
 ```
 
+Two panels are **read-only**, not editable Preference sections: **About** (static
+build/runtime facts, a field on `SettingsRead` like `storage_info`) and **Permissions**
+(live OS state probed from the helper — see its own note below). Neither persists anything.
+
 Key files:
 
 - `src/hearsay/models/preference.py` — `Preference` (section + JSON value).
 - `src/hearsay/schemas/settings.py` — `RecordingSettings`, `SpeakerSettings`, `StorageSettings`,
-  read-only `StorageInfo`, and `SettingsRead` (one field per section).
+  read-only `StorageInfo` + `AboutInfo`, live `PermissionsInfo`, and `SettingsRead` (one field per
+  section; `storage_info` + `about` are read-only context fields).
 - `src/hearsay/services/settings.py` — `SettingsService`: per-section `<x>()` resolver +
-  `set_<x>()` + `effective_<field>()`, `read_all()`, `storage_info()`; `SettingsValidationError`.
-- `src/hearsay/api/settings.py` — `GET /api/settings`, `PUT /api/settings/{recording,speakers,storage}`.
-  Registered in `src/hearsay/api/app.py` as `settings_routes`.
+  `set_<x>()` + `effective_<field>()`, `read_all()`, `storage_info()`, `about()` (sync, no DB);
+  `SettingsValidationError`.
+- `src/hearsay/services/permissions.py` — `probe_permissions()`: spawns the helper, reads its
+  `check_permissions` snapshot + `hello` version, shuts it down; never raises (degrades to
+  `helper_available=false` + all `unknown`).
+- `src/hearsay/api/settings.py` — `GET /api/settings`, `PUT /api/settings/{recording,speakers,storage}`,
+  `GET /api/settings/permissions`. Registered in `src/hearsay/api/app.py` as `settings_routes`.
 - Migration `7579f4d6db78` created the `preferences` table (the current head; speakers/storage
   added no migration — they are JSON sections in `preferences`).
 
@@ -87,25 +100,25 @@ Frontend:
 Finalize: `git checkout -b feat/settings-<x>-panel` -> commit -> `make ci` -> `git checkout main` ->
 `git merge --no-ff`.
 
+## Read-only panels (shipped) — the live-probe pattern
+
+Permissions and About do not follow the editable-panel recipe above (no Preference section, no
+`set_<x>()`, no cache-patching mutation). Reference points if you add another read-only panel:
+
+- **About** is the trivial case: a `<x>()` method on `SettingsService` returning a schema, added as
+  a field on `SettingsRead` and read via the existing `useSettings` query. No route, no hook.
+- **Permissions** is the live-probe case: a standalone `GET /api/settings/permissions` backed by
+  `services/permissions.py` (spawns the helper per request). Its `usePermissions` hook sets
+  `staleTime: Infinity` + `refetchOnWindowFocus: false` because each fetch spawns a subprocess —
+  it loads on panel mount and re-runs only on the explicit **Recheck** button. The probe must never
+  raise: a missing/unresponsive helper returns `helper_available=false` + all `unknown`.
+- Gotcha still open: only microphone has a real TCC status; `audio_capture` / `screen_recording` /
+  `accessibility` / `calendar` are `undetermined` stubs in `helper/.../Permissions.swift` until
+  their capture phases land. The deep-link anchors live in the frontend `PERMISSION_ROWS`
+  (`Privacy_Microphone` / `Privacy_ScreenCapture` / `Privacy_Accessibility` / `Privacy_Calendars`;
+  `audio_capture` falls back to the general `?Privacy` pane — no dedicated tap anchor).
+
 ## Remaining panels
-
-### Permissions (small, but needs the helper)
-
-- Data source already exists: the capture helper answers the `check_permissions` control command
-  (`helper/Sources/hearsay-helper/Serve.swift`, `Permissions.swift` -> `Permissions.snapshot()`).
-  `src/hearsay/helper/capture_debug.py` shows how Python calls `control.call("check_permissions")`.
-- Not a `Preference` section — it is live status + actions. Add e.g. `GET /api/settings/permissions`
-  that briefly spawns/queries the helper and returns the snapshot.
-- Gotchas: only microphone has a real status; screen recording / accessibility / calendar /
-  audio_capture are `undetermined` stubs today. Depends on the helper being present. Add
-  "Open System Settings" deep links in the panel (`x-apple.systempreferences:` URLs).
-
-### About (small)
-
-- Read-only: `__version__` (`hearsay.__version__`), `settings.environment`, protocol/helper version
-  (helper reports `helper_version` + `protocol_version` in `Serve.swift`), DB path.
-- Simplest as a read-only field on `SettingsRead` (like `storage_info`) or a dedicated
-  `GET /api/settings/about`. No wiring, no persistence.
 
 ### Models (large, verification-gated)
 
