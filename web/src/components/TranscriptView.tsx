@@ -28,6 +28,10 @@ export function TranscriptView({ meeting }: Props) {
   const activeRef = useRef<HTMLLIElement>(null);
   const [currentTime, setCurrentTime] = useState(0);
   const [hasAudio, setHasAudio] = useState(true);
+  const [volume, setVolume] = useState(1);
+  const audioCtxRef = useRef<AudioContext | null>(null);
+  const gainRef = useRef<GainNode | null>(null);
+  const volumeRef = useRef(1);
 
   // The audio.wav timeline is meeting-relative (sample N = second N), so the currently-playing
   // line is the last one whose start time has passed.
@@ -40,11 +44,18 @@ export function TranscriptView({ meeting }: Props) {
     return index;
   }, [lines, currentTime]);
 
-  // Reset playback state when switching meetings.
+  // Reset playback state when switching meetings; the <audio> element remounts per meeting, so drop
+  // the old Web Audio graph and let the next play rebuild it against the new element.
   useEffect(() => {
     setCurrentTime(0);
     setHasAudio(true);
+    void audioCtxRef.current?.close();
+    audioCtxRef.current = null;
+    gainRef.current = null;
   }, [meeting?.id]);
+
+  // Close the audio context when the view unmounts.
+  useEffect(() => () => void audioCtxRef.current?.close(), []);
 
   // Keep the highlighted line in view as playback advances.
   useEffect(() => {
@@ -69,6 +80,26 @@ export function TranscriptView({ meeting }: Props) {
     void audio.play();
   };
 
+  // Route the element through a Web Audio gain node so the slider can boost past 100% (native
+  // <audio> volume only attenuates). Built lazily on first play — a user gesture, so the context is
+  // allowed to start; `createMediaElementSource` is once-per-element, guarded by the ref.
+  const ensureAudioGraph = () => {
+    const audio = audioRef.current;
+    if (!audio || audioCtxRef.current) return;
+    const ctx = new AudioContext();
+    const gain = ctx.createGain();
+    gain.gain.value = volumeRef.current;
+    ctx.createMediaElementSource(audio).connect(gain).connect(ctx.destination);
+    audioCtxRef.current = ctx;
+    gainRef.current = gain;
+  };
+
+  const handleVolume = (value: number) => {
+    setVolume(value);
+    volumeRef.current = value;
+    if (gainRef.current) gainRef.current.gain.value = value;
+  };
+
   return (
     <section className="transcript">
       <header className="transcript__header">
@@ -87,15 +118,34 @@ export function TranscriptView({ meeting }: Props) {
         )}
       </header>
       {!recording && hasAudio ? (
-        <audio
-          ref={audioRef}
-          className="transcript__audio"
-          src={audioUrl}
-          controls
-          preload="metadata"
-          onTimeUpdate={(event) => setCurrentTime(event.currentTarget.currentTime)}
-          onError={() => setHasAudio(false)}
-        />
+        <div className="transcript__playback">
+          <audio
+            ref={audioRef}
+            className="transcript__audio"
+            src={audioUrl}
+            controls
+            preload="metadata"
+            onPlay={() => {
+              ensureAudioGraph();
+              void audioCtxRef.current?.resume();
+            }}
+            onTimeUpdate={(event) => setCurrentTime(event.currentTarget.currentTime)}
+            onError={() => setHasAudio(false)}
+          />
+          <label className="transcript__volume">
+            <span>Volume</span>
+            <input
+              type="range"
+              min={0}
+              max={2}
+              step={0.01}
+              value={volume}
+              aria-label="Playback volume"
+              onChange={(event) => handleVolume(event.currentTarget.valueAsNumber)}
+            />
+            <span className="transcript__volume-value">{Math.round(volume * 100)}%</span>
+          </label>
+        </div>
       ) : null}
       {rediarize.isError ? (
         <p className="transcript__error" role="alert">
