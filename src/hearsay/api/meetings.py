@@ -8,8 +8,8 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from hearsay.api.deps import ManagerDep, SessionDep, require_token
-from hearsay.schemas import MeetingCreate, MeetingRead, Page, SegmentRead
-from hearsay.services import MeetingService
+from hearsay.schemas import MeetingCreate, MeetingRead, MeetingRelocate, Page, SegmentRead
+from hearsay.services import MeetingRelocationError, MeetingService
 from hearsay.transcript import SessionBusyError
 
 router = APIRouter(prefix="/meetings", tags=["meetings"], dependencies=[Depends(require_token)])
@@ -66,6 +66,26 @@ async def list_segments(
 @router.post("/{meeting_id}/stop", response_model=MeetingRead)
 async def stop_meeting(meeting_id: UUID, manager: ManagerDep) -> MeetingRead:
     meeting = await manager.stop_meeting(meeting_id)
+    if meeting is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="meeting not found")
+    return MeetingRead.model_validate(meeting)
+
+
+@router.put("/{meeting_id}/storage", response_model=MeetingRead)
+async def relocate_meeting(
+    meeting_id: UUID, body: MeetingRelocate, manager: ManagerDep
+) -> MeetingRead:
+    """Re-point a meeting's storage to a directory its artifacts were moved to (validate, don't
+    move). 409 while it is recording; 422 if the target does not hold the artifacts."""
+    try:
+        meeting = await manager.relocate_meeting(meeting_id, body.new_root)
+    except SessionBusyError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    except MeetingRelocationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail={"message": str(exc), "missing": exc.missing},
+        ) from exc
     if meeting is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="meeting not found")
     return MeetingRead.model_validate(meeting)

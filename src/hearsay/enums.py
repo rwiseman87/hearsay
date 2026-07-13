@@ -30,6 +30,14 @@ class MeetingStatus(StrEnum):
     FINALIZED = "finalized"
 
 
+class AssetKind(StrEnum):
+    """A tracked on-disk meeting artifact (one row per file in the manifest)."""
+
+    TRANSCRIPT = "transcript"
+    METADATA = "metadata"
+    AUDIO = "audio"
+
+
 class SampleFormat(StrEnum):
     INT16 = "int16"
     FLOAT32 = "float32"

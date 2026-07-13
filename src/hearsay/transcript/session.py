@@ -22,7 +22,7 @@ from hearsay.export import LocalMarkdownSink, MeetingMeta, TranscriptSink
 from hearsay.log import get_logger
 from hearsay.models import Cluster, Meeting
 from hearsay.schemas import TranscriptEvent
-from hearsay.services import MeetingService, SpeakerService, meeting_folder_name
+from hearsay.services import MeetingService, SpeakerService, meeting_dir, meeting_folder_name
 from hearsay.transcript.broadcast import Broadcaster
 from hearsay.transcript.capture import Capture, HelperCapture
 from hearsay.transcript.live import LiveThemProcessor
@@ -151,16 +151,22 @@ class SessionManager:
             when = datetime.now(UTC)
             resolved_title = title or _default_title(when)
             folder_name = meeting_folder_name(resolved_title, when)
+            # Stamp the current output root onto the row so a later output-dir change never
+            # repoints this meeting away from where its artifacts get written.
+            storage_root = str(self._settings.output_dir.resolve())
             async with self._db.session() as session:
                 meeting = await MeetingService(session).create(
-                    title=resolved_title, folder=folder_name, started_at=when
+                    title=resolved_title,
+                    folder=folder_name,
+                    storage_root=storage_root,
+                    started_at=when,
                 )
             broadcaster = Broadcaster()
             meta = MeetingMeta(
                 id=meeting.id,
                 title=resolved_title,
                 started_at=when,
-                folder=self._settings.output_dir / folder_name,
+                folder=meeting_dir(meeting),
             )
             session_obj = MeetingSession(
                 meta=meta,
@@ -182,6 +188,13 @@ class SessionManager:
             meeting = await MeetingService(session).finalize(meeting_id)
         if meeting is not None:
             await self._maybe_auto_refine(meeting)
+            # Record the on-disk artifacts (transcript + metadata, and audio.wav if recorded) so
+            # the meeting's storage can later be re-pointed and validated against a known manifest.
+            async with self._db.session() as session:
+                service = MeetingService(session)
+                refreshed = await service.get(meeting_id)
+                if refreshed is not None:
+                    await service.sync_manifest(refreshed)
         return meeting
 
     async def _maybe_auto_refine(self, meeting: Meeting) -> None:
@@ -191,7 +204,7 @@ class SessionManager:
         diarization = self._settings.diarization
         if not (diarization.refine and diarization.auto_refine):
             return
-        audio_wav = self._settings.output_dir / meeting.folder / "audio.wav"
+        audio_wav = meeting_dir(meeting) / "audio.wav"
         if not audio_wav.exists():  # audio.record was off -> nothing to re-diarize
             return
         try:
@@ -218,10 +231,25 @@ class SessionManager:
             meeting = await service.get(meeting_id)
             if meeting is None:
                 return False
-            folder = self._settings.output_dir / meeting.folder
+            folder = meeting_dir(meeting)
             await service.delete(meeting_id)
         shutil.rmtree(folder, ignore_errors=True)
         return True
+
+    async def relocate_meeting(self, meeting_id: UUID, new_root: str) -> Meeting | None:
+        """Re-point a finalized meeting's storage to ``new_root`` (validates the artifacts are
+        there; does not move files). Refuses while the meeting is the active recording, since its
+        folder is being written."""
+        async with self._lock:
+            active = self._active
+            if active is not None and active.meeting_id == meeting_id:
+                raise SessionBusyError("cannot relocate a meeting while it is recording")
+            async with self._db.session() as session:
+                service = MeetingService(session)
+                meeting = await service.get(meeting_id)
+                if meeting is None:
+                    return None
+                return await service.relocate(meeting, new_root)
 
     async def relabel_speaker(
         self, meeting_id: UUID, cluster_id: UUID, display_name: str

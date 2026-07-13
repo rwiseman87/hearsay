@@ -53,7 +53,7 @@ async def database(tmp_path: Path) -> AsyncIterator[Database]:
 async def test_handle_persists_me_with_offset(database: Database) -> None:
     async with database.session() as session:
         meeting = await MeetingService(session).create(
-            title="M", folder="m", started_at=datetime.now(UTC)
+            title="M", folder="m", storage_root="/out", started_at=datetime.now(UTC)
         )
     sink = _FakeSink()
     processor = LiveMeProcessor(
@@ -86,7 +86,7 @@ async def test_handle_persists_me_with_offset(database: Database) -> None:
 async def test_partials_broadcast_but_not_persisted(database: Database) -> None:
     async with database.session() as session:
         meeting = await MeetingService(session).create(
-            title="M", folder="m", started_at=datetime.now(UTC)
+            title="M", folder="m", storage_root="/out", started_at=datetime.now(UTC)
         )
     sink = _FakeSink()
     broadcaster = Broadcaster()

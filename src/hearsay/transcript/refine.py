@@ -36,7 +36,7 @@ from hearsay.enums import MeetingStatus, Stream
 from hearsay.export import LocalMarkdownSink, MeetingMeta, TranscriptLine
 from hearsay.log import get_logger
 from hearsay.models import Cluster, Meeting, Segment
-from hearsay.services import MeetingService, SpeakerService, TurnSegment
+from hearsay.services import MeetingService, SpeakerService, TurnSegment, meeting_dir
 from hearsay.transcript.recorder import read_them_channel
 
 _log = get_logger("hearsay.refine")
@@ -177,7 +177,7 @@ async def rediarize_meeting(
         meeting = await MeetingService(session).get(meeting_id)
     if meeting is None:
         raise RefineError(f"meeting {meeting_id} not found")
-    folder = settings.output_dir / meeting.folder
+    folder = meeting_dir(meeting)
     wav_path = folder / "audio.wav"
     if not wav_path.exists():
         raise RefineError(
@@ -242,6 +242,11 @@ async def rediarize_meeting(
             recognized=recognized,
         )
     await _rewrite_transcript(meeting_id, meeting=meeting, folder=folder, database=database)
+    async with database.session() as session:
+        service = MeetingService(session)
+        refreshed = await service.get(meeting_id)
+        if refreshed is not None:
+            await service.sync_manifest(refreshed)
 
     _log.info(
         "rediarized meeting %s: %d speakers, %d turn segments, %d names kept, %d recognized",

@@ -182,6 +182,27 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/meetings/{meeting_id}/storage": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Relocate Meeting
+         * @description Re-point a meeting's storage to a directory its artifacts were moved to (validate, don't
+         *     move). 409 while it is recording; 422 if the target does not hold the artifacts.
+         */
+        put: operations["relocate_meeting_api_meetings__meeting_id__storage_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -236,6 +257,8 @@ export interface components {
              */
             started_at: string;
             status: components["schemas"]["MeetingStatus"];
+            /** Storage Root */
+            storage_root: string;
             /** Title */
             title: string;
             /**
@@ -243,6 +266,16 @@ export interface components {
              * Format: date-time
              */
             updated_at: string;
+        };
+        /**
+         * MeetingRelocate
+         * @description Re-point a meeting's storage to ``new_root`` (an absolute directory the artifacts moved
+         *     to). The app validates the artifacts are there and updates the stored root; it does not move
+         *     files.
+         */
+        MeetingRelocate: {
+            /** New Root */
+            new_root: string;
         };
         /**
          * MeetingStatus
@@ -718,6 +751,41 @@ export interface operations {
             cookie?: never;
         };
         requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MeetingRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    relocate_meeting_api_meetings__meeting_id__storage_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                meeting_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MeetingRelocate"];
+            };
+        };
         responses: {
             /** @description Successful Response */
             200: {

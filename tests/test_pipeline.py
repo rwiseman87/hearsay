@@ -67,7 +67,7 @@ async def test_pipeline_routes_each_stream_to_its_sidecar(tmp_path: Path) -> Non
     database = _make_db(tmp_path)
     async with database.session() as session:
         meeting = await MeetingService(session).create(
-            title="T", folder="mtg", started_at=datetime.now(UTC)
+            title="T", folder="mtg", storage_root=str(tmp_path), started_at=datetime.now(UTC)
         )
 
     me_queue: asyncio.Queue[AudioChunk | None] = asyncio.Queue()
@@ -120,7 +120,7 @@ async def test_pipeline_drains_stream_without_a_processor(tmp_path: Path) -> Non
     database = _make_db(tmp_path)
     async with database.session() as session:
         meeting = await MeetingService(session).create(
-            title="T", folder="mtg", started_at=datetime.now(UTC)
+            title="T", folder="mtg", storage_root=str(tmp_path), started_at=datetime.now(UTC)
         )
 
     me_queue: asyncio.Queue[AudioChunk | None] = asyncio.Queue()
