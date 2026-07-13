@@ -192,6 +192,29 @@ def test_settings_requires_token(client: TestClient) -> None:
     assert client.put("/api/settings/recording", json={"record": True}).status_code == 401
 
 
+def test_settings_speakers_round_trip(client: TestClient) -> None:
+    initial = client.get("/api/settings", headers=AUTH).json()["speakers"]
+    assert initial == {"auto_refine": True, "recognition_threshold": 0.6}  # defaults
+
+    updated = client.put(
+        "/api/settings/speakers",
+        json={"auto_refine": False, "recognition_threshold": 0.75},
+        headers=AUTH,
+    )
+    assert updated.status_code == 200
+    assert updated.json() == {"auto_refine": False, "recognition_threshold": 0.75}
+    assert client.get("/api/settings", headers=AUTH).json()["speakers"]["auto_refine"] is False
+
+
+def test_settings_speakers_threshold_out_of_range_422(client: TestClient) -> None:
+    response = client.put(
+        "/api/settings/speakers",
+        json={"auto_refine": True, "recognition_threshold": 1.5},
+        headers=AUTH,
+    )
+    assert response.status_code == 422  # Field(ge=0, le=1) rejected at the boundary
+
+
 def test_get_missing_meeting_404(client: TestClient) -> None:
     missing = "00000000-0000-0000-0000-000000000000"
     assert client.get(f"/api/meetings/{missing}", headers=AUTH).status_code == 404

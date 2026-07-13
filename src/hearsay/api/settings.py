@@ -9,7 +9,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends
 
 from hearsay.api.deps import ContextDep, SessionDep, require_token
-from hearsay.schemas import RecordingSettings, SettingsRead
+from hearsay.schemas import RecordingSettings, SettingsRead, SpeakerSettings
 from hearsay.services import SettingsService
 
 router = APIRouter(prefix="/settings", tags=["settings"], dependencies=[Depends(require_token)])
@@ -23,3 +23,8 @@ async def read_settings(context: ContextDep, session: SessionDep) -> SettingsRea
 @router.put("/recording", response_model=RecordingSettings)
 async def update_recording(body: RecordingSettings, session: SessionDep) -> RecordingSettings:
     return await SettingsService(session).set_recording(body)
+
+
+@router.put("/speakers", response_model=SpeakerSettings)
+async def update_speakers(body: SpeakerSettings, session: SessionDep) -> SpeakerSettings:
+    return await SettingsService(session).set_speakers(body)

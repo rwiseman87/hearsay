@@ -12,6 +12,7 @@ import type {
   RecordingSettings,
   SettingsRead,
   SpeakerRead,
+  SpeakerSettings,
 } from "./types";
 
 export function useMeetings(page = 1, pageSize = 50) {
@@ -139,6 +140,19 @@ export function useUpdateRecording() {
     onSuccess: (recording) => {
       qc.setQueryData<SettingsRead>(queryKeys.settings.all, (old) =>
         old ? { ...old, recording } : old,
+      );
+    },
+  });
+}
+
+// Update the speaker-diarization section; patch the cache with the returned section.
+export function useUpdateSpeakers() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: SpeakerSettings) => api.put<SpeakerSettings>("/api/settings/speakers", body),
+    onSuccess: (speakers) => {
+      qc.setQueryData<SettingsRead>(queryKeys.settings.all, (old) =>
+        old ? { ...old, speakers } : old,
       );
     },
   });

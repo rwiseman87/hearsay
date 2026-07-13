@@ -210,8 +210,11 @@ class SessionManager:
         """Re-diarize the just-finalized meeting (FluidAudio on the ANE; ~seconds), so it ends
         with accurate speaker labels without the manual button. Best-effort: a missing
         recording or a diarizer failure is logged, never raised -- the stop already succeeded."""
-        diarization = self._settings.diarization
-        if not (diarization.refine and diarization.auto_refine):
+        if not self._settings.diarization.refine:
+            return
+        async with self._db.session() as session:
+            auto_refine = await SettingsService(session).effective_auto_refine(self._settings)
+        if not auto_refine:  # UI-toggleable (overlay over the env default)
             return
         audio_wav = meeting_dir(meeting) / "audio.wav"
         if not audio_wav.exists():  # audio.record was off -> nothing to re-diarize

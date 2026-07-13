@@ -15,9 +15,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from hearsay.config.settings import Settings
 from hearsay.models import Preference
-from hearsay.schemas import RecordingSettings, SettingsRead
+from hearsay.schemas import RecordingSettings, SettingsRead, SpeakerSettings
 
 _RECORDING = "recording"
+_SPEAKERS = "speakers"
 
 
 class SettingsService:
@@ -26,7 +27,10 @@ class SettingsService:
 
     async def read_all(self, settings: Settings) -> SettingsRead:
         """The effective settings across every section (stored override or default)."""
-        return SettingsRead(recording=await self.recording(settings))
+        return SettingsRead(
+            recording=await self.recording(settings),
+            speakers=await self.speakers(settings),
+        )
 
     async def recording(self, settings: Settings) -> RecordingSettings:
         stored = await self._section(_RECORDING)
@@ -41,6 +45,27 @@ class SettingsService:
     async def effective_audio_record(self, settings: Settings) -> bool:
         """The audio-retention switch feature code reads at meeting start."""
         return (await self.recording(settings)).record
+
+    async def speakers(self, settings: Settings) -> SpeakerSettings:
+        stored = await self._section(_SPEAKERS)
+        if stored is not None:
+            return SpeakerSettings.model_validate(stored)
+        return SpeakerSettings(
+            auto_refine=settings.diarization.auto_refine,
+            recognition_threshold=settings.diarization.recognition_threshold,
+        )
+
+    async def set_speakers(self, patch: SpeakerSettings) -> SpeakerSettings:
+        await self._upsert(_SPEAKERS, patch.model_dump())
+        return patch
+
+    async def effective_auto_refine(self, settings: Settings) -> bool:
+        """Whether the offline refine runs automatically at finalize."""
+        return (await self.speakers(settings)).auto_refine
+
+    async def effective_recognition_threshold(self, settings: Settings) -> float:
+        """The cosine threshold the refine uses to auto-match a returning speaker."""
+        return (await self.speakers(settings)).recognition_threshold
 
     async def _section(self, section: str) -> dict[str, Any] | None:
         pref = await self._session.scalar(select(Preference).where(Preference.section == section))
