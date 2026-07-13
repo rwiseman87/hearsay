@@ -121,10 +121,18 @@ pub(crate) async fn rediarize(
     };
     queries::replace_them_segments(&state.pool, id, &result).await?;
 
-    // Regenerate transcript.md + meeting.json from the refined (+ Me) segments.
+    // Regenerate transcript.md + meeting.json from the refined (+ Me) segments (off the async worker).
     let segments = queries::list_segments(&state.pool, id).await?;
-    if let Err(err) = hearsay_orchestrator::write_meeting_files(&dir, &meeting, &segments) {
-        tracing::warn!(error = %err, "failed to rewrite transcript after rediarize");
+    let write = tokio::task::spawn_blocking(move || {
+        hearsay_orchestrator::write_meeting_files(&dir, &meeting, &segments)
+    })
+    .await;
+    match write {
+        Ok(Err(err)) => {
+            tracing::warn!(error = %err, "failed to rewrite transcript after rediarize")
+        }
+        Err(err) => tracing::warn!(error = %err, "transcript rewrite task panicked"),
+        Ok(Ok(())) => {}
     }
 
     let speakers = queries::list_speaker_rows(&state.pool, id).await?;

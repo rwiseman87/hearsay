@@ -9,7 +9,6 @@
 //! arrive over a std channel, segments leave over a tokio channel (the orchestrator drains it until
 //! it closes at end-of-input).
 
-use std::sync::mpsc as std_mpsc;
 use std::thread::JoinHandle;
 
 use async_trait::async_trait;
@@ -18,10 +17,15 @@ use tokio::sync::mpsc;
 use hearsay_inference::{StreamEventKind, StreamingAsr, StreamingSession};
 use hearsay_orchestrator::{OrchestratorError, SegmentKind, SidecarSegment, Transcriber};
 
+/// Capacity of the PCM hand-off channel to the sherpa worker thread. Bounded so a worker that falls
+/// behind real-time backpressures the caller (via the async `feed`) instead of growing without
+/// bound; ~13 s of 100 ms chunks.
+const PCM_CHANNEL_CAPACITY: usize = 128;
+
 /// A live transcriber driving one sherpa streaming session on a worker thread.
 pub struct SherpaTranscriber {
     asr: StreamingAsr,
-    pcm_tx: Option<std_mpsc::Sender<Vec<f32>>>,
+    pcm_tx: Option<mpsc::Sender<Vec<f32>>>,
     worker: Option<JoinHandle<()>>,
 }
 
@@ -52,10 +56,10 @@ fn to_segment(event: hearsay_inference::StreamEvent) -> SidecarSegment {
 /// The worker: feed each PCM chunk through the session, forwarding events, then flush the tail.
 fn run(
     mut session: StreamingSession,
-    pcm_rx: std_mpsc::Receiver<Vec<f32>>,
+    mut pcm_rx: mpsc::Receiver<Vec<f32>>,
     seg_tx: mpsc::UnboundedSender<SidecarSegment>,
 ) {
-    while let Ok(chunk) = pcm_rx.recv() {
+    while let Some(chunk) = pcm_rx.blocking_recv() {
         for event in session.feed(&chunk) {
             if seg_tx.send(to_segment(event)).is_err() {
                 return; // consumer dropped
@@ -74,16 +78,16 @@ impl Transcriber for SherpaTranscriber {
         &mut self,
     ) -> Result<mpsc::UnboundedReceiver<SidecarSegment>, OrchestratorError> {
         let session = self.asr.session();
-        let (pcm_tx, pcm_rx) = std_mpsc::channel::<Vec<f32>>();
+        let (pcm_tx, pcm_rx) = mpsc::channel::<Vec<f32>>(PCM_CHANNEL_CAPACITY);
         let (seg_tx, seg_rx) = mpsc::unbounded_channel::<SidecarSegment>();
         self.worker = Some(std::thread::spawn(move || run(session, pcm_rx, seg_tx)));
         self.pcm_tx = Some(pcm_tx);
         Ok(seg_rx)
     }
 
-    async fn feed(&mut self, samples: &[f32]) {
+    async fn feed(&mut self, samples: Vec<f32>) {
         if let Some(tx) = &self.pcm_tx {
-            let _ = tx.send(samples.to_vec());
+            let _ = tx.send(samples).await;
         }
     }
 

@@ -711,7 +711,6 @@ dependencies = [
  "async-trait",
  "hearsay-ipc",
  "hearsay-orchestrator",
- "serde_json",
  "tempfile",
  "tokio",
  "tracing",

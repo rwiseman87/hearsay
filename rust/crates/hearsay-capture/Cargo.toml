@@ -7,7 +7,6 @@ edition.workspace = true
 hearsay-orchestrator = { path = "../hearsay-orchestrator" }
 hearsay-ipc = { path = "../hearsay-ipc" }
 tokio = { version = "1.52.3", features = ["net", "process", "io-util", "sync", "time", "rt", "macros"] }
-serde_json = "1.0.150"
 async-trait = "0.1.89"
 tempfile = "3.27.0"
 tracing = "0.1.44"

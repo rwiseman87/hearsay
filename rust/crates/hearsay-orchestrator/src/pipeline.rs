@@ -28,6 +28,11 @@ use crate::types::{CaptureChunk, SegmentKind, SidecarSegment, Stream};
 /// Capacity of the per-meeting live broadcast channel (transcript events to WebSocket subscribers).
 const BROADCAST_CAPACITY: usize = 256;
 
+/// Capacity of each stream's PCM hand-off channel (demux -> stream task). Bounded so a slow
+/// transcriber backpressures capture instead of the queue growing without bound; ~13 s of 100 ms
+/// chunks.
+const PCM_CHANNEL_CAPACITY: usize = 128;
+
 /// A running pipeline: the capture source (kept to stop it) and the spawned tasks.
 pub(crate) struct Pipeline {
     pub(crate) broadcast_tx: broadcast::Sender<String>,
@@ -65,8 +70,8 @@ pub(crate) async fn spawn(
     let them_emit = them.start().await?;
 
     let (broadcast_tx, _) = broadcast::channel::<String>(BROADCAST_CAPACITY);
-    let (me_tx, me_rx) = mpsc::unbounded_channel::<(f64, Vec<f32>)>();
-    let (them_tx, them_rx) = mpsc::unbounded_channel::<(f64, Vec<f32>)>();
+    let (me_tx, me_rx) = mpsc::channel::<(f64, Vec<f32>)>(PCM_CHANNEL_CAPACITY);
+    let (them_tx, them_rx) = mpsc::channel::<(f64, Vec<f32>)>(PCM_CHANNEL_CAPACITY);
 
     let recorder = audio_path.map(MeetingAudioRecorder::new);
     let demux = tokio::spawn(demux(capture_rx, me_tx, them_tx, recorder));
@@ -102,8 +107,8 @@ pub(crate) async fn spawn(
 /// sample index). The recorder is finalized once capture ends.
 async fn demux(
     mut capture_rx: mpsc::Receiver<CaptureChunk>,
-    me_tx: mpsc::UnboundedSender<(f64, Vec<f32>)>,
-    them_tx: mpsc::UnboundedSender<(f64, Vec<f32>)>,
+    me_tx: mpsc::Sender<(f64, Vec<f32>)>,
+    them_tx: mpsc::Sender<(f64, Vec<f32>)>,
     mut recorder: Option<MeetingAudioRecorder>,
 ) {
     let mut epoch_ns: Option<u64> = None;
@@ -117,12 +122,15 @@ async fn demux(
             Stream::Me => &me_tx,
             Stream::Them => &them_tx,
         };
-        let _ = sender.send((t0_s, cap.chunk.samples));
+        let _ = sender.send((t0_s, cap.chunk.samples)).await;
     }
-    // Capture ended: write the WAV. Best-effort — a failure never fails the meeting stop.
+    // Capture ended: write the WAV. Best-effort — a failure never fails the meeting stop. The encode
+    // walks every sample of the meeting, so run it off the async worker.
     if let Some(rec) = recorder.take() {
-        if let Err(err) = rec.close() {
-            tracing::error!(error = %err, "failed to write meeting audio.wav");
+        match tokio::task::spawn_blocking(move || rec.close()).await {
+            Ok(Err(err)) => tracing::error!(error = %err, "failed to write meeting audio.wav"),
+            Err(err) => tracing::error!(error = %err, "meeting audio.wav writer panicked"),
+            Ok(Ok(())) => {}
         }
     }
 }
@@ -133,7 +141,7 @@ async fn demux(
 async fn stream_loop(
     role: StreamRole,
     mut transcriber: Box<dyn Transcriber>,
-    mut chunk_rx: mpsc::UnboundedReceiver<(f64, Vec<f32>)>,
+    mut chunk_rx: mpsc::Receiver<(f64, Vec<f32>)>,
     mut emit_rx: mpsc::UnboundedReceiver<SidecarSegment>,
     pool: SqlitePool,
     meeting_id: Uuid,
@@ -149,7 +157,7 @@ async fn stream_loop(
             chunk = chunk_rx.recv(), if feeding => match chunk {
                 Some((t0_s, samples)) => {
                     offset.get_or_insert(t0_s);
-                    transcriber.feed(&samples).await;
+                    transcriber.feed(samples).await;
                 }
                 // Capture ended: stop feeding and flush the sidecar's finalized tail. The emit
                 // channel closes once the sidecar exits, ending the drain below.
