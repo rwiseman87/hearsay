@@ -173,6 +173,25 @@ def test_relocate_missing_meeting_404(client: TestClient) -> None:
     assert response.status_code == 404
 
 
+def test_settings_read_and_update(client: TestClient) -> None:
+    # Default reflects Settings (audio.record defaults True).
+    initial = client.get("/api/settings", headers=AUTH)
+    assert initial.status_code == 200
+    assert initial.json()["recording"]["record"] is True
+
+    updated = client.put("/api/settings/recording", json={"record": False}, headers=AUTH)
+    assert updated.status_code == 200
+    assert updated.json()["record"] is False
+
+    # The override persists and is reflected on the next read.
+    assert client.get("/api/settings", headers=AUTH).json()["recording"]["record"] is False
+
+
+def test_settings_requires_token(client: TestClient) -> None:
+    assert client.get("/api/settings").status_code == 401
+    assert client.put("/api/settings/recording", json={"record": True}).status_code == 401
+
+
 def test_get_missing_meeting_404(client: TestClient) -> None:
     missing = "00000000-0000-0000-0000-000000000000"
     assert client.get(f"/api/meetings/{missing}", headers=AUTH).status_code == 404

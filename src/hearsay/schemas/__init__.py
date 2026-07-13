@@ -5,6 +5,7 @@ from __future__ import annotations
 from hearsay.schemas.common import Page
 from hearsay.schemas.meeting import MeetingCreate, MeetingRead, MeetingRelocate
 from hearsay.schemas.segment import SegmentRead, TranscriptEvent
+from hearsay.schemas.settings import RecordingSettings, SettingsRead
 from hearsay.schemas.speaker import IdentityRead, SpeakerRead, SpeakerRename
 
 __all__ = [
@@ -13,7 +14,9 @@ __all__ = [
     "MeetingRead",
     "MeetingRelocate",
     "Page",
+    "RecordingSettings",
     "SegmentRead",
+    "SettingsRead",
     "SpeakerRead",
     "SpeakerRename",
     "TranscriptEvent",

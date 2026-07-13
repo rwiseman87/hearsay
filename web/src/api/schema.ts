@@ -203,6 +203,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/settings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read Settings */
+        get: operations["read_settings_api_settings_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/settings/recording": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Update Recording */
+        put: operations["update_recording_api_settings_recording_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -327,6 +361,18 @@ export interface components {
             /** Total */
             total: number;
         };
+        /**
+         * RecordingSettings
+         * @description Recording & privacy. ``record`` is the single audio-retention switch: keep one
+         *     timeline-accurate WAV per meeting (needed for playback + the post-meeting refine).
+         */
+        RecordingSettings: {
+            /**
+             * Record
+             * @default true
+             */
+            record: boolean;
+        };
         /** SegmentRead */
         SegmentRead: {
             /** Cluster Id */
@@ -345,6 +391,13 @@ export interface components {
             stream: components["schemas"]["Stream"];
             /** Text */
             text: string;
+        };
+        /**
+         * SettingsRead
+         * @description The full editable settings, one field per panel/section (extended as panels land).
+         */
+        SettingsRead: {
+            recording: components["schemas"]["RecordingSettings"];
         };
         /**
          * SpeakerRead
@@ -794,6 +847,59 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["MeetingRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    read_settings_api_settings_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SettingsRead"];
+                };
+            };
+        };
+    };
+    update_recording_api_settings_recording_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RecordingSettings"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RecordingSettings"];
                 };
             };
             /** @description Validation Error */

@@ -9,11 +9,13 @@ from hearsay.services.meetings import (
     meeting_folder_name,
     slugify,
 )
+from hearsay.services.settings import SettingsService
 from hearsay.services.speakers import SpeakerService, TurnSegment
 
 __all__ = [
     "MeetingRelocationError",
     "MeetingService",
+    "SettingsService",
     "SpeakerService",
     "TurnSegment",
     "meeting_dir",
