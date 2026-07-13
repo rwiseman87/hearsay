@@ -6,6 +6,167 @@ Conventions: `CLAUDE.md`.
 
 ## How to resume
 
+**CURRENT FOCUS (2026-07-01) — cross-platform (macOS + Windows) Rust + Tauri foundation.** Windows is
+now a **committed near-term requirement**. Since nothing is shipped yet (POC), the decision (full arc in
+[[hearsay-windows-requirement]] memory + `docs/architecture-cross-platform.md`) is to rebuild the
+foundation as **ONE Rust + Tauri app** — per-OS only at capture + ASR acceleration (~90% shared),
+**local-only** inference, one signed installer per OS. Hard constraints: runs on a **16GB Windows laptop
+with integrated graphics** (ref SKU Intel Core Ultra 5 225U) + an **M-series Mac 16GB+**; easily
+distributable to non-technical users. Key insight: the Windows-floor design (light streaming model live +
+heavy ASR/diarization **offline at stop**) designs away the two problems the FluidAudio/ANE pivot solved
+(live-diarization accuracy + Metal contention), so **whisper.cpp works as one unified engine on both
+OSes** (it is the revived pre-ANE stack).
+
+**Branch `feat/cross-platform-rust-tauri` (NOT merged to main).** Target design:
+`docs/architecture-cross-platform.md`. Crate map: `rust/README.md`.
+
+**STATUS (2026-07-02) — the macOS foundation is BUILT and validated end-to-end in the frontend.** All 8
+crates are implemented; the Rust `hearsay-core` binary runs the full live app on the Mac and was confirmed
+on-device (user: live captions + diarization "seems fine"; the offline "Refine speakers" pass "looks pretty
+good"). The Mac path **reuses the proven Swift stack** (capture via `hearsay-helper`; live streaming +
+diarization via the `hearsay-live`/`hearsay-me` FluidAudio sidecars, which the Rust `ProcessTranscriber`
+spawns directly — identical stdio protocol) — so the whisper-vs-FluidAudio fork is effectively **taken:
+FluidAudio/ANE on Mac** (fast, proven), the Rust whisper path is for **Windows** + the offline refine.
+`hearsay-inference` = whisper offline ASR (Mac-verified) + the refine (diarize via Swift `hearsay-diarize`
++ re-transcribe). **All three small Mac follow-ups are DONE 2026-07-02** (auto-refine-at-stop, carry-forward of
+locked manual labels, cross-meeting voiceprints) — not yet on-device-validated end-to-end. **The Windows
+inference path is also DONE + proven end-to-end on the Mac (2026-07-02):** the pure-Rust engines (sherpa-onnx
+streaming ASR live + offline diarizer, whisper offline refine) + the `SherpaTranscriber` adapter run the full
+`WavFileSource -> Orchestrator -> SQLite` pipeline with **no Swift** (capstone: real recording -> 7 finalized
+transcript segments). Diarization accuracy is bounded (~3 vs FluidAudio's 2; better models are non-commercial —
+FluidAudio stays the Mac tier). **The ONLY remaining piece is real capture: a cpal `AudioSource` (WASAPI
+loopback Them + mic Me) + a `WindowsBackend` — genuinely needs Windows hardware.** Blow-by-blow in the progress
+log below.
+
+**DONE + tested — 71 Rust tests (+ opt-in `--ignored`: jfk ASR, synthetic capture, real-recording refine),
+`cargo test` + `clippy -D warnings` + `rustfmt` green, gated by `make ci`:**
+- Rust workspace `rust/` (8 crates) + `make rust-{build,test,lint,fmt}` folded into `make ci`.
+- **`hearsay-ipc`** — media-frame codec (validated byte-for-byte against `shared/fixtures/frames.jsonl`,
+  the same golden vectors Python/Swift check) + NDJSON control channel (Command/Reply/Event, sorted-key wire).
+- **`hearsay-attribution`** — voiceprint cosine matching + diarization mapping (`order_speakers`,
+  `assign_segment_speaker`), pure logic, zero deps.
+- **`hearsay-engine`** — the neutral `LiveEngine` trait seam (meeting lifecycle + live-transcript subscribe)
+  + the `DisabledEngine` stub. Consumed by `hearsay-core`, implemented by `hearsay-orchestrator` — a tiny
+  lean crate (hearsay-db + async-trait + tokio-sync + uuid) so neither adapter depends on the other (breaks
+  the would-be `core -> orchestrator -> core` cycle, and keeps the orchestrator off the axum/web stack).
+- **`hearsay-db`** — SQLx 0.9 + SQLite: one forward-only baseline migration (meetings/identities/clusters/
+  segments), row types + text enums, pool with the `engine.py` pragmas (WAL/busy_timeout/foreign_keys),
+  runtime-checked queries. (Extended with the pagination/join/rename/delete queries `hearsay-core` needs.)
+- **`hearsay-core`** — axum 0.8 HTTP/WS API (port of `src/hearsay/api/`). Full self-contained surface:
+  meetings/segments/speakers/identities queries + the `{total,page,page_size,items}` envelope, pure-DB
+  writes (rename->bind+relabel, delete->DB+folder), audio file serving (Range, query-or-bearer token),
+  static UI + token injection + minimal CSP, loopback Host/Origin hardening + per-session bearer token,
+  and a **utoipa** OpenAPI doc (`GET /openapi.json` + `--dump-openapi`, for OpenAPI->TS). tracing JSON
+  logs; `#[tokio::main]` binds 127.0.0.1 with graceful shutdown. The meeting **lifecycle** (start/stop)
+  and the **live transcript WS** sit behind a `LiveEngine` trait seam (mirrors the Python `create_app`
+  `SessionManager` injection); the `DisabledEngine` is the fallback, but the binary now wires the real
+  `Orchestrator` + macOS `Backend`. `POST /rediarize` now runs the real offline refine (see below).
+  Deps (verified-latest via `cargo add`): axum 0.8.9, tower-http 0.7, tokio 1.52, utoipa 5.5, tracing
+  + tracing-subscriber, serde/serde_json, async-trait 0.1, sqlx 0.9, uuid, chrono, tower (+ tempfile dev).
+  Committed `81c0b9b`.
+- **`hearsay-orchestrator`** — the `LiveEngine` implementation (port of `src/hearsay/transcript/` +
+  `helper/supervisor.py`). Creates the meeting row + folder, drives an `AudioSource`, routes each stream's
+  PCM to its `Transcriber`, and persists + broadcasts the partial/final segments they emit (Them binds
+  `Speaker N` clusters; segment times shifted by the stream's first-fed offset; broadcast JSON matches the
+  Python `TranscriptEvent` `{kind,stream,speaker_label,text,start_s,end_s}` byte-for-byte). The two external
+  backends are behind traits — `AudioSource` (capture) + `Transcriber` (sidecar) — so the lifecycle is tested
+  with scripted fakes over in-memory SQLite (9 tests: full route/persist/broadcast/offset, busy guard, stop
+  unknown, slugify/folder-name, feed framing + segment parse). Real `tokio::process` `ProcessTranscriber`
+  (faithful to `live_base.py` stdio: `<u32 len><f32 pcm>` in, NDJSON segments out) is included for when
+  `hearsay-inference` ships the sidecar binaries. The offline refine at stop (auto-refine) is now DONE
+  (2026-07-02, via a `Refiner` trait seam — see the progress-log entry). The
+  stereo `audio.wav` recorder + the `transcript.md`/`meeting.json` output are also DONE (2026-07-02 entries).
+  Also extended the
+  `hearsay-core` seam: `LiveError::Internal` / `ApiError::Internal` (500) so a real engine can surface DB
+  errors, and `hearsay-db insert_segment` gained a `cluster_id` param (Them finals bind a cluster). Deps:
+  tokio (process/io-util/sync/rt/time), async-trait, serde/serde_json, sqlx, uuid, chrono, tracing
+  (+ tempfile/tokio-macros dev). Committed `d34453e` (+ tracker fixup `5d1245b`).
+  - **Cycle broken (2026-07-02):** the `LiveEngine` trait moved to the new lean `hearsay-engine` crate, so
+    `hearsay-orchestrator` now depends on `hearsay-engine` (not `hearsay-core`) — it no longer pulls in the
+    axum/tower/utoipa web stack, and `hearsay-core`'s binary can construct the orchestrator without a cycle.
+    The final swap (main.rs `DisabledEngine` -> `Orchestrator`) still waits on a real `Backend` (capture +
+    inference). Behavior-neutral refactor; 62 tests still green. Committed `d778191`.
+  - **Hardening + a hardware-free dev path (2026-07-02):** added a `WavFileSource` (a file-backed
+    `AudioSource`: reads the stereo 16 kHz `audio.wav`, Me=L/Them=R, streams timed chunks, holds open until
+    stop; `hound` 3.5.1, Apache-2.0) so the whole real pipeline runs end-to-end from a recording without
+    capture hardware. Plus a `mock_sidecar` fixture bin (speaks the real `<u32 len><f32 pcm>`-in / NDJSON-out
+    contract) driving 3 new integration tests: `ProcessTranscriber` spawn/feed/drain end-to-end (was only
+    codec-unit-tested), `WavFileSource` stereo framing, and a **capstone** running a WAV through two real
+    `ProcessTranscriber` sidecars into SQLite (only the device + model are stand-ins). 65 tests green.
+
+**CRATES 7-8 (in progress):**
+- **`hearsay-capture` (macOS) — DONE (2026-07-02).** `SwiftHelperSource` implements the orchestrator's
+  `AudioSource` by driving the proven Swift `hearsay-helper` over the `hearsay-ipc` sockets (bind control +
+  media, spawn `serve --socket-dir [--synthetic]`, handshake hello + `start_capture`, pump 28-byte media
+  frames -> `CaptureChunk`s). Verified end-to-end against the real helper `--synthetic` (Me + Them frames).
+  **The Rust core is now wired to run live on the Mac** (`hearsay-core` `main.rs` = `Orchestrator` +
+  `MacBackend`: `SwiftHelperSource` + `ProcessTranscriber`s spawning the built `hearsay-live`/`hearsay-me`
+  FluidAudio sidecars — identical stdio protocol, so live streaming + diarization reuse the Swift stack).
+  Smoke-tested: `hearsay-core --synthetic` -> start meeting (helper spawns) -> stop -> finalized. `web/dist`
+  built + FluidAudio models cached, so it's frontend-ready. Windows cpal capture is the remaining half of the
+  trait. **VALIDATED on-device in the frontend (2026-07-02, user: "seems fine")** — live captions +
+  diarization work in the browser through the Rust core. The macOS cross-platform stack is proven end-to-end.
+- **`hearsay-inference`** — whisper.cpp + Silero VAD + offline diarization, tiered models. The big one;
+  provides the orchestrator's `Transcriber` (the sidecar binaries `ProcessTranscriber` spawns) + the offline
+  refine. **Started (2026-07-02) — the offline ASR slice is DONE + verified on the Mac.** `whisper-rs` 0.16
+  (Unlicense) + `hound`: `WhisperAsr::load(ggml)` + `transcribe(&[f32]) -> Vec<AsrSegment>` (16 kHz mono,
+  centisecond bounds), a `read_wav_mono_16k` helper, and a `hearsay-inference <model> <wav>` CLI (the manual
+  accuracy tool). CPU by default (portable); `metal`/`vulkan`/`cuda` are opt-in Cargo features forwarding to
+  `whisper-rs` — the per-OS accel is a build flag, not a fork. Verified: `outputs/models/ggml-base.bin
+  outputs/jfk.wav` -> verbatim JFK quote at ~50x RT (CPU); `ggml-large-v3-turbo` + `--features metal` ->
+  verbatim at ~25x RT. Models live in `outputs/models/` (gitignored: ggml-base/large-v3-turbo/large-v3 +
+  silero_vad.onnx + wespeaker CAM++). Tests: +2 unit (WAV downmix, reject-non-16k) in the gate; an
+  `#[ignore]`d `transcribes_jfk_clip` smoke (opt-in, needs the gitignored model). **The offline REFINE is also
+  DONE + wired + validated on-device** (`refine_them` = re-diarize the Them track via the Swift
+  `hearsay-diarize` sidecar + re-transcribe each turn with whisper; wired to `POST /rediarize`; see its
+  progress-log entry). **NEXT slices (all for the Windows path — Mac uses the Swift sidecars):** a pure-Rust
+  streaming `Transcriber` (Silero VAD ONNX + streaming ASR + pure-Rust Segmenter) + a pure-Rust offline
+  diarizer (Silero + wespeaker/pyannote ONNX via `ort`) so non-Mac needs no Swift; + WER/DER scoring vs
+  references. NB: adding `whisper-rs` means `make rust-{build,test,lint}` now compiles whisper.cpp (cmake + C++)
+  — ~15 s cold, cached after; needs `cmake` + a C++ toolchain (present via Xcode CLT). Cosmetic: whisper.cpp
+  logs some lines to stderr (a `whisper-rs` log hook can silence it later).
+- Deferred: the **Tauri shell** (`cargo tauri init`; hosts the React UI; bundler + signing + notarization +
+  updater). Validate the `externalBin`-breaks-macOS-notarization bug early (the app is sidecar-based).
+
+**MODEL VERIFICATION (corrected 2026-07-02 — NOT a build gate; it is Mac-doable work).** The earlier
+framing wrongly treated a *Windows-floor* determination as a hard gate on building `hearsay-inference`. It
+is not: **model accuracy (WER/DER) + memory are hardware-independent and verifiable on the Mac now**, and
+building the inference path (whisper.cpp on Metal + ONNX) is exactly how you run that verification — you
+can't choose model tiers without running the models. Split the two concerns:
+- **Accuracy / model choice (do it on the Mac, now):** build the whisper.cpp/ONNX path, transcribe known
+  audio on Metal, score WER (ASR) + DER (diarization), pick the tiers. This also resolves the one design
+  fork — **unify on ONE whisper.cpp/ONNX family both platforms, vs keep FluidAudio/ANE as a macOS
+  high-accuracy tier** — from real numbers. Bias to the lighter end (zipformer-live + turbo/distil-large
+  refine).
+- **225U real-time throughput (genuinely deferred):** whether the chosen models hold real-time on the
+  Windows floor's iGPU. Needs the target (a borrowed 225U or **Intel Tiber AI Cloud**'s free Core Ultra),
+  or the quick **Buzz** (whisper.cpp + Vulkan) timing check. A confirmation of a Mac-made choice, not a
+  blocker for it.
+
+**Resume the Rust work:** `. "$HOME/.cargo/env"` first (the Bash-tool shell does not auto-source it);
+`make rust-test` / `rust-lint` / `rust-fmt`; per-crate `cargo test --manifest-path rust/crates/<crate>/Cargo.toml`.
+Pin new deps via `cargo add` (verified-latest, never guess). **The macOS foundation is DONE + validated
+end-to-end** (see the STATUS block up top + the progress log): all 8 crates implemented; `hearsay-core`'s
+binary runs the full live app on the Mac (real capture + streaming captions + live diarization + the offline
+"Refine speakers" pass), reusing the Swift `hearsay-helper` + FluidAudio sidecars. Run it: from the repo root,
+`cargo build --manifest-path rust/Cargo.toml -p hearsay-core` then
+`HEARSAY_SERVER_PORT=8799 DATABASE_URL="sqlite://$PWD/outputs/db/hearsay-rust.db" ./rust/target/debug/hearsay-core`
+(add `--synthetic` for no-permission plumbing), open the printed `?token=` URL. **NEXT — two directions,
+neither blocking the other:** (1) **the Windows path** (the real cross-platform payoff, needs Windows
+hardware): `hearsay-capture` cpal (WASAPI loopback Them + mic Me) + a pure-Rust streaming `Transcriber`
+(Silero VAD + streaming ASR + Segmenter) + a pure-Rust offline diarizer (ONNX via `ort`), so non-Mac needs no
+Swift; (2) **small Mac follow-ups — ALL DONE 2026-07-02** (on-device end-to-end validation still pending):
+~~auto-refine-at-stop~~ (a `Refiner` trait seam; `stop_meeting` best-effort refines before writing the
+transcript), ~~carry-forward of locked manual labels~~ + ~~cross-meeting voiceprints~~ (both in
+`replace_them_segments`, so both refine paths get them). The Windows path is the only remaining cross-platform
+work. Full context: [[hearsay-windows-requirement]].
+
+**Prior on-main focus (now paused behind this):** the three-item focus below — items 1+2 (dead-code, WAV
+consolidation) merged; **item 3 (post-meeting LLM notes) NOT started** — is paused while the cross-platform
+foundation is built. The FluidAudio pivot + post-pivot live-UX features (below) are all done + merged to `main`.
+
+---
+
 **Status (2026-07-01):** The **FluidAudio / Apple-Neural-Engine pivot is COMPLETE and MERGED to `main`** (`--no-ff`
 merge `00672ef`; `make ci` green — ruff + mypy --strict (63 files) + 125 pytest + swift selftest + audit + licenses).
 The on-device audio-AI moved off torch + whisper.cpp/Metal onto **FluidAudio** (Apache-2.0; diarization + Parakeet
@@ -320,6 +481,314 @@ uv run hearsay live --seconds 60     # real pipeline -> live transcripts (on-dev
 
 ## Progress log
 
+- **2026-07-02 (packaging — unsigned macOS .app via a Tauri 2 shell; the app bundles + runs).** First real
+  package (user chose **unsigned** — no Apple Developer cert on this machine: `security find-identity` = 0
+  identities, and notarization needs a paid Developer ID, deferred). Scaffolded a Tauri 2.11 shell at
+  `web/src-tauri/` (standalone crate, not in the `rust/` workspace). **Design = sidecar** (verified best via
+  research vs in-process): the shell bundles + spawns the existing `hearsay-core` binary via
+  `tauri-plugin-shell` (zero core changes), reads its `open: http://127.0.0.1:…?token=…` stdout line, and
+  `WebviewWindow::navigate`s to it; it sets bundle-resolved env (`HEARSAY_HELPER_PATH` -> the sibling Swift
+  sidecar in `Contents/MacOS`, `HEARSAY_WEB_DIR` -> the bundled `web-dist` resource, `DATABASE_URL` /
+  `HEARSAY_OUTPUT_DIR` -> a user-writable `app_data_dir`), and kills the core (+ its Swift children) on quit.
+  All 5 executables (`hearsay-core` + `hearsay-helper`/`live`/`me`/`diarize`) are `bundle.externalBin` (land in
+  `Contents/MacOS`, ad-hoc signed); `web/dist` is a `bundle.resources` map; `Info.plist` merges the mic usage
+  string. **`cargo tauri build --bundles app` produces `Hearsay.app` (72 MB, ad-hoc `Signature=adhoc`).**
+  **Verified the bundle works** (headless, minus the GUI window I can't see): ran the bundled `hearsay-core`
+  with the shell's exact env -> it binds, prints its URL, and `GET /` serves the bundled UI (**HTTP 200**). New
+  `make mac-app` target stages the (debug) binaries + builds. **NEXT (all deferred/optional):** on-device
+  launch of `Hearsay.app` (grant mic/screen, run a meeting — you do this, it's the GUI I can't see); then for a
+  *distributable* build: release binaries (currently debug), bundle the whisper refine model (1.5 GB — or
+  download-on-first-run; auto-refine is skipped gracefully without it), and — if/when you enroll in the Apple
+  Developer Program — Developer-ID sign + notarize (the `externalBin` sidecars each need hardened-runtime +
+  entitlements; research captured the exact steps).
+- **2026-07-02 (cross-platform Rust — pure-Rust live pipeline works END-TO-END on the Mac, no Swift).** Built
+  the `Transcriber`-trait adapter and proved the whole thing. **`SherpaTranscriber`** (in `hearsay-core`, which
+  has both deps; neither orchestrator nor inference can) implements the orchestrator's `Transcriber` over a
+  sherpa `StreamingSession`: a dedicated OS thread owns the session (sherpa decode is blocking CPU), PCM chunks
+  arrive on a std channel, partial/final `StreamEvent`s leave as speaker-less `SidecarSegment`s on a tokio
+  channel (the offline refine assigns speakers at stop). **Capstone** (`hearsay-core/tests/streaming_pipeline.rs`,
+  opt-in): a recorded stereo `audio.wav` (`WavFileSource`) drives **two** `SherpaTranscriber`s through the real
+  `Orchestrator` into SQLite — **no Swift, no capture hardware**. Result: **7 finalized Them segments of real,
+  readable meeting transcript** ("...GOING TO BE MY FIRST TEST HERE... FIGURED OUT MIGUEL AND IT'S PERSISTED
+  THAT THROUGH LIKE THREE DIFFERENT ONES NOW..."), bound to `Speaker 1` (live is speaker-less by design),
+  `transcript.md` + `meeting.json` written, in **2.1 s**. So the **entire Windows inference + orchestration
+  chain is proven in pure Rust**; the only remaining piece is real capture. **79 gate tests (+1 `#[ignore]`d
+  capstone); clippy + rustfmt green.** NEXT — the last piece, and the only Windows-hardware-blocked one: a
+  **cpal `AudioSource`** (WASAPI loopback Them + mic Me) + a `WindowsBackend` (`cpal source` +
+  `SherpaTranscriber`s + the sherpa/whisper refine). With that, `hearsay-core` is a running Windows app.
+- **2026-07-02 (cross-platform Rust — endpointed streaming session; live partials/finals).** Turned the batch
+  streaming ASR into a live session. `StreamingAsr::session()` -> **`StreamingSession`**: `feed(&[f32]) ->
+  Vec<StreamEvent>` (growing **Partial**s; a **Final** + `reset` when sherpa's endpointer fires on trailing
+  silence) + `finish()` (flush the trailing utterance). Events carry stream-relative times (the orchestrator
+  re-anchors). The recognizer is held behind an `Arc` so the session is `Send` (drives from async). **Verified
+  on-device** (opt-in): feeding the JFK clip in 0.5 s chunks -> **12 partials, 2 finals** (a pause split it),
+  reconstructing the full transcript, in 0.41 s. This is the "wrapper" that makes the streaming ASR usable as a
+  live transcriber. **79 gate tests (+1 `#[ignore]`d); clippy + rustfmt green.** Remaining to actually *run* the
+  Windows live path (both need Windows hardware, so deferred): a thin `Transcriber`-trait adapter mapping
+  `StreamEvent` -> the orchestrator's `SidecarSegment` (speaker-less; ~30 lines, lives in `hearsay-core` which
+  has both deps — kept out until it's exercised), + a **cpal `AudioSource`** (WASAPI loopback Them + mic Me).
+  With those two, `hearsay-core` runs a fully pure-Rust live pipeline (sherpa streaming live + whisper/sherpa
+  offline refine) with no Swift — the Windows app.
+- **2026-07-02 (cross-platform Rust — streaming ASR via sherpa-onnx; a clean win).** The other half of the
+  pure-Rust inference path, and — unlike the diarizer — it's genuinely good. Built **`StreamingAsr`** in
+  `hearsay-inference` wrapping sherpa's `OnlineRecognizer` (streaming zipformer transducer, greedy, endpointing
+  on): `load(StreamingModel{encoder,decoder,joiner,tokens})` + `transcribe(&[f32]) -> String`. Downloaded the
+  **20M English streaming zipformer** (`sherpa-onnx-streaming-zipformer-en-20M-2023-02-17`, int8) into
+  `outputs/models/` — the "light live model" the Windows floor calls for. **Verified on-device** (opt-in
+  `--ignored`): the JFK clip -> "...AMERICANS ASK NOT WHAT YOUR COUNTRY CAN DO FOR YOU ASK WHAT YOU CAN DO FOR
+  YOUR COUNTRY" (near-verbatim; only "My fellow" -> "UL" garbled), in **0.42 s** for an ~11 s clip (~26x RT, CPU,
+  int8). So live captions on the Windows floor are viable, and the offline refine (whisper) re-transcribes at
+  stop for the high-quality final anyway. Added a `Streaming` error variant + 1 opt-in test. NB: the 20M model
+  has no LICENSE in its tarball — it's an icefall/k2-fsa model (Apache-2.0), but confirm before distribution; a
+  larger `en-2023-06-26` model is the accuracy option. **79 gate tests (+1 `#[ignore]`d); clippy + rustfmt
+  green.** This slice is batch `transcribe` (WER); NEXT: the partial/final *endpointed* session (is_endpoint +
+  reset -> growing partials + finals) wrapped in the orchestrator's `Transcriber` trait, so the Windows live path
+  runs without a Swift sidecar (paired with a cpal `AudioSource`, which needs Windows hardware).
+- **2026-07-02 (cross-platform Rust — sherpa diarizer DER-tuning; exhausted under the license gate).** Tried to
+  close the diarization gap to FluidAudio. Added a `DiarizeTuning` surface (cluster_threshold + min_duration_on/
+  off) and swept it on the known 2-speaker clip. Result: with **pyannote-segmentation-3.0** (the *only*
+  permissive sherpa segmentation model) + **TitaNet** (which beats CAM++), the pipeline **plateaus at 3 speakers**
+  — 0.90/0.95/0.97 all give 3, and raising min_duration_on to 2.0 s (down to 7 turns) still gives 3, so the 3rd
+  cluster is high-confidence, not a trimmable blip. It never reaches FluidAudio's clean **2**. The one lever that
+  would matter — a better segmentation model — is blocked: sherpa's only better ones are Rev AI's **reverb-
+  diarization v1/v2**, both under the **"Rev Model Non-Production License"** (§3.2: research/personal/eval in
+  Non-Production only, no commercial use "behind a software layer") — fails the MIT/BSD/Apache gate. **Conclusion:
+  no permissively-licensed model set closes the gap.** This firmly settles the fork: **FluidAudio (pyannote
+  community-1, ANE) stays the macOS accuracy tier; sherpa-onnx is the cross-platform (Windows) fallback —
+  degraded-but-usable (~3 vs 2), default threshold set to 0.9 (best-achievable).** Set `DEFAULT_CLUSTER_THRESHOLD`
+  = 0.9 + documented the finding on the const. **79 gate tests; clippy + rustfmt green.** Committed `800686c`'s
+  follow-up. NEXT (unchanged options): the streaming-ASR half (`OnlineRecognizer`, independent of this gap), and
+  wiring a `Diarizer` seam into `refine_them` (Swift on Mac, sherpa fallback elsewhere).
+- **2026-07-02 (cross-platform Rust — pure-Rust offline diarizer via sherpa-onnx; the Windows inference path
+  begins).** Chose the base after live vetting: **`sherpa-onnx` crate 1.13.3** (Apache-2.0, first-party k2-fsa,
+  actively maintained) — NOT `sherpa-rs` (deprecated/archived) and not raw `ort` (rc-only, no stable, would mean
+  hand-building the whole pipeline that already failed here once). One dep gives BOTH deliverables of this path:
+  offline diarization (pyannote-seg-3.0 + embedding + FastClustering) + streaming ASR (`OnlineRecognizer`). Its
+  `sherpa-onnx-sys` build.rs **downloads a prebuilt static lib** (ureq/tar), so it links in ~16 s on the Mac (no
+  giant C++ compile) — the native-dep risk is retired. Built **`SherpaDiarizer`** in `hearsay-inference`
+  (`OfflineSpeakerDiarization` + `SpeakerEmbeddingExtractor`): `diarize(&[f32]) -> {turns, embeddings}` — turns
+  (1-based ordinal by first appearance) + a per-speaker mean voiceprint (diarization exposes only
+  (start,end,speaker), so each speaker's embedding is computed separately, matching FluidAudio's output shape).
+  Downloaded the pyannote-segmentation-3.0 ONNX (MIT, non-gated) into `outputs/models/`; reuses the already-present
+  wespeaker CAM++ embedding model. **Verified end-to-end on-device** (opt-in `--ignored` tests): the pipeline runs
+  (512-dim voiceprints, one per speaker, ~12 s on the miguel-kristina clip). **KEY FINDING (resolves the
+  whisper/ONNX-vs-FluidAudio fork with a real number): out-of-box accuracy is NOT competitive** — on the known
+  **2-speaker** clip it **over-clusters** (12 speakers at sherpa's default threshold 0.5; a sweep gives 9/9/6/4 at
+  0.6/0.7/0.8/0.9). Swapping the embedder **CAM++ -> NeMo TitaNet-small roughly halves it** (6/5/5/5/3 across the
+  same sweep) — so the embedder matters a lot — but neither hits 2 in a safe threshold range, vs **FluidAudio's
+  clean 2**. **Implication:** keep **FluidAudio as the macOS high-accuracy tier**; sherpa-onnx is the **Windows/
+  non-Mac path**, and getting its DER competitive is real tuning work (better segmentation model e.g. pyannote
+  community-1 ONNX + embedder + threshold, validated across labeled clips) — pending before it feeds the refine.
+  Not yet wired into `refine_them` (that seam is next). Added a `Diarize` error variant + 2 opt-in tests (a
+  2-speaker smoke + a threshold/embedder sweep harness). **79 gate tests (+2 `#[ignore]`d); clippy -D warnings +
+  rustfmt --check green.** NEXT: DER-tuning the diarizer, and/or the streaming ASR half (`OnlineRecognizer`), and
+  wiring a `Diarizer` seam into `refine_them` (Swift on Mac, sherpa elsewhere).
+- **2026-07-02 (cross-platform Rust — cross-meeting voiceprints).** The last small Mac follow-up. Turned out
+  to be **pure Rust** — the Swift `hearsay-diarize` sidecar *already emits per-speaker embeddings*
+  (`speakers:[{speaker, embedding}]`, FluidAudio's mean-of-segments speaker database), and the
+  `hearsay_attribution::voiceprint` primitives (`cosine`/`match_identity`/`centroid_{to,from}_bytes`) were
+  already built + tested; the Rust refine just ignored the embeddings. Wired them end-to-end: (1)
+  **`hearsay-inference`** — `refine_them`/`refine_audio_file` now return `RefineOutput { segments, centroids }`,
+  parsing the `speakers` field, mapping each to its 1-based ordinal, and L2-normalizing (`build_centroids` +
+  `l2_normalize`, f64 norm matching Python). (2) **`hearsay-db`** — `RefineResult { segments, centroids }`;
+  `replace_them_segments` now stores each ordinal's voiceprint on its cluster and **recognizes returning
+  speakers** (`recognize_speakers`: match each centroid against `known_voiceprints` — people named + locked in
+  *other* meetings, cosine >= 0.6 `RECOGNITION_THRESHOLD`), binding the identity but leaving it **unlocked**
+  (provisional; a manual rename still overrides). Precedence: **manual carry-forward (locked) > recognized
+  (unlocked) > `Speaker N`**. Ports `refine.py::_recognize_speakers` + `SpeakerService.{known_voiceprints,
+  apply_turn_diarization}`. (3) The `Refiner` trait + both callers (`/rediarize` route, `MacRefiner`) thread
+  the centroids through. Provisional recognitions never become a *source* voiceprint (only locked clusters are
+  `known_voiceprints`), so an auto-recognition error can't propagate across meetings. +4 tests (`l2_normalize`/
+  `build_centroids`; `replace_them_segments` stores + recognizes a returning Alice as unlocked-bound;
+  `known_voiceprints` exclude/locked/centroid filters), and the `#[ignore]` real-recording refine now asserts
+  one voiceprint per speaker. **75 -> 79 Rust tests; clippy -D warnings + rustfmt --check green.** No Swift
+  change was needed. Not yet validated on-device (a returning, previously-named speaker being auto-recognized).
+- **2026-07-02 (cross-platform Rust — carry-forward of locked manual labels).** A re-diarize (manual
+  `/rediarize` or the new auto-refine-at-stop) previously dropped every cluster and rebuilt fresh unlocked
+  `Speaker N` clusters, so a manually renamed + locked speaker was **wiped** — a data-loss bug the auto-refine
+  made worse (now every stop). Fixed by porting Python `refine.py::_carry_forward_names` +
+  `SpeakerService.apply_turn_diarization`'s name-application into **`hearsay_db::replace_them_segments`**
+  (the single chokepoint both refine paths call, so both get it atomically): before dropping the old clusters,
+  read the prior *locked* bindings (cluster -> identity name) + the old Them segments, then **vote each locked
+  name onto the new turn ordinal its old segments most overlap** (reusing `hearsay_attribution::
+  assign_segment_speaker` — hence a new hearsay-db -> hearsay-attribution dep, pure/zero-dep), one name <-> one
+  ordinal by highest vote. On rebuild, a carried ordinal is re-bound + **re-locked** to its identity and its
+  segments keep the name; everything else stays a fresh unlocked `Speaker N`. So the name follows the speaker
+  by **audio overlap**, not by ordinal number (a re-diarize can reorder speakers). Also added an **empty-refine
+  guard**: `replace_them_segments(&[])` is now a no-op (never wipe the transcript when the diarizer/ASR yields
+  nothing — matches Python's "leaving transcript as-is"; important now that refine runs automatically at stop).
+  Extracted a shared `get_or_create_identity` helper (rename + carry-forward both use it; identities are reused,
+  not duplicated). +2 hearsay-db tests (carry-forward follows overlap onto a *different* ordinal + reuses the
+  identity; empty is a no-op). **73 -> 75 Rust tests; clippy -D warnings + rustfmt --check green.** Not yet
+  validated on-device. Voiceprints (the diarizer emitting embeddings + cross-meeting recognition) is the last
+  open Mac follow-up.
+- **2026-07-02 (cross-platform Rust — auto-refine-at-stop).** Wired the offline refine to run automatically
+  when a meeting stops (Python `SessionManager._maybe_auto_refine`), so the Rust core now matches the Python
+  behavior the frontend already expects (`useStopMeeting` uses the 600s `REFINE_TIMEOUT_MS` precisely because
+  stop auto-refines — no frontend change). Design: since `hearsay-orchestrator` is deliberately ML-dep-free
+  (whisper.cpp/cmake stays out; the lifecycle is fake-tested), auto-refine goes through a new **`Refiner`
+  trait seam** (sibling of `Backend`): the orchestrator calls it, the real impl lives in the `hearsay-core`
+  binary. `Orchestrator::stop_meeting` now runs `maybe_auto_refine` after finalize + before the transcript
+  write — **best-effort**: skipped (logged) when no `audio.wav` (retention off) or no refiner, and a refine
+  error is logged + swallowed (the live finals stay as the transcript), so a refine failure never fails the
+  stop. On success it `replace_them_segments` and the transcript reflects the refined speakers. The manual
+  `/rediarize` route is unchanged (still validated on-device); to avoid two ASR code paths both callers now
+  share one **`hearsay_inference::refine_audio_file`** entry point (read Them channel + load whisper +
+  `refine_them`). New `MacRefiner` (in `main.rs`, alongside `MacBackend`) wraps it via `spawn_blocking`;
+  wired into the orchestrator when the new `HEARSAY_AUTO_REFINE` setting (default on) is set. `RefinedThemSegment`
+  gained `Clone`; a `ScriptedRefiner` fake (+ call counter, success/failing modes) drives 2 new lifecycle
+  tests (auto-refine replaces the live Them segments; a refine error keeps them + the stop still finalizes).
+  **71 -> 73 Rust tests; `cargo test` + `clippy -D warnings` + `rustfmt --check` green.** NB: not yet
+  validated on-device (a real stop should auto-refine); the two remaining Mac follow-ups are cross-meeting
+  voiceprints + carry-forward of locked manual labels. NEXT: on-device validation, those two follow-ups, or
+  the Windows path.
+- **2026-07-02 (cross-platform Rust — offline refine, wired to `POST /rediarize`).** Built the post-meeting
+  refine (Python `refine.py` core) in `hearsay-inference`: `read_them_channel` (right channel of the stereo
+  `audio.wav`) + `refine_them(asr, hearsay-diarize, samples)` — write the Them track to a temp wav, run the
+  Swift `hearsay-diarize` FluidAudio sidecar (offline speaker turns; reuses the proven diarizer like the live
+  path reuses the sidecars), map labels -> `Speaker N` by first appearance, re-transcribe each turn with
+  whisper. **Validated on a real recording** (opt-in `--features metal --ignored`): the miguel-kristina clip
+  -> 16 segments / 4 speakers, coherent large-v3-turbo text, ~11s. Then **wired it into the app**:
+  `hearsay-db replace_them_segments` (transactional: drop Them segments + clusters, keep Me, one unlocked
+  cluster per ordinal; +test), `hearsay-orchestrator::write_meeting_files` made pub (rewrite transcript.md
+  after refine), `Settings.refine_model` (`HEARSAY_REFINE_MODEL`, default ggml-large-v3-turbo), and the
+  `POST /api/meetings/{id}/rediarize` route now runs the refine (spawn_blocking) + returns the refreshed
+  speakers -> **the frontend "Refine speakers" button works on the Mac — VALIDATED on-device (2026-07-02,
+  user: "looks pretty good").** **71 Rust tests; clippy + rustfmt green.** Deferred: auto-refine-at-stop (this is the manual button; the orchestrator `// TODO(refine)`
+  stays), cross-meeting voiceprints (the diarizer returns embeddings; `hearsay-attribution` has the cosine
+  matching ready), and carry-forward of locked manual labels. NEXT: the Windows path (cpal capture +
+  pure-Rust streaming `Transcriber` + diarizer), or auto-refine-at-stop.
+- **2026-07-02 (cross-platform Rust — the macOS live path runs end-to-end through the Rust core).** User
+  chose "full streaming + diarization, testable in the frontend." Key insight: the Rust `ProcessTranscriber`
+  already speaks the exact stdio protocol (`<u32 len><f32 pcm>` in, `{kind,text,start_s,end_s,speaker}` NDJSON
+  out) of the existing Swift FluidAudio sidecars (`hearsay-live`/`hearsay-me`, already built), so the fastest
+  path is to **reuse the proven Swift capture + sidecars** on the Mac rather than rebuild them in Rust — the
+  "FluidAudio as macOS tier" fork side; the Rust whisper is the Windows path + refine. Built **`hearsay-capture`**:
+  `SwiftHelperSource` (an `AudioSource`) spawns `hearsay-helper`, binds control+media Unix sockets, handshakes
+  (hello + `start_capture`), and pumps media frames via the `hearsay-ipc` codec into `CaptureChunk`s (port of
+  supervisor/media_channel/control_channel.py). Verified against the real helper `--synthetic` (Me+Them
+  frames). Then **wired the binary**: `hearsay-core` `main.rs` runs the real `Orchestrator` + a `MacBackend`
+  (`SwiftHelperSource` + two `ProcessTranscriber`s -> `hearsay-live`/`hearsay-me`), `--synthetic` flag, new
+  `helper_path` setting. **Smoke-tested live:** `hearsay-core --synthetic` -> `POST /api/meetings` starts a
+  recording (helper spawns) -> `POST /stop` finalizes. `web/dist` is built + FluidAudio models cached, so
+  it's ready to test in the browser (grant mic/screen perms, real capture). **70 gate tests + 3 opt-in
+  (`--ignored`: jfk transcription, synthetic capture) green; clippy + rustfmt clean.** This is the milestone
+  the user asked for: streaming + diarization, testable in the frontend, all through the Rust core. NEXT:
+  on-device browser validation (user); then the Windows path (cpal capture + pure-Rust streaming
+  `Transcriber` + diarizer) + the offline refine.
+- **2026-07-02 (cross-platform Rust — `hearsay-inference` offline ASR, on the Mac).** After the user
+  corrected the "gated on a Windows determination" framing (accuracy is hardware-independent + Mac-verifiable;
+  only 225U real-time perf is deferred — tracker + `[[hearsay-windows-requirement]]` fixed), started
+  `hearsay-inference`. Offline ASR slice: `whisper-rs` 0.16 (Unlicense, verified) + `hound`; `WhisperAsr`
+  loads a GGML model and `transcribe(&[f32])` returns timestamped `AsrSegment`s (English greedy, centisecond
+  bounds), plus `read_wav_mono_16k` (downmix) and a `hearsay-inference <model> <wav>` CLI (the manual accuracy
+  tool). Per-OS accel is opt-in Cargo features (`metal`/`vulkan`/`cuda` -> `whisper-rs`), default CPU/portable
+  — proving "where it runs is a feature flag, not a fork." **Verified on the Mac:** `ggml-base.bin` + `jfk.wav`
+  -> verbatim JFK quote, ~50x RT (CPU); `ggml-large-v3-turbo` + `--features metal` -> verbatim, ~25x RT.
+  whisper.cpp built clean via cmake in ~15 s (needs `cmake` + Xcode CLT). Tests: +2 unit (downmix,
+  reject-non-16k) in the gate + an `#[ignore]`d jfk smoke (opt-in; needs the gitignored model). **68 -> 70
+  Rust tests; clippy + rustfmt green.** The accuracy harness the user wanted is live. NEXT: diarization
+  (Silero VAD + wespeaker/pyannote ONNX) + WER/DER scoring, then the streaming `Transcriber`.
+- **2026-07-02 (cross-platform Rust — `transcript.md` + `meeting.json` output).** Ported the
+  `LocalMarkdownSink` render (`src/hearsay/export/local_markdown.py`) to a `markdown` module: at stop the
+  orchestrator writes the meeting folder's `transcript.md` (`# {title}`, then a `### HH:MM:SS — Speaker`
+  header at each speaker change followed by the turn text) + a `meeting.json` (id/title/folder/status/
+  started_at/ended_at), both atomic (temp + rename). Rendered from the finalized DB segments (already ordered
+  by `start_s`), best-effort (a write failure never fails the stop). **Finalize-only** for now — the Python
+  sink's mid-meeting live-append (crash-safety) is deferred (the live transcript is on the WS + in the DB).
+  This un-defers the transcript sink (it only needs the finals in the DB). Tests: +1 unit (`hhmmss`); the
+  capstone now asserts `transcript.md` (header + `### ` turns + `Speaker 1` + text) and `meeting.json`
+  (`"status": "finalized"`). **67 -> 68 Rust tests; clippy + rustfmt green.** With this + the recorder, the
+  orchestrator's whole output-folder story (audio.wav + transcript.md + meeting.json) is complete; only the
+  inference-gated offline refine remains deferred.
+- **2026-07-02 (cross-platform Rust — `audio.wav` recorder in the orchestrator pipeline).** Ported
+  `MeetingAudioRecorder` (`src/hearsay/transcript/recorder.py`) to Rust: one timeline-accurate stereo WAV per
+  meeting (Me=L / Them=R), each stream placed by meeting time (sample N = t N/16000), written contiguously
+  from a per-stream cursor and only re-anchored to `t0_s` past a 0.2 s gap (so clock jitter never punches
+  holes), normalized at close to a 0.9 overall peak (a mono downmix stays in range), int16 stereo via `hound`.
+  Wired into the pipeline demux (writes each chunk before routing; finalized when capture ends, best-effort).
+  The `Orchestrator` records by default with a `with_audio_recording(bool)` toggle (the eventual config wires
+  `audio.record` there). This un-defers the recorder (it only needs the PCM the demux already sees — not
+  capture/inference) and makes playback (`GET /meetings/{id}/audio`) work end-to-end. Tests (+2 unit: stereo
+  timeline + overall-peak normalization, silent-take-writes-nothing) + the capstone now asserts the pipeline
+  emits a valid stereo `audio.wav`. **65 -> 67 Rust tests; clippy + rustfmt green.**
+- **2026-07-02 (cross-platform Rust — orchestrator hardening + a hardware-free dev path).** Two additions on
+  top of `hearsay-orchestrator`: (1) a **`WavFileSource`** — a file-backed `AudioSource` that reads the
+  canonical stereo 16 kHz `audio.wav` (Me=L/Them=R), streams it as timed chunks on the shared `host_ts`
+  clock, and holds the channel open until stop (mono -> Them). Adds `hound` 3.5.1 (Apache-2.0, verified). It
+  lets the whole real pipeline run from a recording with no capture hardware. (2) A **`mock_sidecar`** fixture
+  bin (`src/bin/`, std-only) that speaks the real sidecar stdio contract (`<u32 len><f32 pcm>` in, NDJSON
+  segments out), used to lift `ProcessTranscriber` from codec-unit-tested to a real spawn/feed/drain
+  integration test. New tests (3): `ProcessTranscriber` e2e, `WavFileSource` stereo framing, and a
+  **capstone** (`tests/end_to_end.rs`) that drives a WAV through two real `ProcessTranscriber` sidecars into
+  SQLite via the `Orchestrator` — only the audio device + the ML model are stand-ins, proving the real
+  source + real transcriber + real orchestrator compose + persist. **62 -> 65 Rust tests; clippy + rustfmt
+  green.**
+- **2026-07-02 (cross-platform Rust — extracted `hearsay-engine`, broke the `core -> orchestrator` cycle;
+  branch `feat/cross-platform-rust-tauri`).** Moved the `LiveEngine` trait + `LiveError` + `DisabledEngine`
+  out of `hearsay-core` into a new lean crate **`hearsay-engine`** (deps: hearsay-db + async-trait +
+  tokio-sync + uuid — no web stack). `hearsay-core` now `pub use`s them from there (external API unchanged),
+  and `hearsay-orchestrator` depends on `hearsay-engine` instead of `hearsay-core` — so the orchestrator no
+  longer compiles axum/tower/utoipa, and the `hearsay-core` binary can construct the orchestrator without the
+  would-be `core -> orchestrator -> core` cycle. This was the one purely-here step the previous entry flagged.
+  8th crate; the graph is now cycle-free and the final `main.rs` swap (`DisabledEngine` -> `Orchestrator`)
+  only waits on a real `Backend` (capture + inference). Behavior-neutral: **62 Rust tests + clippy + rustfmt
+  still green.** Repointed 3 `hearsay-core` imports (lib re-export, `state.rs`, `routes/meetings.rs`) + 3
+  `hearsay-orchestrator` imports (`orchestrator.rs`, `error.rs`, `tests/lifecycle.rs`); `routes/ws.rs`
+  unchanged (calls the trait-object method, no import needed). NEXT: `hearsay-capture` / `hearsay-inference`
+  (both need real hardware / the model decision) are the only substantial work left.
+- **2026-07-02 (cross-platform Rust — `hearsay-core` committed + `hearsay-orchestrator` implemented + tested;
+  branch `feat/cross-platform-rust-tauri`).** Committed the finished `hearsay-core` (`81c0b9b`), then built the
+  5th of 7 crates: **`hearsay-orchestrator`**, the `LiveEngine` implementation (port of
+  `src/hearsay/transcript/` `SessionManager` + pipeline + the two sidecar processors, and
+  `helper/supervisor.py`). It creates the meeting row + folder (ports `slugify`/`meeting_folder_name`/
+  `_default_title`), drives an `AudioSource`, demuxes the capture channel onto a shared epoch clock, routes
+  each stream's PCM to its `Transcriber`, and — per stream — broadcasts partials (UI only) and persists +
+  broadcasts finals (Me = "Me"; Them = `Speaker N` + a get-or-create per-ordinal cluster), shifting sidecar
+  times by the stream's first-fed offset. The broadcast JSON matches the Python `TranscriptEvent`
+  (`{kind,stream,speaker_label,text,start_s,end_s}`). **Design:** the two external backends sit behind traits
+  (`AudioSource` <- `hearsay-capture`; `Transcriber` <- `hearsay-inference`) built per meeting by a `Backend`
+  factory, so the whole lifecycle is verifiable here with scripted fakes (`testing::ScriptedBackend`) over
+  in-memory SQLite. Included the real `ProcessTranscriber` (`tokio::process`, faithful to `live_base.py`:
+  `<u32 len><f32 pcm>` on stdin, NDJSON segments on stdout) for when the sidecar binaries exist. Active state
+  is a std-mutex `Option<ActiveSession>` (sync `active_meeting`/`subscribe`) guarded by an async op-lock
+  (serializes start/stop); stop closes the pipeline (source.stop -> tasks drain each transcriber's tail),
+  finalizes the row, and works for a non-active id too (matches Python). **Seam extensions:** added
+  `LiveError::Internal` + `ApiError::Internal` (500) to `hearsay-core` so a real engine surfaces DB errors,
+  and a `cluster_id` param to `hearsay-db insert_segment` (Them finals bind a cluster) — updated the 5 test
+  call sites. **Deferred (documented TODOs, gated on capture/inference):** the stereo `audio.wav` recorder,
+  the `transcript.md` sink, and the offline refine at stop; finals persist to the DB (the API's source of
+  truth) today. New deps pinned to the workspace-common versions: tokio (process/io-util/sync/rt/time),
+  async-trait 0.1, serde/serde_json, sqlx 0.9, uuid, chrono, tracing (+ tempfile/tokio-macros dev). **`make
+  rust-test` + `rust-lint` (clippy -D warnings) + `rust-fmt --check` all green: 62 Rust tests (9 new —
+  6 unit: slugify/folder-name, feed framing, segment parse; 3 integration: full route/persist/broadcast/
+  offset lifecycle, busy guard, stop-unknown).** Committed `d34453e` (per the per-crate workflow, same as
+  `hearsay-core` earlier this session). **NEXT:** wiring the
+  orchestrator into the `hearsay-core` binary (a small refactor to break the `core -> orchestrator -> core`
+  cycle — move the `LiveEngine` trait to a shared crate or split the binary out) is the only purely-here step
+  left; `hearsay-capture` + `hearsay-inference` need real hardware + the model decision.
+- **2026-07-01 (cross-platform Rust — `hearsay-core` implemented + tested; branch `feat/cross-platform-rust-tauri`,
+  uncommitted).** 4th of 7 crates. With the user, picked `hearsay-core` over `hearsay-orchestrator` as the next
+  verifiable-here crate (self-contained, depends only on the finished `hearsay-db`; unblocks the shared React UI on
+  Rust). Ported `src/hearsay/api/` to axum 0.8: `security.rs` (Host/Origin allowlist + constant-time bearer, unit-tested),
+  `config.rs` (env-resolved `Settings`), `schema.rs` (serde + utoipa `ToSchema` DTOs + the `{total,page,page_size,items}`
+  envelope), `error.rs` (`{detail}` JSON envelope; DB errors -> 500), `state.rs` (`AppState`), and the routers
+  (meetings/speakers/audio/ws/web) + the loopback + token middleware. **Key design:** the capture-dependent routes
+  (start/stop meeting, live WS) sit behind a `LiveEngine` trait seam — the Rust analogue of Python `create_app`'s injected
+  `SessionManager` — with a built-in `DisabledEngine` (503 / clean WS close) so the crate lands complete + tested before
+  `hearsay-orchestrator` exists; every read + pure-DB-write + serving route works now. `POST /rediarize` is 404-or-503
+  (needs `hearsay-inference`). Added a utoipa OpenAPI doc (`/openapi.json` + `--dump-openapi`, emits OpenAPI 3.1.0) for the
+  OpenAPI->TS pipeline. Extended `hearsay-db/queries.rs` with the pagination/count/join(`SpeakerRow`)/`rename_cluster`
+  (transactional bind+relabel)/`delete_meeting` queries the API needs (+3 db tests: pagination, join+relabel, cascade
+  delete). New deps pinned verified-latest via `cargo add`: axum 0.8.9, tower-http 0.7, tower 0.5, tokio 1.52, utoipa 5.5,
+  tracing(+subscriber), serde/serde_json, async-trait 0.1, uuid, chrono, sqlx 0.9 (+ tempfile dev). **`make rust-test` +
+  `rust-lint` (clippy -D warnings) + `rust-fmt --check` all green: 53 Rust tests (16 new in `hearsay-core` — 4 unit
+  security + 12 tower-`oneshot` integration over in-memory SQLite covering auth 401/host 400/origin 403, list/get/404,
+  the page envelope, segment ordering, rename+label resolution, identities, audio token+404, rediarize 404/503, delete
+  204->404, start/stop 503, `/openapi.json`).** NB: uncommitted (the repo commits each crate separately — suggested
+  message `feat(rust): implement hearsay-core (axum API + utoipa + LiveEngine seam)`); await the user. **NEXT
+  verifiable-here crate: `hearsay-orchestrator`** — implement the `LiveEngine` seam (start/stop + live-transcript
+  broadcast) over `tokio::process` supervision + PCM routing, testable with fake sidecars.
 - **2026-07-01 (session wrap — items 1 + 2 of the user's three-item focus done + merged; item 3 not started).** Dead-code
   cleanup (`dfc4fbc`) and the single-stereo-WAV consolidation (`bf2aecb`) are both validated + merged to `main`; working
   tree clean. Item 3 (post-meeting notes + action items, the Phase-4 LLM piece) is **NOT STARTED** — the design shape +

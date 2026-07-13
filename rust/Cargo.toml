@@ -1,0 +1,22 @@
+# Hearsay Rust workspace — cross-platform (macOS + Windows) foundation.
+# Target architecture: ../docs/architecture-cross-platform.md
+#
+# Scaffold only: crates are stubs with no external dependencies yet. Dependencies are added and
+# pinned to verified latest versions as each crate is implemented (see rust/README.md).
+
+[workspace]
+resolver = "2"
+members = [
+    "crates/hearsay-ipc",
+    "crates/hearsay-db",
+    "crates/hearsay-attribution",
+    "crates/hearsay-engine",
+    "crates/hearsay-orchestrator",
+    "crates/hearsay-capture",
+    "crates/hearsay-core",
+    "crates/hearsay-inference",
+]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2021"
