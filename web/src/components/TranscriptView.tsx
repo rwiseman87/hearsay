@@ -29,6 +29,8 @@ export function TranscriptView({ meeting }: Props) {
   const [currentTime, setCurrentTime] = useState(0);
   const [hasAudio, setHasAudio] = useState(true);
   const [volume, setVolume] = useState(1);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [duration, setDuration] = useState(0);
   const audioCtxRef = useRef<AudioContext | null>(null);
   const gainRef = useRef<GainNode | null>(null);
   const volumeRef = useRef(1);
@@ -100,6 +102,20 @@ export function TranscriptView({ meeting }: Props) {
     if (gainRef.current) gainRef.current.gain.value = value;
   };
 
+  const togglePlay = () => {
+    const audio = audioRef.current;
+    if (!audio) return;
+    if (audio.paused) void audio.play();
+    else audio.pause();
+  };
+
+  const handleSeek = (seconds: number) => {
+    const audio = audioRef.current;
+    if (!audio) return;
+    audio.currentTime = seconds;
+    setCurrentTime(seconds);
+  };
+
   return (
     <section className="transcript">
       <header className="transcript__header">
@@ -118,33 +134,53 @@ export function TranscriptView({ meeting }: Props) {
         )}
       </header>
       {!recording && hasAudio ? (
-        <div className="transcript__playback">
+        <div className="player">
           <audio
             ref={audioRef}
-            className="transcript__audio"
             src={audioUrl}
-            controls
             preload="metadata"
+            onLoadedMetadata={(event) => setDuration(event.currentTarget.duration)}
             onPlay={() => {
               ensureAudioGraph();
               void audioCtxRef.current?.resume();
+              setIsPlaying(true);
             }}
+            onPause={() => setIsPlaying(false)}
+            onEnded={() => setIsPlaying(false)}
             onTimeUpdate={(event) => setCurrentTime(event.currentTarget.currentTime)}
             onError={() => setHasAudio(false)}
           />
-          <label className="transcript__volume">
-            <span>Volume</span>
-            <input
-              type="range"
-              min={0}
-              max={2}
-              step={0.01}
-              value={volume}
-              aria-label="Playback volume"
-              onChange={(event) => handleVolume(event.currentTarget.valueAsNumber)}
-            />
-            <span className="transcript__volume-value">{Math.round(volume * 100)}%</span>
-          </label>
+          <button
+            type="button"
+            className="player__play"
+            onClick={togglePlay}
+            aria-label={isPlaying ? "Pause" : "Play"}
+          >
+            {isPlaying ? "Pause" : "Play"}
+          </button>
+          <span className="player__time">{formatTime(currentTime)}</span>
+          <input
+            type="range"
+            className="player__seek"
+            min={0}
+            max={duration || 0}
+            step={0.1}
+            value={Math.min(currentTime, duration || 0)}
+            aria-label="Seek"
+            onChange={(event) => handleSeek(event.currentTarget.valueAsNumber)}
+          />
+          <span className="player__time">{formatTime(duration)}</span>
+          <input
+            type="range"
+            className="player__volume"
+            min={0}
+            max={2}
+            step={0.01}
+            value={volume}
+            aria-label="Playback volume"
+            title={`Volume ${Math.round(volume * 100)}%`}
+            onChange={(event) => handleVolume(event.currentTarget.valueAsNumber)}
+          />
         </div>
       ) : null}
       {rediarize.isError ? (
