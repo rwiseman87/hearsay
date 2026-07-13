@@ -38,7 +38,15 @@ FluidAudio stays the Mac tier). **The ONLY remaining piece is real capture: a cp
 loopback Them + mic Me) + a `WindowsBackend` — genuinely needs Windows hardware.** Blow-by-blow in the progress
 log below.
 
-**DONE + tested — 71 Rust tests (+ opt-in `--ignored`: jfk ASR, synthetic capture, real-recording refine),
+**HARDENING + polish (2026-07-13).** A deep review (security / efficiency / dead code / dead tests) landed its
+fixes: a media-frame allocation clamp (OOM-DoS on a hostile helper header), backpressure on the live PCM
+channels (bounded, not unbounded), `spawn_blocking` for the stop-time WAV/transcript writes, and dead-code
+removal. The per-meeting `audio.wav` recorder now **streams to disk** (RAM O(meeting) -> O(seconds); the fragile,
+buffer-forcing global peak-normalize dropped — capture-level samples, clamped), and the web player gained a
+**0-200% playback volume slider** (Web Audio gain, boosts quiet recordings past what native `<audio>` volume
+can). `make ci` green.
+
+**DONE + tested — 80 Rust tests (+ opt-in `--ignored`: jfk ASR, synthetic capture, real-recording refine),
 `cargo test` + `clippy -D warnings` + `rustfmt` green, gated by `make ci`:**
 - Rust workspace `rust/` (8 crates) + `make rust-{build,test,lint,fmt}` folded into `make ci`.
 - **`hearsay-ipc`** — media-frame codec (validated byte-for-byte against `shared/fixtures/frames.jsonl`,
@@ -481,6 +489,32 @@ uv run hearsay live --seconds 60     # real pipeline -> live transcripts (on-dev
 
 ## Progress log
 
+- **2026-07-13 (streaming `audio.wav` recorder + playback volume slider).** The per-meeting recorder held the
+  whole meeting as two `Vec<f32>` in RAM until stop (~460 MB/hr, **unbounded in duration** — the one memory path
+  with no ceiling; flagged against the 16 GB Windows floor). Rewrote `MeetingAudioRecorder` to **encode stereo
+  frames incrementally** as both channels cover them (interleave up to `min(me,them)`), holding only the small
+  inter-stream skew — **RAM O(meeting) -> O(seconds)**, with a `MAX_SKEW_FRAMES` hard ceiling for a stalled
+  stream. Required **dropping the global peak-normalize** (it needed every sample first — i.e. the whole meeting
+  in RAM — and was the transient-fragile kind): samples now write at **captured level**, still `clamp(-1,1)` so
+  an over can't wrap i16. Safe end-to-end — the recorder is a write-only sink so **live captions are untouched**,
+  and the offline refine is **level-invariant** (diarization CMVN + whisper mel-norm). Playback level moves to
+  the UI: `TranscriptView` gained a **0-200% volume slider** via a Web Audio `GainNode` (native `<audio>` volume
+  only attenuates; gain can boost quiet recordings), adjustable live, built lazily on the first play gesture.
+  Validated: recorder unit tests (timeline/interleave/captured-level/silent), the streaming e2e on a real
+  recording, a **live synthetic run -> valid 2ch/16k/15.03 s `audio.wav`**, web `tsc`+build, `make ci` green.
+- **2026-07-13 (deep review — security / efficiency / dead code / dead tests — + fixes).** Multi-agent review of
+  the ~16 k-line Rust conversion, findings verified against source then applied. **Security:** clamped the
+  media-frame pre-read allocation in `media_pump` (a malformed/hostile helper header could declare ~17 GB -> OOM
+  the core; MEDIUM, local trust boundary) and dropped the unused `shell:allow-execute` Tauri capability. Verified
+  clean: constant-time token compare, full token-gate coverage, slugify path-traversal-safe, all SQL
+  `.bind()`-parameterized, no command injection, no secrets in logs. **Efficiency:** bounded the demux->stream +
+  sherpa PCM channels (were unbounded -> slow-consumer memory blowup), `Transcriber::feed` takes PCM by value
+  (drops a per-frame copy on the Windows path), `spawn_blocking` for the stop-time WAV encode + transcript
+  writes. **Dead code:** removed the unused ipc `SAMPLE_RATE` const + `bytes_per_sample` free fn,
+  `Orchestrator::with_audio_recording`, and the `serde_json` dep in `hearsay-capture`. **Dead tests:** none — the
+  8 `#[ignore]`d are all legit model/hardware gates on live code. Also measured the runtime profile: heaviest is
+  the offline whisper-turbo refine (**~2 GB peak**, measured), live FluidAudio Them sidecar ~137 MB, and the
+  backend/orchestration is ~21 MB (negligible — the cost is entirely the ML models + audio buffer).
 - **2026-07-02 (packaging — unsigned macOS .app via a Tauri 2 shell; the app bundles + runs).** First real
   package (user chose **unsigned** — no Apple Developer cert on this machine: `security find-identity` = 0
   identities, and notarization needs a paid Developer ID, deferred). Scaffolded a Tauri 2.11 shell at
