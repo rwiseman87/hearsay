@@ -4,5 +4,9 @@
 <dict>
   <key>NSMicrophoneUsageDescription</key>
   <string>Hearsay records your microphone to transcribe your side of the meeting.</string>
+  <key>NSAudioCaptureUsageDescription</key>
+  <string>Hearsay records system audio to transcribe what the other participants say.</string>
+  <key>NSCalendarsUsageDescription</key>
+  <string>Hearsay reads your calendar to help label the meeting's participants.</string>
 </dict>
 </plist>

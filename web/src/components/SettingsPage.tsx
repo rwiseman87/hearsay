@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
 
 import {
   usePermissions,
@@ -8,6 +9,10 @@ import {
   useUpdateStorage,
 } from "../api/hooks";
 import type { SpeakerSettings } from "../api/types";
+
+// The Danger Zone's erase/quit actions are Tauri IPC (desktop shell), not the loopback HTTP API, so
+// they only exist in the packaged app. In a plain browser (dev) the shell isn't there.
+const IS_DESKTOP = "__TAURI_INTERNALS__" in window;
 
 interface Props {
   onClose: () => void;
@@ -20,6 +25,7 @@ const PANELS = [
   { id: "storage", label: "Storage" },
   { id: "permissions", label: "Permissions" },
   { id: "about", label: "About" },
+  { id: "danger", label: "Data & Uninstall" },
 ] as const;
 type PanelId = (typeof PANELS)[number]["id"];
 
@@ -224,8 +230,8 @@ function StoragePanel() {
           </button>
         </div>
         <span className="settings__row-hint muted">
-          Where new meetings are written. Existing meetings keep their location — relocate one
-          from its own view. Must be an existing, writable folder.
+          Where new meetings are written. Existing meetings keep their location. Must be an
+          existing, writable folder.
         </span>
         {update.isError ? (
           <p className="settings__error" role="alert">
@@ -290,7 +296,18 @@ function PermissionsPanel() {
                 </span>
               </div>
               <span className="settings__row-hint muted">{row.hint}</span>
-              <a className="settings__perm-link" href={row.url}>
+              <a
+                className="settings__perm-link"
+                href={row.url}
+                onClick={(event) => {
+                  // WKWebView drops navigations to the x-apple.systempreferences: scheme, so in the
+                  // packaged app route the deep link through the shell (open(1)) instead.
+                  if (IS_DESKTOP) {
+                    event.preventDefault();
+                    void invoke("open_url", { url: row.url });
+                  }
+                }}
+              >
                 Open in System Settings
               </a>
             </div>
@@ -330,6 +347,102 @@ function AboutPanel() {
           </dd>
         </div>
       </dl>
+    </div>
+  );
+}
+
+// Self-contained on purpose: it never touches the settings HTTP API (unavailable in the packaged
+// Rust core), so it works even when the other panels can't load.
+function DangerZonePanel() {
+  const [confirm, setConfirm] = useState("");
+  const [phase, setPhase] = useState<"idle" | "erasing" | "done">("idle");
+  const [error, setError] = useState<string | null>(null);
+
+  const reveal = async () => {
+    setError(null);
+    try {
+      await invoke("reveal_data_dir");
+    } catch (err) {
+      setError(String(err));
+    }
+  };
+
+  const erase = async () => {
+    setError(null);
+    setPhase("erasing");
+    try {
+      await invoke("erase_all_data");
+      setPhase("done");
+    } catch (err) {
+      setPhase("idle");
+      setError(String(err));
+    }
+  };
+
+  return (
+    <div className="settings__panel">
+      <h3 className="settings__panel-title">Data &amp; Uninstall</h3>
+      {!IS_DESKTOP ? (
+        <p className="muted">Available in the desktop app.</p>
+      ) : phase === "done" ? (
+        <div className="settings__done">
+          <p>Your recordings, transcripts, caches, and macOS permissions have been erased.</p>
+          <span className="settings__row-hint muted">
+            To finish uninstalling, quit Hearsay and drag it from Applications to the Trash.
+          </span>
+          <button
+            type="button"
+            className="settings__danger-btn"
+            onClick={() => void invoke("quit_app")}
+          >
+            Quit Hearsay
+          </button>
+        </div>
+      ) : (
+        <>
+          <div className="settings__field">
+            <span className="settings__row-label">Keep my recordings</span>
+            <span className="settings__row-hint muted">
+              Your meetings live outside the app. To uninstall but keep them, just drag Hearsay from
+              Applications to the Trash — your recordings and transcripts stay on disk.
+            </span>
+            <button type="button" className="settings__reveal-btn" onClick={() => void reveal()}>
+              Reveal data folder in Finder
+            </button>
+          </div>
+          <div className="settings__danger">
+            <span className="settings__row-label">Erase everything</span>
+            <span className="settings__row-hint muted">
+              Permanently deletes all recordings, transcripts, and the database, clears downloaded
+              models and app caches, and resets Hearsay's macOS permissions so a reinstall re-prompts.
+              This cannot be undone. Type <code>erase</code> to confirm.
+            </span>
+            <div className="settings__inline">
+              <input
+                value={confirm}
+                spellCheck={false}
+                placeholder="erase"
+                aria-label="Type erase to confirm"
+                disabled={phase === "erasing"}
+                onChange={(event) => setConfirm(event.target.value)}
+              />
+              <button
+                type="button"
+                className="settings__danger-btn"
+                disabled={confirm.trim().toLowerCase() !== "erase" || phase === "erasing"}
+                onClick={() => void erase()}
+              >
+                {phase === "erasing" ? "Erasing…" : "Erase all data & reset permissions"}
+              </button>
+            </div>
+          </div>
+        </>
+      )}
+      {error ? (
+        <p className="settings__error" role="alert">
+          {error}
+        </p>
+      ) : null}
     </div>
   );
 }
@@ -378,6 +491,7 @@ export default function SettingsPage({ onClose }: Props) {
             {active === "storage" ? <StoragePanel /> : null}
             {active === "permissions" ? <PermissionsPanel /> : null}
             {active === "about" ? <AboutPanel /> : null}
+            {active === "danger" ? <DangerZonePanel /> : null}
           </div>
         </div>
       </div>

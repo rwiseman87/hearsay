@@ -10,7 +10,7 @@
 //!
 //! **Windows (later):** WASAPI loopback (Them) + mic (Me) via cpal, behind the same trait.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -266,6 +266,141 @@ async fn wait_for_event(
     })
     .await
     .map_err(|_| backend(format!("timed out waiting for '{name}' event")))?
+}
+
+/// How long the permissions probe waits for the helper to connect, say hello, and answer.
+const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
+/// The TCC states the helper reports; anything else is coerced to "unknown" by the API layer.
+const VALID_STATES: [&str; 3] = ["granted", "denied", "undetermined"];
+
+/// A live TCC-permission snapshot read from the capture helper. Port of the Python
+/// `probe_permissions`. Never an error: a missing or unresponsive helper yields
+/// `available = false` with every field `None` (the API renders those as `"unknown"`).
+#[derive(Debug, Clone, Default)]
+pub struct PermissionsSnapshot {
+    pub available: bool,
+    pub helper_version: Option<String>,
+    pub microphone: Option<String>,
+    pub audio_capture: Option<String>,
+    pub screen_recording: Option<String>,
+    pub accessibility: Option<String>,
+    pub calendar: Option<String>,
+}
+
+/// Briefly spawn the helper, read its `hello` (build version) + `check_permissions` reply, then
+/// shut it down. `check_permissions` reads TCC status side-effect-free (it never starts capture, so
+/// no permission prompt fires). Any failure degrades to an unavailable snapshot rather than raising,
+/// so the Permissions panel always renders. Port of `hearsay/services/permissions.py`.
+pub async fn probe_permissions(helper_path: PathBuf) -> PermissionsSnapshot {
+    match probe_inner(&helper_path).await {
+        Ok(snapshot) => snapshot,
+        Err(err) => {
+            tracing::warn!(error = %err, "permissions probe failed");
+            PermissionsSnapshot::default()
+        }
+    }
+}
+
+async fn probe_inner(helper_path: &Path) -> Result<PermissionsSnapshot, OrchestratorError> {
+    if !helper_path.exists() {
+        tracing::info!(path = %helper_path.display(), "permissions probe: helper binary missing");
+        return Ok(PermissionsSnapshot::default());
+    }
+    let run_dir = tempfile::tempdir()?;
+    let control_listener = UnixListener::bind(run_dir.path().join("control.sock"))?;
+    let media_listener = UnixListener::bind(run_dir.path().join("media.sock"))?;
+
+    let mut cmd = ProcessCommand::new(helper_path);
+    cmd.arg("serve").arg("--socket-dir").arg(run_dir.path());
+    cmd.kill_on_drop(true);
+    // Kept alive to scope end; `kill_on_drop` reaps the helper when this drops.
+    let _child = cmd.spawn()?;
+
+    // The helper connects back to both sockets (control first, then media) before it says hello.
+    let (control_conn, _) = tokio::time::timeout(PROBE_TIMEOUT, control_listener.accept())
+        .await
+        .map_err(|_| backend("helper did not connect to control.sock in time"))??;
+    let _media = tokio::time::timeout(PROBE_TIMEOUT, media_listener.accept())
+        .await
+        .map_err(|_| backend("helper did not connect to media.sock in time"))??;
+
+    let (control_read, mut control_writer) = control_conn.into_split();
+    let mut control_lines = BufReader::new(control_read).lines();
+
+    let hello = wait_for_event(&mut control_lines, "hello", PROBE_TIMEOUT).await?;
+    let helper_version = hello
+        .data
+        .get("helper_version")
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+
+    let check = Command {
+        id: 1,
+        cmd: "check_permissions".into(),
+        args: JsonObj::new(),
+    };
+    control_writer
+        .write_all(&to_line(&check).map_err(|e| backend(e.to_string()))?)
+        .await?;
+    let result = wait_for_reply_result(&mut control_lines, 1, PROBE_TIMEOUT).await?;
+
+    // Best-effort graceful shutdown; `kill_on_drop` reaps the child regardless.
+    let shutdown = Command {
+        id: 2,
+        cmd: "shutdown".into(),
+        args: JsonObj::new(),
+    };
+    if let Ok(line) = to_line(&shutdown) {
+        let _ = control_writer.write_all(&line).await;
+    }
+
+    let state = |key: &str| -> Option<String> {
+        result
+            .get(key)
+            .and_then(|v| v.as_str())
+            .filter(|s| VALID_STATES.contains(s))
+            .map(str::to_string)
+    };
+    Ok(PermissionsSnapshot {
+        available: true,
+        helper_version,
+        microphone: state("microphone"),
+        audio_capture: state("audio_capture"),
+        screen_recording: state("screen_recording"),
+        accessibility: state("accessibility"),
+        calendar: state("calendar"),
+    })
+}
+
+/// Read control lines until the reply to command `id` arrives (or timeout), returning its `result`
+/// object. Errors if the reply is `ok = false`.
+async fn wait_for_reply_result(
+    lines: &mut Lines<BufReader<OwnedReadHalf>>,
+    id: i64,
+    timeout: Duration,
+) -> Result<JsonObj, OrchestratorError> {
+    tokio::time::timeout(timeout, async {
+        loop {
+            let line = lines
+                .next_line()
+                .await?
+                .ok_or_else(|| backend("control channel closed before reply"))?;
+            if let Ok(Inbound::Reply(reply)) = parse_message(line.as_bytes()) {
+                if reply.id == id {
+                    if reply.ok {
+                        return Ok(reply.result.unwrap_or_default());
+                    }
+                    let msg = reply
+                        .error
+                        .map(|e| format!("{}: {}", e.code, e.message))
+                        .unwrap_or_else(|| "unknown error".to_string());
+                    return Err(backend(format!("check_permissions failed: {msg}")));
+                }
+            }
+        }
+    })
+    .await
+    .map_err(|_| backend("timed out waiting for check_permissions reply"))?
 }
 
 /// Read control lines until the reply to command `id` arrives (or timeout). Errors if the reply is

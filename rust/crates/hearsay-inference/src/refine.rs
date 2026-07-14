@@ -77,9 +77,16 @@ pub fn refine_them(
         .output()
         .map_err(|e| InferenceError::Whisper(format!("spawn hearsay-diarize: {e}")))?;
     if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        // FluidAudio reports a silent / no-remote-speech track as an error; that is benign for a
+        // refine (there is simply nothing to re-diarize), so surface it as a distinct variant the
+        // caller can treat as a no-op rather than a failure.
+        if stderr.contains("noSpeechDetected") {
+            return Err(InferenceError::NoSpeech);
+        }
         return Err(InferenceError::Whisper(format!(
             "hearsay-diarize failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
+            stderr.trim()
         )));
     }
     let diarized: DiarizeOutput = serde_json::from_slice(&output.stdout)

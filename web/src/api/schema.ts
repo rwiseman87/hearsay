@@ -4,23 +4,6 @@
  */
 
 export interface paths {
-    "/": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Index */
-        get: operations["index__get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/identities": {
         parameters: {
             query?: never;
@@ -28,8 +11,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List Identities */
-        get: operations["list_identities_api_identities_get"];
+        get: operations["list_identities"];
         put?: never;
         post?: never;
         delete?: never;
@@ -45,53 +27,32 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List Meetings */
-        get: operations["list_meetings_api_meetings_get"];
+        get: operations["list_meetings"];
         put?: never;
-        /** Start Meeting */
-        post: operations["start_meeting_api_meetings_post"];
+        post: operations["start_meeting"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/api/meetings/{meeting_id}": {
+    "/api/meetings/{id}": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        /** Get Meeting */
-        get: operations["get_meeting_api_meetings__meeting_id__get"];
+        get: operations["get_meeting"];
         put?: never;
         post?: never;
-        /** Delete Meeting */
-        delete: operations["delete_meeting_api_meetings__meeting_id__delete"];
+        delete: operations["delete_meeting"];
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/api/meetings/{meeting_id}/audio": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Get Meeting Audio */
-        get: operations["get_meeting_audio_api_meetings__meeting_id__audio_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/meetings/{meeting_id}/rediarize": {
+    "/api/meetings/{id}/rediarize": {
         parameters: {
             query?: never;
             header?: never;
@@ -100,29 +61,21 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /**
-         * Rediarize
-         * @description Re-diarize the recorded Them track (FluidAudio on the ANE) and return the new speakers.
-         *
-         *     The heavy diarization runs in the helper, off-loop. 404 if the meeting is
-         *     unknown, 409 if it has no recorded ``audio.wav`` (audio.record was off).
-         */
-        post: operations["rediarize_api_meetings__meeting_id__rediarize_post"];
+        post: operations["rediarize"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/api/meetings/{meeting_id}/segments": {
+    "/api/meetings/{id}/segments": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        /** List Segments */
-        get: operations["list_segments_api_meetings__meeting_id__segments_get"];
+        get: operations["list_segments"];
         put?: never;
         post?: never;
         delete?: never;
@@ -131,15 +84,14 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/meetings/{meeting_id}/speakers": {
+    "/api/meetings/{id}/speakers": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        /** List Speakers */
-        get: operations["list_speakers_api_meetings__meeting_id__speakers_get"];
+        get: operations["list_speakers"];
         put?: never;
         post?: never;
         delete?: never;
@@ -148,7 +100,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/meetings/{meeting_id}/speakers/{cluster_id}": {
+    "/api/meetings/{id}/speakers/{cluster_id}": {
         parameters: {
             query?: never;
             header?: never;
@@ -156,8 +108,7 @@ export interface paths {
             cookie?: never;
         };
         get?: never;
-        /** Rename Speaker */
-        put: operations["rename_speaker_api_meetings__meeting_id__speakers__cluster_id__put"];
+        put: operations["rename_speaker"];
         post?: never;
         delete?: never;
         options?: never;
@@ -165,7 +116,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/meetings/{meeting_id}/stop": {
+    "/api/meetings/{id}/stop": {
         parameters: {
             query?: never;
             header?: never;
@@ -174,29 +125,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Stop Meeting */
-        post: operations["stop_meeting_api_meetings__meeting_id__stop_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/meetings/{meeting_id}/storage": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        /**
-         * Relocate Meeting
-         * @description Re-point a meeting's storage to a directory its artifacts were moved to (validate, don't
-         *     move). 409 while it is recording; 422 if the target does not hold the artifacts.
-         */
-        put: operations["relocate_meeting_api_meetings__meeting_id__storage_put"];
-        post?: never;
+        post: operations["stop_meeting"];
         delete?: never;
         options?: never;
         head?: never;
@@ -210,8 +139,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Read Settings */
-        get: operations["read_settings_api_settings_get"];
+        get: operations["read_settings"];
         put?: never;
         post?: never;
         delete?: never;
@@ -227,11 +155,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /**
-         * Read Permissions
-         * @description Live TCC permission status (briefly spawns the helper); never a stored preference.
-         */
-        get: operations["read_permissions_api_settings_permissions_get"];
+        get: operations["read_permissions"];
         put?: never;
         post?: never;
         delete?: never;
@@ -248,8 +172,7 @@ export interface paths {
             cookie?: never;
         };
         get?: never;
-        /** Update Recording */
-        put: operations["update_recording_api_settings_recording_put"];
+        put: operations["update_recording"];
         post?: never;
         delete?: never;
         options?: never;
@@ -265,8 +188,7 @@ export interface paths {
             cookie?: never;
         };
         get?: never;
-        /** Update Speakers */
-        put: operations["update_speakers_api_settings_speakers_put"];
+        put: operations["update_speakers"];
         post?: never;
         delete?: never;
         options?: never;
@@ -282,8 +204,7 @@ export interface paths {
             cookie?: never;
         };
         get?: never;
-        /** Update Storage */
-        put: operations["update_storage_api_settings_storage_put"];
+        put: operations["update_storage"];
         post?: never;
         delete?: never;
         options?: never;
@@ -296,205 +217,170 @@ export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
         /**
-         * AboutInfo
-         * @description Read-only build/runtime facts for the About panel (no persistence).
-         *
-         *     ``protocol_version`` is the core's IPC frame-protocol constant; the helper reports
-         *     its own copy on connect (surfaced by the Permissions panel), and a mismatch signals
-         *     a helper/core version drift.
+         * @description Read-only build/runtime facts for the About panel (`protocol_version` is the core's IPC
+         *     frame-protocol constant; a mismatch with the helper's reported copy signals version drift).
          */
         AboutInfo: {
-            /** App Version */
             app_version: string;
-            /** Database Path */
             database_path: string;
-            /** Environment */
             environment: string;
-            /** Protocol Version */
+            /** Format: int32 */
             protocol_version: number;
         };
-        /** HTTPValidationError */
-        HTTPValidationError: {
-            /** Detail */
-            detail?: components["schemas"]["ValidationError"][];
-        };
-        /**
-         * IdentityRead
-         * @description A known cross-meeting person (offered as a rename suggestion).
-         */
+        /** @description A known cross-meeting person (offered as a rename suggestion). */
         IdentityRead: {
-            /** Display Name */
             display_name: string;
-            /** Email */
-            email: string | null;
-            /**
-             * Id
-             * Format: uuid
-             */
+            email?: string | null;
+            /** Format: uuid */
             id: string;
         };
-        /**
-         * MeetingCreate
-         * @description Start a meeting. ``title`` defaults to a timestamp-derived name when omitted.
-         */
+        /** @description Start a meeting. `title` defaults to a timestamp-derived name when omitted. */
         MeetingCreate: {
-            /** Title */
             title?: string | null;
         };
-        /** MeetingRead */
+        /** @description A meeting row for the API. */
         MeetingRead: {
-            /**
-             * Created At
-             * Format: date-time
-             */
+            /** Format: date-time */
             created_at: string;
-            /** Ended At */
-            ended_at: string | null;
-            /** Folder */
+            /** Format: date-time */
+            ended_at?: string | null;
             folder: string;
-            /**
-             * Id
-             * Format: uuid
-             */
+            /** Format: uuid */
             id: string;
-            /**
-             * Started At
-             * Format: date-time
-             */
+            /** Format: date-time */
             started_at: string;
             status: components["schemas"]["MeetingStatus"];
-            /** Storage Root */
-            storage_root: string;
-            /** Title */
             title: string;
-            /**
-             * Updated At
-             * Format: date-time
-             */
+            /** Format: date-time */
             updated_at: string;
         };
         /**
-         * MeetingRelocate
-         * @description Re-point a meeting's storage to ``new_root`` (an absolute directory the artifacts moved
-         *     to). The app validates the artifacts are there and updates the stored root; it does not move
-         *     files.
-         */
-        MeetingRelocate: {
-            /** New Root */
-            new_root: string;
-        };
-        /**
-         * MeetingStatus
-         * @description Lifecycle state of a meeting row.
+         * @description Lifecycle state of a meeting (lowercase on the wire, matching the Python `StrEnum`).
          * @enum {string}
          */
         MeetingStatus: "recording" | "finalized";
-        /** Page[IdentityRead] */
-        Page_IdentityRead_: {
-            /** Items */
-            items: components["schemas"]["IdentityRead"][];
-            /** Page */
+        /** @description Paginated list envelope used by every list endpoint (`{ total, page, page_size, items }`). */
+        Page_IdentityRead: {
+            items: {
+                display_name: string;
+                email?: string | null;
+                /** Format: uuid */
+                id: string;
+            }[];
+            /** Format: int32 */
             page: number;
-            /** Page Size */
+            /** Format: int32 */
             page_size: number;
-            /** Total */
+            /** Format: int64 */
             total: number;
         };
-        /** Page[MeetingRead] */
-        Page_MeetingRead_: {
-            /** Items */
-            items: components["schemas"]["MeetingRead"][];
-            /** Page */
+        /** @description Paginated list envelope used by every list endpoint (`{ total, page, page_size, items }`). */
+        Page_MeetingRead: {
+            items: {
+                /** Format: date-time */
+                created_at: string;
+                /** Format: date-time */
+                ended_at?: string | null;
+                folder: string;
+                /** Format: uuid */
+                id: string;
+                /** Format: date-time */
+                started_at: string;
+                status: components["schemas"]["MeetingStatus"];
+                title: string;
+                /** Format: date-time */
+                updated_at: string;
+            }[];
+            /** Format: int32 */
             page: number;
-            /** Page Size */
+            /** Format: int32 */
             page_size: number;
-            /** Total */
+            /** Format: int64 */
             total: number;
         };
-        /** Page[SegmentRead] */
-        Page_SegmentRead_: {
-            /** Items */
-            items: components["schemas"]["SegmentRead"][];
-            /** Page */
+        /** @description Paginated list envelope used by every list endpoint (`{ total, page, page_size, items }`). */
+        Page_SegmentRead: {
+            items: {
+                /** Format: uuid */
+                cluster_id?: string | null;
+                /** Format: double */
+                end_s: number;
+                /** Format: uuid */
+                id: string;
+                speaker_label: string;
+                /** Format: double */
+                start_s: number;
+                stream: components["schemas"]["Stream"];
+                text: string;
+            }[];
+            /** Format: int32 */
             page: number;
-            /** Page Size */
+            /** Format: int32 */
             page_size: number;
-            /** Total */
+            /** Format: int64 */
             total: number;
         };
-        /** Page[SpeakerRead] */
-        Page_SpeakerRead_: {
-            /** Items */
-            items: components["schemas"]["SpeakerRead"][];
-            /** Page */
+        /** @description Paginated list envelope used by every list endpoint (`{ total, page, page_size, items }`). */
+        Page_SpeakerRead: {
+            items: {
+                /**
+                 * Format: uuid
+                 * @description The cluster id.
+                 */
+                id: string;
+                /** Format: uuid */
+                identity_id?: string | null;
+                /** @description The bound identity's name, else `"Speaker {ordinal}"`. */
+                label: string;
+                locked: boolean;
+                /** Format: int64 */
+                ordinal: number;
+            }[];
+            /** Format: int32 */
             page: number;
-            /** Page Size */
+            /** Format: int32 */
             page_size: number;
-            /** Total */
+            /** Format: int64 */
             total: number;
         };
         /**
-         * PermissionsInfo
-         * @description Live TCC permission status probed from the capture helper (not a stored preference).
-         *
-         *     Each permission is ``granted`` / ``denied`` / ``undetermined`` (from the helper's
-         *     ``check_permissions``), or ``unknown`` when the helper is unavailable. Only the
-         *     microphone has a real status today; ``audio_capture`` / ``screen_recording`` /
-         *     ``accessibility`` / ``calendar`` are ``undetermined`` stubs until their capture phases
-         *     land. ``helper_version`` is the connected helper's build; ``None`` when unavailable.
+         * @description Live TCC permission status probed from the capture helper (not a stored preference). Each field
+         *     is `granted` / `denied` / `undetermined`, or `unknown` when the helper is unavailable.
+         *     `helper_version` is the connected helper's build (`None` when unavailable).
          */
         PermissionsInfo: {
-            /** Accessibility */
             accessibility: string;
-            /** Audio Capture */
             audio_capture: string;
-            /** Calendar */
             calendar: string;
-            /** Helper Available */
             helper_available: boolean;
-            /** Helper Version */
             helper_version?: string | null;
-            /** Microphone */
             microphone: string;
-            /** Screen Recording */
             screen_recording: string;
         };
         /**
-         * RecordingSettings
-         * @description Recording & privacy. ``record`` is the single audio-retention switch: keep one
-         *     timeline-accurate WAV per meeting (needed for playback + the post-meeting refine).
+         * @description Recording & privacy — the single audio-retention switch (keep one WAV per meeting for playback
+         *     + the post-meeting refine). Editable section; a request body and part of [`SettingsRead`].
          */
         RecordingSettings: {
-            /**
-             * Record
-             * @default true
-             */
             record: boolean;
         };
-        /** SegmentRead */
+        /** @description A transcript segment for the API. */
         SegmentRead: {
-            /** Cluster Id */
-            cluster_id: string | null;
-            /** End S */
+            /** Format: uuid */
+            cluster_id?: string | null;
+            /** Format: double */
             end_s: number;
-            /**
-             * Id
-             * Format: uuid
-             */
+            /** Format: uuid */
             id: string;
-            /** Speaker Label */
             speaker_label: string;
-            /** Start S */
+            /** Format: double */
             start_s: number;
             stream: components["schemas"]["Stream"];
-            /** Text */
             text: string;
         };
         /**
-         * SettingsRead
-         * @description The full editable settings, one field per panel/section (extended as panels land).
-         *
-         *     ``storage_info`` and ``about`` are read-only context (not editable sections).
+         * @description The full editable settings, one field per panel/section. `storage_info` and `about` are
+         *     read-only context (not editable sections).
          */
         SettingsRead: {
             about: components["schemas"]["AboutInfo"];
@@ -503,94 +389,52 @@ export interface components {
             storage: components["schemas"]["StorageSettings"];
             storage_info: components["schemas"]["StorageInfo"];
         };
-        /**
-         * SpeakerRead
-         * @description A diarization cluster within a meeting, with its resolved display label.
-         */
+        /** @description A diarization cluster within a meeting, with its resolved display label. */
         SpeakerRead: {
             /**
-             * Id
              * Format: uuid
+             * @description The cluster id.
              */
             id: string;
-            /** Identity Id */
-            identity_id: string | null;
-            /** Label */
+            /** Format: uuid */
+            identity_id?: string | null;
+            /** @description The bound identity's name, else `"Speaker {ordinal}"`. */
             label: string;
-            /** Locked */
             locked: boolean;
-            /** Ordinal */
+            /** Format: int64 */
             ordinal: number;
         };
-        /**
-         * SpeakerRename
-         * @description Rename a cluster to a person (binds + locks; relabels that speaker's segments).
-         */
+        /** @description Rename a cluster to a person (binds + locks; relabels that speaker's segments). */
         SpeakerRename: {
-            /** Display Name */
             display_name: string;
         };
         /**
-         * SpeakerSettings
-         * @description Speaker diarization. ``auto_refine`` re-diarizes each meeting at finalize;
-         *     ``recognition_threshold`` is the cosine at/above which a refined speaker is auto-matched
-         *     to a person named in a previous meeting (higher = stricter).
+         * @description Speaker diarization: re-diarize each meeting at finalize (`auto_refine`) + the cosine at/above
+         *     which a refined speaker is auto-matched to a person named in a prior meeting.
          */
         SpeakerSettings: {
-            /**
-             * Auto Refine
-             * @default true
-             */
             auto_refine: boolean;
-            /**
-             * Recognition Threshold
-             * @default 0.6
-             */
+            /** Format: double */
             recognition_threshold: number;
         };
-        /**
-         * StorageInfo
-         * @description Read-only storage facts shown alongside the editable section.
-         */
+        /** @description Read-only storage facts shown alongside the editable storage section. */
         StorageInfo: {
-            /** Database Path */
             database_path: string;
-            /** Meeting Count */
+            /** Format: int64 */
             meeting_count: number;
-            /** Output Dir */
             output_dir: string;
-            /** Tracked Bytes */
+            /** Format: int64 */
             tracked_bytes: number;
         };
-        /**
-         * StorageSettings
-         * @description Storage location. ``output_dir`` is the default root new meetings are written under
-         *     (existing meetings keep their stamped location); relocate an individual meeting from its
-         *     own view.
-         */
+        /** @description The default root new meetings are written under (existing meetings keep their stamped location). */
         StorageSettings: {
-            /** Output Dir */
             output_dir: string;
         };
         /**
-         * Stream
-         * @description Which capture channel a frame/segment came from.
+         * @description Which capture channel a segment came from.
          * @enum {string}
          */
         Stream: "me" | "them";
-        /** ValidationError */
-        ValidationError: {
-            /** Context */
-            ctx?: Record<string, never>;
-            /** Input */
-            input?: unknown;
-            /** Location */
-            loc: (string | number)[];
-            /** Message */
-            msg: string;
-            /** Error Type */
-            type: string;
-        };
     };
     responses: never;
     parameters: never;
@@ -600,27 +444,7 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
-    index__get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "text/html": string;
-                };
-            };
-        };
-    };
-    list_identities_api_identities_get: {
+    list_identities: {
         parameters: {
             query?: {
                 page?: number;
@@ -632,27 +456,17 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Successful Response */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Page_IdentityRead_"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["Page_IdentityRead"];
                 };
             };
         };
     };
-    list_meetings_api_meetings_get: {
+    list_meetings: {
         parameters: {
             query?: {
                 page?: number;
@@ -664,27 +478,17 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Successful Response */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Page_MeetingRead_"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["Page_MeetingRead"];
                 };
             };
         };
     };
-    start_meeting_api_meetings_post: {
+    start_meeting: {
         parameters: {
             query?: never;
             header?: never;
@@ -697,7 +501,6 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Successful Response */
             201: {
                 headers: {
                     [name: string]: unknown;
@@ -706,29 +509,31 @@ export interface operations {
                     "application/json": components["schemas"]["MeetingRead"];
                 };
             };
-            /** @description Validation Error */
-            422: {
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                content?: never;
+            };
+            503: {
+                headers: {
+                    [name: string]: unknown;
                 };
+                content?: never;
             };
         };
     };
-    get_meeting_api_meetings__meeting_id__get: {
+    get_meeting: {
         parameters: {
             query?: never;
             header?: never;
             path: {
-                meeting_id: string;
+                id: string;
             };
             cookie?: never;
         };
         requestBody?: never;
         responses: {
-            /** @description Successful Response */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -737,109 +542,73 @@ export interface operations {
                     "application/json": components["schemas"]["MeetingRead"];
                 };
             };
-            /** @description Validation Error */
-            422: {
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
+                content?: never;
             };
         };
     };
-    delete_meeting_api_meetings__meeting_id__delete: {
+    delete_meeting: {
         parameters: {
             query?: never;
             header?: never;
             path: {
-                meeting_id: string;
+                id: string;
             };
             cookie?: never;
         };
         requestBody?: never;
         responses: {
-            /** @description Successful Response */
             204: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content?: never;
             };
-            /** @description Validation Error */
-            422: {
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
+                content?: never;
             };
         };
     };
-    get_meeting_audio_api_meetings__meeting_id__audio_get: {
+    rediarize: {
         parameters: {
             query?: never;
             header?: never;
             path: {
-                meeting_id: string;
+                id: string;
             };
             cookie?: never;
         };
         requestBody?: never;
         responses: {
-            /** @description Successful Response */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["Page_SpeakerRead"];
                 };
             };
-            /** @description Validation Error */
-            422: {
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                content?: never;
+            };
+            503: {
+                headers: {
+                    [name: string]: unknown;
                 };
+                content?: never;
             };
         };
     };
-    rediarize_api_meetings__meeting_id__rediarize_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                meeting_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Page_SpeakerRead_"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    list_segments_api_meetings__meeting_id__segments_get: {
+    list_segments: {
         parameters: {
             query?: {
                 page?: number;
@@ -847,69 +616,49 @@ export interface operations {
             };
             header?: never;
             path: {
-                meeting_id: string;
+                id: string;
             };
             cookie?: never;
         };
         requestBody?: never;
         responses: {
-            /** @description Successful Response */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Page_SegmentRead_"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["Page_SegmentRead"];
                 };
             };
         };
     };
-    list_speakers_api_meetings__meeting_id__speakers_get: {
+    list_speakers: {
         parameters: {
             query?: never;
             header?: never;
             path: {
-                meeting_id: string;
+                id: string;
             };
             cookie?: never;
         };
         requestBody?: never;
         responses: {
-            /** @description Successful Response */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Page_SpeakerRead_"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["Page_SpeakerRead"];
                 };
             };
         };
     };
-    rename_speaker_api_meetings__meeting_id__speakers__cluster_id__put: {
+    rename_speaker: {
         parameters: {
             query?: never;
             header?: never;
             path: {
-                meeting_id: string;
+                id: string;
                 cluster_id: string;
             };
             cookie?: never;
@@ -920,7 +669,6 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Successful Response */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -929,29 +677,31 @@ export interface operations {
                     "application/json": components["schemas"]["SpeakerRead"];
                 };
             };
-            /** @description Validation Error */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
+                content?: never;
             };
         };
     };
-    stop_meeting_api_meetings__meeting_id__stop_post: {
+    stop_meeting: {
         parameters: {
             query?: never;
             header?: never;
             path: {
-                meeting_id: string;
+                id: string;
             };
             cookie?: never;
         };
         requestBody?: never;
         responses: {
-            /** @description Successful Response */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -960,53 +710,21 @@ export interface operations {
                     "application/json": components["schemas"]["MeetingRead"];
                 };
             };
-            /** @description Validation Error */
-            422: {
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                content?: never;
+            };
+            503: {
+                headers: {
+                    [name: string]: unknown;
                 };
+                content?: never;
             };
         };
     };
-    relocate_meeting_api_meetings__meeting_id__storage_put: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                meeting_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["MeetingRelocate"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["MeetingRead"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    read_settings_api_settings_get: {
+    read_settings: {
         parameters: {
             query?: never;
             header?: never;
@@ -1015,7 +733,6 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Successful Response */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -1026,7 +743,7 @@ export interface operations {
             };
         };
     };
-    read_permissions_api_settings_permissions_get: {
+    read_permissions: {
         parameters: {
             query?: never;
             header?: never;
@@ -1035,7 +752,6 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Successful Response */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -1046,7 +762,7 @@ export interface operations {
             };
         };
     };
-    update_recording_api_settings_recording_put: {
+    update_recording: {
         parameters: {
             query?: never;
             header?: never;
@@ -1059,7 +775,6 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Successful Response */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -1068,18 +783,9 @@ export interface operations {
                     "application/json": components["schemas"]["RecordingSettings"];
                 };
             };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
         };
     };
-    update_speakers_api_settings_speakers_put: {
+    update_speakers: {
         parameters: {
             query?: never;
             header?: never;
@@ -1092,7 +798,6 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Successful Response */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -1101,18 +806,15 @@ export interface operations {
                     "application/json": components["schemas"]["SpeakerSettings"];
                 };
             };
-            /** @description Validation Error */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
+                content?: never;
             };
         };
     };
-    update_storage_api_settings_storage_put: {
+    update_storage: {
         parameters: {
             query?: never;
             header?: never;
@@ -1125,7 +827,6 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Successful Response */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -1134,14 +835,11 @@ export interface operations {
                     "application/json": components["schemas"]["StorageSettings"];
                 };
             };
-            /** @description Validation Error */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
+                content?: never;
             };
         };
     };

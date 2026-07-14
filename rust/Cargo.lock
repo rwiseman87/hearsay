@@ -727,6 +727,7 @@ dependencies = [
  "hearsay-db",
  "hearsay-engine",
  "hearsay-inference",
+ "hearsay-ipc",
  "hearsay-orchestrator",
  "serde",
  "serde_json",

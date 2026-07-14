@@ -11,6 +11,8 @@ pub enum InferenceError {
     Streaming(String),
     /// An audio I/O / format problem.
     Audio(String),
+    /// The offline diarizer found no speech in the Them track — nothing to refine (benign).
+    NoSpeech,
     /// An underlying I/O error.
     Io(std::io::Error),
 }
@@ -22,6 +24,7 @@ impl std::fmt::Display for InferenceError {
             InferenceError::Diarize(m) => write!(f, "diarize error: {m}"),
             InferenceError::Streaming(m) => write!(f, "streaming asr error: {m}"),
             InferenceError::Audio(m) => write!(f, "audio error: {m}"),
+            InferenceError::NoSpeech => write!(f, "no speech detected in the Them track"),
             InferenceError::Io(e) => write!(f, "io error: {e}"),
         }
     }

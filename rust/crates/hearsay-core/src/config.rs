@@ -29,6 +29,13 @@ pub struct Settings {
     /// Auto-run the offline refine when a meeting stops (`HEARSAY_AUTO_REFINE`, default on). The
     /// manual `/rediarize` route works regardless.
     pub auto_refine: bool,
+    /// Default audio-retention switch: keep one WAV per meeting (`HEARSAY_RECORD`, default on). The
+    /// editable `recording` settings section overrides this per install.
+    pub record: bool,
+    /// Default cosine threshold at/above which a refined speaker is auto-matched to a person named
+    /// in a prior meeting (`HEARSAY_RECOGNITION_THRESHOLD`, default 0.6; the `speakers` section
+    /// overrides it).
+    pub recognition_threshold: f64,
 }
 
 fn env_or(key: &str, default: impl Into<String>) -> String {
@@ -44,6 +51,14 @@ fn env_bool(key: &str, default: bool) -> bool {
         ),
         Err(_) => default,
     }
+}
+
+/// Parse a float env var; `default` when unset or unparseable.
+fn env_f64(key: &str, default: f64) -> f64 {
+    env::var(key)
+        .ok()
+        .and_then(|v| v.trim().parse().ok())
+        .unwrap_or(default)
 }
 
 impl Settings {
@@ -72,6 +87,8 @@ impl Settings {
                 "outputs/models/ggml-large-v3-turbo.bin",
             )),
             auto_refine: env_bool("HEARSAY_AUTO_REFINE", true),
+            record: env_bool("HEARSAY_RECORD", true),
+            recognition_threshold: env_f64("HEARSAY_RECOGNITION_THRESHOLD", 0.6),
         }
     }
 }

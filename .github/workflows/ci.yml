@@ -8,42 +8,13 @@ on:
 # NOTE: per CLAUDE.md, pin these actions to full commit SHAs before merging
 # (left as tags here so the workflow is readable; a maintainer must SHA-pin).
 jobs:
-  build:
+  # Native gate: Rust + Swift, the codegen-drift check (Rust is the source of truth for the
+  # OpenAPI + IPC fixtures), and the supply-chain gates. macOS because the Swift helper + sidecars
+  # and the codegen both need the full native toolchain.
+  native:
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
-
-      - name: Install uv
-        run: curl -LsSf https://astral.sh/uv/install.sh | sh
-
-      - name: Sync Python env
-        run: uv sync
-
-      - name: Lint
-        run: make lint
-
-      - name: Type-check
-        run: make typecheck
-
-      - name: Python + Swift tests
-        run: make test
-
-      - name: Dependency CVE audit
-        run: make audit
-
-      - name: Open-license gate
-        run: make licenses
-
-  web:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install uv
-        run: curl -LsSf https://astral.sh/uv/install.sh | sh
-
-      - name: Sync Python env
-        run: uv sync
 
       - uses: actions/setup-node@v4
         with:
@@ -51,5 +22,29 @@ jobs:
           cache: npm
           cache-dependency-path: web/package-lock.json
 
-      - name: Web CI (install, codegen drift, typecheck, build)
+      # cargo-deny (license gate) + cargo-audit (CVE scan) via prebuilt binaries.
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny,cargo-audit
+
+      # Web deps are needed by `make codegen-check` (it runs `npm run codegen`).
+      - name: Install web deps
+        run: cd web && npm ci
+
+      - name: CI gate (lint + tests + codegen drift + audit + licenses)
+        run: make ci
+
+  # Frontend gate: install, type-check, build the React bundle.
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Web CI (install, typecheck, build)
         run: make web-ci

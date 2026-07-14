@@ -5,28 +5,32 @@ audio output as **separate** streams ("Me" vs "Them"), transcribes in real time,
 identifies the remote speakers, and streams notes to Markdown. Transcription,
 diarization, and the LLM run **locally by default**; AWS Bedrock is configurable.
 
+Ships as **one Rust + Tauri app** — a signed installer per OS, no interpreter to install.
+
 ## Architecture
 
-A hybrid, three-process app (Apple Silicon, macOS 14.4+):
+A multi-process, local-only app (Apple Silicon, macOS 14.4+; Windows planned):
 
 - **Swift helper** (`helper/`) — the only process touching guarded native APIs: a Core
   Audio process tap (system audio) + `AVAudioEngine` (mic), resampled to 16 kHz mono and
   stamped with one monotonic clock. Later phases add calendar + on-screen OCR name hints.
-- **Python core** (`src/hearsay/`) — VAD, ASR, diarization (speaker clustering), the transcript
-  pipeline, persistence, Markdown output, and a loopback FastAPI + WebSocket API. Spawns and
-  supervises the helper.
-- **Web UI** — a typed React frontend (Vite + React 19 + TanStack Query) served by the core at
-  `/` with the session token injected; the native WKWebView window is a later phase.
+- **Swift sidecars** (`helper/`, FluidAudio on the Apple Neural Engine) — live diarization +
+  ASR (`hearsay-live`, `hearsay-me`) and the post-meeting refine (`hearsay-diarize`).
+- **Rust core** (`rust/crates/`) — orchestration, speaker attribution, the whisper offline
+  refine, persistence, Markdown output, and a loopback axum HTTP + WebSocket API. Spawns and
+  supervises the helper + sidecars.
+- **Web UI** (`web/`) — a typed React frontend (Vite + React 19 + TanStack Query) served by the
+  core with the session token injected, shown in a Tauri WKWebView window.
 
 The helper and core talk over two Unix sockets; the binary/NDJSON contract is in
-[`shared/protocol/ipc.md`](shared/protocol/ipc.md), pinned by golden fixtures that both
-languages validate in CI.
+[`shared/protocol/ipc.md`](shared/protocol/ipc.md), pinned by golden fixtures that both the Rust
+codec and the Swift codec validate in CI.
 
 ```mermaid
 flowchart LR
   Helper["Swift helper\nmic + system tap -> 16 kHz mono PCM"]
-  Core["Python core\nVAD -> ASR + diarization -> DB + transcript.md + WS"]
-  UI["Web UI (React)\nstart/stop + live transcript + rename speakers"]
+  Core["Rust core\nroute PCM -> sidecars -> DB + transcript.md + WS"]
+  UI["Web UI (React, in Tauri)\nstart/stop + live transcript + rename speakers"]
   Core -- "spawns + supervises" --> Helper
   Helper -- "media.sock (PCM) + control.sock (NDJSON)" --> Core
   Core -- "REST + WebSocket (127.0.0.1 + token)" --> UI
@@ -34,78 +38,83 @@ flowchart LR
 
 ## Status
 
-**Phases 1-2 work end to end; the on-device audio-AI now runs in Swift sidecars on the Apple
-Neural Engine (FluidAudio).** Capture (Me/Them separation) feeds the `hearsay-live` (Them:
-streaming diarization + Parakeet ASR) and `hearsay-me` (Me: streaming VAD + Parakeet) sidecars →
-SQLite + live `transcript.md` + the loopback REST/WebSocket API + the React UI. Remote speakers
-are labeled **Speaker 1..N** live and refined by a whole-track pass at stop (`hearsay-diarize`),
-which also recognizes returning people by voiceprint; **rename them to real people** in the UI —
-names persist and carry across meetings. Me is the mic channel and is never diarized. The Python
-core runs no ML models. See [`docs/TODO.md`](docs/TODO.md) for the phase-by-phase tracker.
+**Phases 1-2 work end to end.** Capture (Me/Them separation) feeds the `hearsay-live` (Them:
+streaming diarization + Parakeet ASR) and `hearsay-me` (Me: streaming VAD + Parakeet) sidecars on
+the Apple Neural Engine → SQLite + live `transcript.md` + the loopback REST/WebSocket API + the
+React UI. Remote speakers are labeled **Speaker 1..N** live and refined by a whole-track pass at
+stop (`hearsay-diarize` + whisper), which also recognizes returning people by voiceprint; **rename
+them to real people** in the UI — names persist and carry across meetings. Me is the mic channel
+and is never diarized. See [`docs/TODO.md`](docs/TODO.md) for the phase-by-phase tracker.
 
 ## Quickstart
 
-Prereqs: [`uv`](https://docs.astral.sh/uv/) and Swift (Command Line Tools is enough).
+Prereqs: a Rust toolchain ([rustup](https://rustup.rs/)), Swift (Command Line Tools is enough),
+and Node 22.
 
 ```sh
-make sync                                  # create the venv + all deps (Python 3.14; numpy is the only ML-adjacent dep)
 make swift-build                           # build the capture helper + the FluidAudio/ANE sidecars
 (cd web && npm ci && npm run build)        # build the React UI bundle (web/dist), served by the core
+make rust-serve                            # prints a loopback URL with the per-session ?token=
 ```
 
-Run the real pipeline and watch live transcripts (the on-device validation path):
+Open the printed `http://127.0.0.1:<port>/?token=...` link — the core serves the built UI with the
+token injected. `SYNTHETIC=1 make rust-serve` drives the pipeline with generated audio (no
+permission prompts). For frontend dev with hot reload: `cd web && npm run dev` (Vite proxies
+`/api` + `/ws` to the core).
+
+## Packaging (macOS .dmg)
+
+Build an unsigned, ad-hoc-signed `Hearsay.app` + `.dmg` — no Apple Developer account, no
+notarization required:
 
 ```sh
-uv run hearsay live --seconds 60   # join a call first; talk + play remote audio
+cargo install tauri-cli    # once
+make dmg                    # -> web/src-tauri/target/release/bundle/dmg/Hearsay_<ver>_aarch64.dmg
 ```
 
-Or run the API server and open the UI:
+Because the app isn't notarized, macOS quarantines it when it's moved to another Mac. After dragging
+it to `/Applications`, clear the flag once (or use System Settings -> Privacy & Security -> Open Anyway):
 
 ```sh
-uv run hearsay serve                 # prints a loopback URL with the per-session ?token=
+xattr -dr com.apple.quarantine /Applications/Hearsay.app
 ```
 
-Open the printed `http://127.0.0.1:<port>/?token=...` link — the core serves the built UI with
-the token injected. For frontend dev with hot reload: `cd web && npm run dev` against
-`uv run hearsay serve --port 8137` (Vite proxies `/api` + `/ws`).
+To uninstall, open **Settings -> Data & Uninstall** to keep or erase your recordings and transcripts,
+then drag `Hearsay.app` to the Trash. Full build/install/uninstall notes are in
+[`docs/packaging.md`](docs/packaging.md).
 
 ## Documentation
 
 | Doc | Contents |
 |---|---|
-| [docs/architecture.md](docs/architecture.md) | The three-process design and a module-by-module tour of the Python core — what each piece does and why. |
+| [docs/architecture-cross-platform.md](docs/architecture-cross-platform.md) | The one Rust + Tauri design, per-OS only at the edges, and the model strategy. |
 | [docs/pipeline.md](docs/pipeline.md) | The real-time transcription data flow: capture -> IPC -> Swift sidecars (diarize + ASR on the ANE) -> DB + `transcript.md` + WebSocket. |
 | [docs/api.md](docs/api.md) | REST + WebSocket reference: auth model, endpoints, request/response examples. |
-| [docs/development.md](docs/development.md) | Setup, `make` targets, running (`serve`/`live`), model management, testing, troubleshooting. |
+| [docs/packaging.md](docs/packaging.md) | Build the unsigned macOS `.dmg` (no Apple account), install past Gatekeeper, and the in-app erase/uninstall flow. |
 | [shared/protocol/ipc.md](shared/protocol/ipc.md) | The helper <-> core IPC contract (source of truth). |
 | [docs/TODO.md](docs/TODO.md) | Durable, resumable progress tracker. |
 
 ## Repo layout
 
 ```
-src/hearsay/
-  config/      typed settings (pydantic-settings); the single config source
-  enums.py     StrEnums for DB + JSON serialization
-  log.py       common structured (JSON) logger
-  helper/      core-side IPC: frame codec, control/media channels, supervisor, capture-debug
-  db/ models/  async SQLAlchemy engine/session + ORM models + Alembic migrations
-  schemas/     Pydantic request/response models (the API boundary)
-  services/    business logic (routers stay thin)
-  transcript/  orchestration: MeetingSession, capture seam, pipeline, live Me/Them sidecars, refine
-  asr/         ASRBackend seam + Parakeet sidecar backend (used by the refine)
-  diarization/ offline diarizer seam (Swift hearsay-diarize) + cross-meeting voiceprints
-  export/      output Sink seam + local Markdown writer
-  api/         FastAPI app, routers, WebSocket, loopback security, DI
-  cli.py       the `hearsay` command (serve, live, rediarize, capture-debug)
-helper/        SwiftPM: hearsay-{helper,diarize,asr,live,me} executables + HearsayIPC library
-web/           React UI (Vite + TS): typed fetch client, TanStack Query, OpenAPI-generated types
-shared/        IPC contract (ipc.md) + golden frame fixtures
-tests/         pytest suite (SAVEPOINT-isolated DB tests; guarded on-device tests)
+rust/crates/
+  hearsay-core/         axum HTTP+WS API: config, routes/, schema (utoipa->TS), security, state; the app binary
+  hearsay-db/           SQLite via SQLx: models, queries, forward-only migrations/
+  hearsay-orchestrator/ capture routing + Transcriber/AudioSource seams + pipeline + markdown/recorder
+  hearsay-engine/       LiveEngine trait seam + DisabledEngine placeholder
+  hearsay-capture/      AudioSource trait + SwiftHelperSource (spawns hearsay-helper) + the TCC permissions probe
+  hearsay-inference/    whisper offline ASR + the refine
+  hearsay-attribution/  speaker clustering / voiceprint match / segment-speaker assignment (pure logic)
+  hearsay-ipc/          binary frame codec + NDJSON control codec (IPC contract source of truth) + gen_fixtures
+helper/                 SwiftPM: hearsay-{helper,live,me,diarize,asr} executables + HearsayIPC library
+web/                    React UI (Vite + TS): typed fetch client, TanStack Query, OpenAPI-generated types
+web/src-tauri/          the Tauri desktop shell (bundles + spawns the core + sidecars)
+shared/                 IPC contract (ipc.md) + golden frame fixtures
 ```
 
 ## Conventions
 
-uv for everything; `mypy --strict` + `ruff` clean; `StrEnum` for DB/JSON; thin routers +
-a service layer; Pydantic schemas; permissive licenses only (MIT/BSD/Apache, gated in CI);
-`pip-audit` clean. The `Makefile` is the task runner and `make ci` is the gate. Full
-conventions are in [`CLAUDE.md`](CLAUDE.md).
+Rust: `cargo clippy --all-targets -- -D warnings` + `cargo fmt --check` clean; thin routers over a
+query/engine layer; utoipa OpenAPI -> generated TS types (drift-checked in CI). Permissive licenses
+only (MIT/BSD/Apache, gated by `cargo deny`); `cargo audit` + `npm audit` clean. The `Makefile` is
+the task runner and `make ci` is the gate. Full conventions are in [`CLAUDE.md`](CLAUDE.md).

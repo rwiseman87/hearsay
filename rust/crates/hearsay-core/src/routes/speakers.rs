@@ -99,12 +99,23 @@ pub(crate) async fn rediarize(
     let model = state.settings.refine_model.clone();
 
     // Read the Them track, re-diarize (hearsay-diarize) + re-transcribe (whisper) — all blocking.
-    let output = tokio::task::spawn_blocking(move || {
+    let refined = tokio::task::spawn_blocking(move || {
         hearsay_inference::refine_audio_file(&audio, &diarize, &model)
     })
     .await
-    .map_err(|e| ApiError::Internal(format!("refine task panicked: {e}")))?
-    .map_err(|e| ApiError::Internal(format!("refine failed: {e}")))?;
+    .map_err(|e| ApiError::Internal(format!("refine task panicked: {e}")))?;
+    let output = match refined {
+        Ok(output) => output,
+        // No remote speech to refine (silent / Me-only meeting): leave the existing live segments
+        // in place and report the current speakers rather than 500-ing.
+        Err(hearsay_inference::InferenceError::NoSpeech) => {
+            let speakers = queries::list_speaker_rows(&state.pool, id).await?;
+            return Ok(Json(speaker_page(
+                speakers.into_iter().map(SpeakerRead::from).collect(),
+            )));
+        }
+        Err(e) => return Err(ApiError::Internal(format!("refine failed: {e}"))),
+    };
 
     let result = queries::RefineResult {
         segments: output

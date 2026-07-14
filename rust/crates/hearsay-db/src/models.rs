@@ -73,3 +73,15 @@ pub struct Cluster {
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
+
+/// A user-settings overlay row: one settings section stored as a JSON object string. The settings
+/// service resolves the effective value as this stored override when present, else the config
+/// default. Port of `src/hearsay/models/preference.py`.
+#[derive(Debug, Clone, PartialEq, Eq, FromRow)]
+pub struct Preference {
+    pub id: Uuid,
+    pub section: String,
+    pub value: String,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}

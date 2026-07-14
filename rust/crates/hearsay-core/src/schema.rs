@@ -165,3 +165,68 @@ pub struct MeetingCreate {
 pub struct SpeakerRename {
     pub display_name: String,
 }
+
+/// Recording & privacy — the single audio-retention switch (keep one WAV per meeting for playback
+/// + the post-meeting refine). Editable section; a request body and part of [`SettingsRead`].
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct RecordingSettings {
+    pub record: bool,
+}
+
+/// Speaker diarization: re-diarize each meeting at finalize (`auto_refine`) + the cosine at/above
+/// which a refined speaker is auto-matched to a person named in a prior meeting.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct SpeakerSettings {
+    pub auto_refine: bool,
+    pub recognition_threshold: f64,
+}
+
+/// The default root new meetings are written under (existing meetings keep their stamped location).
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct StorageSettings {
+    pub output_dir: String,
+}
+
+/// Read-only storage facts shown alongside the editable storage section.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct StorageInfo {
+    pub output_dir: String,
+    pub database_path: String,
+    pub tracked_bytes: i64,
+    pub meeting_count: i64,
+}
+
+/// Read-only build/runtime facts for the About panel (`protocol_version` is the core's IPC
+/// frame-protocol constant; a mismatch with the helper's reported copy signals version drift).
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct AboutInfo {
+    pub app_version: String,
+    pub environment: String,
+    pub protocol_version: u32,
+    pub database_path: String,
+}
+
+/// Live TCC permission status probed from the capture helper (not a stored preference). Each field
+/// is `granted` / `denied` / `undetermined`, or `unknown` when the helper is unavailable.
+/// `helper_version` is the connected helper's build (`None` when unavailable).
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct PermissionsInfo {
+    pub helper_available: bool,
+    pub helper_version: Option<String>,
+    pub microphone: String,
+    pub audio_capture: String,
+    pub screen_recording: String,
+    pub accessibility: String,
+    pub calendar: String,
+}
+
+/// The full editable settings, one field per panel/section. `storage_info` and `about` are
+/// read-only context (not editable sections).
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct SettingsRead {
+    pub recording: RecordingSettings,
+    pub speakers: SpeakerSettings,
+    pub storage: StorageSettings,
+    pub storage_info: StorageInfo,
+    pub about: AboutInfo,
+}

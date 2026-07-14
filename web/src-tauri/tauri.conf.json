@@ -39,11 +39,13 @@
       "binaries/hearsay-diarize"
     ],
     "resources": {
-      "../dist": "web-dist"
+      "../dist": "web-dist",
+      "models": "models"
     },
     "macOS": {
       "minimumSystemVersion": "14.4",
-      "hardenedRuntime": false
+      "hardenedRuntime": false,
+      "signingIdentity": "-"
     }
   }
 }

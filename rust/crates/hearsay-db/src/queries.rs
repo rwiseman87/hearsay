@@ -636,3 +636,37 @@ pub async fn list_identities(
     .fetch_all(pool)
     .await
 }
+
+/// The stored JSON for a settings `section`, or `None` when unset (the caller uses the config
+/// default). Port of `SettingsService._section`.
+pub async fn get_preference(
+    pool: &SqlitePool,
+    section: &str,
+) -> Result<Option<String>, sqlx::Error> {
+    sqlx::query_scalar("SELECT value FROM preferences WHERE section = ?")
+        .bind(section)
+        .fetch_optional(pool)
+        .await
+}
+
+/// Upsert one settings `section`'s JSON (one row per section). Port of `SettingsService._upsert`.
+pub async fn set_preference(
+    pool: &SqlitePool,
+    section: &str,
+    value: &str,
+) -> Result<(), sqlx::Error> {
+    let now = Utc::now();
+    sqlx::query(
+        "INSERT INTO preferences (id, section, value, created_at, updated_at) \
+         VALUES (?, ?, ?, ?, ?) \
+         ON CONFLICT(section) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+    )
+    .bind(Uuid::new_v4())
+    .bind(section)
+    .bind(value)
+    .bind(now)
+    .bind(now)
+    .execute(pool)
+    .await?;
+    Ok(())
+}

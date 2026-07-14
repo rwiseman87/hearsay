@@ -44,6 +44,8 @@ async fn setup() -> (Router, SqlitePool, tempfile::TempDir) {
         helper_path: tmp.path().join("no-helper"),
         refine_model: tmp.path().join("no-model"),
         auto_refine: false,
+        record: true,
+        recognition_threshold: 0.6,
     };
     let state = AppState::new(
         pool.clone(),
@@ -61,6 +63,17 @@ fn get(uri: &str) -> Request<Body> {
         .header("host", "127.0.0.1")
         .header("authorization", format!("Bearer {TOKEN}"))
         .body(Body::empty())
+        .unwrap()
+}
+
+fn put(uri: &str, body: &str) -> Request<Body> {
+    Request::builder()
+        .method("PUT")
+        .uri(uri)
+        .header("host", "127.0.0.1")
+        .header("authorization", format!("Bearer {TOKEN}"))
+        .header("content-type", "application/json")
+        .body(Body::from(body.to_string()))
         .unwrap()
 }
 
@@ -368,4 +381,85 @@ async fn openapi_json_is_served() {
     assert_eq!(status, StatusCode::OK);
     assert!(body["openapi"].is_string());
     assert!(body["paths"]["/api/meetings"].is_object());
+}
+
+#[tokio::test]
+async fn reads_settings_with_config_defaults_and_about() {
+    let (app, _pool, _tmp) = setup().await;
+    let (status, body) = send(&app, get("/api/settings")).await;
+    assert_eq!(status, StatusCode::OK);
+    // No stored overrides yet, so every section resolves to the `Settings` default from `setup()`.
+    assert_eq!(body["recording"]["record"], true);
+    assert_eq!(body["speakers"]["auto_refine"], false);
+    assert_eq!(body["speakers"]["recognition_threshold"], 0.6);
+    assert_eq!(body["storage_info"]["meeting_count"], 0);
+    assert_eq!(body["about"]["environment"], "test");
+    assert_eq!(body["about"]["protocol_version"], 1);
+}
+
+#[tokio::test]
+async fn permissions_probe_degrades_when_helper_missing() {
+    // `setup()` points `helper_path` at a nonexistent file, so the probe reports unavailable.
+    let (app, _pool, _tmp) = setup().await;
+    let (status, body) = send(&app, get("/api/settings/permissions")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["helper_available"], false);
+    assert_eq!(body["helper_version"], Value::Null);
+    assert_eq!(body["microphone"], "unknown");
+    assert_eq!(body["calendar"], "unknown");
+}
+
+#[tokio::test]
+async fn updates_recording_and_persists_the_override() {
+    let (app, _pool, _tmp) = setup().await;
+    let (status, body) = send(&app, put("/api/settings/recording", "{\"record\":false}")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["record"], false);
+
+    // The stored override now wins over the config default on the next read.
+    let (_status, body) = send(&app, get("/api/settings")).await;
+    assert_eq!(body["recording"]["record"], false);
+}
+
+#[tokio::test]
+async fn rejects_out_of_range_recognition_threshold() {
+    let (app, _pool, _tmp) = setup().await;
+    let (status, _) = send(
+        &app,
+        put(
+            "/api/settings/speakers",
+            "{\"auto_refine\":true,\"recognition_threshold\":2.0}",
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+}
+
+#[tokio::test]
+async fn validates_output_dir_on_storage_update() {
+    let (app, _pool, tmp) = setup().await;
+
+    // A nonexistent absolute path is rejected at the boundary (422, not a DB 500).
+    let (status, _) = send(
+        &app,
+        put(
+            "/api/settings/storage",
+            "{\"output_dir\":\"/no/such/hearsay/dir\"}",
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+
+    // The temp dir is absolute, existing, and writable.
+    let dir = serde_json::to_string(&tmp.path().to_string_lossy()).unwrap();
+    let (status, body) = send(
+        &app,
+        put(
+            "/api/settings/storage",
+            &format!("{{\"output_dir\":{dir}}}"),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body["output_dir"].as_str().is_some_and(|s| !s.is_empty()));
 }

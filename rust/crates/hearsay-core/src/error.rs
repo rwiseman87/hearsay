@@ -19,6 +19,8 @@ pub enum ApiError {
     NotFound(&'static str),
     /// 409 — conflicting state (e.g. a session already recording).
     Conflict(String),
+    /// 422 — a semantically invalid value (e.g. an output dir that is missing or not writable).
+    Unprocessable(String),
     /// 503 — a capability whose backing engine is not yet wired (capture / inference).
     Unavailable(String),
     /// 500 — an unexpected engine failure (e.g. a sidecar spawn error).
@@ -41,6 +43,7 @@ impl std::fmt::Display for ApiError {
             ApiError::Forbidden(m) => write!(f, "{m}"),
             ApiError::NotFound(m) => write!(f, "{m}"),
             ApiError::Conflict(m) => write!(f, "{m}"),
+            ApiError::Unprocessable(m) => write!(f, "{m}"),
             ApiError::Unavailable(m) => write!(f, "{m}"),
             ApiError::Internal(_) => write!(f, "internal error"),
             ApiError::Db(_) => write!(f, "internal error"),
@@ -58,6 +61,7 @@ impl IntoResponse for ApiError {
             ApiError::Forbidden(_) => StatusCode::FORBIDDEN,
             ApiError::NotFound(_) => StatusCode::NOT_FOUND,
             ApiError::Conflict(_) => StatusCode::CONFLICT,
+            ApiError::Unprocessable(_) => StatusCode::UNPROCESSABLE_ENTITY,
             ApiError::Unavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
             ApiError::Internal(ref msg) => {
                 tracing::error!(error = %msg, "engine error");

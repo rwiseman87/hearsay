@@ -4,7 +4,6 @@ import { useRediarize, useStopMeeting } from "../api/hooks";
 import { getToken } from "../api/token";
 import type { MeetingRead } from "../api/types";
 import { useTranscript } from "../hooks/useTranscript";
-import { RelocateStorage } from "./RelocateStorage";
 import { SpeakerPanel } from "./SpeakerPanel";
 
 function formatTime(seconds: number): string {
@@ -189,7 +188,6 @@ export function TranscriptView({ meeting }: Props) {
           {(rediarize.error as Error).message}
         </p>
       ) : null}
-      {!recording ? <RelocateStorage meeting={meeting} /> : null}
       <SpeakerPanel meetingId={meeting.id} />
       <ol className="transcript__lines">
         {lines.map((line, index) => {

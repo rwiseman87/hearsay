@@ -3,6 +3,7 @@
 
 pub mod audio;
 pub mod meetings;
+pub mod settings;
 pub mod speakers;
 pub mod web;
 pub mod ws;
