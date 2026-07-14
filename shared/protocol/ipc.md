@@ -1,13 +1,13 @@
 # hearsay IPC contract (v1)
 
 Single source of truth for the helper <-> core boundary. The Swift `FrameCodec`
-(`helper/Sources/HearsayIPC`) and the Python `hearsay.helper.protocol` module MUST
-implement this byte-for-byte. Golden vectors in `shared/fixtures/` are validated by
-both sides in CI to prevent drift.
+(`helper/Sources/HearsayIPC`) and the Rust `hearsay-ipc` codec MUST implement this
+byte-for-byte. Golden vectors in `shared/fixtures/` are validated by both sides in CI
+to prevent drift.
 
 ## Topology
 
-The **Python core** owns (listens on) two Unix domain sockets inside a per-session run
+The **Rust core** owns (listens on) two Unix domain sockets inside a per-session run
 directory; the **Swift helper** connects to both as a client.
 
 ```

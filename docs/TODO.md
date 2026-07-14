@@ -6,6 +6,11 @@ Conventions: `CLAUDE.md`.
 
 ## How to resume
 
+**UPDATE (2026-07-14) — the Rust core is canonical; the Python backend has been removed.** The Rust
+`hearsay-core` is the shipping artifact; the OpenAPI + IPC-fixture codegen is generated from Rust,
+and the Settings page is now backed in the Rust core. Entries below that describe the Python core
+(`src/hearsay/`) are historical.
+
 **CURRENT FOCUS (2026-07-01) — cross-platform (macOS + Windows) Rust + Tauri foundation.** Windows is
 now a **committed near-term requirement**. Since nothing is shipped yet (POC), the decision (full arc in
 [[hearsay-windows-requirement]] memory + `docs/architecture-cross-platform.md`) is to rebuild the
@@ -133,8 +138,10 @@ can). `make ci` green.
   references. NB: adding `whisper-rs` means `make rust-{build,test,lint}` now compiles whisper.cpp (cmake + C++)
   — ~15 s cold, cached after; needs `cmake` + a C++ toolchain (present via Xcode CLT). Cosmetic: whisper.cpp
   logs some lines to stderr (a `whisper-rs` log hook can silence it later).
-- Deferred: the **Tauri shell** (`cargo tauri init`; hosts the React UI; bundler + signing + notarization +
-  updater). Validate the `externalBin`-breaks-macOS-notarization bug early (the app is sidecar-based).
+- **Tauri shell — SHIPPED (2026-07-14).** `web/src-tauri/` hosts the React UI, bundles + spawns
+  `hearsay-core` + the Swift sidecars (`externalBin`), and points the window at the core's loopback URL;
+  `make dmg` builds the ad-hoc-signed `.app` + `.dmg` (unsigned/un-notarized by design — no Apple
+  Developer account; see `docs/packaging.md`). Remaining: real Developer-ID signing + notarization.
 
 **MODEL VERIFICATION (corrected 2026-07-02 — NOT a build gate; it is Mac-doable work).** The earlier
 framing wrongly treated a *Windows-floor* determination as a hard gate on building `hearsay-inference`. It
@@ -425,16 +432,15 @@ If ever fixed: join/await the in-flight ASR before teardown (note the cancel rel
 Docs: `README.md` + `docs/{architecture,pipeline,api,development}.md`. Design: the plan. IPC: `shared/protocol/ipc.md`.
 
 ```sh
-make sync                            # venv + all deps (Python 3.14; numpy is the only ML-adjacent dep, base)
 make swift-build                     # build helper + sidecars: hearsay-{helper,diarize,asr,live,me} (skips FluidAudio's broken CLI)
-make ci                              # ruff + mypy --strict + pytest + swift selftest + audit + licenses
 cd web && npm ci && npm run build && cd ..   # build the React UI bundle (web/dist)
-make web-ci                          # web gate: npm ci + OpenAPI→TS drift + tsc + vite build
-uv run hearsay serve                 # loopback API + WS + the built UI (prints URL + ?token= link)
-uv run hearsay live --seconds 60     # real pipeline -> live transcripts (on-device validation)
+make ci                              # clippy + rustfmt + swift selftest + cargo test + codegen drift + audit + licenses
+make web-ci                          # web gate: npm ci + OpenAPI->TS drift + tsc + vite build
+make rust-serve                      # loopback API + WS + the built UI (prints URL + ?token= link; SYNTHETIC=1 = no permissions)
+make dmg                             # build the distributable macOS .app + .dmg (see docs/packaging.md)
 ```
 
-- Python core: `src/hearsay/`  ·  Swift helper: `helper/`  ·  web UI: `web/` (Vite + React + TS).
+- Rust core: `rust/crates/`  ·  Swift helper + sidecars: `helper/`  ·  web UI: `web/` (Vite + React + TS)  ·  Tauri shell: `web/src-tauri/`.
 - Scratch / local artifacts go in `outputs/` (gitignored), not `/tmp`.
 - The session-scoped task list is ephemeral; **this file is the source of truth** for progress.
 

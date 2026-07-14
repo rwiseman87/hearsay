@@ -16,11 +16,11 @@ it needs an Apple Developer ID.
 ## Prerequisites
 
 ```sh
-make sync                 # Python env (used by codegen, not shipped)
 cargo install tauri-cli   # once; provides `cargo tauri build`
 ```
 
-Node (`npm`) and Swift (Command Line Tools) must be installed — same as the dev quickstart.
+A Rust toolchain, Node (`npm`), and Swift (Command Line Tools) must be installed — same as the dev
+quickstart.
 
 ## Build
 
@@ -107,9 +107,9 @@ flowchart TD
 ## Known limitations
 
 - **Not notarized** — by design; recipients run the `xattr` quarantine strip once.
-- **Settings panels other than Data & Uninstall** — Recording / Speakers / Storage / Permissions /
-  About call the loopback `/api/settings*` endpoints, which the Rust core does not yet serve, so they
-  will not load in the packaged app. Data & Uninstall works regardless (it uses the desktop shell's
-  IPC, not the HTTP API).
+- **Editable settings don't take effect yet** — Recording / Speakers / Storage / Permissions / About
+  are served by the Rust core and load in the packaged app, but the live pipeline still reads the
+  startup config, so edits persist without changing runtime behavior (see `docs/settings-panels.md`).
+  The Models panel is not built, and only Microphone reports a real permission status.
 - **Large DMG** — the ~1.5 GB `ggml-large-v3-turbo` refine model is bundled (see below), so the DMG
   is ~1.5 GB. That is the cost of offline "Refine speakers" working out of the box.
