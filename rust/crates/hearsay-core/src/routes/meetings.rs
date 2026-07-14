@@ -139,7 +139,7 @@ pub(crate) async fn delete_meeting(
         .await?
         .ok_or(ApiError::NotFound("meeting not found"))?;
     // Remove the on-disk folder (audio, transcript, notes) best-effort, then the DB rows.
-    let folder = state.settings.output_dir.join(&meeting.folder);
+    let folder = meeting.dir_path(&state.settings.output_dir);
     if let Err(err) = tokio::fs::remove_dir_all(&folder).await {
         if err.kind() != std::io::ErrorKind::NotFound {
             tracing::warn!(error = %err, folder = %folder.display(), "failed to remove meeting folder");

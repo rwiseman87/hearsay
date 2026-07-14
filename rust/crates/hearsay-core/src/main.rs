@@ -113,13 +113,19 @@ async fn main() -> Result<(), BoxError> {
         helper_path: settings.helper_path.clone(),
         synthetic,
     });
-    let mut orchestrator = Orchestrator::new(pool.clone(), settings.output_dir.clone(), backend);
-    if settings.auto_refine {
-        orchestrator = orchestrator.with_refiner(Arc::new(MacRefiner {
+    // Config defaults seed the orchestrator; the editable Settings panels override them per meeting
+    // (read from the DB at start/stop). The refiner is always made available so toggling auto-refine
+    // on in the UI takes effect — whether it runs at stop is gated by the effective setting.
+    let orchestrator = Orchestrator::new(pool.clone(), settings.output_dir.clone(), backend)
+        .with_defaults(
+            settings.record,
+            settings.auto_refine,
+            settings.recognition_threshold,
+        )
+        .with_refiner(Arc::new(MacRefiner {
             diarize_path: settings.helper_path.with_file_name("hearsay-diarize"),
             model: settings.refine_model.clone(),
         }));
-    }
     let engine = Arc::new(orchestrator);
     let state = AppState::new(pool, settings, token.clone(), engine);
     let app = create_app(state);

@@ -3,6 +3,8 @@
 //! Every table has a UUID primary key and `created_at` / `updated_at` timestamps. Enums are
 //! stored as their lowercase string values (matching the Python `StrEnum` serialization).
 
+use std::path::{Path, PathBuf};
+
 use chrono::{DateTime, Utc};
 use sqlx::FromRow;
 use uuid::Uuid;
@@ -34,6 +36,24 @@ pub struct Meeting {
     pub ended_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    /// Absolute path of this meeting's recordings directory, pinned at creation from the then-effective
+    /// output_dir so the meeting stays locatable after the Storage setting changes. Legacy rows created
+    /// before this column store `""`; [`Meeting::dir_path`] falls back to `default_root.join(folder)`.
+    #[sqlx(default)]
+    pub dir: String,
+}
+
+impl Meeting {
+    /// This meeting's recordings directory: the pinned absolute `dir`, or — for legacy rows that
+    /// predate it — `default_root/<folder>` (the historical layout). `default_root` is the caller's
+    /// effective output_dir.
+    pub fn dir_path(&self, default_root: &Path) -> PathBuf {
+        if self.dir.is_empty() {
+            default_root.join(&self.folder)
+        } else {
+            PathBuf::from(&self.dir)
+        }
+    }
 }
 
 /// A transcript segment row.

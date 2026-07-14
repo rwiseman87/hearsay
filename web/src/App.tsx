@@ -18,7 +18,7 @@ export function App() {
   return (
     <div className="app">
       <header className="app__bar">
-        <h1 className="app__title">hearsay - It's what happened, probably</h1>
+        <h1 className="app__title">Hearsay - It's what happened, probably</h1>
         <button type="button" className="app__settings" onClick={() => setShowSettings(true)}>
           Settings
         </button>

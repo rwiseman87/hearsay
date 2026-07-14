@@ -4,22 +4,21 @@ How to set up, build, run, test, and troubleshoot the project from source.
 
 ## Prerequisites
 
-- [`uv`](https://docs.astral.sh/uv/) — manages the Python 3.14 venv, dependencies, and runtime.
-- Swift — Command Line Tools is enough to build the helper (`xcode-select --install`). Full
-  Xcode is only needed for app packaging (Phase 5, deferred).
+- A Rust toolchain ([rustup](https://rustup.rs/)) — builds the core and all crates.
+- Swift — Command Line Tools is enough to build the helper + sidecars (`xcode-select --install`).
+  Full Xcode is only needed for `.app`/`.dmg` packaging.
+- Node 22 — builds the React UI.
 - Apple Silicon, macOS 14.4+ (Core Audio process taps).
 
 ## Setup
 
 ```sh
-make sync                                  # venv + all deps (numpy is the only ML-adjacent dep)
 make swift-build                           # build hearsay-helper + the FluidAudio/ANE sidecars
+(cd web && npm ci && npm run build)        # build the UI bundle (web/dist), served by the core
 ```
 
-`make sync` installs the full runtime: after the pivot the Python core runs no ML models, so
-numpy (to pack PCM for the sidecars, build the stereo audio.wav, and read its Them channel in the
-refine) is the only ML-adjacent dependency, and it is a base dependency. All ASR + diarization
-runs in the Swift sidecars, whose CoreML models auto-download on first use.
+No interpreter to install: the core is a single Rust binary. The Swift sidecars' CoreML models
+auto-download on first use; the whisper refine model is a separate download (see Models below).
 
 ## Make targets
 
@@ -27,152 +26,137 @@ The `Makefile` is the task runner.
 
 | Target | What it does |
 |---|---|
-| `make sync` | Create the venv and install base + dev dependencies. |
-| `make test` | Build the helper, run pytest, then the Swift cross-language self-test. |
-| `make typecheck` | `mypy --strict` over `src` + `scripts`. |
-| `make lint` / `make fmt` | `ruff` check / format. |
-| `make codegen` | Regenerate the golden IPC fixtures **and** the OpenAPI schema + web TS types. |
-| `make audit` | `pip-audit` CVE scan. |
-| `make licenses` | Fail on any copyleft dependency (permissive-only gate). |
-| `make ci` | The Python + Swift gate: lint + typecheck + tests + audit + licenses. Must stay green. |
-| `make web-ci` | The web gate: `npm ci` + OpenAPI→TS drift check + `tsc` + `vite build`. |
+| `make swift-build` | Build the capture helper + the FluidAudio/ANE sidecars (explicit products). |
+| `make rust-build` / `make rust-test` | Build / test the Rust workspace. |
+| `make test` | Build the helper, run the Swift cross-language self-test, then `cargo test`. |
+| `make lint` / `make fmt` | `clippy -D warnings` + `rustfmt --check` / `rustfmt`. |
+| `make codegen` | Regenerate the golden IPC fixtures **and** the OpenAPI schema + web TS types (all from Rust). |
+| `make codegen-check` | Fail if any of those drift from the Rust source. |
+| `make audit` | CVE scan (`cargo audit` + `npm audit`). |
+| `make licenses` | Fail on any copyleft dependency (`cargo deny`, policy in `rust/deny.toml`). |
+| `make ci` | The native gate: lint + tests + codegen drift + audit + licenses. Must stay green. |
+| `make web-ci` | The web gate: `npm ci` + `tsc` + `vite build`. |
 | `make web-build` / `make web-typecheck` | Build the UI bundle (`web/dist`) / type-check it. |
+| `make rust-serve` (`serve`) | Run the core (`SYNTHETIC=1` for no-permission plumbing). |
+| `make dmg` | Build the unsigned/ad-hoc `.dmg` (see [packaging.md](packaging.md)). |
 
 ## Running
 
-### `hearsay serve` — the API server
+### `make rust-serve` — the API server
 
 ```sh
-uv run hearsay serve            # auto-picks a free port; prints URL + per-session token
-uv run hearsay serve --port 8137
+make rust-serve                       # auto-picks a free port; prints URL + per-session token
+HEARSAY_SERVER_PORT=8137 make rust-serve
+SYNTHETIC=1 make rust-serve           # drive the pipeline with generated audio (no mic/TCC)
 ```
 
-Binds `127.0.0.1` and prints a bearer token (see [api.md](api.md)). This is what the web UI
-loads.
+Binds `127.0.0.1` and prints `open: http://127.0.0.1:<port>/?token=<token>` (see [api.md](api.md)).
+This is what the web UI loads. `SYNTHETIC=1` runs the helper's tone source, so the whole
+capture -> IPC -> sidecar -> DB -> transcript wiring runs without a mic or permission prompts. For a
+real capture run, `make swift-build` first so the helper + sidecars exist.
 
 ### Web UI (`web/`)
 
-Vite + React + TypeScript (strict). The core serves the built bundle at `/` with the session
-token injected, so the production flow is build-then-serve:
+Vite + React + TypeScript (strict). The core serves the built bundle at `/` with the session token
+injected, so the production flow is build-then-serve:
 
 ```sh
 cd web && npm ci          # install pinned deps (one time)
-npm run build             # -> web/dist (served by `hearsay serve`)
+npm run build             # -> web/dist (served by the core)
 ```
 
-For frontend development with hot reload, run the core on a fixed port and Vite in front of it
-(Vite proxies `/api` + `/ws` to the core; see `web/vite.config.ts`):
+For frontend development with hot reload, run the core on a fixed port and Vite in front of it (Vite
+proxies `/api` + `/ws` to the core; see `web/vite.config.ts`):
 
 ```sh
-uv run hearsay serve --port 8137     # terminal 1
-cd web && npm run dev                 # terminal 2 -> http://localhost:5173/?token=<token>
+HEARSAY_SERVER_PORT=8137 make rust-serve   # terminal 1
+cd web && npm run dev                        # terminal 2 -> http://localhost:5173/?token=<token>
 ```
 
-API TypeScript types are generated from the backend's OpenAPI schema — never hand-edited:
-`make codegen` runs `scripts/dump_openapi.py` (→ `web/openapi.json`) then `openapi-typescript`
-(→ `web/src/api/schema.ts`). `make web-codegen-check` (and the CI `web` job) fail if either
-drifts from the backend. The WebSocket `TranscriptEvent` is not in the OpenAPI schema, so it is
-hand-mirrored in `web/src/api/ws.ts`.
+API TypeScript types are generated from the core's OpenAPI schema — never hand-edited: `make codegen`
+runs `hearsay-core --dump-openapi` (-> `web/openapi.json`) then `openapi-typescript`
+(-> `web/src/api/schema.ts`), and also regenerates the golden IPC fixtures from `hearsay-ipc`.
+`make codegen-check` (and CI) fail if any of those drift. The WebSocket `TranscriptEvent` is not in
+the OpenAPI schema, so it is hand-mirrored in `web/src/api/ws.ts`.
 
-### `hearsay live` — the validation harness
+## Models
 
-Runs the **exact** production pipeline (SessionManager -> helper -> VAD -> ASR -> DB +
-`transcript.md`) directly from the CLI and prints live `[partial]` / `[final]` lines. This is
-the on-device end-to-end test.
+**ASR + diarization models** live in the Swift sidecars (FluidAudio on the ANE): Parakeet TDT for
+ASR (`hearsay-asr` / `hearsay-me` / `hearsay-live`), pyannote community-1 as CoreML for the offline
+diarizer (`hearsay-diarize`). Their CoreML models are ungated and auto-download + compile on first
+use — no fetch step, no HF token.
 
-```sh
-uv run hearsay live --seconds 60                # join a call first
-uv run hearsay live --synthetic --seconds 4     # glue smoke: tone source, no mic/TCC, no real audio
-```
+**The offline refine** re-transcribes diarized turns with whisper (`hearsay-inference`), which needs
+a GGML model. Download `ggml-large-v3-turbo.bin` into `outputs/models/` (the default
+`HEARSAY_REFINE_MODEL` path); without it, auto-refine and `POST /api/meetings/{id}/rediarize` report
+the sidecar/model as unavailable rather than failing the meeting. Packaging bundles this model into
+the `.app` (see [packaging.md](packaging.md)).
 
-- `--synthetic` uses the helper's tone source — useful to exercise the wiring without
-  capturing real audio.
-- Output lands in `outputs/recordings/<date>_live-validation/transcript.md`. `Ctrl-C` stops early.
-
-### `hearsay capture-debug` — raw audio dump
-
-The Phase 0 truth test: captures both streams for N seconds and writes `me.wav` / `them.wav`
-(default `outputs/capture-debug/`, override with `--out`) plus drift and skew diagnostics. Use
-`--synthetic` to test the IPC pipe without a mic.
-
-## Models and dependency extras
-
-ASR, diarization, and voiceprints all run in the Swift sidecars on the ANE, so the Python core
-carries **no ML dependency**. numpy (packing PCM for the sidecars, building the stereo audio.wav,
-reading its Them channel in the refine) is the only ML-adjacent dep and is a **base** dependency,
-so `make sync` is the whole runtime. The one optional extra is:
-
-| Extra | Adds | For |
-|---|---|---|
-| `bedrock` | boto3 | Phase 4 (cloud LLM, lazy-imported) |
-
-**ASR + diarization models.** These live in the Swift sidecars (FluidAudio on the ANE): Parakeet
-TDT for ASR (`hearsay-asr` / `hearsay-me` / `hearsay-live`), pyannote community-1 as CoreML for
-the offline diarizer (`hearsay-diarize`). Their CoreML models are ungated and auto-download +
-compile on first use — no fetch step, no HF token. Parakeet ships a single bundled model, so
-there is no model picker or ASR config.
-
-**Diarization.** The live Them stream is labeled Speaker 1..N by the `hearsay-live` sidecar. The
-post-meeting refine (`HEARSAY_DIARIZATION__REFINE`, default on) re-diarizes the whole Them track
-for better accuracy and recognizes returning people by voiceprint; it runs automatically at stop
-(`HEARSAY_DIARIZATION__AUTO_REFINE`) and on demand via the "Refine speakers" button /
-`hearsay rediarize`. Rename a speaker in the UI (or `PUT /api/meetings/{id}/speakers/{cluster_id}`)
-to bind a name that persists, is carried across a re-diarize, and is suggested next meeting.
+The live Them stream is labeled Speaker 1..N by `hearsay-live`; the refine re-diarizes the whole Them
+track for better accuracy and recognizes returning people by voiceprint. It runs automatically at
+stop (`HEARSAY_AUTO_REFINE`, default on) and on demand via the "Refine speakers" button. Rename a
+speaker in the UI (or `PUT /api/meetings/{id}/speakers/{cluster_id}`) to bind a name that persists,
+carries across a re-diarize, and is suggested next meeting.
 
 ## Configuration
 
-All config flows through `hearsay.config.Settings`. Common overrides (env vars are
-`HEARSAY_`-prefixed; nested fields use `__`):
+All config is resolved from the environment with loopback-safe defaults (`rust/crates/hearsay-core/src/config.rs`).
+Common overrides:
 
 | Setting | Env | Default |
 |---|---|---|
-| Database URL | `DATABASE_URL` | `sqlite+aiosqlite:///<repo>/outputs/db/hearsay.db` |
+| Database URL | `DATABASE_URL` | `sqlite://<repo>/outputs/db/hearsay.db` |
 | Output dir | `HEARSAY_OUTPUT_DIR` | `<repo>/outputs/recordings` |
-| Record meeting audio (`audio.wav`) | `HEARSAY_AUDIO__RECORD` | `true` |
-| Run the post-meeting refine | `HEARSAY_DIARIZATION__REFINE` | `true` |
-| Auto-refine at finalize | `HEARSAY_DIARIZATION__AUTO_REFINE` | `true` |
+| Web bundle dir | `HEARSAY_WEB_DIR` | `<repo>/web/dist` |
+| Helper path | `HEARSAY_HELPER_PATH` | `helper/.build/arm64-apple-macosx/debug/hearsay-helper` |
+| Refine model | `HEARSAY_REFINE_MODEL` | `outputs/models/ggml-large-v3-turbo.bin` |
+| Record meeting audio (`audio.wav`) | `HEARSAY_RECORD` | `true` |
+| Auto-refine at finalize | `HEARSAY_AUTO_REFINE` | `true` |
+| Recognition threshold | `HEARSAY_RECOGNITION_THRESHOLD` | `0.6` |
+| Environment | `ENVIRONMENT` | `development` |
 
-**Audio recording + playback.** When `audio.record` is on (default), each meeting records one
+`HEARSAY_RECORD` / `HEARSAY_AUTO_REFINE` / `HEARSAY_RECOGNITION_THRESHOLD` are the defaults for the
+editable Settings sections; a stored preference overrides them (see [settings-panels.md](settings-panels.md)).
+
+**Audio recording + playback.** When recording is on (default), each meeting records one
 timeline-accurate **stereo** `audio.wav` (Me = left channel, Them = right). This single file serves
 both playback — the UI plays it with the transcript highlighting in sync (click a line to seek) —
-and the post-meeting refine, which reads its Them channel. Privacy tradeoff: it retains the full
-raw audio; set `HEARSAY_AUDIO__RECORD=false` to opt out (which also disables the refine, since
-there is no recording to re-diarize; delete-meeting removes the folder). Served by
-`GET /api/meetings/{id}/audio`.
+and the refine, which reads its Them channel. Privacy tradeoff: it retains the full raw audio; turn
+it off (Settings, or `HEARSAY_RECORD=false`) to opt out (which also disables the refine — no
+recording to re-diarize; delete-meeting removes the folder). Served by `GET /api/meetings/{id}/audio`.
 
-When run from source, all runtime data (recordings, the SQLite DB, downloaded models) lives
-under the repo's `outputs/` (gitignored). Override any path with the env vars above.
+When run from source, all runtime data (recordings, the SQLite DB, downloaded models) lives under the
+repo's `outputs/` (gitignored). Override any path with the env vars above.
 
 ## Testing
 
 ```sh
-uv run pytest -q          # Python tests
-make test                 # Python + Swift cross-language self-test
+make rust-test            # cargo test (unit + router integration tests)
+make test                 # Swift cross-language self-test + cargo test
 ```
 
-- DB tests use SAVEPOINT/nested-transaction isolation (`tests/conftest.py`): the schema is
-  created once on a temp file and each test runs inside an outer transaction rolled back at
-  teardown, so even code that commits stays isolated.
-- `MeetingService` and `SpeakerService` are in-memory and unit-tested directly.
-- API tests use Starlette's `TestClient` with a temp DB and a fake capture (no helper).
-- The pipeline is tested end to end with fake media + fake sidecar processors: each stream's
-  PCM routes to its processor, and the Them track is recorded.
-- The sidecar processors are tested against their NDJSON contract, including the broken-pipe
-  resilience path; the offline diarizer + refine use a stub diarizer (no ML deps).
-- The helper integration test skips unless the Swift binary is built.
+- Integration tests exercise the assembled axum router with `tower::ServiceExt::oneshot` against an
+  in-memory SQLite DB, with the capture routes on `DisabledEngine` (503 / clean close) — no helper.
+- Pure logic (`order_speakers`, `assign_segment_speaker`, voiceprint matching) is unit-tested
+  directly in `hearsay-attribution`.
+- The pipeline is tested end to end with scripted fakes in `hearsay-orchestrator` (fake audio source
+  + stubbed transcribers); the refine uses a stub diarizer (no ML deps).
+- `hearsay-ipc`'s `golden_fixtures` test and the Swift `hearsay-helper selftest` both validate the
+  codec against `shared/fixtures/frames.jsonl`.
 
 ## Troubleshooting
 
-- **macOS permission prompts on first capture.** The first `start_capture` blocks while macOS
-  shows the Microphone / System Audio Recording prompts — click Allow. `live` and
-  `capture-debug` give `start_capture` a 120 s timeout for this. Grants persist for the
-  ad-hoc-signed helper until the next `swift build` changes its code signature.
-- **First transcription is slow.** The FluidAudio CoreML models (Parakeet, the diarizer)
-  download and compile on first use, and each sidecar takes ~10 s to load Parakeet at startup.
-  Warm utterances are fast. Pre-warm by running `live` once.
+- **macOS permission prompts on first capture.** The first `start_capture` blocks while macOS shows
+  the Microphone / System Audio Recording prompts — click Allow. Grants persist for the ad-hoc-signed
+  helper until the next `swift build` changes its code signature.
+- **First transcription is slow.** The FluidAudio CoreML models (Parakeet, the diarizer) download and
+  compile on first use, and each sidecar takes ~10 s to load Parakeet at startup. Warm utterances are
+  fast.
 - **"helper binary not found" / a sidecar's live transcription is off.** Build them all:
-  `make swift-build`. The default capture-helper path is `helper/.build/debug/hearsay-helper`
-  (override via `HEARSAY_HELPER_PATH`); the sidecars are located as its siblings.
+  `make swift-build`. The default capture-helper path is
+  `helper/.build/arm64-apple-macosx/debug/hearsay-helper` (override via `HEARSAY_HELPER_PATH`); the
+  sidecars are located as its siblings.
+- **Refine / "Refine speakers" reports the model missing.** Download `ggml-large-v3-turbo.bin` into
+  `outputs/models/` (or point `HEARSAY_REFINE_MODEL` at it).
 - **Speakers over- or under-merge.** The live labels are approximate; run the refine ("Refine
-  speakers" / `hearsay rediarize <id>`) for a more accurate whole-track re-diarization. Manual
-  renames are carried across a re-diarize.
+  speakers") for a more accurate whole-track re-diarization. Manual renames are carried across it.

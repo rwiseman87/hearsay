@@ -276,3 +276,65 @@ async fn stop_unknown_meeting_is_none() {
     let result = orch.stop_meeting(uuid::Uuid::new_v4()).await.unwrap();
     assert!(result.is_none());
 }
+
+#[tokio::test]
+async fn record_setting_off_skips_audio_wav() {
+    let pool = memory_pool().await;
+    let tmp = tempfile::tempdir().unwrap();
+    let chunks = vec![chunk(Stream::Them, 1_000_000_000, &[0.1, 0.2])];
+    let (backend, _fed) = ScriptedBackend::new(chunks, vec![], vec![]);
+
+    // The config default is record=on; the stored UI override turns per-meeting audio off, and the
+    // orchestrator reads that override at meeting start.
+    queries::set_preference(&pool, queries::SECTION_RECORDING, r#"{"record":false}"#)
+        .await
+        .unwrap();
+
+    let orch = orchestrator(pool, tmp.path(), backend);
+    let meeting = orch.start_meeting(Some("No Rec".into())).await.unwrap();
+    orch.stop_meeting(meeting.id).await.unwrap().unwrap();
+
+    let dir = std::path::PathBuf::from(&meeting.dir);
+    assert!(dir.is_dir(), "meeting dir should still be created");
+    assert!(
+        !dir.join("audio.wav").exists(),
+        "record=false must skip the audio.wav recorder"
+    );
+}
+
+#[tokio::test]
+async fn storage_override_pins_meeting_dir_off_the_default_root() {
+    let pool = memory_pool().await;
+    let default_root = tempfile::tempdir().unwrap();
+    let override_root = tempfile::tempdir().unwrap();
+    let (backend, _fed) = ScriptedBackend::new(vec![], vec![], vec![]);
+
+    queries::set_preference(
+        &pool,
+        queries::SECTION_STORAGE,
+        &format!(
+            r#"{{"output_dir":"{}"}}"#,
+            override_root.path().to_str().unwrap()
+        ),
+    )
+    .await
+    .unwrap();
+
+    let orch = orchestrator(pool.clone(), default_root.path(), backend);
+    let meeting = orch.start_meeting(Some("Elsewhere".into())).await.unwrap();
+    orch.stop_meeting(meeting.id).await.unwrap().unwrap();
+
+    // The meeting was created under the override root (not the default), and its dir was pinned +
+    // persisted so later playback/refine/delete locate it regardless of the current setting.
+    assert!(override_root.path().join(&meeting.folder).is_dir());
+    assert!(!default_root.path().join(&meeting.folder).exists());
+    let refetched = queries::get_meeting(&pool, meeting.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(refetched.dir, meeting.dir);
+    assert_eq!(
+        refetched.dir_path(default_root.path()),
+        override_root.path().join(&meeting.folder)
+    );
+}

@@ -1,7 +1,11 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Core capabilities for the main window.",
+  "description": "Core capabilities for the main window. The window is navigated to the Rust core's loopback URL (http://127.0.0.1:<os-assigned-port>), so the app commands (reveal_data_dir / open_url / erase_all_data / quit_app) must be granted to that remote origin as well as the local bundle.",
   "windows": ["main"],
+  "local": true,
+  "remote": {
+    "urls": ["http://127.0.0.1:*/*", "http://localhost:*/*"]
+  },
   "permissions": ["core:default"]
 }

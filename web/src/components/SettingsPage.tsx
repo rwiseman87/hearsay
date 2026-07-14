@@ -29,38 +29,33 @@ const PANELS = [
 ] as const;
 type PanelId = (typeof PANELS)[number]["id"];
 
-// Each permission maps to a label, a one-line rationale, and the macOS System Settings
-// deep link for its Privacy pane. `key` indexes the PermissionsInfo status fields.
+// Each permission maps to a label and a one-line rationale. `key` indexes the PermissionsInfo
+// status fields. (Users open the matching pane themselves via System Settings > Privacy & Security.)
 const PERMISSION_ROWS = [
   {
     key: "microphone",
     label: "Microphone",
     hint: "Captures your voice — the Me stream.",
-    url: "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone",
   },
   {
     key: "audio_capture",
     label: "System audio",
     hint: "Captures the other participants — the Them stream.",
-    url: "x-apple.systempreferences:com.apple.preference.security?Privacy",
   },
   {
     key: "screen_recording",
     label: "Screen recording",
     hint: "Reads on-screen active-speaker hints (later phase).",
-    url: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture",
   },
   {
     key: "accessibility",
     label: "Accessibility",
     hint: "Opt-in Zoom active-speaker path (later phase).",
-    url: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility",
   },
   {
     key: "calendar",
     label: "Calendar",
     hint: "Reads the meeting roster to help label speakers (later phase).",
-    url: "x-apple.systempreferences:com.apple.preference.security?Privacy_Calendars",
   },
 ] as const;
 
@@ -296,20 +291,6 @@ function PermissionsPanel() {
                 </span>
               </div>
               <span className="settings__row-hint muted">{row.hint}</span>
-              <a
-                className="settings__perm-link"
-                href={row.url}
-                onClick={(event) => {
-                  // WKWebView drops navigations to the x-apple.systempreferences: scheme, so in the
-                  // packaged app route the deep link through the shell (open(1)) instead.
-                  if (IS_DESKTOP) {
-                    event.preventDefault();
-                    void invoke("open_url", { url: row.url });
-                  }
-                }}
-              >
-                Open in System Settings
-              </a>
             </div>
           );
         })}

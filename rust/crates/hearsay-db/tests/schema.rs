@@ -280,7 +280,7 @@ async fn replace_them_segments_swaps_clusters_keeps_me() {
             end_s: 5.0,
         },
     ];
-    queries::replace_them_segments(&pool, meeting.id, &refine_result(refined))
+    queries::replace_them_segments(&pool, meeting.id, &refine_result(refined), 0.6)
         .await
         .unwrap();
 
@@ -348,7 +348,7 @@ async fn replace_them_segments_carries_forward_locked_names() {
             end_s: 5.0,
         },
     ];
-    queries::replace_them_segments(&pool, meeting.id, &refine_result(refined))
+    queries::replace_them_segments(&pool, meeting.id, &refine_result(refined), 0.6)
         .await
         .unwrap();
 
@@ -394,7 +394,7 @@ async fn replace_them_segments_empty_is_noop() {
     .unwrap();
 
     // A refine that produced nothing must leave the transcript intact (never wipe it).
-    queries::replace_them_segments(&pool, meeting.id, &RefineResult::default())
+    queries::replace_them_segments(&pool, meeting.id, &RefineResult::default(), 0.6)
         .await
         .unwrap();
 
@@ -456,7 +456,7 @@ async fn replace_them_segments_stores_and_recognizes_voiceprints() {
         ],
         centroids: HashMap::from([(1, vec![0.9, 0.1, 0.0]), (2, vec![0.0, 0.0, 1.0])]),
     };
-    queries::replace_them_segments(&pool, meeting.id, &result)
+    queries::replace_them_segments(&pool, meeting.id, &result, 0.6)
         .await
         .unwrap();
 
@@ -524,4 +524,150 @@ async fn known_voiceprints_excludes_current_and_requires_locked_centroid() {
     let known = queries::known_voiceprints(&pool, m2.id).await.unwrap();
     assert_eq!(known.len(), 1);
     assert_eq!(known[0].0, "Alice");
+}
+
+#[tokio::test]
+async fn effective_settings_default_then_override() {
+    let pool = memory_pool().await;
+
+    // No preference rows -> the caller's config default is returned.
+    assert!(queries::effective_record(&pool, true).await.unwrap());
+    assert!(!queries::effective_record(&pool, false).await.unwrap());
+    assert_eq!(
+        queries::effective_output_dir(&pool, std::path::Path::new("/def"))
+            .await
+            .unwrap(),
+        std::path::PathBuf::from("/def")
+    );
+    assert_eq!(
+        queries::effective_speakers(&pool, true, 0.6).await.unwrap(),
+        (true, 0.6)
+    );
+
+    // Stored UI overrides win over the config defaults (JSON shape matches what the settings routes
+    // write for each section).
+    queries::set_preference(&pool, queries::SECTION_RECORDING, r#"{"record":false}"#)
+        .await
+        .unwrap();
+    queries::set_preference(
+        &pool,
+        queries::SECTION_STORAGE,
+        r#"{"output_dir":"/custom/rec"}"#,
+    )
+    .await
+    .unwrap();
+    queries::set_preference(
+        &pool,
+        queries::SECTION_SPEAKERS,
+        r#"{"auto_refine":false,"recognition_threshold":0.9}"#,
+    )
+    .await
+    .unwrap();
+
+    assert!(!queries::effective_record(&pool, true).await.unwrap());
+    assert_eq!(
+        queries::effective_output_dir(&pool, std::path::Path::new("/def"))
+            .await
+            .unwrap(),
+        std::path::PathBuf::from("/custom/rec")
+    );
+    assert_eq!(
+        queries::effective_speakers(&pool, true, 0.6).await.unwrap(),
+        (false, 0.9)
+    );
+}
+
+#[tokio::test]
+async fn effective_settings_tolerate_corrupt_or_partial_rows() {
+    let pool = memory_pool().await;
+    // A non-JSON row falls back to the default rather than erroring.
+    queries::set_preference(&pool, queries::SECTION_RECORDING, "not json")
+        .await
+        .unwrap();
+    assert!(queries::effective_record(&pool, true).await.unwrap());
+    // A partial speakers row keeps the missing field's default (each field resolves independently).
+    queries::set_preference(&pool, queries::SECTION_SPEAKERS, r#"{"auto_refine":false}"#)
+        .await
+        .unwrap();
+    assert_eq!(
+        queries::effective_speakers(&pool, true, 0.55)
+            .await
+            .unwrap(),
+        (false, 0.55)
+    );
+}
+
+#[tokio::test]
+async fn meeting_dir_pins_at_creation_with_legacy_fallback() {
+    let pool = memory_pool().await;
+    let meeting = queries::create_meeting(&pool, "M", "2026-07-14_0900_m", chrono::Utc::now())
+        .await
+        .unwrap();
+    // A freshly created row has no pinned dir yet; dir_path falls back to default_root/<folder>.
+    assert_eq!(meeting.dir, "");
+    assert_eq!(
+        meeting.dir_path(std::path::Path::new("/root")),
+        std::path::PathBuf::from("/root/2026-07-14_0900_m")
+    );
+
+    // Once pinned, dir_path returns the pinned absolute dir regardless of the current default root.
+    queries::set_meeting_dir(&pool, meeting.id, "/custom/2026-07-14_0900_m")
+        .await
+        .unwrap();
+    let pinned = queries::get_meeting(&pool, meeting.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(pinned.dir, "/custom/2026-07-14_0900_m");
+    assert_eq!(
+        pinned.dir_path(std::path::Path::new("/root")),
+        std::path::PathBuf::from("/custom/2026-07-14_0900_m")
+    );
+}
+
+#[tokio::test]
+async fn recognition_threshold_gates_cross_meeting_match() {
+    let pool = memory_pool().await;
+    // Prior meeting: Alice named + locked with a stored voiceprint.
+    let prior = queries::create_meeting(&pool, "prior", "p", chrono::Utc::now())
+        .await
+        .unwrap();
+    let ac = queries::create_cluster(
+        &pool,
+        prior.id,
+        1,
+        false,
+        Some(centroid_to_bytes(&[1.0, 0.0, 0.0])),
+    )
+    .await
+    .unwrap();
+    queries::rename_cluster(&pool, ac.id, "Alice")
+        .await
+        .unwrap()
+        .expect("cluster exists");
+
+    // New meeting whose ordinal-1 voiceprint is ~0.994 cosine to Alice: recognized at 0.6, but a
+    // stricter 0.999 threshold rejects the same match -> the threshold is genuinely applied.
+    let meeting = queries::create_meeting(&pool, "new", "n", chrono::Utc::now())
+        .await
+        .unwrap();
+    let result = RefineResult {
+        segments: vec![RefinedThemSegment {
+            ordinal: 1,
+            text: "hi".into(),
+            start_s: 0.0,
+            end_s: 1.0,
+        }],
+        centroids: HashMap::from([(1, vec![0.9, 0.1, 0.0])]),
+    };
+    queries::replace_them_segments(&pool, meeting.id, &result, 0.999)
+        .await
+        .unwrap();
+
+    let speakers = queries::list_speaker_rows(&pool, meeting.id).await.unwrap();
+    let ord1 = speakers.iter().find(|s| s.ordinal == 1).unwrap();
+    assert_eq!(
+        ord1.display_name, None,
+        "0.999 threshold must reject ~0.994"
+    );
 }

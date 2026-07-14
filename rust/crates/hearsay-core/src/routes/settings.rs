@@ -12,6 +12,7 @@ use axum::routing::{get, put};
 use axum::{Json, Router};
 
 use hearsay_db::queries;
+use hearsay_db::queries::{SECTION_RECORDING, SECTION_SPEAKERS, SECTION_STORAGE};
 
 use crate::config::Settings;
 use crate::error::{ApiError, ApiResult};
@@ -20,10 +21,6 @@ use crate::schema::{
     StorageSettings,
 };
 use crate::state::AppState;
-
-const SECTION_RECORDING: &str = "recording";
-const SECTION_SPEAKERS: &str = "speakers";
-const SECTION_STORAGE: &str = "storage";
 
 /// Routes served under the `/api` prefix (token-gated by the caller).
 pub fn router() -> Router<AppState> {

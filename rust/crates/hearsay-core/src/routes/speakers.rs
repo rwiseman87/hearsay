@@ -83,7 +83,7 @@ pub(crate) async fn rediarize(
         .await?
         .ok_or(ApiError::NotFound("meeting not found"))?;
 
-    let dir = state.settings.output_dir.join(&meeting.folder);
+    let dir = meeting.dir_path(&state.settings.output_dir);
     let audio = dir.join("audio.wav");
     if !audio.exists() {
         return Err(ApiError::Unavailable(
@@ -130,7 +130,15 @@ pub(crate) async fn rediarize(
             .collect(),
         centroids: output.centroids,
     };
-    queries::replace_them_segments(&state.pool, id, &result).await?;
+    // Apply the same effective recognition threshold the auto-refine uses (stored override else
+    // config default), so manual and automatic re-diarization recognize returning speakers alike.
+    let (_auto_refine, threshold) = queries::effective_speakers(
+        &state.pool,
+        state.settings.auto_refine,
+        state.settings.recognition_threshold,
+    )
+    .await?;
+    queries::replace_them_segments(&state.pool, id, &result, threshold).await?;
 
     // Regenerate transcript.md + meeting.json from the refined (+ Me) segments (off the async worker).
     let segments = queries::list_segments(&state.pool, id).await?;

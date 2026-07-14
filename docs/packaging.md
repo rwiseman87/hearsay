@@ -107,9 +107,9 @@ flowchart TD
 ## Known limitations
 
 - **Not notarized** — by design; recipients run the `xattr` quarantine strip once.
-- **Editable settings don't take effect yet** — Recording / Speakers / Storage / Permissions / About
-  are served by the Rust core and load in the packaged app, but the live pipeline still reads the
-  startup config, so edits persist without changing runtime behavior (see `docs/settings-panels.md`).
-  The Models panel is not built, and only Microphone reports a real permission status.
+- **Some panels are informational, not yet editable** — Recording / Speakers / Storage edits take
+  effect on the next meeting (persisted and read at runtime; see `docs/settings-panels.md`). The
+  Models panel is not built yet, and only Microphone reports a real permission status (the other TCC
+  rows read `undetermined` until their capture phases land).
 - **Large DMG** — the ~1.5 GB `ggml-large-v3-turbo` refine model is bundled (see below), so the DMG
   is ~1.5 GB. That is the cost of offline "Refine speakers" working out of the box.

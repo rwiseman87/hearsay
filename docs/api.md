@@ -1,15 +1,14 @@
 # API reference
 
-The core serves a loopback REST + WebSocket API (FastAPI) that the web UI consumes. Run it
-with `uv run hearsay serve`, which binds `127.0.0.1` on a free port and prints the URL and a
+The core serves a loopback REST + WebSocket API (axum) that the web UI consumes. Run it
+with `make rust-serve`, which binds `127.0.0.1` on a free port and prints the URL with a
 per-session token:
 
 ```
-hearsay core on http://127.0.0.1:8137
 open: http://127.0.0.1:8137/?token=<token>
 ```
 
-OpenAPI/Swagger is available at `/docs`.
+The OpenAPI document is served at `/openapi.json` (it drives the TypeScript codegen).
 
 When the web UI is built (`web/dist` present), the core also serves it: `GET /` returns
 `index.html` with the session token injected as `window.__HEARSAY_TOKEN__` (behind a
@@ -160,6 +159,43 @@ is offered in the next.
 ```json
 // 200 OK
 { "total": 1, "page": 1, "page_size": 50, "items": [ { "id": "i7...", "display_name": "Alice", "email": null } ] }
+```
+
+## Settings
+
+Editable preferences (a writable overlay over the env/startup defaults) plus read-only build and
+permission facts. See [settings-panels.md](settings-panels.md) for the panel model.
+
+### `GET /api/settings` — the effective settings
+
+Returns every section: `recording`, `speakers`, `storage`, plus read-only `storage_info` and `about`.
+
+```json
+// 200 OK
+{
+  "recording": { "record": true },
+  "speakers": { "auto_refine": true, "recognition_threshold": 0.6 },
+  "storage": { "output_dir": "/Users/you/.../outputs/recordings" },
+  "storage_info": { "output_dir": "...", "database_path": ".../hearsay.db", "tracked_bytes": 12345, "meeting_count": 3 },
+  "about": { "app_version": "0.1.0", "environment": "production", "protocol_version": 1, "database_path": ".../hearsay.db" }
+}
+```
+
+### `PUT /api/settings/{recording,speakers,storage}` — update one section
+
+Each takes that section's body and returns it. `storage` validates `output_dir` (absolute, existing,
+writable) and `speakers` validates `recognition_threshold` in `0..=1` — both `422` on a bad value.
+
+### `GET /api/settings/permissions` — live TCC status
+
+Briefly spawns the capture helper and reads its `check_permissions` snapshot + build version; never
+persists. Degrades to `helper_available: false` + every field `unknown` when the helper is absent.
+
+```json
+// 200 OK
+{ "helper_available": true, "helper_version": "0.1.0", "microphone": "granted",
+  "audio_capture": "undetermined", "screen_recording": "undetermined",
+  "accessibility": "undetermined", "calendar": "undetermined" }
 ```
 
 ## WebSocket: live transcript

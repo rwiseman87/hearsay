@@ -73,10 +73,8 @@ async fn get_meeting_audio(
         }
     };
 
-    let audio_path = state
-        .settings
-        .output_dir
-        .join(&meeting.folder)
+    let audio_path = meeting
+        .dir_path(&state.settings.output_dir)
         .join("audio.wav");
     if !audio_path.is_file() {
         return (

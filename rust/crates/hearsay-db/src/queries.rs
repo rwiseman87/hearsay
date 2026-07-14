@@ -2,6 +2,7 @@
 //! `query!` macros (offline `.sqlx` cache) are a future upgrade. Grows as the services are ported.
 
 use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
 use hearsay_attribution::{
@@ -9,10 +10,6 @@ use hearsay_attribution::{
 };
 use sqlx::{FromRow, SqlitePool};
 use uuid::Uuid;
-
-/// Cosine threshold above which a new speaker's voiceprint is auto-matched to a person named in a
-/// prior meeting (mirrors the Python `diarization.recognition_threshold` default).
-const RECOGNITION_THRESHOLD: f64 = 0.6;
 
 /// SQL for the known cross-meeting voiceprints: every person named + locked in another meeting with
 /// a stored centroid.
@@ -50,6 +47,9 @@ pub async fn create_meeting(
         ended_at: None,
         created_at: now,
         updated_at: now,
+        // Pinned in a follow-up `set_meeting_dir` (the orchestrator knows the effective output_dir);
+        // the INSERT relies on the column's `DEFAULT ''`.
+        dir: String::new(),
     };
     sqlx::query(
         "INSERT INTO meetings \
@@ -67,6 +67,22 @@ pub async fn create_meeting(
     .execute(pool)
     .await?;
     Ok(meeting)
+}
+
+/// Pin a meeting's absolute recordings directory (set once at creation, after the folder is made).
+/// Stored so the meeting stays locatable if the Storage output_dir setting later changes.
+pub async fn set_meeting_dir(
+    pool: &SqlitePool,
+    meeting_id: Uuid,
+    dir: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query("UPDATE meetings SET dir = ?, updated_at = ? WHERE id = ?")
+        .bind(dir)
+        .bind(Utc::now())
+        .bind(meeting_id)
+        .execute(pool)
+        .await?;
+    Ok(())
 }
 
 /// Fetch a meeting by id, or `None` if it does not exist.
@@ -391,14 +407,16 @@ pub async fn known_voiceprints(
 }
 
 /// Auto-name returning speakers by matching each ordinal's voiceprint against people named + locked
-/// in prior meetings (cosine `>= RECOGNITION_THRESHOLD`). A manual carry-forward (`manual`) wins, so
-/// those ordinals are skipped. Reads on the refine transaction; returns `ordinal -> recognized name`
-/// (bound but *not* locked — a manual rename can still override). Port of `refine.py::_recognize_speakers`.
+/// in prior meetings (cosine `>= threshold`, the effective `speakers.recognition_threshold`). A
+/// manual carry-forward (`manual`) wins, so those ordinals are skipped. Reads on the refine
+/// transaction; returns `ordinal -> recognized name` (bound but *not* locked — a manual rename can
+/// still override). Port of `refine.py::_recognize_speakers`.
 async fn recognize_speakers(
     conn: &mut sqlx::SqliteConnection,
     meeting_id: Uuid,
     centroids: &HashMap<i64, Vec<f32>>,
     manual: &HashMap<i64, String>,
+    threshold: f64,
 ) -> Result<HashMap<i64, String>, sqlx::Error> {
     let mut recognized = HashMap::new();
     if centroids.is_empty() {
@@ -419,7 +437,7 @@ async fn recognize_speakers(
         if manual.contains_key(&ordinal) {
             continue; // a manual carry-forward name wins over auto-recognition
         }
-        if let Some(name) = match_identity(centroid, &known, RECOGNITION_THRESHOLD) {
+        if let Some(name) = match_identity(centroid, &known, threshold) {
             recognized.insert(ordinal, name.to_string());
         }
     }
@@ -515,12 +533,15 @@ async fn carry_forward_locked_names(
 /// 3. Otherwise a fresh unlocked `"Speaker N"`.
 ///
 /// Each ordinal's voiceprint (`result.centroids`) is stored on its cluster so a later meeting can
-/// recognize the speaker. Mirrors `refine.py` + `SpeakerService.apply_turn_diarization`. A refine
-/// that produced no segments is a no-op — never wipe the transcript.
+/// recognize the speaker. `recognition_threshold` is the effective `speakers.recognition_threshold`
+/// (cosine cutoff for cross-meeting recognition). Mirrors `refine.py` +
+/// `SpeakerService.apply_turn_diarization`. A refine that produced no segments is a no-op — never
+/// wipe the transcript.
 pub async fn replace_them_segments(
     pool: &SqlitePool,
     meeting_id: Uuid,
     result: &RefineResult,
+    recognition_threshold: f64,
 ) -> Result<(), sqlx::Error> {
     if result.segments.is_empty() {
         return Ok(());
@@ -531,8 +552,14 @@ pub async fn replace_them_segments(
     // Resolve names before the old clusters/segments are dropped: manual carry-forward first, then
     // recognition for the ordinals a manual name did not claim.
     let ordinal_names = carry_forward_locked_names(&mut tx, meeting_id, &result.segments).await?;
-    let recognized =
-        recognize_speakers(&mut tx, meeting_id, &result.centroids, &ordinal_names).await?;
+    let recognized = recognize_speakers(
+        &mut tx,
+        meeting_id,
+        &result.centroids,
+        &ordinal_names,
+        recognition_threshold,
+    )
+    .await?;
 
     // Them segments reference clusters, so delete them before the clusters (Me segments are NULL).
     sqlx::query("DELETE FROM segments WHERE meeting_id = ? AND stream = ?")
@@ -669,4 +696,71 @@ pub async fn set_preference(
     .execute(pool)
     .await?;
     Ok(())
+}
+
+/// Settings sections persisted in the `preferences` table (one JSON row each). The section name is
+/// the wire contract shared by the API writer (`hearsay-core`'s settings routes) and the runtime
+/// readers (the `effective_*` resolvers below, called by the orchestrator at meeting start/stop).
+pub const SECTION_RECORDING: &str = "recording";
+pub const SECTION_SPEAKERS: &str = "speakers";
+pub const SECTION_STORAGE: &str = "storage";
+
+/// The parsed JSON object for a stored section, or `None` when unset or unparseable (the caller then
+/// uses its config default). A corrupt row degrades to the default rather than failing an operation.
+async fn section_object(
+    pool: &SqlitePool,
+    section: &str,
+) -> Result<Option<serde_json::Map<String, serde_json::Value>>, sqlx::Error> {
+    let Some(raw) = get_preference(pool, section).await? else {
+        return Ok(None);
+    };
+    Ok(serde_json::from_str::<serde_json::Value>(&raw)
+        .ok()
+        .and_then(|v| v.as_object().cloned()))
+}
+
+/// Effective `record` (keep one WAV per meeting): the stored `recording` override, else `default`.
+pub async fn effective_record(pool: &SqlitePool, default: bool) -> Result<bool, sqlx::Error> {
+    Ok(section_object(pool, SECTION_RECORDING)
+        .await?
+        .and_then(|o| o.get("record").and_then(serde_json::Value::as_bool))
+        .unwrap_or(default))
+}
+
+/// Effective recordings root for a NEW meeting: the stored `storage` override, else `default`. Each
+/// meeting pins its own absolute dir at creation, so changing this never orphans existing meetings.
+pub async fn effective_output_dir(
+    pool: &SqlitePool,
+    default: &Path,
+) -> Result<PathBuf, sqlx::Error> {
+    Ok(section_object(pool, SECTION_STORAGE)
+        .await?
+        .and_then(|o| {
+            o.get("output_dir")
+                .and_then(|v| v.as_str().map(PathBuf::from))
+        })
+        .unwrap_or_else(|| default.to_path_buf()))
+}
+
+/// Effective `(auto_refine, recognition_threshold)`: the stored `speakers` override per field, else
+/// the matching default. Each field falls back independently, so a partial/corrupt row still yields
+/// usable values.
+pub async fn effective_speakers(
+    pool: &SqlitePool,
+    default_auto_refine: bool,
+    default_threshold: f64,
+) -> Result<(bool, f64), sqlx::Error> {
+    let obj = section_object(pool, SECTION_SPEAKERS).await?;
+    let auto_refine = obj
+        .as_ref()
+        .and_then(|o| o.get("auto_refine").and_then(serde_json::Value::as_bool))
+        .unwrap_or(default_auto_refine);
+    let threshold = obj
+        .as_ref()
+        .and_then(|o| {
+            o.get("recognition_threshold")
+                .and_then(serde_json::Value::as_f64)
+        })
+        .unwrap_or(default_threshold);
+    Ok((auto_refine, threshold))
 }

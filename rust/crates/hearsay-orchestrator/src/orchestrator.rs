@@ -28,12 +28,20 @@ struct ActiveSession {
 /// Drives the meeting lifecycle + live transcript broadcast behind `hearsay-core`'s routes.
 pub struct Orchestrator {
     pool: SqlitePool,
+    /// Default recordings root when no `storage` UI override is stored; also the fallback root for
+    /// locating legacy meetings (rows created before per-meeting `dir` pinning).
     output_dir: PathBuf,
     backend: Arc<dyn Backend>,
-    /// Record the stereo `audio.wav` per meeting (for playback + the offline refine). Default on.
-    record_audio: bool,
-    /// The post-meeting refine, run at stop when set (auto-refine). `None` disables it (the manual
-    /// `/rediarize` route still works — it drives the refine directly).
+    /// Config defaults for the editable settings. The effective value at runtime is the stored
+    /// `preferences` override else these — resolved from the DB at meeting start (`record`,
+    /// `output_dir`) and stop (`auto_refine`, `recognition_threshold`), so a UI change takes effect
+    /// on the next meeting without a restart.
+    default_record: bool,
+    default_auto_refine: bool,
+    default_recognition_threshold: f64,
+    /// The post-meeting refine. Wire it (via [`with_refiner`](Self::with_refiner)) so auto-refine is
+    /// *available*; whether it actually runs at stop is gated by the effective `auto_refine` setting.
+    /// `None` disables it entirely (the manual `/rediarize` route still drives the refine directly).
     refiner: Option<Arc<dyn Refiner>>,
     /// Serializes `start_meeting` / `stop_meeting` (so the busy-check and the set never race).
     op_lock: tokio::sync::Mutex<()>,
@@ -42,23 +50,43 @@ pub struct Orchestrator {
 }
 
 impl Orchestrator {
-    /// Build the orchestrator over a database pool, the per-meeting output root, and the capture +
-    /// transcription backend factory. Records the per-meeting `audio.wav`.
+    /// Build the orchestrator over a database pool, the default per-meeting output root, and the
+    /// capture + transcription backend factory. Config defaults are record on / auto-refine on /
+    /// recognition threshold 0.6 until overridden with [`with_defaults`](Self::with_defaults); the
+    /// stored UI preferences override them per meeting.
     pub fn new(pool: SqlitePool, output_dir: PathBuf, backend: Arc<dyn Backend>) -> Self {
         Orchestrator {
             pool,
             output_dir,
             backend,
-            record_audio: true,
+            default_record: true,
+            default_auto_refine: true,
+            default_recognition_threshold: 0.6,
             refiner: None,
             op_lock: tokio::sync::Mutex::new(()),
             active: Mutex::new(None),
         }
     }
 
-    /// Wire the post-meeting [`Refiner`] so a meeting auto-refines at stop (Python
-    /// `SessionManager._maybe_auto_refine`). Without it, stop just finalizes; the manual
-    /// `/rediarize` route drives the refine directly.
+    /// Set the config defaults for the editable settings (the values used when the UI has stored no
+    /// override). Typically the resolved `Settings` (env/startup). The UI still overrides these per
+    /// meeting via the `preferences` table.
+    pub fn with_defaults(
+        mut self,
+        record: bool,
+        auto_refine: bool,
+        recognition_threshold: f64,
+    ) -> Self {
+        self.default_record = record;
+        self.default_auto_refine = auto_refine;
+        self.default_recognition_threshold = recognition_threshold;
+        self
+    }
+
+    /// Make the post-meeting [`Refiner`] available so a meeting can auto-refine at stop (Python
+    /// `SessionManager._maybe_auto_refine`). Whether it runs is decided per stop by the effective
+    /// `auto_refine` setting. Without it, stop just finalizes; the manual `/rediarize` route drives
+    /// the refine directly regardless.
     pub fn with_refiner(mut self, refiner: Arc<dyn Refiner>) -> Self {
         self.refiner = Some(refiner);
         self
@@ -72,11 +100,21 @@ impl Orchestrator {
         let title = title.unwrap_or_else(|| default_title(when));
         let folder_name = meeting_folder_name(&title, when);
 
-        let meeting = queries::create_meeting(&self.pool, &title, &folder_name, when).await?;
-        let folder = self.output_dir.join(&folder_name);
-        tokio::fs::create_dir_all(&folder).await?;
+        let mut meeting = queries::create_meeting(&self.pool, &title, &folder_name, when).await?;
 
-        let audio_path = self.record_audio.then(|| folder.join("audio.wav"));
+        // Effective settings (stored UI override else the config default), resolved at start so a
+        // change takes effect on the next meeting. The recordings root is pinned onto the meeting so
+        // it stays locatable if the Storage setting later changes.
+        let output_root = queries::effective_output_dir(&self.pool, &self.output_dir).await?;
+        let record = queries::effective_record(&self.pool, self.default_record).await?;
+
+        let dir = output_root.join(&folder_name);
+        tokio::fs::create_dir_all(&dir).await?;
+        let dir_str = dir.to_string_lossy().into_owned();
+        queries::set_meeting_dir(&self.pool, meeting.id, &dir_str).await?;
+        meeting.dir = dir_str;
+
+        let audio_path = record.then(|| dir.join("audio.wav"));
         let pipeline = pipeline::spawn(
             self.backend.build(),
             self.pool.clone(),
@@ -96,7 +134,7 @@ impl Orchestrator {
     async fn write_transcript(&self, meeting: &Meeting) {
         match queries::list_segments(&self.pool, meeting.id).await {
             Ok(segments) => {
-                let dir = self.output_dir.join(&meeting.folder);
+                let dir = meeting.dir_path(&self.output_dir);
                 let meeting = meeting.clone();
                 let write = tokio::task::spawn_blocking(move || {
                     crate::markdown::write_meeting_files(&dir, &meeting, &segments)
@@ -122,7 +160,27 @@ impl Orchestrator {
         let Some(refiner) = self.refiner.as_ref() else {
             return;
         };
-        let audio = self.output_dir.join(&meeting.folder).join("audio.wav");
+        // Effective speaker settings (stored override else config default), read at stop so a UI
+        // toggle takes effect. `auto_refine` gates whether we refine; `threshold` is the cross-meeting
+        // recognition cutoff applied when persisting the refined speakers.
+        let (auto_refine, threshold) = match queries::effective_speakers(
+            &self.pool,
+            self.default_auto_refine,
+            self.default_recognition_threshold,
+        )
+        .await
+        {
+            Ok(values) => values,
+            Err(err) => {
+                tracing::warn!(error = %err, "auto-refine: failed to read settings; keeping live segments");
+                return;
+            }
+        };
+        if !auto_refine {
+            tracing::debug!(meeting = %meeting.id, "auto-refine disabled by settings; keeping live segments");
+            return;
+        }
+        let audio = meeting.dir_path(&self.output_dir).join("audio.wav");
         if !audio.exists() {
             tracing::debug!(meeting = %meeting.id, "auto-refine skipped: no recorded audio");
             return;
@@ -130,7 +188,9 @@ impl Orchestrator {
         match refiner.refine(&audio).await {
             Ok(result) => {
                 let count = result.segments.len();
-                match queries::replace_them_segments(&self.pool, meeting.id, &result).await {
+                match queries::replace_them_segments(&self.pool, meeting.id, &result, threshold)
+                    .await
+                {
                     Ok(()) => tracing::info!(
                         meeting = %meeting.id,
                         segments = count,
