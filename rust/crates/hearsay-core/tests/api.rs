@@ -36,6 +36,9 @@ fn test_settings(output_dir: PathBuf, web_dir: PathBuf) -> Settings {
         auto_refine: false,
         record: true,
         recognition_threshold: 0.6,
+        handshake_path: None,
+        fluid_models_dir: None,
+        home_dir: None,
     }
 }
 

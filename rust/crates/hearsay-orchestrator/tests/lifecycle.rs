@@ -448,12 +448,7 @@ async fn capture_death_finalizes_the_meeting() {
         0,
         &[0.1, 0.2, 0.3],
     )]));
-    let orch = Arc::new(Orchestrator::new(
-        pool.clone(),
-        tmp.path().to_path_buf(),
-        backend,
-    ));
-    orch.install_self();
+    let orch = Orchestrator::new(pool.clone(), tmp.path().to_path_buf(), backend).into_arc();
 
     let meeting = orch.start_meeting(Some("Crash".into())).await.unwrap();
     assert_eq!(orch.active_meeting(), Some(meeting.id));

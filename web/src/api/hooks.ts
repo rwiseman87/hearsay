@@ -59,11 +59,16 @@ export function useStatus() {
   });
 }
 
-export function useSegments(meetingId: string | null) {
+export function useSegments(meetingId: string | null, isLive = false) {
   return useQuery({
     queryKey: queryKeys.meetings.segments(meetingId ?? "none"),
     queryFn: () => fetchAllSegments(meetingId as string),
     enabled: meetingId !== null,
+    // While recording, poll as a belt-and-suspenders backfill: the primary recovery is the WS
+    // resync/reconnect invalidation (useTranscript), but a modest refetch also catches any final a
+    // lag dropped without a surviving signal. Merged non-destructively (seed replace=false while
+    // live). Off once finalized -- the DB is then static and the refined transcript is authoritative.
+    refetchInterval: isLive ? 15_000 : false,
   });
 }
 

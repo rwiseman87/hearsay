@@ -19,6 +19,15 @@ export interface StatusEvent {
   state: "warming" | "ready";
 }
 
+// A backfill signal (not a transcript line): the server's broadcast buffer dropped events for a
+// lagged subscriber, so the persisted transcript is ahead of this live stream. On receipt the client
+// refetches persisted segments rather than diverging. Kept out of the reducer-facing `WsMessage`
+// union — it never becomes a line. Hand-maintained like the others (the WebSocket is outside the
+// OpenAPI codegen), so the server frame in routes/ws.rs must match this shape.
+export interface ResyncEvent {
+  kind: "resync";
+}
+
 // Anything the live socket can deliver, discriminated by `kind`.
 export type WsMessage = TranscriptEvent | StatusEvent;
 
@@ -37,6 +46,7 @@ export function openTranscriptSocket(
   token: string,
   onEvent: (message: WsMessage) => void,
   onStatus?: (status: ConnectionStatus) => void,
+  onResync?: () => void,
 ): () => void {
   const scheme = window.location.protocol === "https:" ? "wss" : "ws";
   const url =
@@ -52,15 +62,26 @@ export function openTranscriptSocket(
     onStatus?.(attempt === 0 ? "connecting" : "reconnecting");
     socket = new WebSocket(url);
     socket.onopen = () => {
+      // A reconnect (not the first connect) means the socket was down while the meeting kept
+      // recording, so finals may have been persisted and missed on this stream; backfill on
+      // recovery. Read `attempt` before it is reset.
+      const reconnected = attempt > 0;
       attempt = 0;
       onStatus?.("open");
+      if (reconnected) onResync?.();
     };
     socket.onmessage = (event) => {
-      let parsed: WsMessage;
+      let parsed: WsMessage | ResyncEvent;
       try {
-        parsed = JSON.parse(event.data as string) as WsMessage;
+        parsed = JSON.parse(event.data as string) as WsMessage | ResyncEvent;
       } catch {
         // A malformed frame must not throw out of onmessage (which would kill the handler); drop it.
+        return;
+      }
+      if (parsed.kind === "resync") {
+        // Persisted state is ahead of this stream (server dropped events on lag); backfill instead
+        // of silently diverging. Not a transcript line, so it never reaches the reducer.
+        onResync?.();
         return;
       }
       onEvent(parsed);

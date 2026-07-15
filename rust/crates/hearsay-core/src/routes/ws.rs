@@ -70,8 +70,19 @@ async fn stream_transcript(mut socket: WebSocket, state: AppState, meeting_id: U
                     break; // client disconnected
                 }
             }
-            Err(RecvError::Lagged(_)) => continue, // dropped some events; keep streaming
-            Err(RecvError::Closed) => break,       // meeting ended
+            Err(RecvError::Lagged(_)) => {
+                // A slow/backpressured subscriber fell behind and the broadcast buffer dropped
+                // events — which include persisted finals. Silently continuing would leave the live
+                // view permanently short those lines until stop re-seeds. Since the pipeline
+                // persists a final before broadcasting it, the DB is a superset of the stream, so
+                // tell the client the persisted transcript is now ahead of this stream; it backfills
+                // from `GET /segments` rather than diverging. Then keep streaming.
+                let frame = r#"{"kind":"resync"}"#;
+                if socket.send(Message::Text(frame.into())).await.is_err() {
+                    break; // client disconnected
+                }
+            }
+            Err(RecvError::Closed) => break, // meeting ended
         }
     }
 }

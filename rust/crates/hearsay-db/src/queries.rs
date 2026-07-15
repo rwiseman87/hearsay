@@ -144,6 +144,36 @@ pub async fn set_meeting_finalized(pool: &SqlitePool, id: Uuid) -> Result<(), sq
     Ok(())
 }
 
+/// Meetings still in a non-terminal state (`recording` or `refining`). At startup no meeting can be
+/// active, so every such row was stranded by a prior hard exit (SIGKILL / panic / power loss); the
+/// reconcile sweep finalizes them. Ordered oldest-first for stable logging.
+pub async fn list_nonterminal_meetings(pool: &SqlitePool) -> Result<Vec<Meeting>, sqlx::Error> {
+    sqlx::query_as::<_, Meeting>(
+        "SELECT * FROM meetings WHERE status IN (?, ?) ORDER BY started_at",
+    )
+    .bind(MeetingStatus::Recording)
+    .bind(MeetingStatus::Refining)
+    .fetch_all(pool)
+    .await
+}
+
+/// Finalize a meeting stranded in a non-terminal state by a prior hard exit: set `finalized`, and
+/// stamp `ended_at` only when it was never set (a row that died mid-`refining` already has it). Used
+/// by the startup reconcile sweep, never during normal stop.
+pub async fn reconcile_finalize_meeting(pool: &SqlitePool, id: Uuid) -> Result<(), sqlx::Error> {
+    let now = Utc::now();
+    sqlx::query(
+        "UPDATE meetings SET status = ?, ended_at = COALESCE(ended_at, ?), updated_at = ? WHERE id = ?",
+    )
+    .bind(MeetingStatus::Finalized)
+    .bind(now)
+    .bind(now)
+    .bind(id)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
 /// Insert a transcript segment and return the inserted row. `cluster_id` binds the segment to a
 /// speaker cluster (Them finals); it is `None` for Me and for as-yet-unclustered rows.
 #[allow(clippy::too_many_arguments)]

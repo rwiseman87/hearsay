@@ -44,29 +44,84 @@ pub struct Settings {
     /// in a prior meeting (`HEARSAY_RECOGNITION_THRESHOLD`, default 0.6; the `speakers` section
     /// overrides it).
     pub recognition_threshold: f64,
+    /// Path to the desktop shell's handshake file (`HEARSAY_HANDSHAKE_PATH`): the private 0600 file
+    /// the shell reads once for `{port, token}`. `None` in headless dev, where no handshake is written.
+    pub handshake_path: Option<PathBuf>,
+    /// Bundled FluidAudio live-models directory (`HEARSAY_FLUID_MODELS_DIR`, set by the desktop shell):
+    /// seeded into FluidAudio's cache on first launch. `None` in headless dev, where FluidAudio downloads.
+    pub fluid_models_dir: Option<PathBuf>,
+    /// The process's home directory (`HOME`): the base of FluidAudio's default model cache when
+    /// seeding the bundled models. `None` when `HOME` is unset.
+    pub home_dir: Option<PathBuf>,
 }
 
 fn env_or(key: &str, default: impl Into<String>) -> String {
     env::var(key).unwrap_or_else(|_| default.into())
 }
 
-/// Parse a boolean env var (`1`/`true`/`yes`/`on` -> true, case-insensitive); `default` when unset.
-fn env_bool(key: &str, default: bool) -> bool {
-    match env::var(key) {
-        Ok(value) => matches!(
-            value.trim().to_ascii_lowercase().as_str(),
-            "1" | "true" | "yes" | "on"
-        ),
-        Err(_) => default,
+/// An optional path env var (`None` when unset). For the paths the desktop shell injects (the
+/// handshake file, the bundled FluidAudio models) and the process's `HOME`.
+fn env_path(key: &str) -> Option<PathBuf> {
+    env::var_os(key).map(PathBuf::from)
+}
+
+/// Parse a boolean env var (`1`/`true`/`yes`/`on` -> true, `0`/`false`/`no`/`off` -> false,
+/// case-insensitive); `default` when unset. A set-but-unrecognized value (e.g. the typo `ture`) is
+/// recorded in `problems` so [`Settings::from_env`] surfaces it instead of silently mapping to false.
+fn env_bool(key: &str, default: bool, problems: &mut Vec<String>) -> bool {
+    let Ok(raw) = env::var(key) else {
+        return default;
+    };
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" | "on" => true,
+        "0" | "false" | "no" | "off" => false,
+        _ => {
+            problems.push(format!(
+                "{key}={raw:?} is not a boolean (expected one of 1/true/yes/on or 0/false/no/off)"
+            ));
+            default
+        }
     }
 }
 
-/// Parse a float env var; `default` when unset or unparseable.
-fn env_f64(key: &str, default: f64) -> f64 {
-    env::var(key)
-        .ok()
-        .and_then(|v| v.trim().parse().ok())
-        .unwrap_or(default)
+/// Parse an unsigned-integer env var; `default` when unset. A set-but-unparseable value is recorded
+/// in `problems` instead of falling back silently.
+fn env_u64(key: &str, default: u64, problems: &mut Vec<String>) -> u64 {
+    let Ok(raw) = env::var(key) else {
+        return default;
+    };
+    match raw.trim().parse::<u64>() {
+        Ok(value) => value,
+        Err(_) => {
+            problems.push(format!("{key}={raw:?} is not a non-negative integer"));
+            default
+        }
+    }
+}
+
+/// Parse the recognition-threshold env var and range-check it to the same `0.0..=1.0` the settings
+/// API enforces (`routes::settings::update_speakers`); `default` when unset. A set-but-unparseable or
+/// out-of-range value is recorded in `problems` instead of falling back silently.
+fn env_recognition_threshold(default: f64, problems: &mut Vec<String>) -> f64 {
+    const KEY: &str = "HEARSAY_RECOGNITION_THRESHOLD";
+    let Ok(raw) = env::var(KEY) else {
+        return default;
+    };
+    match raw.trim().parse::<f64>() {
+        Ok(value) if (0.0..=1.0).contains(&value) => value,
+        Ok(value) => {
+            problems.push(format!(
+                "{KEY}={value} is out of range (recognition_threshold must be between 0.0 and 1.0)"
+            ));
+            default
+        }
+        Err(_) => {
+            problems.push(format!(
+                "{KEY}={raw:?} is not a number (recognition_threshold must be between 0.0 and 1.0)"
+            ));
+            default
+        }
+    }
 }
 
 /// Whether `host` is a safe loopback bind target: a loopback IP literal (`127.0.0.1`, `::1`) or the
@@ -94,7 +149,15 @@ fn bind_allowed(host: &str, environment: &str) -> Result<(), String> {
 
 impl Settings {
     /// Resolve settings from environment variables, falling back to loopback-safe defaults.
-    pub fn from_env() -> Self {
+    ///
+    /// A malformed override (a boolean typo, an unparseable number, an out-of-range threshold) is a
+    /// hard error outside development so a misconfigured deploy fails at startup rather than silently
+    /// running with the default; in development the same problems are logged as warnings and the
+    /// default is used, keeping local runs convenient.
+    pub fn from_env() -> Result<Self, String> {
+        let environment = env_or("ENVIRONMENT", "development");
+        let mut problems: Vec<String> = Vec::new();
+
         let output_dir = PathBuf::from(env_or("HEARSAY_OUTPUT_DIR", "./outputs/recordings"));
         let database_url = env::var("DATABASE_URL")
             .unwrap_or_else(|_| "sqlite://./outputs/db/hearsay.db".to_string());
@@ -102,13 +165,34 @@ impl Settings {
             .ok()
             .and_then(|p| p.parse().ok())
             .unwrap_or(0);
-        Settings {
+        let auto_refine = env_bool("HEARSAY_AUTO_REFINE", false, &mut problems);
+        let record = env_bool("HEARSAY_RECORD", true, &mut problems);
+        let recognition_threshold = env_recognition_threshold(0.6, &mut problems);
+        let refine_timeout =
+            Duration::from_secs(env_u64("HEARSAY_REFINE_TIMEOUT_SECS", 1800, &mut problems));
+
+        if !problems.is_empty() {
+            if environment == "development" {
+                for problem in &problems {
+                    tracing::warn!("{problem}; using default");
+                }
+            } else {
+                return Err(format!(
+                    "refusing to start with {} invalid configuration override(s) \
+                     (ENVIRONMENT={environment:?}): {}",
+                    problems.len(),
+                    problems.join("; ")
+                ));
+            }
+        }
+
+        Ok(Settings {
             database_url,
             output_dir,
             web_dir: PathBuf::from(env_or("HEARSAY_WEB_DIR", "./web/dist")),
             server_host: env_or("HEARSAY_SERVER_HOST", "127.0.0.1"),
             server_port,
-            environment: env_or("ENVIRONMENT", "development"),
+            environment,
             helper_path: PathBuf::from(env_or(
                 "HEARSAY_HELPER_PATH",
                 "helper/.build/arm64-apple-macosx/debug/hearsay-helper",
@@ -117,16 +201,14 @@ impl Settings {
                 "HEARSAY_REFINE_MODEL",
                 "outputs/models/ggml-large-v3-turbo.bin",
             )),
-            refine_timeout: Duration::from_secs(
-                env::var("HEARSAY_REFINE_TIMEOUT_SECS")
-                    .ok()
-                    .and_then(|v| v.trim().parse().ok())
-                    .unwrap_or(1800),
-            ),
-            auto_refine: env_bool("HEARSAY_AUTO_REFINE", false),
-            record: env_bool("HEARSAY_RECORD", true),
-            recognition_threshold: env_f64("HEARSAY_RECOGNITION_THRESHOLD", 0.6),
-        }
+            refine_timeout,
+            auto_refine,
+            record,
+            recognition_threshold,
+            handshake_path: env_path("HEARSAY_HANDSHAKE_PATH"),
+            fluid_models_dir: env_path("HEARSAY_FLUID_MODELS_DIR"),
+            home_dir: env_path("HOME"),
+        })
     }
 
     /// Refuse a non-loopback bind host outside development. Loopback is not a security boundary, but

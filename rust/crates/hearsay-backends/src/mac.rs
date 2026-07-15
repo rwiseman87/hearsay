@@ -246,6 +246,9 @@ pub fn build_engine(
     // (read from the DB at start/stop). The refiner is always wired so toggling auto-refine on in the
     // UI takes effect — whether it runs at stop is gated by the effective setting — and so the manual
     // `/rediarize` route can drive the same refine path.
+    // `into_arc` wraps the orchestrator and wires its weak self-reference in one step (via
+    // `Arc::new_cyclic`), so a capture death (helper crash) can finalize the meeting instead of
+    // leaving it falsely live — with no separate init call to forget.
     let orchestrator = Orchestrator::new(pool.clone(), output_dir, backend)
         .with_defaults(record, auto_refine, recognition_threshold)
         .with_refiner(Arc::new(MacRefiner {
@@ -253,10 +256,10 @@ pub fn build_engine(
             diarize_path: helper_path.with_file_name("hearsay-diarize"),
             default_model: refine_model,
             timeout: refine_timeout,
-        }));
-    let orchestrator = Arc::new(orchestrator);
-    // Give the orchestrator its own `Arc` handle so a capture death (helper crash) can finalize the
-    // meeting instead of leaving it falsely live. Must happen exactly once, before serving.
-    orchestrator.install_self();
+        }))
+        .into_arc();
+    // Start the background warm ticker: it re-warms the sidecar pool while idle (off the polled
+    // `sidecars_ready` read) whenever the ANE is free. Must run within the Tokio runtime.
+    orchestrator.spawn_warm_ticker();
     orchestrator
 }

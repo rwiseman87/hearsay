@@ -2,7 +2,7 @@
 //! serve the API + UI. `--dump-openapi` prints the OpenAPI document and exits (for the TS codegen);
 //! `--synthetic` runs the capture helper in synthetic mode (generated audio, no TCC prompts).
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use tokio::io::AsyncReadExt as _;
 use tokio::net::TcpListener;
@@ -34,7 +34,7 @@ async fn main() -> Result<(), BoxError> {
         )
         .init();
 
-    let settings = Settings::from_env();
+    let settings = Settings::from_env()?;
     // Refuse a public bind outside development before doing any work (loopback is not a boundary, but
     // a network-reachable bind exposes the token-gated API to everyone).
     settings.ensure_bind_allowed()?;
@@ -47,7 +47,10 @@ async fn main() -> Result<(), BoxError> {
     // Seed FluidAudio's model cache from the bundled copy before spawning any sidecar, so the live
     // models load locally instead of downloading from HuggingFace on the first meeting. One-time
     // (copies only what's missing), so it's a fast no-op after the first launch.
-    seed_fluid_models();
+    seed_fluid_models(
+        settings.fluid_models_dir.as_deref(),
+        settings.home_dir.as_deref(),
+    );
     // Assemble the platform backend (capture helper + live sidecars + offline whisper refine) behind
     // the neutral LiveEngine seam. `build_engine` prewarms the first sidecar pair and installs the
     // orchestrator's self-reference (so a capture death finalizes the meeting); the binary holds only
@@ -63,14 +66,22 @@ async fn main() -> Result<(), BoxError> {
         settings.auto_refine,
         settings.recognition_threshold,
     );
+    // A prior hard exit (SIGKILL / panic / power loss) can strand a meeting row `recording` or
+    // `refining` forever, with no session to finalize it. Nothing is active at startup, so sweep and
+    // finalize every such row (writing its transcript from the persisted segments) before we serve.
+    hearsay_backends::reconcile::reconcile_stranded_meetings(&pool, &settings.output_dir).await;
+
+    // Grab the handshake path before `settings` moves into the app state; the handshake file is
+    // written after the listener binds (it carries the resolved port).
+    let handshake_path = settings.handshake_path.clone();
     let state = AppState::new(pool, settings, token.clone(), engine.clone());
     let app = create_app(state);
 
     let listener = TcpListener::bind(&bind).await?;
     let addr = listener.local_addr()?;
     // Hand the shell the resolved port + token via a private 0600 file instead of stdout, so the
-    // token never lands in a log line. No-op when HEARSAY_HANDSHAKE_PATH is unset (headless dev).
-    write_handshake(addr.port(), &token)?;
+    // token never lands in a log line. No-op when the handshake path is unset (headless dev).
+    write_handshake(addr.port(), &token, handshake_path.as_deref())?;
     // Print the open URL (which carries the token) only in development; production uses the handshake.
     if is_dev {
         println!("open: http://{addr}/?token={token}");
@@ -95,14 +106,14 @@ async fn main() -> Result<(), BoxError> {
     Ok(())
 }
 
-/// Write `{port, token}` JSON to the path named by `HEARSAY_HANDSHAKE_PATH` — the private file the
-/// desktop shell reads once to navigate the webview. Written via temp file + rename (0600 on Unix)
-/// so the shell never reads a half-written payload. A no-op when the env var is unset (headless dev).
-fn write_handshake(port: u16, token: &str) -> std::io::Result<()> {
-    let Some(path) = std::env::var_os("HEARSAY_HANDSHAKE_PATH") else {
+/// Write `{port, token}` JSON to `handshake_path` (resolved from `HEARSAY_HANDSHAKE_PATH` into
+/// [`Settings`]) — the private file the desktop shell reads once to navigate the webview. Written via
+/// temp file + rename (0600 on Unix) so the shell never reads a half-written payload. A no-op when
+/// the path is `None` (headless dev).
+fn write_handshake(port: u16, token: &str, handshake_path: Option<&Path>) -> std::io::Result<()> {
+    let Some(path) = handshake_path else {
         return Ok(());
     };
-    let path = PathBuf::from(path);
     let payload = serde_json::json!({ "port": port, "token": token }).to_string();
 
     let tmp = path.with_extension("tmp");
@@ -119,33 +130,33 @@ fn write_handshake(port: u16, token: &str) -> std::io::Result<()> {
         file.write_all(payload.as_bytes())?;
         file.sync_all()?;
     }
-    std::fs::rename(&tmp, &path)?;
+    std::fs::rename(&tmp, path)?;
     Ok(())
 }
 
 /// Seed FluidAudio's model cache from the bundled copy so the live sidecars load their models
-/// locally instead of downloading them from HuggingFace — a self-contained, offline install. Reads
-/// `HEARSAY_FLUID_MODELS_DIR` (set by the desktop shell to the bundled resource); a no-op when unset
-/// (headless dev, where FluidAudio downloads to its cache as before). Copies each model repo only
-/// when it is absent from the cache, so it runs once (first launch, or after an erase wipes the
-/// cache) and is a fast no-op afterward. Each repo is copied into a hidden `.partial` dir and then
-/// atomically renamed into place, so an interrupted copy never leaves a half-tree the sidecar would
-/// try to load. Best-effort: a failure is logged, not fatal — the sidecar then downloads that repo.
-fn seed_fluid_models() {
-    let Some(src) = std::env::var_os("HEARSAY_FLUID_MODELS_DIR") else {
+/// locally instead of downloading them from HuggingFace — a self-contained, offline install. Takes
+/// the bundled-models dir (`HEARSAY_FLUID_MODELS_DIR`, set by the desktop shell) and `HOME`, both
+/// resolved into [`Settings`]; a no-op when the models dir is `None` (headless dev, where FluidAudio
+/// downloads to its cache as before). Copies each model repo only when it is absent from the cache,
+/// so it runs once (first launch, or after an erase wipes the cache) and is a fast no-op afterward.
+/// Each repo is copied into a hidden `.partial` dir and then atomically renamed into place, so an
+/// interrupted copy never leaves a half-tree the sidecar would try to load. Best-effort: a failure is
+/// logged, not fatal — the sidecar then downloads that repo.
+fn seed_fluid_models(models_dir: Option<&Path>, home_dir: Option<&Path>) {
+    let Some(src) = models_dir else {
         return; // headless dev: FluidAudio downloads to its own cache as before
     };
-    let src = PathBuf::from(src);
     if !src.is_dir() {
         return; // no bundled models (e.g. a dev build packaged without them)
     }
-    let Some(home) = std::env::var_os("HOME") else {
+    let Some(home) = home_dir else {
         tracing::warn!("HOME unset; cannot seed FluidAudio models from the bundle");
         return;
     };
     // FluidAudio's default cache: ~/Library/Application Support/FluidAudio/Models/<repo>/.
-    let dest = PathBuf::from(home).join("Library/Application Support/FluidAudio/Models");
-    seed_models_into(&src, &dest);
+    let dest = home.join("Library/Application Support/FluidAudio/Models");
+    seed_models_into(src, &dest);
 }
 
 /// Copy each model-repo subdirectory of `src` into `dest`, skipping any already present there (so it

@@ -1,6 +1,8 @@
+import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useReducer, useState } from "react";
 
 import { useSegments } from "../api/hooks";
+import { queryKeys } from "../api/queryKeys";
 import { getToken } from "../api/token";
 import type { MeetingRead, SegmentRead } from "../api/types";
 import { openTranscriptSocket } from "../api/ws";
@@ -93,7 +95,8 @@ export interface TranscriptState {
 export function useTranscript(meeting: MeetingRead | null): TranscriptState {
   const isLive = meeting?.status === "recording";
   const meetingId = meeting?.id ?? null;
-  const segments = useSegments(meetingId);
+  const segments = useSegments(meetingId, isLive);
+  const queryClient = useQueryClient();
   const [state, dispatch] = useReducer(reducer, undefined, init);
   const [connection, setConnection] = useState<ConnectionStatus | null>(null);
 
@@ -117,8 +120,15 @@ export function useTranscript(meeting: MeetingRead | null): TranscriptState {
       getToken(),
       (event) => dispatch({ type: "event", event }),
       setConnection,
+      // On a reconnect or a server resync signal, persisted state may be ahead of the stream;
+      // refetch segments so the reducer merges any missed finals (seed replace=false while live).
+      () => {
+        void queryClient.invalidateQueries({
+          queryKey: queryKeys.meetings.segments(meetingId),
+        });
+      },
     );
-  }, [isLive, meetingId]);
+  }, [isLive, meetingId, queryClient]);
 
   const lines = useMemo(() => {
     const merged = [...state.finals.values(), ...state.partials.values()];

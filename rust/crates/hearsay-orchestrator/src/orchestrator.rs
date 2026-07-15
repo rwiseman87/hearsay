@@ -4,7 +4,8 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
+use std::time::Duration;
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -20,6 +21,11 @@ use hearsay_engine::{LiveEngine, LiveError};
 use crate::error::OrchestratorError;
 use crate::pipeline::{self, Pipeline};
 use crate::traits::{Backend, Refiner};
+
+/// How often the background warm ticker re-checks the sidecar pool while idle. The check is cheap
+/// and idempotent when a healthy pair is present; on this cadence it re-spawns a warm pair that died
+/// while idle, so the "Start" gate can never wedge on an empty/dead pool.
+const WARM_TICK_INTERVAL: Duration = Duration::from_secs(2);
 
 /// The single active recording session: its meeting id and the running pipeline.
 struct ActiveSession {
@@ -45,6 +51,11 @@ pub struct Orchestrator {
     /// *available*; whether it actually runs at stop is gated by the effective `auto_refine` setting.
     /// `None` disables it entirely (the manual `/rediarize` route still drives the refine directly).
     refiner: Option<Arc<dyn Refiner>>,
+    /// One-permit gate serializing ANE-heavy work (P1): a live meeting holds it for its whole
+    /// duration (acquired off the start path inside its pipeline) and the offline refine takes it for
+    /// each run, so refine and live capture never run on the ANE at once. Always released, so it is
+    /// deadlock-free: the live side releases at stop, the refine when it returns.
+    ane_gate: Arc<tokio::sync::Semaphore>,
     /// Serializes `start_meeting` / `stop_meeting` (so the busy-check and the set never race).
     op_lock: tokio::sync::Mutex<()>,
     /// The active session, readable by the sync `active_meeting` / `subscribe` accessors.
@@ -52,10 +63,16 @@ pub struct Orchestrator {
     /// In-flight post-stop finalize tasks (refine + transcript write + status flip). A stop returns
     /// before its task completes; tracked so graceful shutdown and tests can await them.
     background: Mutex<Vec<JoinHandle<()>>>,
-    /// Weak self-reference, set once via [`install_self`](Self::install_self) after the orchestrator
-    /// is wrapped in an `Arc`. Lets the per-meeting capture-death supervisor call back into
-    /// `stop_meeting` without a reference cycle. Empty (no supervisor finalize) until installed.
-    self_weak: Mutex<Weak<Orchestrator>>,
+    /// The background warm ticker (P3): re-warms the sidecar pool while idle, off the polled
+    /// `sidecars_ready` read. Set once by [`spawn_warm_ticker`](Self::spawn_warm_ticker); tracked so
+    /// it is aborted when the orchestrator drops.
+    warm_ticker: OnceLock<JoinHandle<()>>,
+    /// Weak self-reference, always set at construction via [`into_arc`](Self::into_arc) (with
+    /// `Arc::new_cyclic`), so the per-meeting capture-death supervisor can call back into
+    /// `stop_meeting` without a reference cycle — and it can never be forgotten. Empty only when the
+    /// orchestrator was built with [`new`](Self::new) alone (unit tests that never drive a capture
+    /// death), where the supervisor simply no-ops.
+    self_weak: Weak<Orchestrator>,
 }
 
 impl Orchestrator {
@@ -72,19 +89,13 @@ impl Orchestrator {
             default_auto_refine: true,
             default_recognition_threshold: 0.6,
             refiner: None,
+            ane_gate: Arc::new(tokio::sync::Semaphore::new(1)),
             op_lock: tokio::sync::Mutex::new(()),
             active: Mutex::new(None),
             background: Mutex::new(Vec::new()),
-            self_weak: Mutex::new(Weak::new()),
+            warm_ticker: OnceLock::new(),
+            self_weak: Weak::new(),
         }
-    }
-
-    /// Record the `Arc<Self>` handle so the per-meeting capture-death supervisor can finalize a
-    /// meeting whose capture died. Call once, right after wrapping the orchestrator in an `Arc`
-    /// (before serving). Without it, an unexpected capture death still winds the pipeline down but
-    /// the meeting is not auto-finalized.
-    pub fn install_self(self: &Arc<Self>) {
-        *self.self_weak.lock().unwrap() = Arc::downgrade(self);
     }
 
     /// Set the config defaults for the editable settings (the values used when the UI has stored no
@@ -109,6 +120,55 @@ impl Orchestrator {
     pub fn with_refiner(mut self, refiner: Arc<dyn Refiner>) -> Self {
         self.refiner = Some(refiner);
         self
+    }
+
+    /// Wrap the orchestrator in an `Arc`, wiring its weak self-reference in the *same* step via
+    /// [`Arc::new_cyclic`] so the capture-death supervisor's `weak.upgrade()` is always live — there
+    /// is no separate init call to forget (P4). Apply [`with_defaults`](Self::with_defaults) /
+    /// [`with_refiner`](Self::with_refiner) before this; start the warm ticker with
+    /// [`spawn_warm_ticker`](Self::spawn_warm_ticker) after.
+    pub fn into_arc(self) -> Arc<Self> {
+        Arc::new_cyclic(move |weak| {
+            let mut orch = self;
+            orch.self_weak = weak.clone();
+            orch
+        })
+    }
+
+    /// Start the background warm ticker (P3): on a fixed cadence, re-warm the sidecar pool for the
+    /// next meeting, but only when the compute (ANE) is free — never while a meeting is active or the
+    /// shared [`ane_gate`](Self::ane_gate) is held by a background refine. This keeps warm *recovery*
+    /// off the polled [`sidecars_ready`](LiveEngine::sidecars_ready) read (now a pure query) while
+    /// still re-warming a pair that died idle. The task holds a [`Weak`] self-ref (so it stops once
+    /// the orchestrator is dropped) and is tracked so it is aborted on drop. Call once, from within
+    /// the Tokio runtime, on the `Arc` returned by [`into_arc`](Self::into_arc).
+    pub fn spawn_warm_ticker(self: &Arc<Self>) {
+        let weak = Arc::downgrade(self);
+        let handle = tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(WARM_TICK_INTERVAL);
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                ticker.tick().await;
+                let Some(orch) = weak.upgrade() else { return };
+                orch.maybe_warm_pool();
+            }
+        });
+        let _ = self.warm_ticker.set(handle);
+    }
+
+    /// Re-warm the sidecar pool for the next meeting only when the ANE is free: never while a meeting
+    /// is active or starting (its live sidecars own the ANE) and never while a background refine
+    /// holds the shared [`ane_gate`](Self::ane_gate) (warming then would contend with the very work
+    /// the gate serializes). Called off the read path by the warm ticker, so a `sidecars_ready` poll
+    /// never spawns a process.
+    fn maybe_warm_pool(&self) {
+        if self.active_meeting().is_some() {
+            return;
+        }
+        if self.ane_gate.available_permits() == 0 {
+            return;
+        }
+        self.backend.ensure_pool_warm();
     }
 
     async fn start_meeting_inner(
@@ -159,6 +219,7 @@ impl Orchestrator {
             self.pool.clone(),
             meeting.id,
             audio_path,
+            self.ane_gate.clone(),
         )
         .await?;
         *self.active.lock().unwrap() = Some(ActiveSession {
@@ -172,14 +233,15 @@ impl Orchestrator {
     /// Watch for an unexpected capture death (helper crash / socket EOF): `died_rx` fires only then,
     /// not on an intentional stop (which drops the sender -> `Err`). On death, finalize the meeting
     /// through `stop_meeting` so it is not left falsely `recording`/active with a dead pipeline (and
-    /// the closed broadcast channel tells live subscribers). A no-op if `install_self` was never
-    /// called (the weak ref is empty).
+    /// the closed broadcast channel tells live subscribers). A no-op when the orchestrator was built
+    /// with [`new`](Self::new) alone rather than [`into_arc`](Self::into_arc) (the weak ref is empty),
+    /// as in unit tests that never exercise capture death.
     fn spawn_capture_supervisor(
         &self,
         meeting_id: Uuid,
         died_rx: tokio::sync::oneshot::Receiver<()>,
     ) {
-        let weak = self.self_weak.lock().unwrap().clone();
+        let weak = self.self_weak.clone();
         tokio::spawn(async move {
             if died_rx.await.is_err() {
                 return; // intentional stop: nothing to do
@@ -369,9 +431,18 @@ impl LiveEngine for Orchestrator {
         // free. The manual `/rediarize` route drives the same refine when auto-refine is off.
         let pool = self.pool.clone();
         let output_dir = self.output_dir.clone();
+        let ane_gate = self.ane_gate.clone();
         let task_meeting = meeting.clone();
         let handle = tokio::spawn(async move {
             if let Some((refiner, threshold)) = refine {
+                // Serialize the refine's ANE work (diarize + whisper) against any live meeting on the
+                // shared permit: hold it only for the refine (waiting if a meeting currently holds
+                // it), released before the transcript write (disk, not ANE). Deadlock-free — the live
+                // side always releases at stop, this always releases when the refine returns.
+                let _permit = ane_gate
+                    .acquire_owned()
+                    .await
+                    .expect("ANE gate semaphore is never closed");
                 run_auto_refine(&pool, &output_dir, &refiner, threshold, &task_meeting).await;
             }
             write_transcript(&pool, &output_dir, &task_meeting).await;
@@ -413,14 +484,9 @@ impl LiveEngine for Orchestrator {
     }
 
     fn sidecars_ready(&self) -> bool {
-        // While idle (no meeting running), make sure the pool is warming — this both starts the
-        // first warm and recovers a pair that died while idle (e.g. lost an ANE race to the auto-
-        // refine), so the "Start" gate can never wedge on a dead/empty pool with nothing to re-trigger
-        // it. A no-op once a healthy pair is loading/ready. Skipped while a meeting is active: warming
-        // then would starve the live sidecars on the compute (ANE).
-        if self.active_meeting().is_none() {
-            self.backend.ensure_pool_warm();
-        }
+        // A pure read (P3): whether the pre-warmed pair for the next meeting has finished loading its
+        // models. Warm *recovery* is handled off this path by the background warm ticker
+        // (`spawn_warm_ticker`), so a UI status poll never spawns a sidecar process.
         self.backend.sidecars_ready()
     }
 
@@ -449,7 +515,18 @@ impl LiveEngine for Orchestrator {
         )
         .await
         .map_err(OrchestratorError::from)?;
-        let result = refiner.refine(&audio).await?;
+        // Serialize against any live meeting on the shared ANE permit (waiting if one holds it), for
+        // the refine's duration only — released before the DB write + transcript rewrite. The same
+        // gate the auto-refine at stop takes; deadlock-free (the live side always releases at stop).
+        let result = {
+            let _permit = self
+                .ane_gate
+                .clone()
+                .acquire_owned()
+                .await
+                .expect("ANE gate semaphore is never closed");
+            refiner.refine(&audio).await?
+        };
         queries::replace_them_segments(&self.pool, meeting_id, &result, threshold)
             .await
             .map_err(OrchestratorError::from)?;
@@ -460,6 +537,16 @@ impl LiveEngine for Orchestrator {
 
     async fn shutdown(&self) {
         self.wait_for_refines().await;
+    }
+}
+
+impl Drop for Orchestrator {
+    fn drop(&mut self) {
+        // Stop the background warm ticker (a tracked, self-`Weak` task) promptly on shutdown rather
+        // than waiting for its next tick to observe the dropped orchestrator.
+        if let Some(handle) = self.warm_ticker.take() {
+            handle.abort();
+        }
     }
 }
 
@@ -501,6 +588,15 @@ fn slugify(title: &str) -> String {
 mod tests {
     use super::*;
 
+    use std::collections::VecDeque;
+
+    use hearsay_db::{connect_options, MIGRATOR};
+    use sqlx::sqlite::SqlitePoolOptions;
+
+    use crate::testing::{GateRefiner, ScriptedBackend, ScriptedSource, ScriptedTranscriber};
+    use crate::traits::BackendInstance;
+    use crate::types::{AudioChunk, CaptureChunk, Stream};
+
     #[test]
     fn slugify_matches_python_semantics() {
         assert_eq!(slugify("Standup: Q3 Planning!"), "standup-q3-planning");
@@ -521,5 +617,157 @@ mod tests {
             "2026-07-02_0905_weekly-sync"
         );
         assert_eq!(default_title(when), "Meeting 2026-07-02 09:05");
+    }
+
+    async fn memory_pool() -> SqlitePool {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(connect_options("sqlite::memory:").unwrap())
+            .await
+            .unwrap();
+        MIGRATOR.run(&pool).await.unwrap();
+        pool
+    }
+
+    fn them_chunk(host_ts: u64, samples: &[f32]) -> CaptureChunk {
+        CaptureChunk {
+            stream: Stream::Them,
+            chunk: AudioChunk {
+                host_ts,
+                samples: samples.to_vec(),
+            },
+        }
+    }
+
+    /// One meeting's replay plan for [`RepeatingBackend`]: its Them-stream chunks plus the `Vec` its
+    /// Them transcriber records its fed samples into.
+    type MeetingPlan = (Vec<CaptureChunk>, Arc<Mutex<Vec<f32>>>);
+
+    /// A [`Backend`] that hands out a fresh observable instance per meeting from a queue of plans
+    /// (one per `build`), so a single orchestrator can run meeting A then meeting B. (`ScriptedBackend`
+    /// can only build once, and `EmptyBackend` exposes no fed log.)
+    struct RepeatingBackend {
+        plans: Mutex<VecDeque<MeetingPlan>>,
+    }
+
+    impl Backend for RepeatingBackend {
+        fn build(&self) -> BackendInstance {
+            let (chunks, them_fed) = self
+                .plans
+                .lock()
+                .unwrap()
+                .pop_front()
+                .expect("RepeatingBackend ran out of plans");
+            BackendInstance {
+                source: Box::new(ScriptedSource::new(chunks)),
+                me: Box::new(ScriptedTranscriber::new(
+                    vec![],
+                    Arc::new(Mutex::new(Vec::new())),
+                )),
+                them: Box::new(ScriptedTranscriber::new(vec![], them_fed)),
+            }
+        }
+    }
+
+    /// P1: a live meeting holds the shared ANE permit for its whole duration and releases it at stop,
+    /// so the offline refine (which takes the same permit) can never run on the ANE concurrently. The
+    /// permit is taken off the start path (inside the pipeline's holder task), so poll for it.
+    #[tokio::test]
+    async fn live_meeting_holds_and_releases_the_ane_permit() {
+        let pool = memory_pool().await;
+        let tmp = tempfile::tempdir().unwrap();
+        let (backend, _fed) = ScriptedBackend::new(vec![], vec![], vec![]);
+        let orch = Orchestrator::new(pool, tmp.path().to_path_buf(), backend).into_arc();
+
+        assert_eq!(
+            orch.ane_gate.available_permits(),
+            1,
+            "idle: the ANE permit is free"
+        );
+
+        let meeting = orch.start_meeting(None).await.unwrap();
+        let mut held = false;
+        for _ in 0..10_000 {
+            if orch.ane_gate.available_permits() == 0 {
+                held = true;
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert!(held, "a live meeting must hold the ANE permit");
+
+        orch.stop_meeting(meeting.id).await.unwrap();
+        // The permit drops when the aborted holder task is reaped, so poll for the release too.
+        let mut released = false;
+        for _ in 0..10_000 {
+            if orch.ane_gate.available_permits() == 1 {
+                released = true;
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert!(released, "stop must release the ANE permit");
+        orch.wait_for_refines().await;
+    }
+
+    /// P1: while a background refine holds the ANE permit, the *next* meeting's live sidecar feeding
+    /// waits — it only begins once the refine releases the permit. Directly asserts refine and live
+    /// never feed the ANE at the same time (recording is unaffected; only live feeding waits).
+    #[tokio::test]
+    async fn next_meeting_live_feeding_waits_for_the_refine_to_release_the_ane() {
+        let pool = memory_pool().await;
+        let tmp = tempfile::tempdir().unwrap();
+
+        // record=false so neither meeting's recorder runs; A gets a manual audio.wav (so it
+        // auto-refines at stop), B gets none (so B just finalizes — only its live phase is under test).
+        queries::set_preference(&pool, queries::SECTION_RECORDING, r#"{"record":false}"#)
+            .await
+            .unwrap();
+
+        let a_them_fed = Arc::new(Mutex::new(Vec::new()));
+        let b_them_fed = Arc::new(Mutex::new(Vec::new()));
+        let backend = Arc::new(RepeatingBackend {
+            plans: Mutex::new(VecDeque::from(vec![
+                (vec![], a_them_fed),
+                (vec![them_chunk(0, &[1.0; 1600])], b_them_fed.clone()),
+            ])),
+        });
+
+        let (refiner, gate) = GateRefiner::new();
+        let orch = Orchestrator::new(pool.clone(), tmp.path().to_path_buf(), backend)
+            .with_refiner(refiner)
+            .into_arc();
+
+        let a = orch.start_meeting(Some("A".into())).await.unwrap();
+        std::fs::write(tmp.path().join(&a.folder).join("audio.wav"), b"x").unwrap();
+        orch.stop_meeting(a.id).await.unwrap();
+        gate.started.notified().await; // refine A now holds the ANE permit
+
+        // Meeting B starts promptly (the refine is off the op-lock); its live holder task blocks on
+        // the held permit, so its Them sidecar must not be fed while the refine runs.
+        let b = orch.start_meeting(Some("B".into())).await.unwrap();
+        for _ in 0..2_000 {
+            tokio::task::yield_now().await;
+        }
+        assert!(
+            b_them_fed.lock().unwrap().is_empty(),
+            "B must not feed the ANE while the refine holds the permit"
+        );
+
+        // Release the refine; it finishes and frees the ANE, so B's feeding can begin.
+        gate.release.notify_one();
+        let mut fed = false;
+        for _ in 0..10_000 {
+            if b_them_fed.lock().unwrap().len() == 1600 {
+                fed = true;
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert!(fed, "B must feed once the refine releases the ANE permit");
+
+        orch.stop_meeting(b.id).await.unwrap();
+        orch.wait_for_refines().await;
+        assert_eq!(gate.calls.load(Ordering::SeqCst), 1, "only A refined");
     }
 }

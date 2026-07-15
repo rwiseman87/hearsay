@@ -18,7 +18,7 @@ use std::time::Duration;
 use serde::Serialize;
 use sqlx::SqlitePool;
 use tokio::sync::mpsc::error::TrySendError;
-use tokio::sync::{broadcast, mpsc, oneshot};
+use tokio::sync::{broadcast, mpsc, oneshot, watch, Semaphore};
 use tokio::task::JoinHandle;
 use uuid::Uuid;
 
@@ -74,6 +74,11 @@ pub(crate) struct Pipeline {
     /// The per-stream feed+persist tasks. Bounded on close (a wedged sidecar can block one in
     /// `feed`), then aborted.
     streams: Vec<JoinHandle<()>>,
+    /// Holds the shared single ANE permit for this meeting's lifetime — acquired off the start path
+    /// (in a dedicated task) so neither `start_meeting` nor recording ever blocks on it. While it is
+    /// held, the offline refine (which takes the same permit) cannot run on the ANE. Aborted by
+    /// [`close`](Self::close) to release the permit at stop/teardown (P1).
+    ane_holder: JoinHandle<()>,
     /// True while any transcription sidecar is still loading its models (a cold start); false once
     /// all are serving. Read by the orchestrator to answer the WebSocket warm-up snapshot so the UI
     /// can show a "preparing" notice instead of a silent gap.
@@ -87,6 +92,11 @@ impl Pipeline {
         // Mark this an intentional stop before closing capture, so demux does not report the
         // resulting capture-end as an unexpected death.
         self.intentional_stop.store(true, Ordering::SeqCst);
+        // Release the shared ANE permit now: aborting the holder drops the permit (freeing the ANE
+        // for the next refine) and, by dropping its readiness sender, unblocks a stream loop still
+        // waiting on it (e.g. if a prior refine held the ANE for this whole meeting), so stop never
+        // waits the full join timeout for one.
+        self.ane_holder.abort();
         self.source.stop().await;
         // Demux never blocks (it drops-with-log on a full stream queue), so it finishes promptly
         // after capture closes; await it unbounded so its final `audio.wav` encode completes.
@@ -116,6 +126,7 @@ pub(crate) async fn spawn(
     pool: SqlitePool,
     meeting_id: Uuid,
     audio_path: Option<PathBuf>,
+    ane_gate: Arc<Semaphore>,
 ) -> Result<(Pipeline, oneshot::Receiver<()>), OrchestratorError> {
     let BackendInstance {
         mut source,
@@ -176,6 +187,22 @@ pub(crate) async fn spawn(
         }
     }
 
+    // Serialize this meeting's live ANE work against the offline refine (which takes the same
+    // permit): hold the shared single ANE permit for the meeting's lifetime. Acquired in a dedicated
+    // task so neither `start_meeting`'s caller nor recording ever blocks on it — only live feeding
+    // waits, and only when a prior meeting's refine is still finishing. `ane_ready` flips true once
+    // the permit is held; the stream loops gate their first feed on it. The holder parks holding the
+    // permit until `Pipeline::close` aborts it (dropping the permit and this readiness sender).
+    let (ane_ready_tx, ane_ready_rx) = watch::channel(false);
+    let ane_holder = tokio::spawn(async move {
+        // `acquire_owned` errors only if the semaphore is closed, which never happens; on that (never)
+        // path the readiness stays false and the stream loops wind down at close.
+        if let Ok(_permit) = ane_gate.acquire_owned().await {
+            let _ = ane_ready_tx.send(true);
+            std::future::pending::<()>().await;
+        }
+    });
+
     let (me_tx, me_rx) = mpsc::channel::<(f64, Vec<f32>)>(PCM_CHANNEL_CAPACITY);
     let (them_tx, them_rx) = mpsc::channel::<(f64, Vec<f32>)>(PCM_CHANNEL_CAPACITY);
 
@@ -198,6 +225,7 @@ pub(crate) async fn spawn(
         pool.clone(),
         meeting_id,
         broadcast_tx.clone(),
+        ane_ready_rx.clone(),
     ));
     let them_task = tokio::spawn(stream_loop(
         StreamRole::Them,
@@ -207,6 +235,7 @@ pub(crate) async fn spawn(
         pool,
         meeting_id,
         broadcast_tx.clone(),
+        ane_ready_rx,
     ));
 
     Ok((
@@ -216,6 +245,7 @@ pub(crate) async fn spawn(
             intentional_stop,
             demux,
             streams: vec![me_task, them_task],
+            ane_holder,
             warming,
         },
         died_rx,
@@ -279,6 +309,7 @@ async fn demux(
 /// Per-stream task: feed the transcriber while capture flows, then flush + drain its tail. Segment
 /// times are shifted by `offset` (the first `t0_s` fed to this stream), mapping sidecar-local time
 /// back to meeting time.
+#[allow(clippy::too_many_arguments)]
 async fn stream_loop(
     role: StreamRole,
     mut transcriber: Box<dyn Transcriber>,
@@ -287,7 +318,16 @@ async fn stream_loop(
     pool: SqlitePool,
     meeting_id: Uuid,
     broadcast_tx: broadcast::Sender<String>,
+    mut ane_ready: watch::Receiver<bool>,
 ) {
+    // Serialize live inference against the offline refine on the shared ANE permit: wait until this
+    // meeting holds it before feeding the sidecar. Recording is unaffected (demux records on its own
+    // path), so only live transcription waits — briefly, and only if a prior meeting's refine is
+    // still finishing. `Err` means the permit holder was aborted at close; fall through to wind down
+    // on the now-closed capture channel. Any chunks demux delivers meanwhile buffer in `chunk_rx`
+    // (dropped-with-log only past its capacity), so a fast acquire loses nothing.
+    let _ = ane_ready.wait_for(|&ready| ready).await;
+
     let mut offset: Option<f64> = None;
     let mut clusters: HashMap<i64, Uuid> = HashMap::new();
     let mut feeding = true;

@@ -43,6 +43,9 @@ final class Serve: @unchecked Sendable {
     // Capture session state (guarded by `stateLock`).
     private let stateLock = NSLock()
     private var capturing = false
+    // Latched by `shutdown` (under `stateLock`) so a `startCapture` whose out-of-lock mic prompt raced
+    // a SIGTERM bails instead of starting capture into a process that is already exiting.
+    private var shuttingDown = false
     private var sources: [AudioSource] = []
     private var streams: [(kind: StreamKind, ring: RingBuffer)] = []
     private var uplink: Thread?
@@ -134,6 +137,9 @@ final class Serve: @unchecked Sendable {
 
     private func shutdown(replyId: Int?) -> Never {
         if let id = replyId { reply(.ok(id, ["bye": true])) }
+        stateLock.lock()
+        shuttingDown = true
+        stateLock.unlock()
         _ = stopCapture()
         emitStatus("stopped")
         control?.close()
@@ -194,7 +200,20 @@ final class Serve: @unchecked Sendable {
             reply(.fail(cmd.id, code: "unsupported", message: unsupported))
             return
         }
+        // Surface the TCC mic prompt on a first run (undetermined) so capture does not silently record
+        // zeros — but do it BEFORE taking `stateLock`. `requestMicrophone` blocks on the modal dialog,
+        // and holding `stateLock` across that wait would wedge a SIGTERM-driven `stopCapture`, leaving
+        // the helper unresponsive and unkillable-by-signal. A no-op once the user has granted or denied.
+        if !synthetic && Permissions.microphone() == .undetermined {
+            _ = Permissions.requestMicrophone()
+        }
         stateLock.lock()
+        // A stop/shutdown may have raced the prompt above; do not start capture into an exiting process.
+        if shuttingDown {
+            stateLock.unlock()
+            reply(.fail(cmd.id, code: "shutting_down", message: "helper is shutting down"))
+            return
+        }
         if capturing {
             stateLock.unlock()
             reply(.ok(cmd.id, ["started": true]))  // idempotent
@@ -210,11 +229,6 @@ final class Serve: @unchecked Sendable {
             meSource = SyntheticSource(ring: meRing, frequency: 440)
             themSource = SyntheticSource(ring: themRing, frequency: 660)
         } else {
-            // Surface the TCC mic prompt on a first run (undetermined) so capture does not silently
-            // record zeros; a no-op once the user has granted or denied.
-            if Permissions.microphone() == .undetermined {
-                _ = Permissions.requestMicrophone()
-            }
             meSource = MicCapture(
                 ring: meRing,
                 onHealth: { [weak self] state, action in self?.emitMicHealth(state, action) },

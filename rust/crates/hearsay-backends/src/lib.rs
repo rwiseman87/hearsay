@@ -12,6 +12,7 @@
 //! Permissions panel reaches the capture helper without a direct `hearsay-capture` dependency.
 
 mod mac;
+pub mod reconcile;
 mod streaming_transcriber;
 
 pub use hearsay_capture::{probe_permissions, PermissionsSnapshot};

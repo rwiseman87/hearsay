@@ -30,6 +30,13 @@ const RESYNC_GAP: usize = (SAMPLE_RATE / 5) as usize;
 /// without bound. 30 s — far beyond real inter-stream jitter, so it never fires in normal capture;
 /// it is only a hard ceiling on memory.
 const MAX_SKEW_FRAMES: usize = 30 * SAMPLE_RATE as usize;
+/// Cap how far a single `write` may leap past the buffered frontier before it resizes a channel. A
+/// non-monotonic `host_ts` (sleep/resume or a garbage timestamp) would otherwise drive `target` —
+/// and the resize — to a multi-GB/TB length and abort the process. 5 min of 16 kHz frames: far
+/// beyond any real gap, so it never fires in normal capture; past it the write clamps forward
+/// (logged) and the WAV re-anchors on the next in-range `t0_s`. Mirrors the pipeline's
+/// `MAX_SILENCE_PAD_SAMPLES`.
+const MAX_FORWARD_JUMP_FRAMES: usize = 5 * 60 * SAMPLE_RATE as usize;
 
 /// Accumulates one timeline-accurate stereo (Me=L, Them=R) 16 kHz WAV, encoding frames as they
 /// complete so memory stays bounded by the inter-stream skew.
@@ -103,6 +110,23 @@ impl MeetingAudioRecorder {
                 _ => target,
             }
             .max(written);
+            // Bound how far one write may leap past the buffered frontier before the resize below: a
+            // non-monotonic `host_ts` (sleep/resume or a garbage timestamp) would otherwise drive the
+            // allocation to a multi-GB/TB length. Past the cap, clamp forward — the WAV re-anchors on
+            // the next in-range `t0_s`, mirroring the pipeline's silence-pad cap.
+            let buffered_end = written + data.len();
+            let start_abs = if start_abs.saturating_sub(buffered_end) > MAX_FORWARD_JUMP_FRAMES {
+                let clamped = buffered_end + MAX_FORWARD_JUMP_FRAMES;
+                tracing::warn!(
+                    t0_s,
+                    target,
+                    excess = start_abs - clamped,
+                    "recorder: clamping out-of-range forward jump (non-monotonic host_ts?)"
+                );
+                clamped
+            } else {
+                start_abs
+            };
             let start = start_abs - written;
             let end = start + samples.len();
             if data.len() < end {
@@ -249,6 +273,39 @@ mod tests {
             (samples[last] as i32 - 16384).abs() <= 1,
             "Me[last] {}",
             samples[last]
+        );
+    }
+
+    #[test]
+    fn clamps_wild_timestamp_but_keeps_legitimate_gaps() {
+        let tmp = tempfile::tempdir().unwrap();
+
+        // A legitimate multi-second gap re-anchors exactly (well under the forward-jump cap).
+        let gap_path = tmp.path().join("gap.wav");
+        let mut rec = MeetingAudioRecorder::new(gap_path.clone());
+        rec.write(&[0.5], 0.0, Stream::Me);
+        rec.write(&[-0.5], 1.0, Stream::Them); // 1 s -> frame 16000, not clamped
+        rec.close().unwrap();
+        let reader = hound::WavReader::open(&gap_path).unwrap();
+        assert_eq!(
+            reader.duration(),
+            16_001,
+            "legitimate 1 s gap must not be clamped"
+        );
+
+        // A garbage host_ts (sleep/resume or a corrupt frame) yields an enormous t0_s:
+        // round(1e12 * 16000) is ~1.6e16 frames. Without the forward-jump clamp the resize in
+        // `write` allocates petabytes and aborts the process.
+        let wild_path = tmp.path().join("wild.wav");
+        let mut rec = MeetingAudioRecorder::new(wild_path.clone());
+        rec.write(&[0.5, 0.5], 0.0, Stream::Me);
+        rec.write(&[0.5], 1e12, Stream::Them);
+        rec.close().unwrap();
+        let reader = hound::WavReader::open(&wild_path).unwrap();
+        assert!(
+            reader.duration() <= MAX_FORWARD_JUMP_FRAMES as u32 + 2,
+            "wild timestamp allocated unboundedly: {} frames",
+            reader.duration()
         );
     }
 

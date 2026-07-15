@@ -19,24 +19,10 @@ export function getToken(): string {
     );
   }
   cached = token;
-  // Strip ?token= from the URL once cached so the secret does not linger in the address bar or
-  // browser history for the rest of the session (it is already held in memory).
-  if (fromQuery) {
-    stripTokenFromUrl();
-  }
+  // Deliberately leave ?token= in the URL on loopback. The core gates every request on the token,
+  // including `GET /` (routes/web.rs), and the in-memory copy above does not survive a full document
+  // reload. So a manual Cmd-R or the ErrorBoundary's window.location.reload() crash recovery must be
+  // able to re-request `/` with the token still in the URL, or it 401s to a blank window. The project
+  // forbids localStorage/sessionStorage for the token, so the loopback URL is the intended carrier.
   return token;
-}
-
-function stripTokenFromUrl(): void {
-  try {
-    const url = new URL(window.location.href);
-    if (url.searchParams.has("token")) {
-      url.searchParams.delete("token");
-      const search = url.searchParams.toString();
-      const next = url.pathname + (search ? `?${search}` : "") + url.hash;
-      window.history.replaceState(window.history.state, "", next);
-    }
-  } catch {
-    // Non-fatal: keeping the token in the URL is a hygiene issue, not a functional one.
-  }
 }
