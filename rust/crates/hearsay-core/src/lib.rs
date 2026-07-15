@@ -13,7 +13,6 @@ pub mod routes;
 pub mod schema;
 pub mod security;
 pub mod state;
-pub mod streaming_transcriber;
 
 use axum::middleware::{from_fn, from_fn_with_state};
 use axum::routing::get;
@@ -24,7 +23,6 @@ pub use config::Settings;
 pub use hearsay_engine::{DisabledEngine, LiveEngine, LiveError};
 pub use openapi::ApiDoc;
 pub use state::AppState;
-pub use streaming_transcriber::SherpaTranscriber;
 
 /// Assemble the full application router (state already provided).
 ///

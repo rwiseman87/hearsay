@@ -6,6 +6,7 @@ use axum::{Json, Router};
 use uuid::Uuid;
 
 use hearsay_db::queries;
+use hearsay_engine::LiveError;
 
 use crate::error::{ApiError, ApiResult};
 use crate::routes::Pagination;
@@ -79,84 +80,22 @@ pub(crate) async fn rediarize(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
 ) -> ApiResult<Json<Page<SpeakerRead>>> {
-    let meeting = queries::get_meeting(&state.pool, id)
+    // Existence check here so an unknown meeting is a 404 even against a `DisabledEngine` (which
+    // would otherwise answer every id with 503). The refine itself is the engine's job — one shared
+    // path with the auto-refine at stop, so manual and automatic re-diarization never drift.
+    queries::get_meeting(&state.pool, id)
         .await?
         .ok_or(ApiError::NotFound("meeting not found"))?;
-
-    let dir = meeting.dir_path(&state.settings.output_dir);
-    let audio = dir.join("audio.wav");
-    if !audio.exists() {
-        return Err(ApiError::Unavailable(
-            "no recorded audio to re-diarize (audio.record was off)".into(),
-        ));
-    }
-    let diarize = state.settings.helper_path.with_file_name("hearsay-diarize");
-    if !diarize.exists() {
-        return Err(ApiError::Unavailable(
-            "hearsay-diarize sidecar not found (build it with `make swift-build`)".into(),
-        ));
-    }
-    // Effective refine model: the stored `models` override else the config default, read fresh so a
-    // change in the Models panel applies to the next manual re-diarize (matching the auto-refine).
-    let model = queries::effective_refine_model(&state.pool, &state.settings.refine_model).await?;
-    let timeout = state.settings.refine_timeout;
-
-    // Read the Them track, re-diarize (hearsay-diarize) + re-transcribe (whisper) — all blocking.
-    let refined = tokio::task::spawn_blocking(move || {
-        hearsay_inference::refine_audio_file(&audio, &diarize, &model, timeout)
-    })
-    .await
-    .map_err(|e| ApiError::Internal(format!("refine task panicked: {e}")))?;
-    let output = match refined {
-        Ok(output) => output,
-        // No remote speech to refine (silent / Me-only meeting): leave the existing live segments
-        // in place and report the current speakers rather than 500-ing.
-        Err(hearsay_inference::InferenceError::NoSpeech) => {
-            let speakers = queries::list_speaker_rows(&state.pool, id).await?;
-            return Ok(Json(speaker_page(
-                speakers.into_iter().map(SpeakerRead::from).collect(),
-            )));
+    match state.engine.rediarize(id).await {
+        Ok(()) => {}
+        Err(LiveError::Unavailable) => {
+            return Err(ApiError::Unavailable(
+                "re-diarize unavailable: no recorded audio, or the live engine is not wired".into(),
+            ))
         }
-        Err(e) => return Err(ApiError::Internal(format!("refine failed: {e}"))),
-    };
-
-    let result = queries::RefineResult {
-        segments: output
-            .segments
-            .into_iter()
-            .map(|s| queries::RefinedThemSegment {
-                ordinal: s.ordinal,
-                text: s.text,
-                start_s: s.start_s,
-                end_s: s.end_s,
-            })
-            .collect(),
-        centroids: output.centroids,
-    };
-    // Apply the same effective recognition threshold the auto-refine uses (stored override else
-    // config default), so manual and automatic re-diarization recognize returning speakers alike.
-    let (_auto_refine, threshold) = queries::effective_speakers(
-        &state.pool,
-        state.settings.auto_refine,
-        state.settings.recognition_threshold,
-    )
-    .await?;
-    queries::replace_them_segments(&state.pool, id, &result, threshold).await?;
-
-    // Regenerate transcript.md + meeting.json from the refined (+ Me) segments (off the async worker).
-    let segments = queries::list_segments(&state.pool, id).await?;
-    let write = tokio::task::spawn_blocking(move || {
-        hearsay_orchestrator::write_meeting_files(&dir, &meeting, &segments)
-    })
-    .await;
-    match write {
-        Ok(Err(err)) => {
-            tracing::warn!(error = %err, "failed to rewrite transcript after rediarize")
-        }
-        Err(err) => tracing::warn!(error = %err, "transcript rewrite task panicked"),
-        Ok(Ok(())) => {}
+        Err(LiveError::Busy(msg)) => return Err(ApiError::Conflict(msg)),
+        Err(LiveError::Internal(msg)) => return Err(ApiError::Internal(msg)),
     }
-
     let speakers = queries::list_speaker_rows(&state.pool, id).await?;
     Ok(Json(speaker_page(
         speakers.into_iter().map(SpeakerRead::from).collect(),

@@ -15,6 +15,7 @@ members = [
     "crates/hearsay-capture",
     "crates/hearsay-core",
     "crates/hearsay-inference",
+    "crates/hearsay-backends",
 ]
 
 [workspace.package]

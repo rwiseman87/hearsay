@@ -3,12 +3,12 @@
 //! real `Orchestrator` into SQLite. This is the Windows live path minus real capture: prove the
 //! streaming ASR -> orchestrator -> persisted transcript chain works end-to-end. Ignored by default
 //! (needs the 20M streaming model + a recording).
-//!   cargo test --manifest-path rust/Cargo.toml -p hearsay-core streaming_pipeline -- --ignored --nocapture
+//!   cargo test --manifest-path rust/Cargo.toml -p hearsay-backends streaming_pipeline -- --ignored --nocapture
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use hearsay_core::SherpaTranscriber;
+use hearsay_backends::SherpaTranscriber;
 use hearsay_db::models::Stream;
 use hearsay_db::{connect_options, queries, MIGRATOR};
 use hearsay_engine::LiveEngine;

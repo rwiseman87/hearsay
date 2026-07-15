@@ -41,6 +41,13 @@ pub trait LiveEngine: Send + Sync {
     /// not the active recording session.
     fn subscribe(&self, meeting_id: Uuid) -> Option<broadcast::Receiver<String>>;
 
+    /// Re-run the offline refine for a stored meeting: re-diarize + re-transcribe its recorded Them
+    /// track and replace the stored Them segments (and rewrite the transcript) in place. A meeting
+    /// whose track has no remote speech is a no-op that keeps the existing segments. Drives the
+    /// manual "Refine speakers" route with the same refine path as the auto-refine at stop.
+    /// [`LiveError::Unavailable`] when no capture/inference engine is wired.
+    async fn rediarize(&self, meeting_id: Uuid) -> Result<(), LiveError>;
+
     /// Whether the active meeting's transcription sidecars are still loading their models, so the
     /// live WebSocket can send a warm-up snapshot to a new subscriber. `Some(true)` = still loading
     /// (a cold start), `Some(false)` = serving, `None` = not the active session. Defaults to `None`
@@ -56,6 +63,10 @@ pub trait LiveEngine: Send + Sync {
     fn sidecars_ready(&self) -> bool {
         true
     }
+
+    /// Await any in-flight background work (e.g. a post-stop refine + transcript write) so a graceful
+    /// shutdown does not cut one off mid-write. Default no-op for engines with no background tasks.
+    async fn shutdown(&self) {}
 }
 
 /// The placeholder engine used until `hearsay-orchestrator` is wired in: no capture, no active
@@ -79,5 +90,9 @@ impl LiveEngine for DisabledEngine {
 
     fn subscribe(&self, _meeting_id: Uuid) -> Option<broadcast::Receiver<String>> {
         None
+    }
+
+    async fn rediarize(&self, _meeting_id: Uuid) -> Result<(), LiveError> {
+        Err(LiveError::Unavailable)
     }
 }

@@ -423,6 +423,44 @@ impl LiveEngine for Orchestrator {
         }
         self.backend.sidecars_ready()
     }
+
+    /// Manual re-diarize: run the same refine + persist + transcript-rewrite path the auto-refine at
+    /// stop uses, on demand for a stored meeting. Reuses the wired [`Refiner`], the effective
+    /// recognition threshold, and [`queries::replace_them_segments`] — which is a no-op on an empty
+    /// (silent / no-remote-speech) refine, so existing segments are never wiped. A genuine refine or
+    /// persist failure surfaces as [`LiveError::Internal`]; a missing refiner / recording / audio is
+    /// [`LiveError::Unavailable`]. The caller (the route) has already 404'd an unknown meeting id.
+    async fn rediarize(&self, meeting_id: Uuid) -> Result<(), LiveError> {
+        let refiner = self.refiner.clone().ok_or(LiveError::Unavailable)?;
+        let meeting = queries::get_meeting(&self.pool, meeting_id)
+            .await
+            .map_err(OrchestratorError::from)?
+            .ok_or(LiveError::Unavailable)?;
+        let audio = meeting.dir_path(&self.output_dir).join("audio.wav");
+        if !audio.exists() {
+            return Err(LiveError::Unavailable);
+        }
+        // The effective recognition threshold (stored `speakers` override else the config default),
+        // read fresh so a Settings change applies to the next re-diarize — matching the auto-refine.
+        let (_auto_refine, threshold) = queries::effective_speakers(
+            &self.pool,
+            self.default_auto_refine,
+            self.default_recognition_threshold,
+        )
+        .await
+        .map_err(OrchestratorError::from)?;
+        let result = refiner.refine(&audio).await?;
+        queries::replace_them_segments(&self.pool, meeting_id, &result, threshold)
+            .await
+            .map_err(OrchestratorError::from)?;
+        // Rewrite transcript.md + meeting.json from the refined (+ Me) segments (best-effort, logged).
+        write_transcript(&self.pool, &self.output_dir, &meeting).await;
+        Ok(())
+    }
+
+    async fn shutdown(&self) {
+        self.wait_for_refines().await;
+    }
 }
 
 /// Default meeting title when the caller does not supply one (matches Python `_default_title`).

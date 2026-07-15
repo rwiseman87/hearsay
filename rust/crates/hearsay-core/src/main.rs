@@ -3,220 +3,16 @@
 //! `--synthetic` runs the capture helper in synthetic mode (generated audio, no TCC prompts).
 
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
-use async_trait::async_trait;
-use sqlx::SqlitePool;
 use tokio::io::AsyncReadExt as _;
 use tokio::net::TcpListener;
 use utoipa::OpenApi as _;
 use uuid::Uuid;
 
-use hearsay_capture::SwiftHelperSource;
-use hearsay_core::{create_app, ApiDoc, AppState, LiveEngine as _, Settings};
-use hearsay_orchestrator::{
-    Backend, BackendInstance, Orchestrator, OrchestratorError, ProcessTranscriber, RefineResult,
-    RefinedThemSegment, Refiner,
-};
+use hearsay_backends::build_engine;
+use hearsay_core::{create_app, ApiDoc, AppState, Settings};
 
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
-
-/// Keeps one `hearsay-me` + `hearsay-live` pair pre-spawned so its FluidAudio/CoreML models load
-/// (and the ANE warms) *before* the user hits start, off the meeting-start path. The pool holds the
-/// spawned pair the moment it is spawned — while the models are still loading in the background —
-/// so a meeting always *adopts* this pair (loaded or still loading) rather than cold-spawning a
-/// second pair that would race it on the ANE and slow both. One pair is spawned at launch and a
-/// replacement after each meeting adopts one (each process still serves exactly one meeting — no
-/// cross-meeting state is reused). The capture source is deliberately *not* pooled: spawning it
-/// touches the mic/tap and can raise a TCC prompt, so it must stay fresh per meeting.
-struct SidecarPool {
-    me_binary: PathBuf,
-    them_binary: PathBuf,
-    /// The spawned pair the next meeting adopts (its models loading in the background, or already
-    /// loaded). `None` only before the first spawn, after a meeting takes it (until the replacement
-    /// spawns), or if a spawn failed (the next meeting then cold-starts).
-    warm: Mutex<Option<(ProcessTranscriber, ProcessTranscriber)>>,
-}
-
-impl SidecarPool {
-    fn new(helper_path: &Path) -> Self {
-        SidecarPool {
-            me_binary: helper_path.with_file_name("hearsay-me"),
-            them_binary: helper_path.with_file_name("hearsay-live"),
-            warm: Mutex::new(None),
-        }
-    }
-
-    /// Take the spawned pair if one is present (leaving the pool empty until the next replenish).
-    /// `None` means the caller must cold-spawn — no prewarm pair was available.
-    fn take(&self) -> Option<(ProcessTranscriber, ProcessTranscriber)> {
-        self.warm.lock().unwrap().take()
-    }
-
-    /// Whether a warm pair is present *and* both sidecars have finished loading their models, so the
-    /// next meeting would start transcribing immediately. Answers the API's "Start" gate. `false`
-    /// while the pair is still loading, or in the brief window after a meeting takes the pair and
-    /// before its replacement has spawned.
-    fn is_ready(&self) -> bool {
-        self.warm
-            .lock()
-            .unwrap()
-            .as_ref()
-            .is_some_and(|(me, them)| me.is_ready() && them.is_ready())
-    }
-
-    /// Spawn a replacement pair into the pool if none is present. The two sidecar processes begin
-    /// loading their models immediately, in the background; the spawn itself returns at once, so this
-    /// is cheap to call. Idempotent; call at startup and after each [`take`](Self::take). A spawn
-    /// failure (a missing/broken sidecar binary) is logged and leaves the pool empty, so the next
-    /// meeting simply cold-starts. Must be called from within the Tokio runtime (the sidecar child
-    /// registers with the reactor).
-    fn ensure_warm(&self) {
-        let mut guard = self.warm.lock().unwrap();
-        if let Some((me, them)) = guard.as_mut() {
-            if me.is_alive() && them.is_alive() {
-                return; // a healthy pair is present (loaded, or still loading)
-            }
-            // A pooled sidecar exited (e.g. a warm whose model load failed) — drop the dead pair
-            // (kill_on_drop reaps the survivor) and re-spawn below, so a dead pair never wedges the
-            // "Start" gate: is_ready() would otherwise report false for it forever.
-            tracing::warn!("prewarmed sidecar pair died before use; re-warming");
-            *guard = None;
-        }
-        let mut me = ProcessTranscriber::new(self.me_binary.clone());
-        let mut them = ProcessTranscriber::new(self.them_binary.clone());
-        // Spawn both; each process loads its own models on the ANE concurrently and signals ready
-        // when done. spawn_warming returns immediately — the load runs in the background.
-        match (me.spawn_warming(), them.spawn_warming()) {
-            (Ok(()), Ok(())) => {
-                *guard = Some((me, them));
-                tracing::info!("prewarming live sidecars (models loading in the background)");
-            }
-            (me_res, them_res) => {
-                // Drop whichever spawned (kill_on_drop reaps it); the next meeting cold-starts.
-                if let Err(err) = me_res {
-                    tracing::warn!(error = %err, "prewarm spawn of hearsay-me failed; next meeting cold-starts");
-                }
-                if let Err(err) = them_res {
-                    tracing::warn!(error = %err, "prewarm spawn of hearsay-live failed; next meeting cold-starts");
-                }
-            }
-        }
-    }
-}
-
-/// The macOS live-capture backend: the Swift `hearsay-helper` for capture + the built `hearsay-live`
-/// (Them: diarization + ASR) and `hearsay-me` (Me: VAD + ASR) FluidAudio sidecars. The transcriber
-/// sidecars are drawn from a [`SidecarPool`] (pre-warmed off the start path) when hot, else spawned
-/// cold; the capture source is always fresh. Reuses the proven Swift stack behind the traits.
-struct MacBackend {
-    helper_path: PathBuf,
-    synthetic: bool,
-    pool: SidecarPool,
-}
-
-impl MacBackend {
-    fn new(helper_path: PathBuf, synthetic: bool) -> Self {
-        let pool = SidecarPool::new(&helper_path);
-        MacBackend {
-            helper_path,
-            synthetic,
-            pool,
-        }
-    }
-
-    /// Spawn the first sidecar pair now (at launch) so its models start loading before the first
-    /// meeting, off the start path. Safe to call once before serving; a spawn failure just leaves
-    /// the first meeting to cold-start.
-    fn prewarm(&self) {
-        self.pool.ensure_warm();
-    }
-}
-
-impl Backend for MacBackend {
-    fn build(&self) -> BackendInstance {
-        let (me, them) = match self.pool.take() {
-            Some(pair) => {
-                tracing::info!("adopting prewarmed live sidecars");
-                pair
-            }
-            None => (
-                ProcessTranscriber::new(self.helper_path.with_file_name("hearsay-me")),
-                ProcessTranscriber::new(self.helper_path.with_file_name("hearsay-live")),
-            ),
-        };
-        // Deliberately do NOT warm the replacement here: the meeting's own sidecars are about to run
-        // on the ANE, and a concurrent warm load starves (and can fail) against them. The pool is
-        // re-warmed on `meeting_ended` instead, once this meeting's sidecars have been torn down.
-        BackendInstance {
-            source: Box::new(
-                SwiftHelperSource::new(self.helper_path.clone()).synthetic(self.synthetic),
-            ),
-            me: Box::new(me),
-            them: Box::new(them),
-        }
-    }
-
-    fn sidecars_ready(&self) -> bool {
-        self.pool.is_ready()
-    }
-
-    fn ensure_pool_warm(&self) {
-        self.pool.ensure_warm();
-    }
-}
-
-/// The post-meeting offline refine backend: re-diarize the Them track with the Swift
-/// `hearsay-diarize` FluidAudio sidecar + re-transcribe with whisper (`hearsay-inference`). Wired
-/// into the orchestrator so a meeting auto-refines at stop (the same path as the `/rediarize`
-/// button).
-struct MacRefiner {
-    pool: SqlitePool,
-    diarize_path: PathBuf,
-    /// Bundled config default; the effective model is the `models` preference override else this,
-    /// resolved from the DB at each refine so a Models-panel change applies with no restart.
-    default_model: PathBuf,
-    timeout: Duration,
-}
-
-#[async_trait]
-impl Refiner for MacRefiner {
-    async fn refine(&self, audio_path: &Path) -> Result<RefineResult, OrchestratorError> {
-        if !self.diarize_path.exists() {
-            return Err(OrchestratorError::Backend(format!(
-                "hearsay-diarize sidecar not found at {} (build it with `make swift-build`)",
-                self.diarize_path.display()
-            )));
-        }
-        let model = hearsay_db::queries::effective_refine_model(&self.pool, &self.default_model)
-            .await
-            .map_err(|e| OrchestratorError::Backend(format!("resolve refine model: {e}")))?;
-        let audio = audio_path.to_path_buf();
-        let diarize = self.diarize_path.clone();
-        let timeout = self.timeout;
-        // whisper + the diarize subprocess are blocking — run off the async runtime.
-        let output = tokio::task::spawn_blocking(move || {
-            hearsay_inference::refine_audio_file(&audio, &diarize, &model, timeout)
-        })
-        .await
-        .map_err(|e| OrchestratorError::Backend(format!("refine task panicked: {e}")))?
-        .map_err(|e| OrchestratorError::Backend(format!("refine failed: {e}")))?;
-        Ok(RefineResult {
-            segments: output
-                .segments
-                .into_iter()
-                .map(|s| RefinedThemSegment {
-                    ordinal: s.ordinal,
-                    text: s.text,
-                    start_s: s.start_s,
-                    end_s: s.end_s,
-                })
-                .collect(),
-            centroids: output.centroids,
-        })
-    }
-}
 
 #[tokio::main]
 async fn main() -> Result<(), BoxError> {
@@ -230,9 +26,9 @@ async fn main() -> Result<(), BoxError> {
         .json()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
-                // Include the orchestrator + capture crates so sidecar stderr (forwarded via tracing)
-                // and lifecycle warnings surface by default, not only under RUST_LOG.
-                "hearsay_core=info,hearsay_orchestrator=info,hearsay_capture=info,tower_http=info"
+                // Include the backends + orchestrator + capture crates so sidecar stderr (forwarded
+                // via tracing) and lifecycle warnings surface by default, not only under RUST_LOG.
+                "hearsay_core=info,hearsay_backends=info,hearsay_orchestrator=info,hearsay_capture=info,tower_http=info"
                     .into()
             }),
         )
@@ -248,36 +44,26 @@ async fn main() -> Result<(), BoxError> {
     let token = format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
 
     let bind = format!("{}:{}", settings.server_host, settings.server_port);
-    let backend = Arc::new(MacBackend::new(settings.helper_path.clone(), synthetic));
     // Seed FluidAudio's model cache from the bundled copy before spawning any sidecar, so the live
     // models load locally instead of downloading from HuggingFace on the first meeting. One-time
     // (copies only what's missing), so it's a fast no-op after the first launch.
     seed_fluid_models();
-    // Spawn the first sidecar pair now so its models start loading before the first meeting instead
-    // of on the start path (subsequent pairs spawn in the background after each meeting adopts one).
-    backend.prewarm();
-    // Config defaults seed the orchestrator; the editable Settings panels override them per meeting
-    // (read from the DB at start/stop). The refiner is always made available so toggling auto-refine
-    // on in the UI takes effect — whether it runs at stop is gated by the effective setting.
-    let orchestrator = Orchestrator::new(pool.clone(), settings.output_dir.clone(), backend)
-        .with_defaults(
-            settings.record,
-            settings.auto_refine,
-            settings.recognition_threshold,
-        )
-        .with_refiner(Arc::new(MacRefiner {
-            pool: pool.clone(),
-            diarize_path: settings.helper_path.with_file_name("hearsay-diarize"),
-            default_model: settings.refine_model.clone(),
-            timeout: settings.refine_timeout,
-        }));
-    // Keep the concrete `Arc<Orchestrator>` so the shutdown path below can stop the active meeting
-    // and await any in-flight refine; it coerces to `Arc<dyn LiveEngine>` for the app state.
-    let orchestrator = Arc::new(orchestrator);
-    // Give the orchestrator its own `Arc` handle so a capture death (helper crash) can finalize the
-    // meeting instead of leaving it falsely live.
-    orchestrator.install_self();
-    let state = AppState::new(pool, settings, token.clone(), orchestrator.clone());
+    // Assemble the platform backend (capture helper + live sidecars + offline whisper refine) behind
+    // the neutral LiveEngine seam. `build_engine` prewarms the first sidecar pair and installs the
+    // orchestrator's self-reference (so a capture death finalizes the meeting); the binary holds only
+    // the trait object. Config defaults seed it; the editable Settings panels override per meeting.
+    let engine = build_engine(
+        pool.clone(),
+        settings.output_dir.clone(),
+        settings.helper_path.clone(),
+        synthetic,
+        settings.refine_model.clone(),
+        settings.refine_timeout,
+        settings.record,
+        settings.auto_refine,
+        settings.recognition_threshold,
+    );
+    let state = AppState::new(pool, settings, token.clone(), engine.clone());
     let app = create_app(state);
 
     let listener = TcpListener::bind(&bind).await?;
@@ -299,13 +85,13 @@ async fn main() -> Result<(), BoxError> {
     // and its audio/transcript flushed before we exit — otherwise a shell crash (which closes our
     // stdin -> shutdown) would strand a `recording` row and orphan the sidecars. Then wait for any
     // in-flight refine so the background task is not cut off mid-write.
-    if let Some(id) = orchestrator.active_meeting() {
+    if let Some(id) = engine.active_meeting() {
         tracing::info!(meeting = %id, "stopping active meeting on shutdown");
-        if let Err(err) = orchestrator.stop_meeting(id).await {
+        if let Err(err) = engine.stop_meeting(id).await {
             tracing::warn!(error = ?err, "failed to stop active meeting on shutdown");
         }
     }
-    orchestrator.wait_for_refines().await;
+    engine.shutdown().await;
     Ok(())
 }
 

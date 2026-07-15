@@ -1,0 +1,28 @@
+[package]
+name = "hearsay-backends"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+hearsay-engine = { path = "../hearsay-engine" }
+hearsay-orchestrator = { path = "../hearsay-orchestrator" }
+hearsay-capture = { path = "../hearsay-capture" }
+hearsay-inference = { path = "../hearsay-inference" }
+hearsay-db = { path = "../hearsay-db" }
+tokio = { version = "1.52.3", features = ["rt", "sync"] }
+async-trait = "0.1.89"
+tracing = "0.1.44"
+sqlx = { version = "0.9.0", default-features = false, features = ["runtime-tokio", "sqlite", "uuid", "chrono"] }
+
+# GPU backends for the offline whisper refine, forwarded from `hearsay-core` through to
+# `hearsay-inference`'s whisper-rs so `make dmg`'s `--features metal` still reaches whisper. Off by
+# default (CPU); enable one per target.
+[features]
+metal = ["hearsay-inference/metal"]
+vulkan = ["hearsay-inference/vulkan"]
+cuda = ["hearsay-inference/cuda"]
+
+[dev-dependencies]
+tokio = { version = "1.52.3", features = ["macros", "rt-multi-thread"] }
+tempfile = "3.27.0"

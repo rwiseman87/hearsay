@@ -705,6 +705,22 @@ name = "hearsay-attribution"
 version = "0.1.0"
 
 [[package]]
+name = "hearsay-backends"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "hearsay-capture",
+ "hearsay-db",
+ "hearsay-engine",
+ "hearsay-inference",
+ "hearsay-orchestrator",
+ "sqlx",
+ "tempfile",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "hearsay-capture"
 version = "0.1.0"
 dependencies = [
@@ -720,15 +736,12 @@ dependencies = [
 name = "hearsay-core"
 version = "0.1.0"
 dependencies = [
- "async-trait",
  "axum",
  "chrono",
- "hearsay-capture",
+ "hearsay-backends",
  "hearsay-db",
  "hearsay-engine",
- "hearsay-inference",
  "hearsay-ipc",
- "hearsay-orchestrator",
  "serde",
  "serde_json",
  "sqlx",

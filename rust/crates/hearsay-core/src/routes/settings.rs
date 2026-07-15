@@ -160,7 +160,7 @@ pub(crate) async fn read_settings(State(state): State<AppState>) -> ApiResult<Js
 
 #[utoipa::path(get, path = "/api/settings/permissions", tag = "settings", responses((status = 200, body = PermissionsInfo)))]
 pub(crate) async fn read_permissions(State(state): State<AppState>) -> Json<PermissionsInfo> {
-    let snapshot = hearsay_capture::probe_permissions(state.settings.helper_path.clone()).await;
+    let snapshot = hearsay_backends::probe_permissions(state.settings.helper_path.clone()).await;
     let field = |value: Option<String>| value.unwrap_or_else(|| "unknown".to_string());
     Json(PermissionsInfo {
         helper_available: snapshot.available,
