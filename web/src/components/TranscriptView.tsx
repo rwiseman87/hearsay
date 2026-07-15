@@ -22,10 +22,14 @@ interface Props {
 export function TranscriptView({ meeting }: Props) {
   const stop = useStopMeeting();
   const rediarize = useRediarize(meeting?.id ?? "");
-  const lines = useTranscript(meeting);
+  const { lines, connection, preparing } = useTranscript(meeting);
 
   const audioRef = useRef<HTMLAudioElement>(null);
   const activeRef = useRef<HTMLLIElement>(null);
+  const linesRef = useRef<HTMLOListElement>(null);
+  // Whether the lines list is scrolled to (near) the bottom; when it is, live lines keep pinning the
+  // latest into view. Set false once the user scrolls up to read earlier history, so we don't yank it.
+  const pinnedToBottom = useRef(true);
   const [currentTime, setCurrentTime] = useState(0);
   const [hasAudio, setHasAudio] = useState(true);
   const [volume, setVolume] = useState(1);
@@ -51,10 +55,19 @@ export function TranscriptView({ meeting }: Props) {
   useEffect(() => {
     setCurrentTime(0);
     setHasAudio(true);
+    pinnedToBottom.current = true; // a freshly opened meeting follows the latest by default
     void audioCtxRef.current?.close();
     audioCtxRef.current = null;
     gainRef.current = null;
   }, [meeting?.id]);
+
+  // Follow the live transcript: when new lines arrive during recording, keep the newest in view —
+  // unless the user has scrolled up (pinnedToBottom is cleared by onScroll below).
+  useEffect(() => {
+    if (meeting?.status !== "recording") return;
+    const el = linesRef.current;
+    if (el && pinnedToBottom.current) el.scrollTop = el.scrollHeight;
+  }, [lines, meeting?.status]);
 
   // Close the audio context when the view unmounts.
   useEffect(() => () => void audioCtxRef.current?.close(), []);
@@ -183,13 +196,32 @@ export function TranscriptView({ meeting }: Props) {
           />
         </div>
       ) : null}
+      {recording && connection && connection !== "open" ? (
+        <p className="transcript__status" role="status">
+          {connection === "reconnecting"
+            ? "Reconnecting to the live transcript…"
+            : "Connecting to the live transcript…"}
+        </p>
+      ) : null}
+      {stop.isError ? (
+        <p className="transcript__error" role="alert">
+          Could not stop the meeting: {(stop.error as Error).message}
+        </p>
+      ) : null}
       {rediarize.isError ? (
         <p className="transcript__error" role="alert">
           {(rediarize.error as Error).message}
         </p>
       ) : null}
       <SpeakerPanel meetingId={meeting.id} />
-      <ol className="transcript__lines">
+      <ol
+        className="transcript__lines"
+        ref={linesRef}
+        onScroll={(event) => {
+          const el = event.currentTarget;
+          pinnedToBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 48;
+        }}
+      >
         {lines.map((line, index) => {
           const active = index === activeIndex;
           return (
@@ -211,7 +243,13 @@ export function TranscriptView({ meeting }: Props) {
           );
         })}
         {lines.length === 0 ? (
-          <li className="muted">{recording ? "Listening…" : "No transcript."}</li>
+          <li className="muted">
+            {recording
+              ? preparing
+                ? "Preparing transcription (loading models)…"
+                : "Listening…"
+              : "No transcript."}
+          </li>
         ) : null}
       </ol>
     </section>

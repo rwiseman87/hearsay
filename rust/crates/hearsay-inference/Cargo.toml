@@ -2,6 +2,7 @@
 name = "hearsay-inference"
 version.workspace = true
 edition.workspace = true
+publish = false
 
 [dependencies]
 hound = "3.5.1"

@@ -5,6 +5,7 @@
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;
+use std::time::Duration;
 
 use hearsay_inference::{read_them_channel, refine_them, WhisperAsr};
 
@@ -22,7 +23,7 @@ fn refines_real_meeting_them_track() {
     let asr = WhisperAsr::load(repo("outputs/models/ggml-large-v3-turbo.bin")).expect("load model");
     let diarize = repo("helper/.build/arm64-apple-macosx/debug/hearsay-diarize");
 
-    let output = refine_them(&asr, &diarize, &them).expect("refine");
+    let output = refine_them(&asr, &diarize, &them, Duration::from_secs(600)).expect("refine");
     let segments = &output.segments;
 
     let speakers: BTreeSet<i64> = segments.iter().map(|s| s.ordinal).collect();

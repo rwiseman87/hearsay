@@ -18,5 +18,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.0.0"
+# Canonical app version. `make version-check` fails CI if web/src-tauri/tauri.conf.json or
+# web/package.json drift from this; the About panel reports it via CARGO_PKG_VERSION.
+version = "0.1.0"
 edition = "2021"

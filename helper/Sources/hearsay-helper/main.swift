@@ -84,10 +84,52 @@ private func controlRoundTripChecks() -> Bool {
     return ok
 }
 
+/// Deterministic checks for the lock-free-throughput SPSC ring that carries raw audio from the tap's
+/// real-time IOProc to its drain worker — FIFO order, physical wrap-around, and newest-over-capacity
+/// drop accounting. Pure logic, so it runs off-device in the self-test.
+private func spscRingChecks() -> Bool {
+    var ok = true
+    func check(_ cond: Bool, _ what: String) {
+        if !cond {
+            ok = false
+            warn("  spsc: \(what)")
+        }
+    }
+    func writeRing(_ ring: SPSCFloatRing, _ xs: [Float]) {
+        xs.withUnsafeBufferPointer { ring.write($0.baseAddress!, count: $0.count) }
+    }
+    func readRing(_ ring: SPSCFloatRing, _ maxCount: Int) -> [Float] {
+        var out = [Float](repeating: 0, count: maxCount)
+        let n = out.withUnsafeMutableBufferPointer { ring.read(into: $0.baseAddress!, max: $0.count) }
+        return Array(out[0..<n])
+    }
+
+    let r1 = SPSCFloatRing(capacity: 8)
+    writeRing(r1, [1, 2, 3])
+    check(readRing(r1, 8) == [1, 2, 3] as [Float], "basic fifo")
+    writeRing(r1, [4, 5])
+    check(readRing(r1, 8) == [4, 5] as [Float], "fifo after drain")
+    check(readRing(r1, 8).isEmpty, "empty read")
+
+    // Wrap-around: the second write straddles the physical end of storage.
+    let r2 = SPSCFloatRing(capacity: 4)
+    writeRing(r2, [1, 2, 3])
+    check(readRing(r2, 2) == [1, 2] as [Float], "partial drain")
+    writeRing(r2, [4, 5, 6])
+    check(readRing(r2, 4) == [3, 4, 5, 6] as [Float], "wrap fifo")
+
+    // Overrun keeps the oldest `capacity` samples and counts the dropped newest.
+    let r3 = SPSCFloatRing(capacity: 4)
+    writeRing(r3, [1, 2, 3, 4, 5, 6])
+    check(r3.droppedSamples == 2, "overrun drop count")
+    check(readRing(r3, 8) == [1, 2, 3, 4] as [Float], "overrun keeps oldest four")
+    return ok
+}
+
 /// Internal round-trip checks plus decoding + re-encoding every committed golden
 /// fixture. This is the Swift side of the cross-language IPC contract check.
 private func runSelfTest(path: String) -> Bool {
-    var ok = internalRoundTripChecks() && controlRoundTripChecks()
+    var ok = internalRoundTripChecks() && controlRoundTripChecks() && spscRingChecks()
     guard let data = FileManager.default.contents(atPath: path),
         let text = String(data: data, encoding: .utf8)
     else {
@@ -130,7 +172,9 @@ private func runSelfTest(path: String) -> Bool {
             warn("  decode error: \(error)")
         }
     }
-    print("swift self-test: internal + control checks + \(count) fixtures, \(ok ? "PASS" : "FAIL")")
+    print(
+        "swift self-test: internal + control + spsc checks + \(count) fixtures, \(ok ? "PASS" : "FAIL")"
+    )
     return ok
 }
 

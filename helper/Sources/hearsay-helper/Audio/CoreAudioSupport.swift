@@ -7,6 +7,7 @@ enum CaptureError: Error, CustomStringConvertible {
     case resamplerInit
     case createTap(OSStatus)
     case tapFormat
+    case unsupportedTapFormat(String)
     case createAggregate(OSStatus)
     case createIOProc(OSStatus)
     case startDevice(OSStatus)
@@ -17,6 +18,7 @@ enum CaptureError: Error, CustomStringConvertible {
         case .resamplerInit: return "could not create resampler"
         case .createTap(let s): return "AudioHardwareCreateProcessTap failed (\(s))"
         case .tapFormat: return "could not read tap stream format"
+        case .unsupportedTapFormat(let d): return "unsupported tap stream format: \(d)"
         case .createAggregate(let s): return "AudioHardwareCreateAggregateDevice failed (\(s))"
         case .createIOProc(let s): return "AudioDeviceCreateIOProcIDWithBlock failed (\(s))"
         case .startDevice(let s): return "AudioDeviceStart failed (\(s))"

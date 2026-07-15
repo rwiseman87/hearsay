@@ -40,6 +40,22 @@ pub trait LiveEngine: Send + Sync {
     /// Subscribe to a meeting's live transcript events (JSON lines). `None` when that meeting is
     /// not the active recording session.
     fn subscribe(&self, meeting_id: Uuid) -> Option<broadcast::Receiver<String>>;
+
+    /// Whether the active meeting's transcription sidecars are still loading their models, so the
+    /// live WebSocket can send a warm-up snapshot to a new subscriber. `Some(true)` = still loading
+    /// (a cold start), `Some(false)` = serving, `None` = not the active session. Defaults to `None`
+    /// for engines without live capture.
+    fn transcription_warming(&self, _meeting_id: Uuid) -> Option<bool> {
+        None
+    }
+
+    /// Whether the pre-warmed transcription sidecars for the *next* meeting have finished loading
+    /// their models and can transcribe immediately. Lets the UI gate "Start" until a meeting can
+    /// actually be used (rather than starting one that shows nothing for ~30 s while models load).
+    /// Defaults to `true` for engines without a warm pool (they impose no such wait).
+    fn sidecars_ready(&self) -> bool {
+        true
+    }
 }
 
 /// The placeholder engine used until `hearsay-orchestrator` is wired in: no capture, no active

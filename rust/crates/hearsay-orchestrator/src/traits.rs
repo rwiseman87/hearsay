@@ -5,7 +5,7 @@
 use std::path::Path;
 
 use async_trait::async_trait;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 
 use hearsay_db::queries::RefineResult;
 
@@ -38,6 +38,14 @@ pub trait Transcriber: Send {
     /// Signal end-of-input and drain the sidecar's finalized tail. The segment channel closes once
     /// the sidecar exits.
     async fn close(&mut self);
+
+    /// A one-shot that fires once this transcriber's sidecar has loaded its models and is serving,
+    /// so the pipeline can tell the UI it is still warming up. `None` means already-ready — a
+    /// pre-warmed sidecar or a fake with no load phase — which is the default. Called once, after
+    /// [`start`](Self::start).
+    fn ready_signal(&mut self) -> Option<oneshot::Receiver<()>> {
+        None
+    }
 }
 
 /// The post-meeting offline refine of the Them track. Behind a trait so the orchestrator does not
@@ -65,6 +73,21 @@ pub struct BackendInstance {
 pub trait Backend: Send + Sync {
     /// Build the capture source + the Me/Them transcribers for one meeting.
     fn build(&self) -> BackendInstance;
+
+    /// Whether the pre-warmed transcriber pair for the *next* meeting has finished loading its
+    /// models. Lets the API gate "Start" until a meeting can actually transcribe. Defaults to `true`
+    /// for backends without a warm pool (scripted test fakes have no load phase).
+    fn sidecars_ready(&self) -> bool {
+        true
+    }
+
+    /// Ensure the warm pool is (re)warming for the next meeting: spawn a pair if none is present, and
+    /// evict + re-spawn a pair whose sidecar has died (a warm that lost an ANE race and exited).
+    /// Idempotent and a no-op while a healthy pair is loading. The caller invokes this only when it
+    /// is *safe* to warm — after a meeting's sidecars are torn down, or while idle — never during a
+    /// meeting, when a concurrent warm load would starve the live sidecars on the compute (ANE).
+    /// Default no-op for backends without a warm pool.
+    fn ensure_pool_warm(&self) {}
 }
 
 /// Which stream a transcriber handles, and thus how its segments are labeled + persisted.

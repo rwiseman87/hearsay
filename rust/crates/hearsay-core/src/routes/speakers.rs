@@ -96,11 +96,14 @@ pub(crate) async fn rediarize(
             "hearsay-diarize sidecar not found (build it with `make swift-build`)".into(),
         ));
     }
-    let model = state.settings.refine_model.clone();
+    // Effective refine model: the stored `models` override else the config default, read fresh so a
+    // change in the Models panel applies to the next manual re-diarize (matching the auto-refine).
+    let model = queries::effective_refine_model(&state.pool, &state.settings.refine_model).await?;
+    let timeout = state.settings.refine_timeout;
 
     // Read the Them track, re-diarize (hearsay-diarize) + re-transcribe (whisper) — all blocking.
     let refined = tokio::task::spawn_blocking(move || {
-        hearsay_inference::refine_audio_file(&audio, &diarize, &model)
+        hearsay_inference::refine_audio_file(&audio, &diarize, &model, timeout)
     })
     .await
     .map_err(|e| ApiError::Internal(format!("refine task panicked: {e}")))?;

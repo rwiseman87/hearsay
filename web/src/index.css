@@ -55,9 +55,24 @@ body {
 
 .app__main {
   display: grid;
-  grid-template-columns: 280px 1fr;
+  grid-template-columns: var(--sidebar-width, 280px) 6px 1fr;
   flex: 1;
   min-height: 0;
+}
+
+/* Drag handle between the sidebar and the main pane; the sidebar's border-right is the visible seam,
+   this is the (wider) grab zone that lights up on hover/focus. */
+.app__resizer {
+  cursor: col-resize;
+  background: transparent;
+  touch-action: none;
+}
+
+.app__resizer:hover,
+.app__resizer:active,
+.app__resizer:focus-visible {
+  background: var(--accent);
+  outline: none;
 }
 
 .meetings {
@@ -77,6 +92,12 @@ body {
 .meetings__new input {
   flex: 1;
   min-width: 0;
+}
+
+.meetings__preparing {
+  margin: 0;
+  padding: 0 12px 10px;
+  font-size: 0.85em;
 }
 
 .meetings__list {
@@ -130,6 +151,55 @@ body {
   color: var(--danger);
 }
 
+.meetings__confirm {
+  display: flex;
+  gap: 4px;
+}
+
+.meetings__confirm-yes,
+.meetings__confirm-no {
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: none;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.meetings__confirm-yes {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+
+.meetings__confirm-no {
+  color: var(--muted);
+}
+
+.meetings__edit {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px;
+}
+
+.meetings__edit-input {
+  flex: 1;
+  min-width: 0;
+  padding: 6px 8px;
+}
+
+.meetings__edit-btn {
+  padding: 4px 8px;
+  border: none;
+  background: none;
+  color: var(--muted);
+}
+
+.meetings__edit-btn:hover:not(:disabled) {
+  color: var(--text);
+}
+
 .transcript {
   display: flex;
   flex-direction: column;
@@ -168,7 +238,16 @@ body {
   font-size: 13px;
 }
 
+.transcript__status {
+  margin: 0;
+  padding: 8px 16px;
+  color: var(--accent);
+  font-size: 13px;
+}
+
 .transcript__lines {
+  flex: 1;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -623,6 +702,26 @@ button:not(:disabled):hover {
   margin-top: 4px;
 }
 
+/* Inline link-styled button (e.g. "Reset to default" next to a fact) — no button chrome. */
+.settings__link-btn {
+  margin-left: 8px;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--accent);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.settings__link-btn:hover:not(:disabled) {
+  text-decoration: underline;
+}
+
+.settings__link-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
 .settings__danger {
   display: flex;
   flex-direction: column;
@@ -646,4 +745,27 @@ button:not(:disabled):hover {
   display: flex;
   flex-direction: column;
   gap: 8px;
+}
+
+.crash {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  height: 100%;
+  padding: 24px;
+  text-align: center;
+}
+
+.crash__title {
+  margin: 0;
+  font-size: 18px;
+}
+
+.crash__message {
+  margin: 0;
+  max-width: 40ch;
+  color: var(--muted);
+  font-size: 13px;
 }

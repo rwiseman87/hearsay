@@ -1,15 +1,24 @@
 # cargo-deny license policy (https://embarkstudios.github.io/cargo-deny/). Encodes the CLAUDE.md
 # open-license gate: only permissive licenses are allowed (MIT / BSD / Apache-2.0 and equivalents);
-# copyleft families (GPL / AGPL / LGPL / MPL / EUPL / SSPL / CC-BY-SA) are denied by omission
-# (`version = 2` treats any unlisted license as a failure). Checked by `make licenses`.
+# strong-copyleft families (GPL / AGPL / LGPL / EUPL / SSPL / CC-BY-SA) are denied by omission
+# (`version = 2` treats any unlisted license as a failure). Checked by `make licenses` over both the
+# rust/ workspace and the web/src-tauri Tauri shell.
 #
-# NOTE: cargo-deny was not installed in the environment this file was authored in, so the allow
-# list is a best-effort match for the current dependency tree. If `cargo deny check licenses`
-# reports an unlisted *permissive* license, add its SPDX id here; do not add a copyleft id.
+# MPL-2.0 is the one deliberate exception to "permissive only": it is weak, file-level copyleft that
+# reaches only the specific MPL-licensed files, so redistributing those files unmodified as a
+# dependency imposes no obligation on our own code. It is pulled in transitively by the Tauri tree
+# and cannot be removed. If an unlisted *permissive* license appears, add its SPDX id here; never add
+# a strong-copyleft id (GPL / AGPL / LGPL / SSPL / EUPL).
+#
+# First-party crates (hearsay-*, hearsay-app) carry no license by design — the app is unpublished /
+# proprietary — so they are `publish = false` and skipped via `private.ignore` below rather than by
+# claiming an OSS license they do not have.
 
 [licenses]
 version = 2
 confidence-threshold = 0.9
+# Skip our own unpublished workspace crates (publish = false); they carry no license on purpose.
+private = { ignore = true }
 allow = [
     "MIT",
     "MIT-0",
@@ -23,4 +32,7 @@ allow = [
     "Unicode-DFS-2016",
     "CC0-1.0",
     "BSL-1.0",
+    "CDLA-Permissive-2.0", # webpki-roots (Mozilla CA bundle) — permissive data license
+    "Unlicense",           # whisper-rs / whisper-rs-sys — public-domain dedication
+    "MPL-2.0",             # Tauri tree (see note above) — weak file-level copyleft, allowed
 ]

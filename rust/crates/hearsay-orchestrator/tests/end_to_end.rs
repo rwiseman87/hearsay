@@ -70,9 +70,11 @@ async fn wav_through_process_sidecars_persists_segments() {
     let orch = Orchestrator::new(pool.clone(), tmp.path().to_path_buf(), backend);
 
     let meeting = orch.start_meeting(Some("e2e".into())).await.unwrap();
-    // stop drains capture -> both sidecars -> persistence + the audio.wav write before it returns.
+    // stop drains capture -> both sidecars -> persistence + the audio.wav write before it returns;
+    // the transcript.md / meeting.json write runs on the post-stop background task.
     let stopped = orch.stop_meeting(meeting.id).await.unwrap().unwrap();
     assert!(stopped.ended_at.is_some());
+    orch.wait_for_refines().await; // join the background transcript write
 
     let folder = tmp.path().join(&meeting.folder);
 

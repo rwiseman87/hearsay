@@ -9,11 +9,13 @@ use chrono::{DateTime, Utc};
 use sqlx::FromRow;
 use uuid::Uuid;
 
-/// Lifecycle state of a meeting.
+/// Lifecycle state of a meeting: `recording` while live, `refining` while the post-stop offline
+/// refine + transcript write run in the background, then `finalized`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, sqlx::Type)]
 #[sqlx(rename_all = "lowercase")]
 pub enum MeetingStatus {
     Recording,
+    Refining,
     Finalized,
 }
 

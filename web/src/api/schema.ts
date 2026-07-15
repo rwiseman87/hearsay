@@ -49,7 +49,7 @@ export interface paths {
         delete: operations["delete_meeting"];
         options?: never;
         head?: never;
-        patch?: never;
+        patch: operations["update_meeting"];
         trace?: never;
     };
     "/api/meetings/{id}/rediarize": {
@@ -148,6 +148,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/settings/models": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put: operations["update_models"];
+        post?: never;
+        delete: operations["reset_models"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/settings/permissions": {
         parameters: {
             query?: never;
@@ -180,6 +196,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/settings/reveal": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Open the effective recordings directory in the OS file manager. Runs in the core (a native
+         *     process in the user's login session), reached over the same-origin HTTP API the rest of Settings
+         *     uses — the desktop shell's Tauri `invoke()` is not reliably reachable from the webview's remote
+         *     loopback origin, so the "Reveal data folder" button routes here instead. On failure the reason is
+         *     surfaced to the client (not collapsed to a generic 500) so a broken reveal is diagnosable.
+         */
+        post: operations["reveal_output_dir"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/settings/speakers": {
         parameters: {
             query?: never;
@@ -205,6 +244,22 @@ export interface paths {
         };
         get?: never;
         put: operations["update_storage"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["read_status"];
+        put?: never;
         post?: never;
         delete?: never;
         options?: never;
@@ -255,10 +310,31 @@ export interface components {
             updated_at: string;
         };
         /**
-         * @description Lifecycle state of a meeting (lowercase on the wire, matching the Python `StrEnum`).
+         * @description Lifecycle state of a meeting (lowercase on the wire): `recording` while live, `refining` while the
+         *     post-stop refine + transcript write run in the background, then `finalized`.
          * @enum {string}
          */
-        MeetingStatus: "recording" | "finalized";
+        MeetingStatus: "recording" | "refining" | "finalized";
+        /** @description Rename a meeting. `title` replaces the meeting's display title (validated non-empty, <= 255 chars). */
+        MeetingUpdate: {
+            title: string;
+        };
+        /**
+         * @description Models: the offline-refine whisper model path. Editable section; the effective value is the
+         *     stored override, else the bundled config default. Only the refine (post-meeting re-transcription)
+         *     uses whisper — live transcription is the FluidAudio/ANE sidecars and is not configured here.
+         */
+        ModelSettings: {
+            refine_model: string;
+        };
+        /**
+         * @description Read-only model facts shown alongside the editable models section: the bundled default (so the
+         *     UI can offer a reset target) and whether the effective model file currently resolves on disk.
+         */
+        ModelsInfo: {
+            default_refine_model: string;
+            refine_model_exists: boolean;
+        };
         /** @description Paginated list envelope used by every list endpoint (`{ total, page, page_size, items }`). */
         Page_IdentityRead: {
             items: {
@@ -384,6 +460,8 @@ export interface components {
          */
         SettingsRead: {
             about: components["schemas"]["AboutInfo"];
+            models: components["schemas"]["ModelSettings"];
+            models_info: components["schemas"]["ModelsInfo"];
             recording: components["schemas"]["RecordingSettings"];
             speakers: components["schemas"]["SpeakerSettings"];
             storage: components["schemas"]["StorageSettings"];
@@ -416,6 +494,14 @@ export interface components {
             auto_refine: boolean;
             /** Format: double */
             recognition_threshold: number;
+        };
+        /**
+         * @description Live engine readiness for the UI to gate "Start" on. `sidecars_ready` is `true` once the
+         *     pre-warmed transcription sidecars have loaded their models (so a new meeting transcribes
+         *     immediately) and `false` while they are still loading after launch.
+         */
+        StatusInfo: {
+            sidecars_ready: boolean;
         };
         /** @description Read-only storage facts shown alongside the editable storage section. */
         StorageInfo: {
@@ -562,6 +648,43 @@ export interface operations {
         requestBody?: never;
         responses: {
             204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    update_meeting: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MeetingUpdate"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MeetingRead"];
+                };
+            };
+            400: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -743,6 +866,54 @@ export interface operations {
             };
         };
     };
+    update_models: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ModelSettings"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ModelSettings"];
+                };
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    reset_models: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ModelSettings"];
+                };
+            };
+        };
+    };
     read_permissions: {
         parameters: {
             query?: never;
@@ -782,6 +953,29 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["RecordingSettings"];
                 };
+            };
+        };
+    };
+    reveal_output_dir: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };
@@ -840,6 +1034,25 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+        };
+    };
+    read_status: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StatusInfo"];
+                };
             };
         };
     };

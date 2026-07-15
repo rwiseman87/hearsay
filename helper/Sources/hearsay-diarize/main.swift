@@ -1,3 +1,4 @@
+import AVFoundation
 import FluidAudio
 import Foundation
 
@@ -57,8 +58,11 @@ guard FileManager.default.fileExists(atPath: wavPath) else {
 
 do {
     let url = URL(fileURLWithPath: wavPath)
-    let samples = try AudioConverter().resampleAudioFile(path: wavPath)
-    let durationS = Double(samples.count) / 16_000.0
+    // Duration from the file header (frames / sample rate) — no need to decode the whole track just
+    // to count samples; `manager.process(url)` decodes it once below.
+    let file = try AVAudioFile(forReading: url)
+    let fileRate = file.fileFormat.sampleRate
+    let durationS = fileRate > 0 ? Double(file.length) / fileRate : 0
 
     let manager = OfflineDiarizerManager()
     let result = try await manager.process(url)

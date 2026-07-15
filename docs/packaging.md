@@ -40,6 +40,24 @@ confirm the ad-hoc signature is intact.
 works offline in the installed app. The copy is skipped once staged; `rm web/src-tauri/models/*.bin`
 to refresh it.
 
+`stage-release` also stages the **FluidAudio live models** (~1.1 GB: Parakeet batch + streaming ASR,
+the LS-EEND diarizer, the pyannote refine diarizer, and Silero VAD) so the installer is fully
+self-contained — no first-run HuggingFace download. Populate them once from your local FluidAudio
+cache:
+
+```sh
+# Run Hearsay (or any live sidecar) once so FluidAudio downloads the models, then:
+make fetch-fluid-models     # copies the needed repos into outputs/models/fluidaudio/Models/
+```
+
+`stage-fluid-models` then copies them to `web/src-tauri/models/fluidaudio/Models/`, Tauri bundles
+them under `Contents/Resources/models/fluidaudio/…`, the shell points `HEARSAY_FLUID_MODELS_DIR` at
+that, and on first launch the core copies each repo into FluidAudio's cache
+(`~/Library/Application Support/FluidAudio/Models/`) where the sidecars find them and skip the
+download. A repo is re-copied into the bundle only when missing; `rm -rf web/src-tauri/models/fluidaudio`
+to refresh (e.g. after a FluidAudio version bump changes the model set — pinned in the `FLUID_REPOS`
+list in the `Makefile`).
+
 Artifacts:
 
 | Target | Output |
@@ -97,7 +115,8 @@ flowchart TD
   so you can back them up. Then just drag the app to the Trash; nothing else is touched.
 - **Erase everything** — deletes, all best-effort:
   - the data dir `~/Library/Application Support/com.hearsay.app/` (db + recordings + transcripts),
-  - the model caches (`~/Library/Application Support/FluidAudio`, `~/.cache/fluidaudio`),
+  - the model caches (`~/Library/Application Support/FluidAudio`, `~/.cache/fluidaudio`) — the next
+    launch re-seeds the FluidAudio cache from the bundled copy (a fast local copy, no re-download),
   - the WebView/app caches, saved state, and preferences plist for `com.hearsay.app`,
   - and runs `tccutil reset All com.hearsay.app` / `com.hearsay.helper` so a reinstall re-prompts
     for permissions.
@@ -111,5 +130,6 @@ flowchart TD
   effect on the next meeting (persisted and read at runtime; see `docs/settings-panels.md`). The
   Models panel is not built yet, and only Microphone reports a real permission status (the other TCC
   rows read `undetermined` until their capture phases land).
-- **Large DMG** — the ~1.5 GB `ggml-large-v3-turbo` refine model is bundled (see below), so the DMG
-  is ~1.5 GB. That is the cost of offline "Refine speakers" working out of the box.
+- **Large DMG** — the ~1.5 GB `ggml-large-v3-turbo` refine model plus the ~1.1 GB FluidAudio live
+  models are bundled (see above), so the DMG is ~2.6 GB. That is the cost of a fully self-contained,
+  offline install (live transcription + "Refine speakers" work with no first-run download).

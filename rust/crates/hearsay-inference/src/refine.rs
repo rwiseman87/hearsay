@@ -8,8 +8,11 @@
 //! all live in `hearsay_db::replace_them_segments`, which both this refine's callers go through.
 
 use std::collections::HashMap;
+use std::io::Read;
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, ExitStatus, Stdio};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use serde::Deserialize;
 
@@ -18,6 +21,9 @@ use crate::error::InferenceError;
 
 /// Contract-fixed track sample rate (Hz).
 const SAMPLE_RATE: u32 = 16_000;
+
+/// How often the bounded diarize wait polls the child for exit.
+const DIARIZE_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
 /// One refined Them segment: a diarizer turn re-transcribed, tagged with its 1-based speaker
 /// ordinal (`Speaker {ordinal}`).
@@ -61,36 +67,35 @@ struct SpeakerEmbedding {
 }
 
 /// Re-diarize + re-transcribe the Them track. `diarize_binary` is the Swift `hearsay-diarize`
-/// sidecar; `them_samples` is the 16 kHz mono right channel of `audio.wav`. Blocking (whisper +
-/// subprocess) — call via `spawn_blocking` from async code.
+/// sidecar; `them_samples` is the 16 kHz mono right channel of `audio.wav`. `timeout` bounds the
+/// diarize subprocess (killed on expiry) so a hung sidecar can never wedge the refine — and thus
+/// meeting stop. Blocking (whisper + subprocess) — call via `spawn_blocking` from async code.
 pub fn refine_them(
     asr: &WhisperAsr,
     diarize_binary: &Path,
     them_samples: &[f32],
+    timeout: Duration,
 ) -> Result<RefineOutput, InferenceError> {
     // hearsay-diarize is file-based: write the Them track to a temp wav.
     let tmp = tempfile::Builder::new().suffix(".wav").tempfile()?;
     write_mono_wav(tmp.path(), them_samples)?;
 
-    let output = Command::new(diarize_binary)
-        .arg(tmp.path())
-        .output()
-        .map_err(|e| InferenceError::Whisper(format!("spawn hearsay-diarize: {e}")))?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
+    let (stdout, stderr, status) = run_diarize(diarize_binary, tmp.path(), timeout)?;
+    if !status.success() {
+        let stderr = String::from_utf8_lossy(&stderr);
         // FluidAudio reports a silent / no-remote-speech track as an error; that is benign for a
         // refine (there is simply nothing to re-diarize), so surface it as a distinct variant the
         // caller can treat as a no-op rather than a failure.
         if stderr.contains("noSpeechDetected") {
             return Err(InferenceError::NoSpeech);
         }
-        return Err(InferenceError::Whisper(format!(
+        return Err(InferenceError::Diarize(format!(
             "hearsay-diarize failed: {}",
             stderr.trim()
         )));
     }
-    let diarized: DiarizeOutput = serde_json::from_slice(&output.stdout)
-        .map_err(|e| InferenceError::Whisper(format!("parse diarize output: {e}")))?;
+    let diarized: DiarizeOutput = serde_json::from_slice(&stdout)
+        .map_err(|e| InferenceError::Diarize(format!("parse diarize output: {e}")))?;
 
     // Diarizer speaker label -> 1-based ordinal by first appearance (Python `order_speakers`).
     let mut turns = diarized.turns;
@@ -135,6 +140,59 @@ pub fn refine_them(
         segments,
         centroids,
     })
+}
+
+/// Spawn `hearsay-diarize <wav>` and wait for it with a deadline, killing it on expiry so a hung
+/// sidecar can never wedge the refine. stdout/stderr are drained on their own threads so a large
+/// payload (per-speaker embeddings) cannot deadlock the wait by filling a pipe buffer.
+fn run_diarize(
+    binary: &Path,
+    wav: &Path,
+    timeout: Duration,
+) -> Result<(Vec<u8>, Vec<u8>, ExitStatus), InferenceError> {
+    let mut child = Command::new(binary)
+        .arg(wav)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| InferenceError::Diarize(format!("spawn hearsay-diarize: {e}")))?;
+
+    let mut out_pipe = child.stdout.take().expect("stdout piped");
+    let mut err_pipe = child.stderr.take().expect("stderr piped");
+    let out_reader = thread::spawn(move || {
+        let mut buf = Vec::new();
+        let _ = out_pipe.read_to_end(&mut buf);
+        buf
+    });
+    let err_reader = thread::spawn(move || {
+        let mut buf = Vec::new();
+        let _ = err_pipe.read_to_end(&mut buf);
+        buf
+    });
+
+    let deadline = Instant::now() + timeout;
+    let status = loop {
+        if let Some(status) = child
+            .try_wait()
+            .map_err(|e| InferenceError::Diarize(format!("wait hearsay-diarize: {e}")))?
+        {
+            break status;
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(InferenceError::Diarize(format!(
+                "hearsay-diarize timed out after {}s",
+                timeout.as_secs()
+            )));
+        }
+        thread::sleep(DIARIZE_POLL_INTERVAL);
+    };
+
+    // The child has exited, so both pipes are closed; the reader threads finish promptly.
+    let stdout = out_reader.join().unwrap_or_default();
+    let stderr = err_reader.join().unwrap_or_default();
+    Ok((stdout, stderr, status))
 }
 
 /// L2-normalize each speaker's embedding and key it by its 1-based ordinal (unknown speakers or
@@ -186,10 +244,11 @@ pub fn refine_audio_file(
     audio_path: &Path,
     diarize_binary: &Path,
     model: &Path,
+    timeout: Duration,
 ) -> Result<RefineOutput, InferenceError> {
     let them = crate::audio::read_them_channel(audio_path)?;
     let asr = WhisperAsr::load(model)?;
-    refine_them(&asr, diarize_binary, &them)
+    refine_them(&asr, diarize_binary, &them, timeout)
 }
 
 fn write_mono_wav(path: &Path, samples: &[f32]) -> Result<(), InferenceError> {

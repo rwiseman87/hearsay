@@ -268,10 +268,19 @@ pub fn decode(buf: &[u8]) -> Result<MediaFrame, ProtocolError> {
 
 /// Payload byte count that follows a 28-byte header (0 for non-audio frames).
 ///
-/// Lets a stream reader size the second read without decoding the whole frame.
+/// Lets a stream reader size the second read without decoding the whole frame. Validates the
+/// magic + version prefix *before* trusting the length field, so a garbage/hostile header cannot
+/// size the next read off a bogus `n_samples` (a caller reading `header` then this many payload
+/// bytes must know the header is real first).
 pub fn expected_payload_len(header: &[u8]) -> Result<usize, ProtocolError> {
     if header.len() < HEADER_SIZE {
         return Err(ProtocolError::BufferTooShort);
+    }
+    if header[0] != MAGIC {
+        return Err(ProtocolError::BadMagic(header[0]));
+    }
+    if header[1] != VERSION {
+        return Err(ProtocolError::UnsupportedVersion(header[1]));
     }
     let frame_type = FrameType::from_code(header[2])?;
     let format = SampleFormat::from_code(header[4])?;
@@ -386,5 +395,33 @@ mod tests {
         assert_eq!(expected_payload_len(&audio[..HEADER_SIZE]).unwrap(), 4);
         let hello = encode(&hello_me()).unwrap();
         assert_eq!(expected_payload_len(&hello[..HEADER_SIZE]).unwrap(), 0);
+    }
+
+    #[test]
+    fn expected_payload_len_rejects_bad_magic_or_version_before_sizing() {
+        // A header with the wrong magic/version must error rather than size a read off its (bogus)
+        // n_samples field — even when that field claims a large payload.
+        let mut header = encode(&MediaFrame {
+            frame_type: FrameType::Audio,
+            stream: Stream::Them,
+            format: SampleFormat::Float32,
+            seq: 0,
+            host_ts: 0,
+            payload: vec![0; 4000], // n_samples = 1000
+            flags: 0,
+        })
+        .unwrap()[..HEADER_SIZE]
+            .to_vec();
+        let mut bad_magic = header.clone();
+        bad_magic[0] = 0x00;
+        assert_eq!(
+            expected_payload_len(&bad_magic),
+            Err(ProtocolError::BadMagic(0x00))
+        );
+        header[1] = 2;
+        assert_eq!(
+            expected_payload_len(&header),
+            Err(ProtocolError::UnsupportedVersion(2))
+        );
     }
 }

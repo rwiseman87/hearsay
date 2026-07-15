@@ -6,6 +6,7 @@ type Schemas = components["schemas"];
 
 export type MeetingRead = Schemas["MeetingRead"];
 export type MeetingCreate = Schemas["MeetingCreate"];
+export type MeetingUpdate = Schemas["MeetingUpdate"];
 export type SegmentRead = Schemas["SegmentRead"];
 export type Stream = Schemas["Stream"];
 export type PageMeeting = Schemas["Page_MeetingRead"];
@@ -18,5 +19,8 @@ export type RecordingSettings = Schemas["RecordingSettings"];
 export type SpeakerSettings = Schemas["SpeakerSettings"];
 export type StorageSettings = Schemas["StorageSettings"];
 export type StorageInfo = Schemas["StorageInfo"];
+export type ModelSettings = Schemas["ModelSettings"];
+export type ModelsInfo = Schemas["ModelsInfo"];
 export type AboutInfo = Schemas["AboutInfo"];
 export type PermissionsInfo = Schemas["PermissionsInfo"];
+export type StatusInfo = Schemas["StatusInfo"];

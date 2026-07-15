@@ -22,8 +22,8 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
 use hearsay_ipc::{
-    decode, expected_payload_len, parse_message, to_line, Command, Event, Inbound, JsonObj,
-    SampleFormat, Stream as IpcStream, HEADER_SIZE,
+    decode, expected_payload_len, parse_message, to_line, Command, Event, FrameType, Inbound,
+    JsonObj, MediaFrame, SampleFormat, Stream as IpcStream, HEADER_SIZE,
 };
 use hearsay_orchestrator::{AudioChunk, AudioSource, CaptureChunk, OrchestratorError, Stream};
 
@@ -94,6 +94,10 @@ impl AudioSource for SwiftHelperSource {
         if self.synthetic {
             cmd.arg("--synthetic");
         }
+        // Reap the helper (mic + tap hot) if any start()-internal step below fails and `child` is
+        // dropped before it reaches `Running`, and as a backstop if `Running` is dropped without a
+        // clean `stop()`. The probe path already does this; start() must too.
+        cmd.kill_on_drop(true);
         let child = cmd.spawn()?;
 
         // The helper connects back to both sockets (control first, then media).
@@ -161,43 +165,41 @@ impl AudioSource for SwiftHelperSource {
         {
             let _ = running.child.kill().await;
         }
+        // The helper has now exited (gracefully or killed), so the media socket is closed and the
+        // pump reads any socket-buffered tail audio to EOF and ends on its own. Join the tasks
+        // (bounded) instead of aborting mid-drain, so that tail audio is not discarded. On the
+        // unexpected chance a task does not end, the timeout detaches it rather than hanging stop.
         for task in running.tasks {
-            task.abort();
+            let _ = tokio::time::timeout(Duration::from_secs(2), task).await;
         }
     }
 }
 
 /// Read `media.sock` frames and forward each audio frame as a [`CaptureChunk`]. Ends (closing the
-/// channel) on socket EOF — i.e. when the helper exits.
+/// channel) on socket EOF — i.e. when the helper exits. Per `shared/protocol/ipc.md`, a malformed
+/// or truncated frame is dropped-and-resynced (never a silent desync of every later frame, never a
+/// torn-down capture on one bad header), and each stream's `seq` is tracked so dropped frames are
+/// logged.
 async fn media_pump(conn: UnixStream, tx: mpsc::Sender<CaptureChunk>) {
     let mut reader = BufReader::new(conn);
-    let mut header = [0u8; HEADER_SIZE];
-    loop {
-        if reader.read_exact(&mut header).await.is_err() {
-            break; // EOF
-        }
-        let payload_len = match expected_payload_len(&header) {
-            Ok(n) => n,
-            Err(_) => break,
-        };
-        if payload_len > MAX_FRAME_PAYLOAD_BYTES {
+    // Last `seq` seen per stream (index = wire stream code). ipc.md: `seq` is per-stream monotonic;
+    // a gap means the helper dropped frames.
+    let mut last_seq: [Option<u32>; 2] = [None, None];
+    while let Some(frame) = next_frame(&mut reader).await {
+        let idx = frame.stream.to_code() as usize;
+        if let Some(dropped) = seq_gap(last_seq.get(idx).copied().flatten(), frame.seq) {
             tracing::warn!(
-                payload_len,
-                max = MAX_FRAME_PAYLOAD_BYTES,
-                "media frame declares an oversized payload; closing capture stream"
+                stream = frame.stream.as_str(),
+                dropped,
+                seq = frame.seq,
+                "media seq gap: helper dropped frames"
             );
-            break;
         }
-        let mut buf = vec![0u8; HEADER_SIZE + payload_len];
-        buf[..HEADER_SIZE].copy_from_slice(&header);
-        if payload_len > 0 && reader.read_exact(&mut buf[HEADER_SIZE..]).await.is_err() {
-            break;
+        if let Some(slot) = last_seq.get_mut(idx) {
+            *slot = Some(frame.seq);
         }
-        let frame = match decode(&buf) {
-            Ok(frame) => frame,
-            Err(_) => continue,
-        };
-        if frame.frame_type == hearsay_ipc::FrameType::Audio {
+
+        if frame.frame_type == FrameType::Audio {
             let chunk = CaptureChunk {
                 stream: map_stream(frame.stream),
                 chunk: AudioChunk {
@@ -210,6 +212,74 @@ async fn media_pump(conn: UnixStream, tx: mpsc::Sender<CaptureChunk>) {
             }
         }
     }
+}
+
+/// Dropped-frame count implied by a `seq` gap: `None` when contiguous (or first-seen), else how
+/// many frames were skipped. Wraps with `seq` (u32, monotonic from 0), so a wrap boundary is
+/// treated as contiguous.
+fn seq_gap(prev: Option<u32>, got: u32) -> Option<u32> {
+    let expected = prev?.wrapping_add(1);
+    (got != expected).then(|| got.wrapping_sub(expected))
+}
+
+/// Read the next well-formed media frame, resyncing to the frame magic if the byte stream is
+/// misaligned. A garbage/unknown header no longer kills capture and a decode failure no longer
+/// silently desyncs every later frame (`ipc.md`: drop/log-and-resync). Returns `None` at EOF.
+async fn next_frame<R: tokio::io::AsyncRead + Unpin>(reader: &mut R) -> Option<MediaFrame> {
+    let mut header = [0u8; HEADER_SIZE];
+    if !fill(reader, &mut header).await {
+        return None;
+    }
+    loop {
+        // Slide one byte at a time until the window is a valid, correctly-sized frame header.
+        let mut skipped = 0usize;
+        let payload_len = loop {
+            if let Some(n) = header_payload_len(&header) {
+                break n;
+            }
+            skipped += 1;
+            header.copy_within(1.., 0);
+            if !fill(reader, &mut header[HEADER_SIZE - 1..]).await {
+                return None;
+            }
+        };
+        if skipped > 0 {
+            tracing::warn!(skipped, "media stream desynced; resynced to frame magic");
+        }
+        let mut buf = vec![0u8; HEADER_SIZE + payload_len];
+        buf[..HEADER_SIZE].copy_from_slice(&header);
+        if payload_len > 0 && !fill(reader, &mut buf[HEADER_SIZE..]).await {
+            return None;
+        }
+        match decode(&buf) {
+            Ok(frame) => return Some(frame),
+            // `header_payload_len` validated magic/version/type/stream/format and the payload was
+            // read to length, so this is unreachable in practice; treat it defensively as a desync
+            // and rescan from a fresh header rather than tearing capture down.
+            Err(err) => {
+                tracing::warn!(error = %err, "media frame decode failed after header validation; resyncing");
+                if !fill(reader, &mut header).await {
+                    return None;
+                }
+            }
+        }
+    }
+}
+
+/// Validate a 28-byte window as a frame header and return its payload length, or `None` if it is
+/// not a well-formed, correctly-sized header (so the reader slides forward to resync). Checks the
+/// magic/version prefix and every enum field before trusting the length, and rejects an oversized
+/// payload so a garbage length cannot force a giant read.
+fn header_payload_len(header: &[u8; HEADER_SIZE]) -> Option<usize> {
+    IpcStream::from_code(header[3]).ok()?; // magic/version/type/format checked by expected_payload_len
+    let payload_len = expected_payload_len(header).ok()?;
+    (payload_len <= MAX_FRAME_PAYLOAD_BYTES).then_some(payload_len)
+}
+
+/// Read exactly `buf.len()` bytes; `false` on EOF or error (end the pump). At a frame boundary EOF
+/// is the helper exiting cleanly; mid-frame it is a truncated final frame — both end capture.
+async fn fill<R: tokio::io::AsyncRead + Unpin>(reader: &mut R, buf: &mut [u8]) -> bool {
+    reader.read_exact(buf).await.is_ok()
 }
 
 /// Drain (and debug-log) control events after the handshake so the helper never blocks on a full
@@ -432,4 +502,77 @@ async fn wait_for_reply(
     })
     .await
     .map_err(|_| backend("timed out waiting for start_capture reply"))?
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use hearsay_ipc::encode;
+
+    fn audio_frame(stream: IpcStream, seq: u32, samples: &[f32]) -> Vec<u8> {
+        let payload: Vec<u8> = samples.iter().flat_map(|s| s.to_le_bytes()).collect();
+        encode(&MediaFrame {
+            frame_type: FrameType::Audio,
+            stream,
+            format: SampleFormat::Float32,
+            seq,
+            host_ts: seq as u64,
+            payload,
+            flags: 0,
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn seq_gap_detects_drops_and_ignores_contiguous_and_wrap() {
+        assert_eq!(seq_gap(None, 5), None); // first-seen
+        assert_eq!(seq_gap(Some(4), 5), None); // contiguous
+        assert_eq!(seq_gap(Some(4), 7), Some(2)); // two frames dropped
+        assert_eq!(seq_gap(Some(u32::MAX), 0), None); // wrap is contiguous
+    }
+
+    #[test]
+    fn header_payload_len_accepts_valid_rejects_garbage() {
+        let audio = audio_frame(IpcStream::Them, 0, &[0.0, 1.0]);
+        let header: &[u8; HEADER_SIZE] = audio[..HEADER_SIZE].try_into().unwrap();
+        assert_eq!(header_payload_len(header), Some(8)); // 2 * f32
+
+        let mut bad_magic = *header;
+        bad_magic[0] = 0x00;
+        assert_eq!(header_payload_len(&bad_magic), None);
+        let mut bad_stream = *header;
+        bad_stream[3] = 9; // unknown stream code
+        assert_eq!(header_payload_len(&bad_stream), None);
+    }
+
+    #[tokio::test]
+    async fn next_frame_decodes_a_stream_of_frames() {
+        let mut bytes = Vec::new();
+        bytes.extend(audio_frame(IpcStream::Me, 0, &[0.1]));
+        bytes.extend(audio_frame(IpcStream::Them, 0, &[0.2, 0.3]));
+        let mut reader = tokio::io::BufReader::new(&bytes[..]);
+
+        let f0 = next_frame(&mut reader).await.unwrap();
+        assert_eq!(f0.stream, IpcStream::Me);
+        assert_eq!(f0.seq, 0);
+        let f1 = next_frame(&mut reader).await.unwrap();
+        assert_eq!(f1.stream, IpcStream::Them);
+        assert_eq!(samples_f32(&f1), vec![0.2, 0.3]);
+        assert!(next_frame(&mut reader).await.is_none()); // clean EOF
+    }
+
+    #[tokio::test]
+    async fn next_frame_resyncs_past_leading_garbage_and_false_magic() {
+        // Junk, including a lone 0xA7 not followed by the version byte, then a real frame.
+        let mut bytes = vec![0x00, 0xFF, 0xA7, 0x13, 0x02];
+        bytes.extend(audio_frame(IpcStream::Them, 3, &[0.5]));
+        let mut reader = tokio::io::BufReader::new(&bytes[..]);
+
+        let frame = next_frame(&mut reader)
+            .await
+            .expect("resyncs to the real frame magic");
+        assert_eq!(frame.stream, IpcStream::Them);
+        assert_eq!(frame.seq, 3);
+        assert_eq!(samples_f32(&frame), vec![0.5]);
+    }
 }

@@ -48,6 +48,18 @@ public final class UnixSocketClient: @unchecked Sendable {
         self.fd = f
     }
 
+    /// Bound blocking writes with `SO_SNDTIMEO`. A stalled peer (the core stops reading) then makes
+    /// `write` fail with `EAGAIN` after `seconds` instead of blocking forever — so a caller holding a
+    /// lock across a write (the media uplink) cannot wedge the shutdown path. Best-effort: a failed
+    /// `setsockopt` leaves the socket in its default blocking mode.
+    public func setWriteTimeout(seconds: Double) {
+        var tv = timeval(
+            tv_sec: Int(seconds),
+            tv_usec: Int32((seconds - Double(Int(seconds))) * 1_000_000))
+        _ = setsockopt(
+            fd, SOL_SOCKET, SO_SNDTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
+    }
+
     /// Write every byte, retrying short writes and `EINTR`.
     public func writeAll(_ data: Data) throws {
         try data.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in

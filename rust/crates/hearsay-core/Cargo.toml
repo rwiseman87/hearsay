@@ -2,6 +2,7 @@
 name = "hearsay-core"
 version.workspace = true
 edition.workspace = true
+publish = false
 
 [dependencies]
 hearsay-db = { path = "../hearsay-db" }
@@ -12,7 +13,7 @@ hearsay-inference = { path = "../hearsay-inference" }
 hearsay-ipc = { path = "../hearsay-ipc" }
 axum = { version = "0.8.9", features = ["ws", "macros"] }
 tower-http = { version = "0.7.0", features = ["fs"] }
-tokio = { version = "1.52.3", features = ["macros", "rt-multi-thread", "net", "signal", "fs", "sync", "time"] }
+tokio = { version = "1.52.3", features = ["macros", "rt-multi-thread", "net", "signal", "fs", "sync", "time", "io-std", "io-util"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"
 tracing = "0.1.44"
@@ -23,6 +24,15 @@ chrono = { version = "0.4.45", features = ["serde"] }
 sqlx = { version = "0.9.0", default-features = false, features = ["runtime-tokio", "sqlite", "uuid", "chrono"] }
 async-trait = "0.1.89"
 tower = { version = "0.5.3", features = ["util"] }
+
+# GPU backends for the offline whisper refine (forwarded to `hearsay-inference`'s whisper-rs). Off by
+# default (CPU); the macOS bundle + `rust-serve` build with `metal` (see the Makefile) — a large win
+# on Apple Silicon. vulkan/cuda are here for the planned cross-platform builds; enable one per target
+# (building a backend the host lacks fails).
+[features]
+metal = ["hearsay-inference/metal"]
+vulkan = ["hearsay-inference/vulkan"]
+cuda = ["hearsay-inference/cuda"]
 
 [dev-dependencies]
 tempfile = "3.27.0"

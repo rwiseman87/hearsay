@@ -702,11 +702,11 @@ dependencies = [
 
 [[package]]
 name = "hearsay-attribution"
-version = "0.0.0"
+version = "0.1.0"
 
 [[package]]
 name = "hearsay-capture"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "async-trait",
  "hearsay-ipc",
@@ -718,7 +718,7 @@ dependencies = [
 
 [[package]]
 name = "hearsay-core"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "async-trait",
  "axum",
@@ -744,7 +744,7 @@ dependencies = [
 
 [[package]]
 name = "hearsay-db"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "chrono",
  "hearsay-attribution",
@@ -756,7 +756,7 @@ dependencies = [
 
 [[package]]
 name = "hearsay-engine"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "async-trait",
  "hearsay-db",
@@ -766,7 +766,7 @@ dependencies = [
 
 [[package]]
 name = "hearsay-inference"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "hound",
  "serde",
@@ -778,7 +778,7 @@ dependencies = [
 
 [[package]]
 name = "hearsay-ipc"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -786,7 +786,7 @@ dependencies = [
 
 [[package]]
 name = "hearsay-orchestrator"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "async-trait",
  "chrono",

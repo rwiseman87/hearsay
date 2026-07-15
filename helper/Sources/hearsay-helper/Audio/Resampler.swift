@@ -41,4 +41,22 @@ final class Resampler {
         guard status != .error, out.frameLength > 0, let ch = out.floatChannelData else { return [] }
         return Array(UnsafeBufferPointer(start: ch[0], count: Int(out.frameLength)))
     }
+
+    /// Resample `count` raw mono input-format frames (e.g. drained from the tap's SPSC ring, off the
+    /// real-time thread) to 16 kHz. Wraps the samples in an input-format buffer and reuses `resample`.
+    /// Assumes the input format is mono (one flat float channel), which the mono tap guarantees.
+    func resample(_ frames: UnsafePointer<Float>, count: Int) -> [Float] {
+        guard count > 0,
+            let buf = AVAudioPCMBuffer(pcmFormat: inputFormat, frameCapacity: AVAudioFrameCount(count))
+        else { return [] }
+        buf.frameLength = AVAudioFrameCount(count)
+        // Mono float: interleaved and deinterleaved layouts are identical, so copy raw bytes into the
+        // first (only) buffer — works whether `inputFormat` reports interleaved or not.
+        let abl = UnsafeMutableAudioBufferListPointer(buf.mutableAudioBufferList)
+        if let mData = abl[0].mData {
+            let bytes = Swift.min(Int(abl[0].mDataByteSize), count * MemoryLayout<Float>.stride)
+            mData.copyMemory(from: frames, byteCount: bytes)
+        }
+        return resample(buf)
+    }
 }

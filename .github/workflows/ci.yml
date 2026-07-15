@@ -5,8 +5,8 @@ on:
     branches: [main]
   pull_request:
 
-# NOTE: per CLAUDE.md, pin these actions to full commit SHAs before merging
-# (left as tags here so the workflow is readable; a maintainer must SHA-pin).
+# Actions are pinned to full commit SHAs (supply-chain: a moving tag can be repointed at malicious
+# code). The trailing comment records the human-readable tag each SHA corresponds to.
 jobs:
   # Native gate: Rust + Swift, the codegen-drift check (Rust is the source of truth for the
   # OpenAPI + IPC fixtures), and the supply-chain gates. macOS because the Swift helper + sidecars
@@ -14,16 +14,16 @@ jobs:
   native:
     runs-on: macos-14
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '22'
           cache: npm
           cache-dependency-path: web/package-lock.json
 
       # cargo-deny (license gate) + cargo-audit (CVE scan) via prebuilt binaries.
-      - uses: taiki-e/install-action@v2
+      - uses: taiki-e/install-action@43aecc8d72668fbcfe75c31400bc4f890f1c5853 # v2
         with:
           tool: cargo-deny,cargo-audit
 
@@ -38,9 +38,9 @@ jobs:
   web:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '22'
           cache: npm

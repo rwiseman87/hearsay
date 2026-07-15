@@ -30,11 +30,14 @@ pub struct SpeakerRow {
     pub display_name: Option<String>,
 }
 
-/// Create a `recording` meeting and return the inserted row.
+/// Create a `recording` meeting (with its recordings `dir` pinned in the same statement) and return
+/// the inserted row. Pass `""` for `dir` to rely on the `Meeting::dir_path` fallback
+/// (`output_dir.join(folder)`), as legacy rows do.
 pub async fn create_meeting(
     pool: &SqlitePool,
     title: &str,
     folder: &str,
+    dir: &str,
     started_at: DateTime<Utc>,
 ) -> Result<Meeting, sqlx::Error> {
     let now = Utc::now();
@@ -47,14 +50,12 @@ pub async fn create_meeting(
         ended_at: None,
         created_at: now,
         updated_at: now,
-        // Pinned in a follow-up `set_meeting_dir` (the orchestrator knows the effective output_dir);
-        // the INSERT relies on the column's `DEFAULT ''`.
-        dir: String::new(),
+        dir: dir.to_string(),
     };
     sqlx::query(
         "INSERT INTO meetings \
-         (id, title, folder, status, started_at, ended_at, created_at, updated_at) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+         (id, title, folder, status, started_at, ended_at, created_at, updated_at, dir) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(meeting.id)
     .bind(&meeting.title)
@@ -64,6 +65,7 @@ pub async fn create_meeting(
     .bind(meeting.ended_at)
     .bind(meeting.created_at)
     .bind(meeting.updated_at)
+    .bind(&meeting.dir)
     .execute(pool)
     .await?;
     Ok(meeting)
@@ -93,15 +95,48 @@ pub async fn get_meeting(pool: &SqlitePool, id: Uuid) -> Result<Option<Meeting>,
         .await
 }
 
-/// Mark a meeting `finalized` with its end time.
+/// Rename a meeting (replace its display `title`), stamping `updated_at`. Returns the updated row,
+/// or `None` when no meeting has that id. The caller validates `title` (non-empty, length bound).
+pub async fn update_meeting_title(
+    pool: &SqlitePool,
+    id: Uuid,
+    title: &str,
+) -> Result<Option<Meeting>, sqlx::Error> {
+    let result = sqlx::query("UPDATE meetings SET title = ?, updated_at = ? WHERE id = ?")
+        .bind(title)
+        .bind(Utc::now())
+        .bind(id)
+        .execute(pool)
+        .await?;
+    if result.rows_affected() == 0 {
+        return Ok(None);
+    }
+    get_meeting(pool, id).await
+}
+
+/// Stamp a meeting's end time and set its post-stop `status` (`refining` while the background
+/// refine + transcript write run, else `finalized`).
 pub async fn finalize_meeting(
     pool: &SqlitePool,
     id: Uuid,
     ended_at: DateTime<Utc>,
+    status: MeetingStatus,
 ) -> Result<(), sqlx::Error> {
     sqlx::query("UPDATE meetings SET status = ?, ended_at = ?, updated_at = ? WHERE id = ?")
-        .bind(MeetingStatus::Finalized)
+        .bind(status)
         .bind(ended_at)
+        .bind(Utc::now())
+        .bind(id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+/// Flip a meeting from `refining` to `finalized` once the post-stop refine + transcript write
+/// complete. Leaves `ended_at` (stamped at stop) untouched.
+pub async fn set_meeting_finalized(pool: &SqlitePool, id: Uuid) -> Result<(), sqlx::Error> {
+    sqlx::query("UPDATE meetings SET status = ?, updated_at = ? WHERE id = ?")
+        .bind(MeetingStatus::Finalized)
         .bind(Utc::now())
         .bind(id)
         .execute(pool)
@@ -698,12 +733,24 @@ pub async fn set_preference(
     Ok(())
 }
 
+/// Delete one settings `section`'s stored override (a no-op when unset), reverting the effective
+/// value to the config default. Used by "reset to default" actions where the default may be a
+/// relative/bundled path that the section's own input validation would reject on a re-write.
+pub async fn clear_preference(pool: &SqlitePool, section: &str) -> Result<(), sqlx::Error> {
+    sqlx::query("DELETE FROM preferences WHERE section = ?")
+        .bind(section)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
 /// Settings sections persisted in the `preferences` table (one JSON row each). The section name is
 /// the wire contract shared by the API writer (`hearsay-core`'s settings routes) and the runtime
 /// readers (the `effective_*` resolvers below, called by the orchestrator at meeting start/stop).
 pub const SECTION_RECORDING: &str = "recording";
 pub const SECTION_SPEAKERS: &str = "speakers";
 pub const SECTION_STORAGE: &str = "storage";
+pub const SECTION_MODELS: &str = "models";
 
 /// The parsed JSON object for a stored section, or `None` when unset or unparseable (the caller then
 /// uses its config default). A corrupt row degrades to the default rather than failing an operation.
@@ -737,6 +784,22 @@ pub async fn effective_output_dir(
         .await?
         .and_then(|o| {
             o.get("output_dir")
+                .and_then(|v| v.as_str().map(PathBuf::from))
+        })
+        .unwrap_or_else(|| default.to_path_buf()))
+}
+
+/// Effective offline-refine whisper model: the stored `models` override, else `default` (the
+/// bundled model from config). Read fresh at each refine, so pointing the `models` section at a
+/// larger downloaded model takes effect on the next refine/rediarize with no restart.
+pub async fn effective_refine_model(
+    pool: &SqlitePool,
+    default: &Path,
+) -> Result<PathBuf, sqlx::Error> {
+    Ok(section_object(pool, SECTION_MODELS)
+        .await?
+        .and_then(|o| {
+            o.get("refine_model")
                 .and_then(|v| v.as_str().map(PathBuf::from))
         })
         .unwrap_or_else(|| default.to_path_buf()))

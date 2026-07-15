@@ -2,6 +2,7 @@
 name = "hearsay-engine"
 version.workspace = true
 edition.workspace = true
+publish = false
 
 [dependencies]
 hearsay-db = { path = "../hearsay-db" }

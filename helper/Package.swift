@@ -18,6 +18,10 @@ let package = Package(
     ],
     targets: [
         .target(name: "HearsayIPC"),
+        // Shared stdio plumbing for the streaming sidecars (framing + stdin length cap + JSON emit +
+        // stderr log + PCM buffer). Dependency-free (system frameworks only) so it never bloats a
+        // binary; the length-cap fix lives here once instead of in each sidecar main.
+        .target(name: "SidecarIO"),
         .executableTarget(
             name: "hearsay-helper",
             dependencies: ["HearsayIPC"],
@@ -58,7 +62,7 @@ let package = Package(
         // unrecoverable error state). Separate target so the capture binary stays lean.
         .executableTarget(
             name: "hearsay-asr",
-            dependencies: [.product(name: "FluidAudio", package: "FluidAudio")]
+            dependencies: [.product(name: "FluidAudio", package: "FluidAudio"), "SidecarIO"]
         ),
         // Live "Them" processor: streaming diarization + Parakeet on the ANE. The Python core
         // streams the Them PCM in; as each speaker turn finalizes, this transcribes it and
@@ -66,7 +70,7 @@ let package = Package(
         // core does no fusion. Separate target so the capture binary stays lean.
         .executableTarget(
             name: "hearsay-live",
-            dependencies: [.product(name: "FluidAudio", package: "FluidAudio")]
+            dependencies: [.product(name: "FluidAudio", package: "FluidAudio"), "SidecarIO"]
         ),
         // Live "Me" processor: streaming VAD + Parakeet on the ANE. The Python core streams the
         // local-mic PCM in; this segments speech and transcribes each utterance, emitting a
@@ -74,7 +78,7 @@ let package = Package(
         // always the local speaker, so there is no diarization. Separate target, lean capture.
         .executableTarget(
             name: "hearsay-me",
-            dependencies: [.product(name: "FluidAudio", package: "FluidAudio")]
+            dependencies: [.product(name: "FluidAudio", package: "FluidAudio"), "SidecarIO"]
         ),
     ]
 )

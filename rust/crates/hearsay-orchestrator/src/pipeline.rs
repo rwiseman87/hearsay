@@ -11,10 +11,14 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::Arc;
+use std::time::Duration;
 
 use serde::Serialize;
 use sqlx::SqlitePool;
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::mpsc::error::TrySendError;
+use tokio::sync::{broadcast, mpsc, oneshot};
 use tokio::task::JoinHandle;
 use uuid::Uuid;
 
@@ -28,53 +32,164 @@ use crate::types::{CaptureChunk, SegmentKind, SidecarSegment, Stream};
 /// Capacity of the per-meeting live broadcast channel (transcript events to WebSocket subscribers).
 const BROADCAST_CAPACITY: usize = 256;
 
-/// Capacity of each stream's PCM hand-off channel (demux -> stream task). Bounded so a slow
-/// transcriber backpressures capture instead of the queue growing without bound; ~13 s of 100 ms
-/// chunks.
+/// Capacity of each stream's PCM hand-off channel (demux -> stream task). ~13 s of 100 ms chunks.
+/// The recorder writes on the always-drained demux path *before* this hand-off, so a wedged/slow
+/// transcriber only backs up its own queue; on overflow demux drops-with-log for that stream rather
+/// than stalling the recorder and the other stream (head-of-line).
 const PCM_CHANNEL_CAPACITY: usize = 128;
+
+/// Contract-fixed capture sample rate (Hz).
+const SAMPLE_RATE: f64 = 16_000.0;
+
+/// Re-anchor a sidecar's sample-count timeline to the chunk's `t0_s` only once they diverge past
+/// this — a real delivery gap (dropped frames, a tap rebuild, a wedged-then-recovered stream), not
+/// per-chunk clock jitter. Matches the recorder's `RESYNC_GAP` (0.2 s) so the sidecar timeline and
+/// `audio.wav` re-anchor together and transcript times stay aligned.
+const RESYNC_THRESHOLD_S: f64 = 0.2;
+
+/// Safety cap on one silence-pad fed to a sidecar during a resync, so a bad (non-monotonic) `host_ts`
+/// jump cannot force a multi-GB allocation. 5 min of 16 kHz mono — far beyond any real gap. Past
+/// this the timeline diverges by the excess (logged); acceptable, as the recorder re-anchors on
+/// `t0_s` too.
+const MAX_SILENCE_PAD_SAMPLES: usize = 5 * 60 * 16_000;
+
+/// How long [`Pipeline::close`] waits for a stream task to wind down before aborting it. Above the
+/// transcriber's own close deadline (drain + reap, 10 s) so a *healthy* sidecar's graceful tail
+/// flush always completes; a *wedged* sidecar (its stream task blocked feeding a full pipe) is
+/// aborted here so meeting stop cannot hang. Aborting drops the `ProcessTranscriber`, whose
+/// `kill_on_drop` reaps the child.
+const STREAM_JOIN_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// A running pipeline: the capture source (kept to stop it) and the spawned tasks.
 pub(crate) struct Pipeline {
     pub(crate) broadcast_tx: broadcast::Sender<String>,
     pub(crate) source: Box<dyn AudioSource>,
-    pub(crate) tasks: Vec<JoinHandle<()>>,
+    /// Set true by [`close`](Self::close) before stopping the source, so demux can tell an
+    /// intentional stop from an unexpected capture death (helper crash / socket EOF).
+    intentional_stop: Arc<AtomicBool>,
+    /// Reads capture, records `audio.wav`, and fans PCM to the stream tasks. Awaited unbounded on
+    /// close so a long final WAV encode is never truncated (it cannot block — it drops-with-log on a
+    /// full stream queue).
+    demux: JoinHandle<()>,
+    /// The per-stream feed+persist tasks. Bounded on close (a wedged sidecar can block one in
+    /// `feed`), then aborted.
+    streams: Vec<JoinHandle<()>>,
+    /// True while any transcription sidecar is still loading its models (a cold start); false once
+    /// all are serving. Read by the orchestrator to answer the WebSocket warm-up snapshot so the UI
+    /// can show a "preparing" notice instead of a silent gap.
+    pub(crate) warming: Arc<AtomicBool>,
 }
 
 impl Pipeline {
-    /// Stop capture, then wait for every task to wind down (each transcriber's tail is drained on
+    /// Stop capture, then wait for the tasks to wind down (each transcriber's tail is drained on
     /// close). After this returns, the broadcast channel closes when the pipeline is dropped.
     pub(crate) async fn close(mut self) {
+        // Mark this an intentional stop before closing capture, so demux does not report the
+        // resulting capture-end as an unexpected death.
+        self.intentional_stop.store(true, Ordering::SeqCst);
         self.source.stop().await;
-        for task in self.tasks.drain(..) {
-            let _ = task.await;
+        // Demux never blocks (it drops-with-log on a full stream queue), so it finishes promptly
+        // after capture closes; await it unbounded so its final `audio.wav` encode completes.
+        let _ = self.demux.await;
+        // A wedged sidecar can leave its stream task blocked in `feed`; bound the join and abort so
+        // stop cannot hang. Abort drops the transcriber, whose `kill_on_drop` reaps the child.
+        for task in self.streams.drain(..) {
+            let abort = task.abort_handle();
+            if tokio::time::timeout(STREAM_JOIN_TIMEOUT, task)
+                .await
+                .is_err()
+            {
+                tracing::warn!("stream task did not wind down within the deadline; aborting");
+                abort.abort();
+            }
         }
     }
 }
 
 /// Start the source + both transcribers and spawn the routing/handling tasks. `audio_path` is the
-/// `audio.wav` to record (Me=L / Them=R) when recording is enabled, else `None`.
+/// `audio.wav` to record (Me=L / Them=R) when recording is enabled, else `None`. Returns the
+/// pipeline plus a receiver that fires once if capture ends **unexpectedly** (helper crash / socket
+/// EOF) rather than via [`Pipeline::close`], so the orchestrator can finalize the meeting instead of
+/// leaving it falsely live.
 pub(crate) async fn spawn(
     instance: BackendInstance,
     pool: SqlitePool,
     meeting_id: Uuid,
     audio_path: Option<PathBuf>,
-) -> Result<Pipeline, OrchestratorError> {
+) -> Result<(Pipeline, oneshot::Receiver<()>), OrchestratorError> {
     let BackendInstance {
         mut source,
         mut me,
         mut them,
     } = instance;
 
-    let capture_rx = source.start().await?;
+    // Start the transcribers first, then the capture source. A cold sidecar's start() forks the
+    // process and returns immediately, so its ~10 s CoreML/ANE model load runs *during* the capture
+    // handshake below (Core Audio graph build + any first-run TCC prompt) rather than stacking after
+    // it — cutting time-to-first-transcript. (A pre-warmed sidecar's start() returns instantly.) If
+    // a later stage fails, tear down what already started (a started transcriber holds a live
+    // sidecar; the source keeps the mic/tap hot) instead of dropping it un-stopped.
     let me_emit = me.start().await?;
-    let them_emit = them.start().await?;
+    let them_emit = match them.start().await {
+        Ok(rx) => rx,
+        Err(err) => {
+            me.close().await;
+            return Err(err);
+        }
+    };
+    let capture_rx = match source.start().await {
+        Ok(rx) => rx,
+        Err(err) => {
+            them.close().await;
+            me.close().await;
+            return Err(err);
+        }
+    };
 
     let (broadcast_tx, _) = broadcast::channel::<String>(BROADCAST_CAPACITY);
+
+    // Transcription warm-up state for the UI. A cold sidecar exposes a ready one-shot (still loading
+    // its models); a pre-warmed one does not (already serving). While any sidecar is still loading,
+    // `warming` is true — the WS sends a "preparing" snapshot to new subscribers. Once the last one
+    // is ready, flip it false and broadcast a `ready` status so an already-connected client clears
+    // the notice.
+    let ready_signals: Vec<oneshot::Receiver<()>> = [me.ready_signal(), them.ready_signal()]
+        .into_iter()
+        .flatten()
+        .collect();
+    let warming = Arc::new(AtomicBool::new(!ready_signals.is_empty()));
+    if !ready_signals.is_empty() {
+        let pending = Arc::new(AtomicUsize::new(ready_signals.len()));
+        for ready_rx in ready_signals {
+            let warming = warming.clone();
+            let pending = pending.clone();
+            let broadcast_tx = broadcast_tx.clone();
+            tokio::spawn(async move {
+                // Fires on the sidecar's ready marker; Err if it died first — either way it is no
+                // longer loading, so count it down.
+                let _ = ready_rx.await;
+                if pending.fetch_sub(1, Ordering::SeqCst) == 1 {
+                    warming.store(false, Ordering::SeqCst);
+                    publish_status(&broadcast_tx, "ready");
+                }
+            });
+        }
+    }
+
     let (me_tx, me_rx) = mpsc::channel::<(f64, Vec<f32>)>(PCM_CHANNEL_CAPACITY);
     let (them_tx, them_rx) = mpsc::channel::<(f64, Vec<f32>)>(PCM_CHANNEL_CAPACITY);
 
     let recorder = audio_path.map(MeetingAudioRecorder::new);
-    let demux = tokio::spawn(demux(capture_rx, me_tx, them_tx, recorder));
+    let intentional_stop = Arc::new(AtomicBool::new(false));
+    let (died_tx, died_rx) = oneshot::channel();
+    let demux = tokio::spawn(demux(
+        capture_rx,
+        me_tx,
+        them_tx,
+        recorder,
+        intentional_stop.clone(),
+        died_tx,
+    ));
     let me_task = tokio::spawn(stream_loop(
         StreamRole::Me,
         me,
@@ -94,11 +209,17 @@ pub(crate) async fn spawn(
         broadcast_tx.clone(),
     ));
 
-    Ok(Pipeline {
-        broadcast_tx,
-        source,
-        tasks: vec![demux, me_task, them_task],
-    })
+    Ok((
+        Pipeline {
+            broadcast_tx,
+            source,
+            intentional_stop,
+            demux,
+            streams: vec![me_task, them_task],
+            warming,
+        },
+        died_rx,
+    ))
 }
 
 /// Read capture, anchor the shared epoch on the first chunk, record the stereo `audio.wav` (if
@@ -110,11 +231,15 @@ async fn demux(
     me_tx: mpsc::Sender<(f64, Vec<f32>)>,
     them_tx: mpsc::Sender<(f64, Vec<f32>)>,
     mut recorder: Option<MeetingAudioRecorder>,
+    intentional_stop: Arc<AtomicBool>,
+    died_tx: oneshot::Sender<()>,
 ) {
     let mut epoch_ns: Option<u64> = None;
     while let Some(cap) = capture_rx.recv().await {
         let epoch = *epoch_ns.get_or_insert(cap.chunk.host_ts);
         let t0_s = cap.chunk.host_ts.saturating_sub(epoch) as f64 / 1e9;
+        // Record first, on this always-drained path, so `audio.wav` captures every chunk even when a
+        // stream's transcriber is wedged/behind.
         if let Some(rec) = recorder.as_mut() {
             rec.write(&cap.chunk.samples, t0_s, cap.stream);
         }
@@ -122,7 +247,16 @@ async fn demux(
             Stream::Me => &me_tx,
             Stream::Them => &them_tx,
         };
-        let _ = sender.send((t0_s, cap.chunk.samples)).await;
+        // Never block on a slow/wedged transcriber (that would stall the recorder + the other
+        // stream); on a full queue drop-with-log. The dropped span reappears as a timeline gap that
+        // `stream_loop`'s resync pads with silence, so segment times stay aligned.
+        match sender.try_send((t0_s, cap.chunk.samples)) {
+            Ok(()) => {}
+            Err(TrySendError::Full(_)) => {
+                tracing::debug!(stream = ?cap.stream, "transcriber queue full; dropping chunk")
+            }
+            Err(TrySendError::Closed(_)) => {}
+        }
     }
     // Capture ended: write the WAV. Best-effort — a failure never fails the meeting stop. The encode
     // walks every sample of the meeting, so run it off the async worker.
@@ -132,6 +266,13 @@ async fn demux(
             Err(err) => tracing::error!(error = %err, "meeting audio.wav writer panicked"),
             Ok(Ok(())) => {}
         }
+    }
+    // If capture ended without an intentional `close()` (the helper crashed / the media socket
+    // EOF'd), signal it so the orchestrator finalizes the meeting rather than leaving it live with a
+    // dead pipeline. On an intentional stop, `died_tx` drops here instead (Err on the receiver).
+    if !intentional_stop.load(Ordering::SeqCst) {
+        tracing::warn!("capture ended unexpectedly (helper crash / socket EOF)");
+        let _ = died_tx.send(());
     }
 }
 
@@ -150,13 +291,30 @@ async fn stream_loop(
     let mut offset: Option<f64> = None;
     let mut clusters: HashMap<i64, Uuid> = HashMap::new();
     let mut feeding = true;
+    // Samples fed to the sidecar so far (including any silence padding), so its sample-count
+    // timeline can be kept aligned to meeting time.
+    let mut fed_samples: u64 = 0;
 
     loop {
         tokio::select! {
             biased;
             chunk = chunk_rx.recv(), if feeding => match chunk {
                 Some((t0_s, samples)) => {
-                    offset.get_or_insert(t0_s);
+                    let base = *offset.get_or_insert(t0_s);
+                    // Keep the sidecar's sample-count timeline aligned to meeting time: if this
+                    // chunk's timestamp is past where the samples fed so far place it (dropped
+                    // frames, a tap rebuild, or a chunk dropped by demux under backpressure), pad
+                    // the gap with silence so the single `offset` mapping in `handle` stays correct
+                    // and transcript times track `audio.wav` (which re-anchors on `t0_s` too).
+                    let expected_s = fed_samples as f64 / SAMPLE_RATE;
+                    let gap_s = (t0_s - base) - expected_s;
+                    if gap_s > RESYNC_THRESHOLD_S {
+                        let pad = ((gap_s * SAMPLE_RATE).round() as usize).min(MAX_SILENCE_PAD_SAMPLES);
+                        tracing::debug!(role = ?role, gap_s, pad, "resync: padding sidecar timeline with silence");
+                        fed_samples += pad as u64;
+                        transcriber.feed(vec![0.0; pad]).await;
+                    }
+                    fed_samples += samples.len() as u64;
                     transcriber.feed(samples).await;
                 }
                 // Capture ended: stop feeding and flush the sidecar's finalized tail. The emit
@@ -179,7 +337,13 @@ async fn stream_loop(
                     )
                     .await;
                 }
-                None => break, // the sidecar closed its output; the stream is done
+                // The sidecar closed its output (finished, or died mid-meeting). Close the
+                // transcriber (drop stdin, drain, reap the child) rather than leaking it, then end
+                // this stream. `close()` is idempotent, so a prior close on capture-end is fine.
+                None => {
+                    transcriber.close().await;
+                    break;
+                }
             },
         }
     }
@@ -200,6 +364,25 @@ struct TranscriptEvent<'a> {
 fn publish(broadcast_tx: &broadcast::Sender<String>, event: &TranscriptEvent<'_>) {
     if let Ok(line) = serde_json::to_string(event) {
         // Err just means no live subscribers, which is fine.
+        let _ = broadcast_tx.send(line);
+    }
+}
+
+/// A warm-up status event for WebSocket subscribers: `{"kind":"status","state":"ready"}`, broadcast
+/// once the transcription sidecars finish loading so a client showing a "preparing" notice clears
+/// it. (The initial `"warming"` snapshot is sent by the WS handler on connect; a distinct `kind`
+/// keeps it off the transcript-line path.)
+#[derive(Serialize)]
+struct StatusEvent<'a> {
+    kind: &'a str,
+    state: &'a str,
+}
+
+fn publish_status(broadcast_tx: &broadcast::Sender<String>, state: &str) {
+    if let Ok(line) = serde_json::to_string(&StatusEvent {
+        kind: "status",
+        state,
+    }) {
         let _ = broadcast_tx.send(line);
     }
 }

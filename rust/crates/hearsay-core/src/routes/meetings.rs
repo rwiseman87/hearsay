@@ -10,7 +10,7 @@ use hearsay_db::queries;
 
 use crate::error::{ApiError, ApiResult};
 use crate::routes::Pagination;
-use crate::schema::{MeetingCreate, MeetingRead, Page, SegmentRead};
+use crate::schema::{MeetingCreate, MeetingRead, MeetingUpdate, Page, SegmentRead, StatusInfo};
 use crate::state::AppState;
 use hearsay_engine::LiveError;
 
@@ -18,9 +18,22 @@ use hearsay_engine::LiveError;
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/meetings", get(list_meetings).post(start_meeting))
-        .route("/meetings/{id}", get(get_meeting).delete(delete_meeting))
+        .route(
+            "/meetings/{id}",
+            get(get_meeting)
+                .patch(update_meeting)
+                .delete(delete_meeting),
+        )
         .route("/meetings/{id}/segments", get(list_segments))
         .route("/meetings/{id}/stop", post(stop_meeting))
+        .route("/status", get(read_status))
+}
+
+#[utoipa::path(get, path = "/api/status", tag = "meetings", responses((status = 200, body = StatusInfo)))]
+pub(crate) async fn read_status(State(state): State<AppState>) -> Json<StatusInfo> {
+    Json(StatusInfo {
+        sidecars_ready: state.engine.sidecars_ready(),
+    })
 }
 
 fn unavailable() -> ApiError {
@@ -79,6 +92,30 @@ pub(crate) async fn get_meeting(
     Path(id): Path<Uuid>,
 ) -> ApiResult<Json<MeetingRead>> {
     let meeting = queries::get_meeting(&state.pool, id)
+        .await?
+        .ok_or(ApiError::NotFound("meeting not found"))?;
+    Ok(Json(meeting.into()))
+}
+
+#[utoipa::path(
+    patch, path = "/api/meetings/{id}", tag = "meetings",
+    params(("id" = Uuid, Path)),
+    request_body = MeetingUpdate,
+    responses((status = 200, body = MeetingRead), (status = 400), (status = 404)),
+)]
+pub(crate) async fn update_meeting(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    Json(body): Json<MeetingUpdate>,
+) -> ApiResult<Json<MeetingRead>> {
+    let title = body.title.trim();
+    if title.is_empty() {
+        return Err(ApiError::BadRequest("title must not be empty".into()));
+    }
+    if title.chars().count() > 255 {
+        return Err(ApiError::BadRequest("title exceeds 255 characters".into()));
+    }
+    let meeting = queries::update_meeting_title(&state.pool, id, title)
         .await?
         .ok_or(ApiError::NotFound("meeting not found"))?;
     Ok(Json(meeting.into()))

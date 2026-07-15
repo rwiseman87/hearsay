@@ -86,6 +86,14 @@ One UTF-8 JSON object per line, terminated by `\n`. Three shapes:
 | `get_roster` | `{}` | `roster` data (see event) |
 | `shutdown` | `{}` | `{"bye": true}` (helper then exits) |
 
+> **Implemented subset (this phase).** The helper implements `ping`, `check_permissions`,
+> `start_capture`, `stop_capture`, and `shutdown`; the remaining rows (`list_audio_processes`,
+> `set_active_speaker_mode`, `set_target_window`, `enable_ax`, `get_roster`) are Phase-3 additions and
+> currently answer `{"ok": false, "error": {"code": "unsupported", ...}}`. `start_capture` supports only
+> `tap_mode: "global_except_self"` at the contract-fixed `sample_rate: 16000`; `meeting_app_only`, a
+> per-app/window `target`, and any other `sample_rate` are likewise rejected `unsupported` rather than
+> silently accepted.
+
 ### Events (helper -> core)
 
 | `event` | `data` |
@@ -111,8 +119,11 @@ changes align to audio/diarization turns in the fusion engine.
 3. Core sends `check_permissions`; renders onboarding from the `permission` reply/events.
 4. Core sends `start_capture`; helper opens streams (each begins with a `hello` media frame),
    then streams `audio` frames + emits `status`/`tap_health`/`level`/hint events.
-5. On helper crash/socket EOF, core keeps listening, marks session `degraded`, and respawns
-   with backoff, replaying the last `start_capture`.
+5. On helper crash / media-socket EOF, the core finalizes the active meeting so it is not left
+   falsely recording (the closed broadcast channel signals live subscribers), and the media reader
+   drops-and-resyncs to the frame magic on a malformed frame rather than tearing capture down.
+   Marking the session `degraded` and automatically respawning the helper with backoff to replay the
+   last `start_capture` is not yet implemented.
 6. `shutdown` (or SIGTERM) stops capture and exits.
 
 ## Golden fixtures

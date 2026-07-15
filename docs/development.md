@@ -93,8 +93,9 @@ the sidecar/model as unavailable rather than failing the meeting. Packaging bund
 the `.app` (see [packaging.md](packaging.md)).
 
 The live Them stream is labeled Speaker 1..N by `hearsay-live`; the refine re-diarizes the whole Them
-track for better accuracy and recognizes returning people by voiceprint. It runs automatically at
-stop (`HEARSAY_AUTO_REFINE`, default on) and on demand via the "Refine speakers" button. Rename a
+track for better accuracy and recognizes returning people by voiceprint. It runs on demand via the
+"Refine speakers" button, and optionally at stop when `HEARSAY_AUTO_REFINE` is on (default off, so
+back-to-back meetings are not slowed by the previous meeting's refine). Rename a
 speaker in the UI (or `PUT /api/meetings/{id}/speakers/{cluster_id}`) to bind a name that persists,
 carries across a re-diarize, and is suggested next meeting.
 
@@ -111,7 +112,7 @@ Common overrides:
 | Helper path | `HEARSAY_HELPER_PATH` | `helper/.build/arm64-apple-macosx/debug/hearsay-helper` |
 | Refine model | `HEARSAY_REFINE_MODEL` | `outputs/models/ggml-large-v3-turbo.bin` |
 | Record meeting audio (`audio.wav`) | `HEARSAY_RECORD` | `true` |
-| Auto-refine at finalize | `HEARSAY_AUTO_REFINE` | `true` |
+| Auto-refine at finalize | `HEARSAY_AUTO_REFINE` | `false` |
 | Recognition threshold | `HEARSAY_RECOGNITION_THRESHOLD` | `0.6` |
 | Environment | `ENVIRONMENT` | `development` |
 

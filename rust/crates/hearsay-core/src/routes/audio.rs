@@ -17,20 +17,12 @@ use uuid::Uuid;
 
 use hearsay_db::queries;
 
-use crate::security::{bearer_token, token_matches};
+use crate::security::{bearer_token, query_token, token_matches};
 use crate::state::AppState;
 
 /// Routes served under the `/api` prefix (auth is inline, not the bearer route layer).
 pub fn router() -> Router<AppState> {
     Router::new().route("/meetings/{id}/audio", get(get_meeting_audio))
-}
-
-/// Extract the `token` value from a raw query string (`a=b&token=xyz`), without percent-decoding
-/// (the session token is URL-safe base64).
-fn query_token(query: Option<&str>) -> Option<&str> {
-    query?
-        .split('&')
-        .find_map(|pair| pair.strip_prefix("token="))
 }
 
 fn unauthorized() -> Response {

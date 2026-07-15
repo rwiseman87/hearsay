@@ -4,9 +4,9 @@
 use utoipa::OpenApi;
 
 use crate::schema::{
-    AboutInfo, IdentityRead, MeetingCreate, MeetingRead, MeetingStatus, PermissionsInfo,
-    RecordingSettings, SegmentRead, SettingsRead, SpeakerRead, SpeakerRename, SpeakerSettings,
-    StorageInfo, StorageSettings, Stream,
+    AboutInfo, IdentityRead, MeetingCreate, MeetingRead, MeetingStatus, MeetingUpdate,
+    ModelSettings, ModelsInfo, PermissionsInfo, RecordingSettings, SegmentRead, SettingsRead,
+    SpeakerRead, SpeakerRename, SpeakerSettings, StatusInfo, StorageInfo, StorageSettings, Stream,
 };
 
 #[derive(OpenApi)]
@@ -16,9 +16,11 @@ use crate::schema::{
         crate::routes::meetings::list_meetings,
         crate::routes::meetings::start_meeting,
         crate::routes::meetings::get_meeting,
+        crate::routes::meetings::update_meeting,
         crate::routes::meetings::list_segments,
         crate::routes::meetings::stop_meeting,
         crate::routes::meetings::delete_meeting,
+        crate::routes::meetings::read_status,
         crate::routes::speakers::list_speakers,
         crate::routes::speakers::rename_speaker,
         crate::routes::speakers::rediarize,
@@ -28,6 +30,9 @@ use crate::schema::{
         crate::routes::settings::update_recording,
         crate::routes::settings::update_speakers,
         crate::routes::settings::update_storage,
+        crate::routes::settings::update_models,
+        crate::routes::settings::reset_models,
+        crate::routes::settings::reveal_output_dir,
     ),
     components(schemas(
         MeetingRead,
@@ -37,14 +42,18 @@ use crate::schema::{
         SpeakerRead,
         IdentityRead,
         MeetingCreate,
+        MeetingUpdate,
         SpeakerRename,
         SettingsRead,
         RecordingSettings,
         SpeakerSettings,
         StorageSettings,
         StorageInfo,
+        ModelSettings,
+        ModelsInfo,
         AboutInfo,
         PermissionsInfo,
+        StatusInfo,
     )),
     tags(
         (name = "meetings", description = "Meeting lifecycle + transcript segments"),

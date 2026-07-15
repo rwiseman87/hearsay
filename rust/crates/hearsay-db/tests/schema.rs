@@ -34,7 +34,7 @@ fn refine_result(segments: Vec<RefinedThemSegment>) -> RefineResult {
 async fn meeting_and_segments_roundtrip_ordered() {
     let pool = memory_pool().await;
     let started = chrono::Utc::now();
-    let meeting = queries::create_meeting(&pool, "Standup", "/tmp/standup", started)
+    let meeting = queries::create_meeting(&pool, "Standup", "/tmp/standup", "", started)
         .await
         .unwrap();
     assert_eq!(meeting.status, MeetingStatus::Recording);
@@ -72,11 +72,11 @@ async fn meeting_and_segments_roundtrip_ordered() {
 #[tokio::test]
 async fn finalize_sets_status_and_end() {
     let pool = memory_pool().await;
-    let meeting = queries::create_meeting(&pool, "t", "f", chrono::Utc::now())
+    let meeting = queries::create_meeting(&pool, "t", "f", "", chrono::Utc::now())
         .await
         .unwrap();
     let ended = chrono::Utc::now();
-    queries::finalize_meeting(&pool, meeting.id, ended)
+    queries::finalize_meeting(&pool, meeting.id, ended, MeetingStatus::Finalized)
         .await
         .unwrap();
     let fetched = queries::get_meeting(&pool, meeting.id)
@@ -90,7 +90,7 @@ async fn finalize_sets_status_and_end() {
 #[tokio::test]
 async fn enum_stored_as_lowercase_text() {
     let pool = memory_pool().await;
-    let meeting = queries::create_meeting(&pool, "t", "f", chrono::Utc::now())
+    let meeting = queries::create_meeting(&pool, "t", "f", "", chrono::Utc::now())
         .await
         .unwrap();
     let status: String = sqlx::query_scalar("SELECT status FROM meetings WHERE id = ?")
@@ -104,7 +104,7 @@ async fn enum_stored_as_lowercase_text() {
 #[tokio::test]
 async fn foreign_key_cascade_deletes_segments() {
     let pool = memory_pool().await;
-    let meeting = queries::create_meeting(&pool, "t", "f", chrono::Utc::now())
+    let meeting = queries::create_meeting(&pool, "t", "f", "", chrono::Utc::now())
         .await
         .unwrap();
     queries::insert_segment(&pool, meeting.id, Stream::Me, "Me", "x", 0.0, 1.0, None)
@@ -134,7 +134,7 @@ async fn identity_display_name_is_unique() {
 #[tokio::test]
 async fn cluster_centroid_blob_roundtrips() {
     let pool = memory_pool().await;
-    let meeting = queries::create_meeting(&pool, "t", "f", chrono::Utc::now())
+    let meeting = queries::create_meeting(&pool, "t", "f", "", chrono::Utc::now())
         .await
         .unwrap();
     let centroid = vec![1u8, 2, 3, 4, 250, 255];
@@ -151,7 +151,7 @@ async fn list_meetings_paginates_newest_first() {
     let base = chrono::Utc::now();
     for (i, title) in ["oldest", "middle", "newest"].iter().enumerate() {
         let started = base + chrono::Duration::seconds(i as i64);
-        queries::create_meeting(&pool, title, title, started)
+        queries::create_meeting(&pool, title, title, "", started)
             .await
             .unwrap();
     }
@@ -168,9 +168,36 @@ async fn list_meetings_paginates_newest_first() {
 }
 
 #[tokio::test]
+async fn update_meeting_title_renames_and_reports_missing() {
+    let pool = memory_pool().await;
+    let meeting = queries::create_meeting(&pool, "old", "f", "", chrono::Utc::now())
+        .await
+        .unwrap();
+
+    let updated = queries::update_meeting_title(&pool, meeting.id, "new title")
+        .await
+        .unwrap()
+        .expect("meeting exists");
+    assert_eq!(updated.title, "new title");
+    assert!(updated.updated_at >= meeting.updated_at);
+    // Persisted, not just returned.
+    let fetched = queries::get_meeting(&pool, meeting.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(fetched.title, "new title");
+
+    // An unknown id renames nothing and reports `None`.
+    let missing = queries::update_meeting_title(&pool, uuid::Uuid::new_v4(), "x")
+        .await
+        .unwrap();
+    assert!(missing.is_none());
+}
+
+#[tokio::test]
 async fn rename_cluster_binds_relabels_and_joins() {
     let pool = memory_pool().await;
-    let meeting = queries::create_meeting(&pool, "t", "f", chrono::Utc::now())
+    let meeting = queries::create_meeting(&pool, "t", "f", "", chrono::Utc::now())
         .await
         .unwrap();
     let cluster = queries::create_cluster(&pool, meeting.id, 1, false, None)
@@ -218,7 +245,7 @@ async fn rename_cluster_binds_relabels_and_joins() {
 #[tokio::test]
 async fn delete_meeting_removes_clusters_and_reports_missing() {
     let pool = memory_pool().await;
-    let meeting = queries::create_meeting(&pool, "t", "f", chrono::Utc::now())
+    let meeting = queries::create_meeting(&pool, "t", "f", "", chrono::Utc::now())
         .await
         .unwrap();
     queries::create_cluster(&pool, meeting.id, 1, false, None)
@@ -237,7 +264,7 @@ async fn delete_meeting_removes_clusters_and_reports_missing() {
 #[tokio::test]
 async fn replace_them_segments_swaps_clusters_keeps_me() {
     let pool = memory_pool().await;
-    let meeting = queries::create_meeting(&pool, "t", "f", chrono::Utc::now())
+    let meeting = queries::create_meeting(&pool, "t", "f", "", chrono::Utc::now())
         .await
         .unwrap();
     // Seed: a Me segment (untouched by the refine) + an old Them segment on an old cluster.
@@ -308,7 +335,7 @@ async fn replace_them_segments_swaps_clusters_keeps_me() {
 #[tokio::test]
 async fn replace_them_segments_carries_forward_locked_names() {
     let pool = memory_pool().await;
-    let meeting = queries::create_meeting(&pool, "t", "f", chrono::Utc::now())
+    let meeting = queries::create_meeting(&pool, "t", "f", "", chrono::Utc::now())
         .await
         .unwrap();
     // An old Them cluster (ordinal 5) with a segment late in the meeting, manually named + locked.
@@ -374,7 +401,7 @@ async fn replace_them_segments_carries_forward_locked_names() {
 #[tokio::test]
 async fn replace_them_segments_empty_is_noop() {
     let pool = memory_pool().await;
-    let meeting = queries::create_meeting(&pool, "t", "f", chrono::Utc::now())
+    let meeting = queries::create_meeting(&pool, "t", "f", "", chrono::Utc::now())
         .await
         .unwrap();
     let cluster = queries::create_cluster(&pool, meeting.id, 1, false, None)
@@ -417,7 +444,7 @@ async fn replace_them_segments_stores_and_recognizes_voiceprints() {
     let pool = memory_pool().await;
 
     // Prior meeting: Alice named + locked with a stored voiceprint.
-    let prior = queries::create_meeting(&pool, "prior", "p", chrono::Utc::now())
+    let prior = queries::create_meeting(&pool, "prior", "p", "", chrono::Utc::now())
         .await
         .unwrap();
     let ac = queries::create_cluster(
@@ -436,7 +463,7 @@ async fn replace_them_segments_stores_and_recognizes_voiceprints() {
 
     // New meeting: refine yields two speakers; ordinal 1's voiceprint is close to Alice's, ordinal
     // 2's is unknown.
-    let meeting = queries::create_meeting(&pool, "new", "n", chrono::Utc::now())
+    let meeting = queries::create_meeting(&pool, "new", "n", "", chrono::Utc::now())
         .await
         .unwrap();
     let result = RefineResult {
@@ -487,10 +514,10 @@ async fn replace_them_segments_stores_and_recognizes_voiceprints() {
 #[tokio::test]
 async fn known_voiceprints_excludes_current_and_requires_locked_centroid() {
     let pool = memory_pool().await;
-    let m1 = queries::create_meeting(&pool, "m1", "1", chrono::Utc::now())
+    let m1 = queries::create_meeting(&pool, "m1", "1", "", chrono::Utc::now())
         .await
         .unwrap();
-    let m2 = queries::create_meeting(&pool, "m2", "2", chrono::Utc::now())
+    let m2 = queries::create_meeting(&pool, "m2", "2", "", chrono::Utc::now())
         .await
         .unwrap();
 
@@ -600,7 +627,7 @@ async fn effective_settings_tolerate_corrupt_or_partial_rows() {
 #[tokio::test]
 async fn meeting_dir_pins_at_creation_with_legacy_fallback() {
     let pool = memory_pool().await;
-    let meeting = queries::create_meeting(&pool, "M", "2026-07-14_0900_m", chrono::Utc::now())
+    let meeting = queries::create_meeting(&pool, "M", "2026-07-14_0900_m", "", chrono::Utc::now())
         .await
         .unwrap();
     // A freshly created row has no pinned dir yet; dir_path falls back to default_root/<folder>.
@@ -629,7 +656,7 @@ async fn meeting_dir_pins_at_creation_with_legacy_fallback() {
 async fn recognition_threshold_gates_cross_meeting_match() {
     let pool = memory_pool().await;
     // Prior meeting: Alice named + locked with a stored voiceprint.
-    let prior = queries::create_meeting(&pool, "prior", "p", chrono::Utc::now())
+    let prior = queries::create_meeting(&pool, "prior", "p", "", chrono::Utc::now())
         .await
         .unwrap();
     let ac = queries::create_cluster(
@@ -648,7 +675,7 @@ async fn recognition_threshold_gates_cross_meeting_match() {
 
     // New meeting whose ordinal-1 voiceprint is ~0.994 cosine to Alice: recognized at 0.6, but a
     // stricter 0.999 threshold rejects the same match -> the threshold is genuinely applied.
-    let meeting = queries::create_meeting(&pool, "new", "n", chrono::Utc::now())
+    let meeting = queries::create_meeting(&pool, "new", "n", "", chrono::Utc::now())
         .await
         .unwrap();
     let result = RefineResult {

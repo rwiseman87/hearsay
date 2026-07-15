@@ -11,11 +11,13 @@ use uuid::Uuid;
 use hearsay_db::models::{Identity, Meeting, Segment};
 use hearsay_db::queries::SpeakerRow;
 
-/// Lifecycle state of a meeting (lowercase on the wire, matching the Python `StrEnum`).
+/// Lifecycle state of a meeting (lowercase on the wire): `recording` while live, `refining` while the
+/// post-stop refine + transcript write run in the background, then `finalized`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ToSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum MeetingStatus {
     Recording,
+    Refining,
     Finalized,
 }
 
@@ -23,6 +25,7 @@ impl From<hearsay_db::models::MeetingStatus> for MeetingStatus {
     fn from(status: hearsay_db::models::MeetingStatus) -> Self {
         match status {
             hearsay_db::models::MeetingStatus::Recording => MeetingStatus::Recording,
+            hearsay_db::models::MeetingStatus::Refining => MeetingStatus::Refining,
             hearsay_db::models::MeetingStatus::Finalized => MeetingStatus::Finalized,
         }
     }
@@ -160,6 +163,12 @@ pub struct MeetingCreate {
     pub title: Option<String>,
 }
 
+/// Rename a meeting. `title` replaces the meeting's display title (validated non-empty, <= 255 chars).
+#[derive(Debug, Clone, Deserialize, ToSchema)]
+pub struct MeetingUpdate {
+    pub title: String,
+}
+
 /// Rename a cluster to a person (binds + locks; relabels that speaker's segments).
 #[derive(Debug, Clone, Deserialize, ToSchema)]
 pub struct SpeakerRename {
@@ -196,6 +205,22 @@ pub struct StorageInfo {
     pub meeting_count: i64,
 }
 
+/// Models: the offline-refine whisper model path. Editable section; the effective value is the
+/// stored override, else the bundled config default. Only the refine (post-meeting re-transcription)
+/// uses whisper — live transcription is the FluidAudio/ANE sidecars and is not configured here.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ModelSettings {
+    pub refine_model: String,
+}
+
+/// Read-only model facts shown alongside the editable models section: the bundled default (so the
+/// UI can offer a reset target) and whether the effective model file currently resolves on disk.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct ModelsInfo {
+    pub default_refine_model: String,
+    pub refine_model_exists: bool,
+}
+
 /// Read-only build/runtime facts for the About panel (`protocol_version` is the core's IPC
 /// frame-protocol constant; a mismatch with the helper's reported copy signals version drift).
 #[derive(Debug, Clone, Serialize, ToSchema)]
@@ -228,5 +253,15 @@ pub struct SettingsRead {
     pub speakers: SpeakerSettings,
     pub storage: StorageSettings,
     pub storage_info: StorageInfo,
+    pub models: ModelSettings,
+    pub models_info: ModelsInfo,
     pub about: AboutInfo,
+}
+
+/// Live engine readiness for the UI to gate "Start" on. `sidecars_ready` is `true` once the
+/// pre-warmed transcription sidecars have loaded their models (so a new meeting transcribes
+/// immediately) and `false` while they are still loading after launch.
+#[derive(Debug, Clone, Copy, Serialize, ToSchema)]
+pub struct StatusInfo {
+    pub sidecars_ready: bool,
 }

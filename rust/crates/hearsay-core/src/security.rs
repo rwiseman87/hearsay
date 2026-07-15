@@ -75,6 +75,16 @@ pub fn token_matches(provided: Option<&str>, expected: &str) -> bool {
     }
 }
 
+/// Extract the `token` value from a raw query string (`a=b&token=xyz`), without percent-decoding:
+/// the session token is hex (`[0-9a-f]`), which never contains a percent-encoded byte, so the raw
+/// substring is the token verbatim. Used by the `<audio>` element and the WebSocket (which cannot
+/// set an Authorization header) and by the index gate.
+pub fn query_token(query: Option<&str>) -> Option<&str> {
+    query?
+        .split('&')
+        .find_map(|pair| pair.strip_prefix("token="))
+}
+
 /// Extract the token from an `Authorization: Bearer <token>` header, or `None`.
 pub fn bearer_token(authorization_header: Option<&str>) -> Option<&str> {
     let header = authorization_header?;
@@ -118,6 +128,15 @@ mod tests {
         assert!(!token_matches(Some("Secret"), "secret"));
         assert!(!token_matches(Some(""), "secret"));
         assert!(!token_matches(None, "secret"));
+    }
+
+    #[test]
+    fn query_token_extracts_raw_value_without_decoding() {
+        assert_eq!(query_token(Some("token=abc123")), Some("abc123"));
+        assert_eq!(query_token(Some("a=b&token=abc123")), Some("abc123"));
+        assert_eq!(query_token(Some("a=b&c=d")), None);
+        assert_eq!(query_token(Some("")), None);
+        assert_eq!(query_token(None), None);
     }
 
     #[test]

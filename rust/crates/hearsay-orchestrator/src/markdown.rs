@@ -48,6 +48,7 @@ fn render(title: &str, segments: &[Segment]) -> String {
 fn status_str(status: MeetingStatus) -> &'static str {
     match status {
         MeetingStatus::Recording => "recording",
+        MeetingStatus::Refining => "refining",
         MeetingStatus::Finalized => "finalized",
     }
 }

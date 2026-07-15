@@ -2,6 +2,7 @@
 name = "hearsay-ipc"
 version.workspace = true
 edition.workspace = true
+publish = false
 
 [dependencies]
 serde = { version = "1.0.228", default-features = false, features = ["derive"] }

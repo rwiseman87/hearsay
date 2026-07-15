@@ -8,17 +8,18 @@
 use std::path::{Path, PathBuf};
 
 use axum::extract::State;
-use axum::routing::{get, put};
+use axum::http::StatusCode;
+use axum::routing::{get, post, put};
 use axum::{Json, Router};
 
 use hearsay_db::queries;
-use hearsay_db::queries::{SECTION_RECORDING, SECTION_SPEAKERS, SECTION_STORAGE};
+use hearsay_db::queries::{SECTION_MODELS, SECTION_RECORDING, SECTION_SPEAKERS, SECTION_STORAGE};
 
 use crate::config::Settings;
 use crate::error::{ApiError, ApiResult};
 use crate::schema::{
-    AboutInfo, PermissionsInfo, RecordingSettings, SettingsRead, SpeakerSettings, StorageInfo,
-    StorageSettings,
+    AboutInfo, ModelSettings, ModelsInfo, PermissionsInfo, RecordingSettings, SettingsRead,
+    SpeakerSettings, StorageInfo, StorageSettings,
 };
 use crate::state::AppState;
 
@@ -30,6 +31,8 @@ pub fn router() -> Router<AppState> {
         .route("/settings/recording", put(update_recording))
         .route("/settings/speakers", put(update_speakers))
         .route("/settings/storage", put(update_storage))
+        .route("/settings/models", put(update_models).delete(reset_models))
+        .route("/settings/reveal", post(reveal_output_dir))
 }
 
 /// The local DB file path for display; avoid leaking credentials for a remote DB URL. Mirrors the
@@ -83,6 +86,23 @@ async fn resolve_storage(state: &AppState) -> ApiResult<StorageSettings> {
     }
 }
 
+async fn resolve_models(state: &AppState) -> ApiResult<ModelSettings> {
+    match queries::get_preference(&state.pool, SECTION_MODELS).await? {
+        Some(json) => serde_json::from_str(&json)
+            .map_err(|e| ApiError::Internal(format!("corrupt models preference: {e}"))),
+        None => Ok(ModelSettings {
+            refine_model: state.settings.refine_model.to_string_lossy().to_string(),
+        }),
+    }
+}
+
+fn models_info(state: &AppState, effective: &ModelSettings) -> ModelsInfo {
+    ModelsInfo {
+        default_refine_model: state.settings.refine_model.to_string_lossy().to_string(),
+        refine_model_exists: Path::new(&effective.refine_model).is_file(),
+    }
+}
+
 async fn storage_info(state: &AppState) -> ApiResult<StorageInfo> {
     let output_dir = resolve_storage(state).await?.output_dir;
     let meeting_count = queries::count_meetings(&state.pool).await?;
@@ -125,11 +145,15 @@ fn dir_size(root: &Path) -> i64 {
 
 #[utoipa::path(get, path = "/api/settings", tag = "settings", responses((status = 200, body = SettingsRead)))]
 pub(crate) async fn read_settings(State(state): State<AppState>) -> ApiResult<Json<SettingsRead>> {
+    let models = resolve_models(&state).await?;
+    let models_info = models_info(&state, &models);
     Ok(Json(SettingsRead {
         recording: resolve_recording(&state).await?,
         speakers: resolve_speakers(&state).await?,
         storage: resolve_storage(&state).await?,
         storage_info: storage_info(&state).await?,
+        models,
+        models_info,
         about: about(&state.settings),
     }))
 }
@@ -202,6 +226,86 @@ pub(crate) async fn update_storage(
     Ok(Json(stored))
 }
 
+#[utoipa::path(
+    put, path = "/api/settings/models", tag = "settings",
+    request_body = ModelSettings, responses((status = 200, body = ModelSettings), (status = 422)),
+)]
+pub(crate) async fn update_models(
+    State(state): State<AppState>,
+    Json(body): Json<ModelSettings>,
+) -> ApiResult<Json<ModelSettings>> {
+    let input = body.refine_model.trim().to_string();
+    if input.is_empty() {
+        return Err(ApiError::Unprocessable(
+            "refine_model must not be empty".into(),
+        ));
+    }
+    let resolved = tokio::task::spawn_blocking(move || validate_refine_model(&input))
+        .await
+        .map_err(|e| ApiError::Internal(format!("refine_model validation panicked: {e}")))??;
+    let stored = ModelSettings {
+        refine_model: resolved,
+    };
+    store_section(&state, SECTION_MODELS, &stored).await?;
+    Ok(Json(stored))
+}
+
+#[utoipa::path(
+    delete, path = "/api/settings/models", tag = "settings",
+    responses((status = 200, body = ModelSettings)),
+)]
+pub(crate) async fn reset_models(State(state): State<AppState>) -> ApiResult<Json<ModelSettings>> {
+    queries::clear_preference(&state.pool, SECTION_MODELS).await?;
+    Ok(Json(resolve_models(&state).await?))
+}
+
+/// Open the effective recordings directory in the OS file manager. Runs in the core (a native
+/// process in the user's login session), reached over the same-origin HTTP API the rest of Settings
+/// uses — the desktop shell's Tauri `invoke()` is not reliably reachable from the webview's remote
+/// loopback origin, so the "Reveal data folder" button routes here instead. On failure the reason is
+/// surfaced to the client (not collapsed to a generic 500) so a broken reveal is diagnosable.
+#[utoipa::path(
+    post, path = "/api/settings/reveal", tag = "settings",
+    responses((status = 204), (status = 503)),
+)]
+pub(crate) async fn reveal_output_dir(State(state): State<AppState>) -> ApiResult<StatusCode> {
+    let dir = PathBuf::from(resolve_storage(&state).await?.output_dir);
+    let _ = tokio::fs::create_dir_all(&dir).await; // best-effort; open still surfaces a real failure
+    tokio::task::spawn_blocking(move || reveal_in_file_manager(&dir))
+        .await
+        .map_err(|e| ApiError::Internal(format!("reveal task panicked: {e}")))??;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Open `dir` in Finder via an absolute `/usr/bin/open` (no PATH dependency from the bundled app's
+/// minimal process environment). `dir` is app-controlled (the effective recordings dir), never
+/// user-supplied, so there is no argument-injection surface. Errors carry the reason for the UI.
+#[cfg(target_os = "macos")]
+fn reveal_in_file_manager(dir: &Path) -> ApiResult<()> {
+    tracing::info!(dir = %dir.display(), "reveal: opening recordings dir in Finder");
+    let status = std::process::Command::new("/usr/bin/open")
+        .arg(dir)
+        .status()
+        .map_err(|e| ApiError::Unavailable(format!("could not launch /usr/bin/open: {e}")))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(ApiError::Unavailable(format!(
+            "/usr/bin/open exited with {status} for {}",
+            dir.display()
+        )))
+    }
+}
+
+/// Non-macOS placeholder: the Windows port (planned) will use `explorer`; other targets have no
+/// file manager to drive.
+#[cfg(not(target_os = "macos"))]
+fn reveal_in_file_manager(_dir: &Path) -> ApiResult<()> {
+    Err(ApiError::Unavailable(
+        "revealing the recordings folder is not supported on this platform".into(),
+    ))
+}
+
 /// Serialize a settings section to JSON and upsert its `preferences` row.
 async fn store_section<T: serde::Serialize>(
     state: &AppState,
@@ -236,6 +340,41 @@ fn validate_output_dir(input: &str) -> Result<String, ApiError> {
     std::fs::write(&probe, b"")
         .and_then(|()| std::fs::remove_file(&probe))
         .map_err(|_| ApiError::Unprocessable(format!("{} is not writable", resolved.display())))?;
+    Ok(resolved.to_string_lossy().to_string())
+}
+
+/// Resolve `input` to an absolute, existing, readable GGML whisper model file or a 422. The refine
+/// loads this model at each run, so reject a bad path at the boundary (empty, non-absolute, missing,
+/// a directory, or not a whisper model) instead of surfacing a cryptic whisper load failure at
+/// refine time. The GGML magic check (little-endian `0x67676d6c`, the first 4 bytes of every
+/// `ggml-*.bin` whisper model) guards against pointing the refine at an unrelated file.
+fn validate_refine_model(input: &str) -> Result<String, ApiError> {
+    let expanded = expand_home(input);
+    let path = Path::new(&expanded);
+    if !path.is_absolute() {
+        return Err(ApiError::Unprocessable(
+            "refine_model must be an absolute path".into(),
+        ));
+    }
+    let resolved = std::fs::canonicalize(path)
+        .map_err(|_| ApiError::Unprocessable(format!("{expanded} does not exist")))?;
+    if !resolved.is_file() {
+        return Err(ApiError::Unprocessable(format!(
+            "{} is not a file",
+            resolved.display()
+        )));
+    }
+    let mut magic = [0u8; 4];
+    std::fs::File::open(&resolved)
+        .and_then(|mut f| std::io::Read::read_exact(&mut f, &mut magic))
+        .map_err(|_| ApiError::Unprocessable(format!("{} is not readable", resolved.display())))?;
+    // Whisper `GGML_FILE_MAGIC` (0x67676d6c) stored little-endian on disk.
+    if magic != [0x6c, 0x6d, 0x67, 0x67] {
+        return Err(ApiError::Unprocessable(format!(
+            "{} is not a GGML whisper model (expected a ggml-*.bin file)",
+            resolved.display()
+        )));
+    }
     Ok(resolved.to_string_lossy().to_string())
 }
 

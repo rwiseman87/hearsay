@@ -1,0 +1,10 @@
+# cargo-audit config for the Tauri shell tree (read by `make audit` -> `cd web/src-tauri && cargo
+# audit`). Ignored advisories are transitive dependencies with no compatible patched version yet.
+#
+# RUSTSEC-2026-0194 / -0195: quick-xml 0.39.4 (DoS: quadratic attribute scan + unbounded namespace
+# allocation). Reached only via plist -> tauri (macOS Info.plist parsing in the bundler/build); it
+# never parses untrusted network input in this app. `cargo update` finds no semver-compatible fix
+# under plist's `^0.39` constraint, so this waits on an upstream tauri/plist bump. Re-check on Tauri
+# upgrades and drop these ignores once quick-xml is patched.
+[advisories]
+ignore = ["RUSTSEC-2026-0194", "RUSTSEC-2026-0195"]

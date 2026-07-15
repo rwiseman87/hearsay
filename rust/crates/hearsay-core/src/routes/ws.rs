@@ -53,6 +53,16 @@ async fn stream_transcript(mut socket: WebSocket, state: AppState, meeting_id: U
         let _ = socket.send(Message::Close(None)).await;
         return;
     };
+    // Warm-up snapshot: if the transcription sidecars are still loading their models (a cold start),
+    // tell this subscriber up front so it shows a "preparing" notice instead of a silent gap. Read
+    // *after* subscribing, so the `ready` transition (broadcast to the receiver above) can never be
+    // missed in the gap between the two. A pre-warmed meeting reports not-warming and sends nothing.
+    if state.engine.transcription_warming(meeting_id) == Some(true) {
+        let frame = r#"{"kind":"status","state":"warming"}"#;
+        if socket.send(Message::Text(frame.into())).await.is_err() {
+            return;
+        }
+    }
     loop {
         match receiver.recv().await {
             Ok(text) => {

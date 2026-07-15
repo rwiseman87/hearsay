@@ -1,9 +1,12 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 
+import { api } from "../api/client";
 import {
   usePermissions,
+  useResetModels,
   useSettings,
+  useUpdateModels,
   useUpdateRecording,
   useUpdateSpeakers,
   useUpdateStorage,
@@ -22,6 +25,7 @@ interface Props {
 const PANELS = [
   { id: "recording", label: "Recording & Privacy" },
   { id: "speakers", label: "Speakers" },
+  { id: "models", label: "Models" },
   { id: "storage", label: "Storage" },
   { id: "permissions", label: "Permissions" },
   { id: "about", label: "About" },
@@ -121,9 +125,12 @@ function SpeakersPanel() {
   // Local slider value so dragging is smooth; the mutation commits only on release.
   const [threshold, setThreshold] = useState(0.6);
 
+  // Re-sync the slider when the server value changes. Depend on the primitive we actually read, not
+  // the settings object (a fresh reference on every fetch).
+  const recognitionThreshold = speakers?.recognition_threshold;
   useEffect(() => {
-    if (speakers) setThreshold(speakers.recognition_threshold);
-  }, [speakers?.recognition_threshold]);
+    if (recognitionThreshold !== undefined) setThreshold(recognitionThreshold);
+  }, [recognitionThreshold]);
 
   if (settings.isLoading || !speakers) return <p className="muted">Loading…</p>;
 
@@ -182,6 +189,112 @@ function SpeakersPanel() {
   );
 }
 
+function ModelsPanel() {
+  const settings = useSettings();
+  const update = useUpdateModels();
+  const reset = useResetModels();
+  const models = settings.data?.models;
+  const info = settings.data?.models_info;
+  const [path, setPath] = useState("");
+
+  // Re-sync the input when the server value changes; depend on the primitive, not the settings object.
+  const refineModel = models?.refine_model;
+  useEffect(() => {
+    if (refineModel !== undefined) setPath(refineModel);
+  }, [refineModel]);
+
+  if (settings.isLoading || !models || !info) return <p className="muted">Loading…</p>;
+
+  const busy = update.isPending || reset.isPending;
+  const onSave = () => {
+    const trimmed = path.trim();
+    if (trimmed) update.mutate({ refine_model: trimmed });
+  };
+
+  // Native open-file dialog (desktop only — the shell surfaces it via Tauri IPC). Picking a file
+  // applies it immediately; the core still validates the GGML magic before persisting.
+  const onBrowse = async () => {
+    let picked: string | null;
+    try {
+      picked = await invoke<string | null>("pick_refine_model");
+    } catch {
+      return; // picker unavailable — the text input remains the fallback
+    }
+    if (picked) {
+      setPath(picked);
+      update.mutate({ refine_model: picked });
+    }
+  };
+
+  const isDefault = models.refine_model === info.default_refine_model;
+
+  return (
+    <div className="settings__panel">
+      <h3 className="settings__panel-title">Models</h3>
+      <div className="settings__field">
+        <span className="settings__row-label">Refine transcription model</span>
+        <div className="settings__inline">
+          <input
+            value={path}
+            spellCheck={false}
+            disabled={busy}
+            aria-label="Refine transcription model path"
+            onChange={(event) => setPath(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") onSave();
+            }}
+          />
+          {IS_DESKTOP ? (
+            <button type="button" onClick={() => void onBrowse()} disabled={busy}>
+              Choose…
+            </button>
+          ) : null}
+          <button type="button" onClick={onSave} disabled={busy || path.trim() === models.refine_model}>
+            {update.isPending ? "Checking…" : "Save"}
+          </button>
+        </div>
+        <span className="settings__row-hint muted">
+          Absolute path to a downloaded GGML whisper model (a <code>ggml-*.bin</code> file). Used
+          only for the post-meeting refine — the higher-accuracy re-transcription behind the “Refine
+          speakers” button and auto-refine. Live transcription is unaffected. Applies to your next
+          refine.
+        </span>
+        {!info.refine_model_exists ? (
+          <p className="settings__error" role="alert">
+            The current model file was not found on disk. Refining will fail until this points at an
+            existing model.
+          </p>
+        ) : null}
+        {update.isError ? (
+          <p className="settings__error" role="alert">
+            {(update.error as Error).message}
+          </p>
+        ) : null}
+      </div>
+      <dl className="settings__facts">
+        <div>
+          <dt>Bundled default</dt>
+          <dd>
+            <code>{info.default_refine_model}</code>
+            {isDefault ? (
+              <span className="settings__row-hint muted"> — in use</span>
+            ) : (
+              <button
+                type="button"
+                className="settings__link-btn"
+                disabled={busy}
+                onClick={() => reset.mutate()}
+              >
+                {reset.isPending ? "Resetting…" : "Reset to default"}
+              </button>
+            )}
+          </dd>
+        </div>
+      </dl>
+    </div>
+  );
+}
+
 function StoragePanel() {
   const settings = useSettings();
   const update = useUpdateStorage();
@@ -189,9 +302,11 @@ function StoragePanel() {
   const info = settings.data?.storage_info;
   const [dir, setDir] = useState("");
 
+  // Re-sync the input when the server value changes; depend on the primitive, not the settings object.
+  const outputDir = storage?.output_dir;
   useEffect(() => {
-    if (storage) setDir(storage.output_dir);
-  }, [storage?.output_dir]);
+    if (outputDir !== undefined) setDir(outputDir);
+  }, [outputDir]);
 
   if (settings.isLoading || !storage || !info) return <p className="muted">Loading…</p>;
 
@@ -332,8 +447,12 @@ function AboutPanel() {
   );
 }
 
-// Self-contained on purpose: it never touches the settings HTTP API (unavailable in the packaged
-// Rust core), so it works even when the other panels can't load.
+// "Reveal data folder" goes through the core's same-origin HTTP API (the channel the rest of
+// Settings uses and which works in the packaged app), NOT Tauri invoke() — the webview runs on the
+// core's remote loopback origin, from which custom shell commands are not reliably reachable, which
+// is why every invoke()-based reveal did nothing. The core (a native process) opens Finder itself,
+// and surfaces the reason on failure. Erase + quit stay Tauri IPC (only the shell can quit the app /
+// reset macOS permissions).
 function DangerZonePanel() {
   const [confirm, setConfirm] = useState("");
   const [phase, setPhase] = useState<"idle" | "erasing" | "done">("idle");
@@ -342,9 +461,9 @@ function DangerZonePanel() {
   const reveal = async () => {
     setError(null);
     try {
-      await invoke("reveal_data_dir");
+      await api.post("/api/settings/reveal");
     } catch (err) {
-      setError(String(err));
+      setError(err instanceof Error ? err.message : String(err));
     }
   };
 
@@ -469,6 +588,7 @@ export default function SettingsPage({ onClose }: Props) {
           <div className="settings__content">
             {active === "recording" ? <RecordingPanel /> : null}
             {active === "speakers" ? <SpeakersPanel /> : null}
+            {active === "models" ? <ModelsPanel /> : null}
             {active === "storage" ? <StoragePanel /> : null}
             {active === "permissions" ? <PermissionsPanel /> : null}
             {active === "about" ? <AboutPanel /> : null}

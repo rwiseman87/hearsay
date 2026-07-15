@@ -2,11 +2,12 @@
 name = "hearsay-orchestrator"
 version.workspace = true
 edition.workspace = true
+publish = false
 
 [dependencies]
 hearsay-engine = { path = "../hearsay-engine" }
 hearsay-db = { path = "../hearsay-db" }
-tokio = { version = "1.52.3", features = ["process", "io-util", "sync", "rt", "time"] }
+tokio = { version = "1.52.3", features = ["process", "io-util", "sync", "rt", "time", "macros", "fs"] }
 async-trait = "0.1.89"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"

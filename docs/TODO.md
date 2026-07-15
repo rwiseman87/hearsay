@@ -6,6 +6,15 @@ Conventions: `CLAUDE.md`.
 
 ## How to resume
 
+**ACTIVE WORK (2026-07-14) — architecture-review remediation, tracked in `docs/remediation-plan.md`.**
+WP1-WP6 are done and verified locally but **not yet committed** on `feat/packaging-dmg-uninstall`;
+WP7-WP10 remain. WP6 (IPC contract reconciliation) landed the one real correctness bug (transcript
+timestamp drift, now silence-padded on gaps), the capture-reader resync + seq-gap logging, the
+helper-crash supervisor (an unexpected capture death now finalizes the meeting), the head-of-line fix
+(recorder off the ASR-backpressure path), Swift `start_capture` arg validation + ring-overrun→seq, and
+the ipc.md reconciliation. See that plan's "Progress (resume here)" block for the exact state,
+verification gaps, and what's next (WP7 — Swift helper RT-audio hygiene + watchdog correctness).
+
 **UPDATE (2026-07-14) — the Rust core is canonical; the Python backend has been removed.** The Rust
 `hearsay-core` is the shipping artifact; the OpenAPI + IPC-fixture codegen is generated from Rust,
 and the Settings page is now backed in the Rust core. Entries below that describe the Python core

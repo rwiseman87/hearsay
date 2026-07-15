@@ -24,6 +24,12 @@ final class Serve: @unchecked Sendable {
     private let heartbeatNs: UInt64 = 1_000_000_000  // emit a heartbeat after 1 s idle
     private let levelThrottleNs: UInt64 = 250_000_000  // meter cadence
     private let helperVersion = "0.1.0"
+    // Bound each media write so a stalled core cannot pin `mediaLock` (and thus the shutdown path)
+    // forever; a timed-out write drops the frame (the core's frame reader resyncs to the next magic).
+    private let mediaWriteTimeoutSec = 2.0
+    // Give the uplink a little longer than one bounded write to observe the stop flag and exit before
+    // the control thread does the final drain, so the two never touch the ring / bookkeeping at once.
+    private let uplinkJoinTimeoutSec = 3.0
 
     // Sockets + their write locks. Two threads emit on the control channel (the
     // control loop replies; the uplink + watchdog emit events), so writes are
@@ -41,6 +47,10 @@ final class Serve: @unchecked Sendable {
     private var streams: [(kind: StreamKind, ring: RingBuffer)] = []
     private var uplink: Thread?
     private var uplinkDone: DispatchSemaphore?
+    // Per-session stop signal. The uplink loops on its own captured flag, not the shared `capturing`,
+    // so a stopped-but-still-alive uplink (wedged past the join timeout) can never resume against a
+    // *new* session's streams if `capturing` flips back to true.
+    private var uplinkStop: StopFlag?
 
     // Per-stream wire seq (guarded by `mediaLock`), indexed by `StreamKind.rawValue`.
     private var seqByStream: [UInt32] = [0, 0]
@@ -53,6 +63,8 @@ final class Serve: @unchecked Sendable {
     private var lastLevelNs: [UInt64] = [0, 0]
     private var levelSumSq: [Double] = [0, 0]
     private var levelCount: [Int] = [0, 0]
+    // Per-stream ring `droppedSamples` last observed by the uplink, to detect new overruns.
+    private var lastDropped: [UInt64] = [0, 0]
 
     private let signalQueue = DispatchQueue(label: "hearsay.signals")
     private var signalSources: [DispatchSourceSignal] = []
@@ -71,6 +83,7 @@ final class Serve: @unchecked Sendable {
             control = try connectRetry(path: socketDir + "/control.sock")
             emitHello()
             media = try connectRetry(path: socketDir + "/media.sock")
+            media?.setWriteTimeout(seconds: mediaWriteTimeoutSec)
         } catch {
             logJSON("error", "failed to connect to core sockets: \(error)")
             exit(1)
@@ -152,6 +165,20 @@ final class Serve: @unchecked Sendable {
         }
     }
 
+    /// Validate `start_capture` args against what this helper implements, returning a message for an
+    /// `unsupported` reply when an arg asks for an unimplemented mode. Today only `global_except_self`
+    /// at the contract-fixed 16 kHz is supported; `meeting_app_only` (and per-`target` capture) is
+    /// not, and a differing `sample_rate` is rejected rather than silently ignored.
+    private func unsupportedStartArg(_ args: [String: JSONValue]) -> String? {
+        if let mode = args["tap_mode"]?.stringValue, mode != "global_except_self" {
+            return "tap_mode '\(mode)' is not implemented (only global_except_self)"
+        }
+        if let rate = args["sample_rate"]?.intValue, rate != 16_000 {
+            return "sample_rate \(rate) is not supported (capture is fixed at 16000 Hz)"
+        }
+        return nil
+    }
+
     private func replyPermissions(_ id: Int) {
         var result: [String: JSONValue] = [:]
         for (key, value) in Permissions.snapshot() { result[key] = .string(value) }
@@ -161,6 +188,12 @@ final class Serve: @unchecked Sendable {
     // MARK: - Capture start / stop
 
     private func startCapture(_ cmd: Command) {
+        // Validate the requested capture args against what this phase implements, rather than
+        // silently answering {"started": true} to modes we ignore (`shared/protocol/ipc.md`).
+        if let unsupported = unsupportedStartArg(cmd.args) {
+            reply(.fail(cmd.id, code: "unsupported", message: unsupported))
+            return
+        }
         stateLock.lock()
         if capturing {
             stateLock.unlock()
@@ -177,6 +210,11 @@ final class Serve: @unchecked Sendable {
             meSource = SyntheticSource(ring: meRing, frequency: 440)
             themSource = SyntheticSource(ring: themRing, frequency: 660)
         } else {
+            // Surface the TCC mic prompt on a first run (undetermined) so capture does not silently
+            // record zeros; a no-op once the user has granted or denied.
+            if Permissions.microphone() == .undetermined {
+                _ = Permissions.requestMicrophone()
+            }
             meSource = MicCapture(
                 ring: meRing,
                 onHealth: { [weak self] state, action in self?.emitMicHealth(state, action) },
@@ -197,6 +235,7 @@ final class Serve: @unchecked Sendable {
         lastLevelNs = [startNs, startNs]
         levelSumSq = [0, 0]
         levelCount = [0, 0]
+        lastDropped = [0, 0]
 
         // Open each stream with a `hello` frame, then start the producers.
         do {
@@ -217,12 +256,19 @@ final class Serve: @unchecked Sendable {
             return
         }
 
-        streams = [(.me, meRing), (.them, themRing)]
+        let sessionStreams: [(kind: StreamKind, ring: RingBuffer)] = [(.me, meRing), (.them, themRing)]
+        streams = sessionStreams
         sources = [meSource, themSource]
         let done = DispatchSemaphore(value: 0)
         uplinkDone = done
+        let stop = StopFlag()
+        uplinkStop = stop
         capturing = true
-        let thread = Thread { [weak self] in self?.uplinkLoop() }
+        // Bind this session's streams + done + stop into the thread at creation so the uplink never
+        // reads shared state (`self.streams`/`capturing`) a concurrent stopCapture / new session mutates.
+        let thread = Thread { [weak self] in
+            self?.uplinkLoop(streams: sessionStreams, done: done, stop: stop)
+        }
         thread.name = "hearsay-uplink"
         uplink = thread
         stateLock.unlock()
@@ -245,14 +291,24 @@ final class Serve: @unchecked Sendable {
         let stoppingSources = sources
         let stoppingStreams = streams
         let done = uplinkDone
+        let stop = uplinkStop
         sources = []
         streams = []
         uplink = nil
         uplinkDone = nil
+        uplinkStop = nil
         stateLock.unlock()
 
+        stop?.set()  // this session's uplink exits its loop regardless of a later `capturing` flip
         for source in stoppingSources { source.stop() }  // no more producers
-        _ = done?.wait(timeout: .now() + 2)  // uplink observes the flag and exits
+        // Wait for the uplink to observe the flag and exit. If it does not (wedged mid-write), it is
+        // still the ring consumer, so skip the final drain/eos rather than race it on the ring and
+        // the per-stream bookkeeping — a lost tail on a dying core is better than a data race.
+        let joined = done?.wait(timeout: .now() + uplinkJoinTimeoutSec)
+        guard joined == .success else {
+            logJSON("warn", "uplink did not exit within \(uplinkJoinTimeoutSec)s; skipping final flush")
+            return true
+        }
 
         // The uplink has exited, so this thread is now the sole ring consumer.
         let now = clock.nowNs()
@@ -265,22 +321,16 @@ final class Serve: @unchecked Sendable {
 
     // MARK: - Uplink
 
-    private func uplinkLoop() {
-        let streams = self.streams
-        let done = self.uplinkDone
-        defer { done?.signal() }
-        while isCapturing() {
+    private func uplinkLoop(
+        streams: [(kind: StreamKind, ring: RingBuffer)], done: DispatchSemaphore, stop: StopFlag
+    ) {
+        defer { done.signal() }
+        while !stop.isSet {
             let now = clock.nowNs()
             for (kind, ring) in streams { drainStream(kind: kind, ring: ring, nowNs: now) }
             emitMetersAndHeartbeats(streams, now: now)
             Thread.sleep(forTimeInterval: tickInterval)
         }
-    }
-
-    private func isCapturing() -> Bool {
-        stateLock.lock()
-        defer { stateLock.unlock() }
-        return capturing
     }
 
     /// Drain one stream's ring into framed PCM. `host_ts` is stamped from the shared
@@ -290,6 +340,7 @@ final class Serve: @unchecked Sendable {
     /// when one tick emits several frames.
     private func drainStream(kind: StreamKind, ring: RingBuffer, nowNs: UInt64) {
         let i = Int(kind.rawValue)
+        noteRingDrops(kind, index: i, ring: ring)
         var remaining = ring.available
         while remaining > 0 {
             let want = min(remaining, maxFrameSamples)
@@ -314,6 +365,23 @@ final class Serve: @unchecked Sendable {
             levelCount[i] += got
             remaining -= got
         }
+    }
+
+    /// Surface ring overruns as a wire `seq` gap. The ring discards oldest-first on overflow —
+    /// *before* framing — so the per-frame `seq` would otherwise never gap and the advertised loss
+    /// signal (ipc.md: seq gaps = dropped frames) could never fire. Advance `seq` by the
+    /// dropped-frame equivalent so the core detects + logs the loss; the core's host_ts-based resync
+    /// separately keeps transcript time aligned across the gap.
+    private func noteRingDrops(_ kind: StreamKind, index i: Int, ring: RingBuffer) {
+        let dropped = ring.droppedSamples
+        guard dropped > lastDropped[i] else { return }
+        let delta = dropped - lastDropped[i]
+        lastDropped[i] = dropped
+        let lostFrames = UInt32((delta + UInt64(maxFrameSamples) - 1) / UInt64(maxFrameSamples))
+        mediaLock.lock()
+        seqByStream[i] = seqByStream[i] &+ lostFrames
+        mediaLock.unlock()
+        logJSON("warn", "ring overrun on \(kind.wire): dropped \(delta) samples (~\(lostFrames) frames)")
     }
 
     private func emitMetersAndHeartbeats(
@@ -415,6 +483,8 @@ final class Serve: @unchecked Sendable {
         guard let line = try? ControlCodec.line(record) else { return }
         logLock.lock()
         defer { logLock.unlock() }
-        FileHandle.standardError.write(line)
+        // `write(contentsOf:)` throws on a dead stderr pipe; the legacy `write(_:)` raises an
+        // uncatchable ObjC exception instead. SIGPIPE is already ignored in `run()`.
+        try? FileHandle.standardError.write(contentsOf: line)
     }
 }

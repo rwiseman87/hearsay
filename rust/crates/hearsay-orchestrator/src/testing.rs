@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, Notify};
 
 use hearsay_db::queries::{RefineResult, RefinedThemSegment};
 
@@ -203,5 +203,328 @@ impl Backend for ScriptedBackend {
             me: Box::new(ScriptedTranscriber::new(plan.me_segments, plan.me_fed)),
             them: Box::new(ScriptedTranscriber::new(plan.them_segments, plan.them_fed)),
         }
+    }
+}
+
+/// A [`Backend`] that builds a fresh empty instance (no chunks, no segments) on every call — for
+/// lifecycle tests that start more than one meeting (e.g. a start that overlaps a prior refine),
+/// which [`ScriptedBackend`] cannot serve because its single plan is consumed on first build.
+pub struct EmptyBackend;
+
+impl Backend for EmptyBackend {
+    fn build(&self) -> BackendInstance {
+        BackendInstance {
+            source: Box::new(ScriptedSource::new(vec![])),
+            me: Box::new(ScriptedTranscriber::new(
+                vec![],
+                Arc::new(Mutex::new(Vec::new())),
+            )),
+            them: Box::new(ScriptedTranscriber::new(
+                vec![],
+                Arc::new(Mutex::new(Vec::new())),
+            )),
+        }
+    }
+}
+
+/// A [`Transcriber`] whose `start` always fails — to prove a sidecar spawn failure tears the
+/// already-started source/transcribers down and never strands a `recording` meeting row.
+pub struct FailingTranscriber;
+
+#[async_trait]
+impl Transcriber for FailingTranscriber {
+    async fn start(
+        &mut self,
+    ) -> Result<mpsc::UnboundedReceiver<SidecarSegment>, OrchestratorError> {
+        Err(OrchestratorError::Backend(
+            "sidecar start failed (test)".into(),
+        ))
+    }
+
+    async fn feed(&mut self, _samples: Vec<f32>) {}
+
+    async fn close(&mut self) {}
+}
+
+/// A [`Backend`] whose `them` transcriber fails to start (source + `me` start fine), exercising the
+/// pipeline's teardown-on-later-stage-failure guard and the orchestrator's start-failure cleanup.
+pub struct FailingBackend;
+
+impl Backend for FailingBackend {
+    fn build(&self) -> BackendInstance {
+        BackendInstance {
+            source: Box::new(ScriptedSource::new(vec![])),
+            me: Box::new(ScriptedTranscriber::new(
+                vec![],
+                Arc::new(Mutex::new(Vec::new())),
+            )),
+            them: Box::new(FailingTranscriber),
+        }
+    }
+}
+
+/// A [`Transcriber`] whose `feed` blocks until released (a sidecar that has stopped reading its
+/// stdin), to prove a wedged transcriber stalls neither the recorder nor the other stream (demux
+/// drops-with-log instead of blocking). Keeps its segment sender alive so the stream task stays
+/// parked in `feed` rather than exiting via a closed emit channel; released so the task can wind
+/// down cleanly at stop (no bounded-join abort needed for the test).
+pub struct WedgingTranscriber {
+    release: Arc<Notify>,
+    released: bool,
+    _tx: Option<mpsc::UnboundedSender<SidecarSegment>>,
+}
+
+#[async_trait]
+impl Transcriber for WedgingTranscriber {
+    async fn start(
+        &mut self,
+    ) -> Result<mpsc::UnboundedReceiver<SidecarSegment>, OrchestratorError> {
+        let (tx, rx) = mpsc::unbounded_channel();
+        self._tx = Some(tx);
+        Ok(rx)
+    }
+
+    async fn feed(&mut self, _samples: Vec<f32>) {
+        if !self.released {
+            self.release.notified().await;
+            self.released = true;
+        }
+    }
+
+    async fn close(&mut self) {
+        // Drop the segment sender so the emit channel closes and the stream task can exit (a real
+        // transcriber's close() closes its stdout, which does the same).
+        self._tx.take();
+    }
+}
+
+/// Replay plan for [`WedgeMeBackend`]: the chunks, the Them fed-log, and the release handle.
+type WedgePlan = (Vec<CaptureChunk>, Arc<Mutex<Vec<f32>>>, Arc<Notify>);
+
+/// A [`Backend`] whose `me` transcriber wedges (blocks in `feed` until released) while `them`
+/// records normally, for the head-of-line test: a wedged stream must not starve the other stream.
+/// Exposes the Them fed-log and the release handle.
+pub struct WedgeMeBackend {
+    plan: Mutex<Option<WedgePlan>>,
+}
+
+impl WedgeMeBackend {
+    /// Build a backend that replays `chunks` (Me wedges, Them records), plus the Them fed-log and
+    /// the Notify that releases the wedged Me `feed`.
+    pub fn new(chunks: Vec<CaptureChunk>) -> (Arc<Self>, Arc<Mutex<Vec<f32>>>, Arc<Notify>) {
+        let them_fed = Arc::new(Mutex::new(Vec::new()));
+        let release = Arc::new(Notify::new());
+        let backend = Arc::new(WedgeMeBackend {
+            plan: Mutex::new(Some((chunks, them_fed.clone(), release.clone()))),
+        });
+        (backend, them_fed, release)
+    }
+}
+
+impl Backend for WedgeMeBackend {
+    fn build(&self) -> BackendInstance {
+        let (chunks, them_fed, release) = self
+            .plan
+            .lock()
+            .unwrap()
+            .take()
+            .expect("WedgeMeBackend::build called more than once");
+        BackendInstance {
+            source: Box::new(ScriptedSource::new(chunks)),
+            me: Box::new(WedgingTranscriber {
+                release,
+                released: false,
+                _tx: None,
+            }),
+            them: Box::new(ScriptedTranscriber::new(vec![], them_fed)),
+        }
+    }
+}
+
+/// A [`Transcriber`] that reports a cold sidecar: its [`ready_signal`](Transcriber::ready_signal)
+/// resolves only when the test fires the paired sender, so the warm-up state can be driven
+/// deterministically. Otherwise a no-op (no segments, feed ignored).
+pub struct WarmingTranscriber {
+    ready_rx: Option<oneshot::Receiver<()>>,
+    tx: Option<mpsc::UnboundedSender<SidecarSegment>>,
+}
+
+#[async_trait]
+impl Transcriber for WarmingTranscriber {
+    async fn start(
+        &mut self,
+    ) -> Result<mpsc::UnboundedReceiver<SidecarSegment>, OrchestratorError> {
+        let (tx, rx) = mpsc::unbounded_channel();
+        self.tx = Some(tx);
+        Ok(rx)
+    }
+
+    async fn feed(&mut self, _samples: Vec<f32>) {}
+
+    async fn close(&mut self) {
+        self.tx.take();
+    }
+
+    fn ready_signal(&mut self) -> Option<oneshot::Receiver<()>> {
+        self.ready_rx.take()
+    }
+}
+
+/// A [`Backend`] whose two transcribers start cold (each exposes a ready signal), for testing the
+/// pipeline's warm-up state. [`new`](Self::new) returns the backend plus the two senders that fire
+/// the Me/Them ready signals.
+pub struct WarmingBackend {
+    plan: Mutex<Option<(oneshot::Receiver<()>, oneshot::Receiver<()>)>>,
+}
+
+impl WarmingBackend {
+    pub fn new() -> (Arc<Self>, oneshot::Sender<()>, oneshot::Sender<()>) {
+        let (me_tx, me_rx) = oneshot::channel();
+        let (them_tx, them_rx) = oneshot::channel();
+        let backend = Arc::new(WarmingBackend {
+            plan: Mutex::new(Some((me_rx, them_rx))),
+        });
+        (backend, me_tx, them_tx)
+    }
+}
+
+impl Backend for WarmingBackend {
+    fn build(&self) -> BackendInstance {
+        let (me_ready, them_ready) = self
+            .plan
+            .lock()
+            .unwrap()
+            .take()
+            .expect("WarmingBackend::build called more than once");
+        BackendInstance {
+            source: Box::new(ScriptedSource::new(vec![])),
+            me: Box::new(WarmingTranscriber {
+                ready_rx: Some(me_ready),
+                tx: None,
+            }),
+            them: Box::new(WarmingTranscriber {
+                ready_rx: Some(them_ready),
+                tx: None,
+            }),
+        }
+    }
+}
+
+/// An [`AudioSource`] that replays `chunks` then **closes its channel on its own** (dropping the
+/// sender) without waiting for [`stop`](AudioSource::stop) — simulating a helper crash / media
+/// socket EOF, to exercise the orchestrator's capture-death supervisor.
+pub struct CrashingSource {
+    chunks: Vec<CaptureChunk>,
+}
+
+impl CrashingSource {
+    pub fn new(chunks: Vec<CaptureChunk>) -> Self {
+        CrashingSource { chunks }
+    }
+}
+
+#[async_trait]
+impl AudioSource for CrashingSource {
+    async fn start(&mut self) -> Result<mpsc::Receiver<CaptureChunk>, OrchestratorError> {
+        let (tx, rx) = mpsc::channel(1024);
+        let chunks = std::mem::take(&mut self.chunks);
+        tokio::spawn(async move {
+            for chunk in chunks {
+                if tx.send(chunk).await.is_err() {
+                    return;
+                }
+            }
+            // Drop `tx` here (no wait for stop): the capture channel closes as if the helper died.
+        });
+        Ok(rx)
+    }
+
+    async fn stop(&mut self) {}
+}
+
+/// A [`Backend`] whose source crashes (closes capture on its own) after replaying `chunks`, for the
+/// capture-death supervisor test.
+pub struct CrashingBackend {
+    plan: Mutex<Option<Vec<CaptureChunk>>>,
+}
+
+impl CrashingBackend {
+    pub fn new(chunks: Vec<CaptureChunk>) -> Self {
+        CrashingBackend {
+            plan: Mutex::new(Some(chunks)),
+        }
+    }
+}
+
+impl Backend for CrashingBackend {
+    fn build(&self) -> BackendInstance {
+        let chunks = self
+            .plan
+            .lock()
+            .unwrap()
+            .take()
+            .expect("CrashingBackend::build called more than once");
+        BackendInstance {
+            source: Box::new(CrashingSource::new(chunks)),
+            me: Box::new(ScriptedTranscriber::new(
+                vec![],
+                Arc::new(Mutex::new(Vec::new())),
+            )),
+            them: Box::new(ScriptedTranscriber::new(
+                vec![],
+                Arc::new(Mutex::new(Vec::new())),
+            )),
+        }
+    }
+}
+
+/// Handles for driving + observing a [`GateRefiner`] from a test.
+pub struct GateHandle {
+    /// Notified when `refine` begins (proves stop returned before the refine finished).
+    pub started: Arc<Notify>,
+    /// Notify to unblock the in-flight `refine` so it can complete.
+    pub release: Arc<Notify>,
+    /// How many times `refine` ran.
+    pub calls: Arc<AtomicUsize>,
+}
+
+/// A [`Refiner`] that, on `refine`, signals it started and then blocks until released — for
+/// asserting a new meeting can start while a previous one is still refining (i.e. the refine runs
+/// off the op-lock). Yields an empty [`RefineResult`], so it replaces nothing.
+pub struct GateRefiner {
+    started: Arc<Notify>,
+    release: Arc<Notify>,
+    calls: Arc<AtomicUsize>,
+}
+
+impl GateRefiner {
+    /// A gated refiner plus the handle a test uses to observe its start and release it.
+    pub fn new() -> (Arc<Self>, GateHandle) {
+        let started = Arc::new(Notify::new());
+        let release = Arc::new(Notify::new());
+        let calls = Arc::new(AtomicUsize::new(0));
+        let refiner = Arc::new(GateRefiner {
+            started: started.clone(),
+            release: release.clone(),
+            calls: calls.clone(),
+        });
+        (
+            refiner,
+            GateHandle {
+                started,
+                release,
+                calls,
+            },
+        )
+    }
+}
+
+#[async_trait]
+impl Refiner for GateRefiner {
+    async fn refine(&self, _audio_path: &Path) -> Result<RefineResult, OrchestratorError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        self.started.notify_one();
+        self.release.notified().await;
+        Ok(RefineResult::default())
     }
 }

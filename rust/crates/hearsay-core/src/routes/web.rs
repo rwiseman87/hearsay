@@ -7,7 +7,7 @@
 
 use std::path::Path as FsPath;
 
-use axum::extract::State;
+use axum::extract::{RawQuery, State};
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::get;
@@ -15,6 +15,7 @@ use axum::Router;
 use tower_http::services::ServeDir;
 use uuid::Uuid;
 
+use crate::security::{query_token, token_matches};
 use crate::state::AppState;
 
 /// Mount the UI if it is built, else return an empty router (API-only).
@@ -35,15 +36,16 @@ pub fn router(web_dir: &FsPath) -> Router<AppState> {
 /// shell's `invoke()` works when it navigates the webview to this served page — the Tauri IPC
 /// transport (`ipc://localhost` on macOS, `http://ipc.localhost` on Windows/Linux). Because the core
 /// (not Tauri) serves this page, Tauri cannot auto-patch its own CSP, so these must be listed
-/// explicitly; they are inert in a plain browser.
-fn csp(nonce: &str) -> String {
+/// explicitly; they are inert in a plain browser. The WebSocket source is pinned to the exact host
+/// the page was served from (the same `window.location.host` the client opens the socket on) rather
+/// than a `ws://127.0.0.1:*` port wildcard.
+fn csp(nonce: &str, ws_host: &str) -> String {
     [
         "default-src 'self'".to_string(),
         format!("script-src 'self' 'nonce-{nonce}'"),
         "style-src 'self' 'unsafe-inline'".to_string(),
         "img-src 'self' data:".to_string(),
-        "connect-src 'self' ipc: http://ipc.localhost ws://127.0.0.1:* ws://localhost:*"
-            .to_string(),
+        format!("connect-src 'self' ipc: http://ipc.localhost ws://{ws_host}"),
         "base-uri 'none'".to_string(),
         "object-src 'none'".to_string(),
         "frame-ancestors 'none'".to_string(),
@@ -53,7 +55,8 @@ fn csp(nonce: &str) -> String {
 
 /// Inject the token bootstrap `<script>` just before `</head>` (or prepend if there is no head).
 fn render_index(template: &str, token: &str, nonce: &str) -> String {
-    // serde_json yields a valid JS string literal; the token is URL-safe base64.
+    // serde_json yields a valid JS string literal; the token is hex, so no escaping is needed, but
+    // encoding it defensively keeps the bootstrap valid for any token shape.
     let literal = serde_json::to_string(token).unwrap_or_else(|_| "\"\"".to_string());
     let bootstrap =
         format!("<script nonce=\"{nonce}\">window.__HEARSAY_TOKEN__={literal};</script>");
@@ -63,7 +66,19 @@ fn render_index(template: &str, token: &str, nonce: &str) -> String {
     }
 }
 
-async fn index(State(state): State<AppState>) -> Response {
+async fn index(
+    State(state): State<AppState>,
+    req_headers: HeaderMap,
+    RawQuery(query): RawQuery,
+) -> Response {
+    // Require a valid `?token=` before serving the bootstrap: `GET /` injects the session token as a
+    // global, so an unauthenticated request could otherwise harvest it with one curl. Both real
+    // clients navigate with `?token=` (the shell handshake; `web/src/api/token.ts`). A browser
+    // cannot set an Authorization header on a navigation, so the query param is the only channel.
+    if !token_matches(query_token(query.as_deref()), state.session_token.as_str()) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+
     let index_path = state.settings.web_dir.join("index.html");
     let Ok(template) = tokio::fs::read_to_string(&index_path).await else {
         return StatusCode::NOT_FOUND.into_response();
@@ -71,13 +86,23 @@ async fn index(State(state): State<AppState>) -> Response {
     let nonce = Uuid::new_v4().simple().to_string();
     let html = render_index(&template, state.session_token.as_str(), &nonce);
 
+    // The Host header is loopback-validated by `enforce_loopback`; pin the WS source to it.
+    let ws_host = req_headers
+        .get(header::HOST)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("127.0.0.1");
+
     let mut headers = HeaderMap::new();
     let insert = |headers: &mut HeaderMap, name, value: &str| {
         if let Ok(value) = HeaderValue::from_str(value) {
             headers.insert(name, value);
         }
     };
-    insert(&mut headers, header::CONTENT_SECURITY_POLICY, &csp(&nonce));
+    insert(
+        &mut headers,
+        header::CONTENT_SECURITY_POLICY,
+        &csp(&nonce, ws_host),
+    );
     insert(&mut headers, header::X_CONTENT_TYPE_OPTIONS, "nosniff");
     insert(&mut headers, header::X_FRAME_OPTIONS, "DENY");
     insert(&mut headers, header::REFERRER_POLICY, "no-referrer");
