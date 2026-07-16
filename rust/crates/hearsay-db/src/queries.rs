@@ -17,7 +17,9 @@ const KNOWN_VOICEPRINTS_SQL: &str = "SELECT i.display_name, c.centroid FROM clus
      JOIN identities i ON i.id = c.identity_id \
      WHERE c.locked = 1 AND c.centroid IS NOT NULL AND c.meeting_id != ?";
 
-use crate::models::{Cluster, Identity, Meeting, MeetingNotes, MeetingStatus, Segment, Stream};
+use crate::models::{
+    Cluster, Folder, Identity, Meeting, MeetingNotes, MeetingStatus, Segment, Stream,
+};
 
 /// A speaker cluster joined to its bound identity's name (for the speakers list). `display_name`
 /// is `None` when the cluster is unbound; the caller renders `"Speaker {ordinal}"` in that case.
@@ -51,6 +53,7 @@ pub async fn create_meeting(
         created_at: now,
         updated_at: now,
         dir: dir.to_string(),
+        folder_id: None,
     };
     sqlx::query(
         "INSERT INTO meetings \
@@ -323,6 +326,159 @@ pub async fn delete_meeting(pool: &SqlitePool, id: Uuid) -> Result<bool, sqlx::E
         .execute(pool)
         .await?;
     Ok(result.rows_affected() > 0)
+}
+
+/// Create a folder (optionally nested under `parent_id`) and return the inserted row. The caller
+/// validates `name` and that `parent_id` (when given) exists.
+pub async fn create_folder(
+    pool: &SqlitePool,
+    name: &str,
+    parent_id: Option<Uuid>,
+) -> Result<Folder, sqlx::Error> {
+    let now = Utc::now();
+    let folder = Folder {
+        id: Uuid::new_v4(),
+        name: name.to_string(),
+        parent_id,
+        created_at: now,
+        updated_at: now,
+    };
+    sqlx::query(
+        "INSERT INTO folders (id, name, parent_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+    )
+    .bind(folder.id)
+    .bind(&folder.name)
+    .bind(folder.parent_id)
+    .bind(folder.created_at)
+    .bind(folder.updated_at)
+    .execute(pool)
+    .await?;
+    Ok(folder)
+}
+
+/// Fetch a folder by id, or `None` if it does not exist.
+pub async fn get_folder(pool: &SqlitePool, id: Uuid) -> Result<Option<Folder>, sqlx::Error> {
+    sqlx::query_as::<_, Folder>("SELECT * FROM folders WHERE id = ?")
+        .bind(id)
+        .fetch_optional(pool)
+        .await
+}
+
+/// Total folder count (for the paginated list envelope).
+pub async fn count_folders(pool: &SqlitePool) -> Result<i64, sqlx::Error> {
+    sqlx::query_scalar("SELECT COUNT(*) FROM folders")
+        .fetch_one(pool)
+        .await
+}
+
+/// One page of folders, ordered by name (case-insensitive) then creation time. The full set is small
+/// -- the sidebar fetches it whole and builds the nested tree client-side.
+pub async fn list_folders(
+    pool: &SqlitePool,
+    limit: i64,
+    offset: i64,
+) -> Result<Vec<Folder>, sqlx::Error> {
+    sqlx::query_as::<_, Folder>(
+        "SELECT * FROM folders ORDER BY name COLLATE NOCASE, created_at LIMIT ? OFFSET ?",
+    )
+    .bind(limit)
+    .bind(offset)
+    .fetch_all(pool)
+    .await
+}
+
+/// Rename a folder, stamping `updated_at`. Returns the updated row, or `None` when no folder has that
+/// id. The caller validates `name` (non-empty, length bound).
+pub async fn update_folder_name(
+    pool: &SqlitePool,
+    id: Uuid,
+    name: &str,
+) -> Result<Option<Folder>, sqlx::Error> {
+    let result = sqlx::query("UPDATE folders SET name = ?, updated_at = ? WHERE id = ?")
+        .bind(name)
+        .bind(Utc::now())
+        .bind(id)
+        .execute(pool)
+        .await?;
+    if result.rows_affected() == 0 {
+        return Ok(None);
+    }
+    get_folder(pool, id).await
+}
+
+/// Reparent a folder (`parent_id = None` moves it to the root), stamping `updated_at`. Returns the
+/// updated row, or `None` when no folder has that id. The caller guards against cycles (see
+/// [`folder_is_descendant`]) and validates that `parent_id` (when given) exists.
+pub async fn set_folder_parent(
+    pool: &SqlitePool,
+    id: Uuid,
+    parent_id: Option<Uuid>,
+) -> Result<Option<Folder>, sqlx::Error> {
+    let result = sqlx::query("UPDATE folders SET parent_id = ?, updated_at = ? WHERE id = ?")
+        .bind(parent_id)
+        .bind(Utc::now())
+        .bind(id)
+        .execute(pool)
+        .await?;
+    if result.rows_affected() == 0 {
+        return Ok(None);
+    }
+    get_folder(pool, id).await
+}
+
+/// Delete a folder. Its sub-folder subtree is removed (FK `ON DELETE CASCADE`) and every meeting in
+/// that subtree is un-filed (`meetings.folder_id` FK `ON DELETE SET NULL`) rather than deleted.
+/// Returns whether a row was removed.
+pub async fn delete_folder(pool: &SqlitePool, id: Uuid) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query("DELETE FROM folders WHERE id = ?")
+        .bind(id)
+        .execute(pool)
+        .await?;
+    Ok(result.rows_affected() > 0)
+}
+
+/// Whether `candidate` is `ancestor` itself or lives somewhere in its subtree. This is the cycle
+/// guard for reparenting: moving folder `X` under `candidate` is illegal when
+/// `folder_is_descendant(candidate, X)` (it would place `X` inside its own subtree). Walks the
+/// `parent_id` chain up from `candidate`; the loop is bounded by the tree depth.
+pub async fn folder_is_descendant(
+    pool: &SqlitePool,
+    candidate: Uuid,
+    ancestor: Uuid,
+) -> Result<bool, sqlx::Error> {
+    let mut current = Some(candidate);
+    while let Some(id) = current {
+        if id == ancestor {
+            return Ok(true);
+        }
+        current =
+            sqlx::query_scalar::<_, Option<Uuid>>("SELECT parent_id FROM folders WHERE id = ?")
+                .bind(id)
+                .fetch_optional(pool)
+                .await?
+                .flatten();
+    }
+    Ok(false)
+}
+
+/// File a meeting under a folder (`folder_id = None` un-files it), stamping `updated_at`. Returns the
+/// updated meeting, or `None` when no meeting has that id. The caller validates that `folder_id`
+/// (when given) exists.
+pub async fn assign_meeting_folder(
+    pool: &SqlitePool,
+    meeting_id: Uuid,
+    folder_id: Option<Uuid>,
+) -> Result<Option<Meeting>, sqlx::Error> {
+    let result = sqlx::query("UPDATE meetings SET folder_id = ?, updated_at = ? WHERE id = ?")
+        .bind(folder_id)
+        .bind(Utc::now())
+        .bind(meeting_id)
+        .execute(pool)
+        .await?;
+    if result.rows_affected() == 0 {
+        return Ok(None);
+    }
+    get_meeting(pool, meeting_id).await
 }
 
 /// Number of segments in a meeting.

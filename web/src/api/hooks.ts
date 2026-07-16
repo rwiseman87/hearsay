@@ -4,11 +4,14 @@ import { api } from "./client";
 import { queryKeys } from "./queryKeys";
 import type {
   DownloadState,
+  FolderCreate,
+  FolderRead,
   MeetingCreate,
   MeetingNotesRead,
   MeetingRead,
   ModelCatalog,
   ModelSettings,
+  PageFolder,
   PageIdentity,
   PageMeeting,
   PageSegment,
@@ -125,6 +128,68 @@ export function useRenameMeeting() {
   return useMutation({
     mutationFn: ({ id, title }: { id: string; title: string }) =>
       api.patch<MeetingRead>(`/api/meetings/${id}`, { title }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: queryKeys.meetings.all }),
+  });
+}
+
+// The organizational folder tree. Fetched whole (one large page) and assembled into a tree
+// client-side; folder mutations invalidate this prefix rather than refetching on a timer.
+export function useFolders() {
+  return useQuery({
+    queryKey: queryKeys.folders.list(1, 200),
+    queryFn: () => api.get<PageFolder>("/api/folders?page=1&page_size=200"),
+  });
+}
+
+export function useCreateFolder() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: FolderCreate) => api.post<FolderRead>("/api/folders", body),
+    onSuccess: () => qc.invalidateQueries({ queryKey: queryKeys.folders.all }),
+  });
+}
+
+export function useRenameFolder() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, name }: { id: string; name: string }) =>
+      api.patch<FolderRead>(`/api/folders/${id}`, { name }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: queryKeys.folders.all }),
+  });
+}
+
+// Move a folder to a new parent (`parentId: null` moves it to the root). The server rejects a move
+// into the folder itself or a descendant (422); invalidate the tree on success.
+export function useReparentFolder() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, parentId }: { id: string; parentId: string | null }) =>
+      api.put<FolderRead>(`/api/folders/${id}/parent`, { parent_id: parentId }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: queryKeys.folders.all }),
+  });
+}
+
+// Delete a folder. The server removes its sub-folder subtree and un-files (never deletes) the
+// meetings within, so refresh both the folder tree and the meeting list.
+export function useDeleteFolder() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.delete<void>(`/api/folders/${id}`),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: queryKeys.folders.all });
+      qc.invalidateQueries({ queryKey: queryKeys.meetings.all });
+    },
+  });
+}
+
+// File a meeting under a folder (`folderId: null` un-files it) — the drag-and-drop "move" action.
+// The server validates the target folder (422 if missing); invalidate the meeting list so the
+// sidebar re-groups.
+export function useMoveMeeting() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, folderId }: { id: string; folderId: string | null }) =>
+      api.put<MeetingRead>(`/api/meetings/${id}/folder`, { folder_id: folderId }),
     onSuccess: () => qc.invalidateQueries({ queryKey: queryKeys.meetings.all }),
   });
 }

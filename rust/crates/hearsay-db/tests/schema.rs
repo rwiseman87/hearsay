@@ -770,3 +770,171 @@ async fn delete_meeting_cascades_notes() {
         "notes cascade-deleted with the meeting"
     );
 }
+
+#[tokio::test]
+async fn folder_crud_roundtrip_and_reports_missing() {
+    let pool = memory_pool().await;
+    let work = queries::create_folder(&pool, "Work", None).await.unwrap();
+    assert_eq!(work.parent_id, None);
+    let project = queries::create_folder(&pool, "Project", Some(work.id))
+        .await
+        .unwrap();
+    assert_eq!(project.parent_id, Some(work.id));
+
+    assert_eq!(queries::count_folders(&pool).await.unwrap(), 2);
+    // Ordered by name (case-insensitive): "Project" before "Work".
+    let listed = queries::list_folders(&pool, 50, 0).await.unwrap();
+    assert_eq!(
+        listed.iter().map(|f| f.name.as_str()).collect::<Vec<_>>(),
+        vec!["Project", "Work"]
+    );
+
+    let renamed = queries::update_folder_name(&pool, work.id, "Work stuff")
+        .await
+        .unwrap()
+        .expect("existing folder renamed");
+    assert_eq!(renamed.name, "Work stuff");
+    assert!(renamed.updated_at >= work.updated_at);
+
+    assert!(
+        queries::update_folder_name(&pool, uuid::Uuid::new_v4(), "x")
+            .await
+            .unwrap()
+            .is_none(),
+        "renaming a missing folder reports None"
+    );
+}
+
+#[tokio::test]
+async fn reparent_folder_and_descendant_cycle_guard() {
+    let pool = memory_pool().await;
+    let a = queries::create_folder(&pool, "A", None).await.unwrap();
+    let b = queries::create_folder(&pool, "B", None).await.unwrap();
+
+    // Move B under A, then C under B: A > B > C.
+    let moved = queries::set_folder_parent(&pool, b.id, Some(a.id))
+        .await
+        .unwrap()
+        .expect("existing folder reparented");
+    assert_eq!(moved.parent_id, Some(a.id));
+    let c = queries::create_folder(&pool, "C", Some(b.id))
+        .await
+        .unwrap();
+
+    // A descendant is itself, a child, or a deeper node; a sibling/ancestor is not.
+    assert!(queries::folder_is_descendant(&pool, a.id, a.id)
+        .await
+        .unwrap());
+    assert!(queries::folder_is_descendant(&pool, b.id, a.id)
+        .await
+        .unwrap());
+    assert!(queries::folder_is_descendant(&pool, c.id, a.id)
+        .await
+        .unwrap());
+    assert!(!queries::folder_is_descendant(&pool, a.id, b.id)
+        .await
+        .unwrap());
+
+    // Detaching to the root is allowed.
+    let detached = queries::set_folder_parent(&pool, b.id, None)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(detached.parent_id, None);
+    assert!(
+        queries::set_folder_parent(&pool, uuid::Uuid::new_v4(), None)
+            .await
+            .unwrap()
+            .is_none(),
+        "reparenting a missing folder reports None"
+    );
+}
+
+#[tokio::test]
+async fn assign_meeting_folder_sets_and_clears() {
+    let pool = memory_pool().await;
+    let folder = queries::create_folder(&pool, "Clients", None)
+        .await
+        .unwrap();
+    let meeting = queries::create_meeting(&pool, "Kickoff", "/tmp/kickoff", "", chrono::Utc::now())
+        .await
+        .unwrap();
+    assert_eq!(meeting.folder_id, None);
+
+    let filed = queries::assign_meeting_folder(&pool, meeting.id, Some(folder.id))
+        .await
+        .unwrap()
+        .expect("existing meeting filed");
+    assert_eq!(filed.folder_id, Some(folder.id));
+
+    let unfiled = queries::assign_meeting_folder(&pool, meeting.id, None)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(unfiled.folder_id, None);
+
+    assert!(
+        queries::assign_meeting_folder(&pool, uuid::Uuid::new_v4(), Some(folder.id))
+            .await
+            .unwrap()
+            .is_none(),
+        "filing a missing meeting reports None"
+    );
+}
+
+#[tokio::test]
+async fn delete_folder_cascades_subtree_and_unfiles_meetings() {
+    let pool = memory_pool().await;
+    // A > B, with a meeting filed in each level.
+    let a = queries::create_folder(&pool, "A", None).await.unwrap();
+    let b = queries::create_folder(&pool, "B", Some(a.id))
+        .await
+        .unwrap();
+    let now = chrono::Utc::now();
+    let m_a = queries::create_meeting(&pool, "in A", "/tmp/a", "", now)
+        .await
+        .unwrap();
+    let m_b = queries::create_meeting(&pool, "in B", "/tmp/b", "", now)
+        .await
+        .unwrap();
+    queries::assign_meeting_folder(&pool, m_a.id, Some(a.id))
+        .await
+        .unwrap();
+    queries::assign_meeting_folder(&pool, m_b.id, Some(b.id))
+        .await
+        .unwrap();
+
+    assert!(queries::delete_folder(&pool, a.id).await.unwrap());
+
+    // The whole folder subtree is gone (ON DELETE CASCADE)...
+    assert!(queries::get_folder(&pool, a.id).await.unwrap().is_none());
+    assert!(
+        queries::get_folder(&pool, b.id).await.unwrap().is_none(),
+        "the sub-folder cascade-deletes with its parent"
+    );
+    // ...but the meetings survive, merely un-filed (ON DELETE SET NULL).
+    assert_eq!(
+        queries::get_meeting(&pool, m_a.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .folder_id,
+        None
+    );
+    assert_eq!(
+        queries::get_meeting(&pool, m_b.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .folder_id,
+        None,
+        "a meeting in the deleted subtree is un-filed, not deleted"
+    );
+
+    assert!(
+        !queries::delete_folder(&pool, uuid::Uuid::new_v4())
+            .await
+            .unwrap(),
+        "deleting a missing folder reports false"
+    );
+}

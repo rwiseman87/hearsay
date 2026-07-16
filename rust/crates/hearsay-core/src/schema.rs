@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use uuid::Uuid;
 
-use hearsay_db::models::{Identity, Meeting, MeetingNotes, Segment};
+use hearsay_db::models::{Folder, Identity, Meeting, MeetingNotes, Segment};
 use hearsay_db::queries::SpeakerRow;
 
 /// Lifecycle state of a meeting (lowercase on the wire): `recording` while live, `refining` while the
@@ -62,7 +62,11 @@ pub struct Page<T> {
 pub struct MeetingRead {
     pub id: Uuid,
     pub title: String,
+    /// The on-disk recordings-directory name (not an organizational folder). To move a meeting
+    /// between user folders, use `folder_id`.
     pub folder: String,
+    /// The organizational [`FolderRead`] this meeting is filed under, or `null` when unfiled.
+    pub folder_id: Option<Uuid>,
     pub status: MeetingStatus,
     pub started_at: DateTime<Utc>,
     pub ended_at: Option<DateTime<Utc>>,
@@ -76,11 +80,35 @@ impl From<Meeting> for MeetingRead {
             id: m.id,
             title: m.title,
             folder: m.folder,
+            folder_id: m.folder_id,
             status: m.status.into(),
             started_at: m.started_at,
             ended_at: m.ended_at,
             created_at: m.created_at,
             updated_at: m.updated_at,
+        }
+    }
+}
+
+/// An organizational folder for meetings (a node in the nested folder tree). `parent_id` is `null`
+/// for a root folder.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct FolderRead {
+    pub id: Uuid,
+    pub name: String,
+    pub parent_id: Option<Uuid>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+impl From<Folder> for FolderRead {
+    fn from(f: Folder) -> Self {
+        FolderRead {
+            id: f.id,
+            name: f.name,
+            parent_id: f.parent_id,
+            created_at: f.created_at,
+            updated_at: f.updated_at,
         }
     }
 }
@@ -191,6 +219,39 @@ pub struct MeetingCreate {
 #[derive(Debug, Clone, Deserialize, ToSchema)]
 pub struct MeetingUpdate {
     pub title: String,
+}
+
+/// File a meeting under a folder. `folder_id` is the target folder, or `null` to un-file (move it
+/// back to the root/"Unfiled" list). Validated: a non-null `folder_id` must reference an existing
+/// folder.
+#[derive(Debug, Clone, Deserialize, ToSchema)]
+pub struct MeetingFolderAssign {
+    #[serde(default)]
+    pub folder_id: Option<Uuid>,
+}
+
+/// Create a folder. `name` is validated non-empty, <= 255 chars; `parent_id` nests it under an
+/// existing folder (omit or `null` for a root folder).
+#[derive(Debug, Clone, Default, Deserialize, ToSchema)]
+pub struct FolderCreate {
+    pub name: String,
+    #[serde(default)]
+    pub parent_id: Option<Uuid>,
+}
+
+/// Rename a folder. `name` replaces the folder's display name (validated non-empty, <= 255 chars).
+#[derive(Debug, Clone, Deserialize, ToSchema)]
+pub struct FolderUpdate {
+    pub name: String,
+}
+
+/// Reparent a folder. `parent_id` is the new parent, or `null` to move it to the root. Validated: a
+/// non-null `parent_id` must exist and must not be the folder itself or one of its descendants (which
+/// would create a cycle).
+#[derive(Debug, Clone, Deserialize, ToSchema)]
+pub struct FolderReparent {
+    #[serde(default)]
+    pub parent_id: Option<Uuid>,
 }
 
 /// Rename a cluster to a person (binds + locks; relabels that speaker's segments).

@@ -91,6 +91,38 @@ fn put(uri: &str, body: &str) -> Request<Body> {
         .unwrap()
 }
 
+fn post(uri: &str, body: &str) -> Request<Body> {
+    Request::builder()
+        .method("POST")
+        .uri(uri)
+        .header("host", "127.0.0.1")
+        .header("authorization", format!("Bearer {TOKEN}"))
+        .header("content-type", "application/json")
+        .body(Body::from(body.to_string()))
+        .unwrap()
+}
+
+fn patch(uri: &str, body: &str) -> Request<Body> {
+    Request::builder()
+        .method("PATCH")
+        .uri(uri)
+        .header("host", "127.0.0.1")
+        .header("authorization", format!("Bearer {TOKEN}"))
+        .header("content-type", "application/json")
+        .body(Body::from(body.to_string()))
+        .unwrap()
+}
+
+fn del(uri: &str) -> Request<Body> {
+    Request::builder()
+        .method("DELETE")
+        .uri(uri)
+        .header("host", "127.0.0.1")
+        .header("authorization", format!("Bearer {TOKEN}"))
+        .body(Body::empty())
+        .unwrap()
+}
+
 async fn send(app: &Router, req: Request<Body>) -> (StatusCode, Value) {
     let resp = app.clone().oneshot(req).await.unwrap();
     let status = resp.status();
@@ -519,6 +551,17 @@ async fn openapi_json_is_served() {
     assert!(body["components"]["schemas"]["TranscriptEvent"].is_object());
     assert!(body["components"]["schemas"]["StatusEvent"].is_object());
     assert!(body["components"]["schemas"]["ResyncEvent"].is_object());
+    // The folder endpoints + schemas are registered so they codegen into the TS client.
+    assert!(body["paths"]["/api/folders"]["get"].is_object());
+    assert!(body["paths"]["/api/folders"]["post"].is_object());
+    assert!(body["paths"]["/api/folders/{id}"]["patch"].is_object());
+    assert!(body["paths"]["/api/folders/{id}"]["delete"].is_object());
+    assert!(body["paths"]["/api/folders/{id}/parent"]["put"].is_object());
+    assert!(body["paths"]["/api/meetings/{id}/folder"]["put"].is_object());
+    assert!(body["components"]["schemas"]["FolderRead"].is_object());
+    assert!(body["components"]["schemas"]["FolderCreate"].is_object());
+    assert!(body["components"]["schemas"]["FolderReparent"].is_object());
+    assert!(body["components"]["schemas"]["MeetingFolderAssign"].is_object());
 }
 
 #[tokio::test]
@@ -549,6 +592,242 @@ async fn extractor_rejections_are_422_with_the_detail_envelope() {
     let (status, body) = send(&app, malformed).await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
     assert!(body["detail"].is_string());
+}
+
+#[tokio::test]
+async fn folders_crud_with_the_page_envelope() {
+    let (app, _pool, _tmp) = setup().await;
+
+    let (status, work) = send(&app, post("/api/folders", "{\"name\":\"  Work  \"}")).await;
+    assert_eq!(status, StatusCode::CREATED);
+    assert_eq!(work["name"], "Work"); // trimmed
+    assert!(work["parent_id"].is_null());
+    let work_id = work["id"].as_str().unwrap().to_string();
+
+    let (status, project) = send(
+        &app,
+        post(
+            "/api/folders",
+            &format!("{{\"name\":\"Project\",\"parent_id\":\"{work_id}\"}}"),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    assert_eq!(project["parent_id"], work_id.as_str());
+
+    // The shared { total, page, page_size, items } envelope, name-ordered ("Project" < "Work").
+    let (status, page) = send(&app, get("/api/folders")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(page["total"], 2);
+    assert_eq!(page["page"], 1);
+    assert_eq!(page["page_size"], 200);
+    assert_eq!(page["items"][0]["name"], "Project");
+    assert_eq!(page["items"][1]["name"], "Work");
+
+    // Rename trims and returns the updated row.
+    let (status, renamed) = send(
+        &app,
+        patch(
+            &format!("/api/folders/{work_id}"),
+            "{\"name\":\"  Work stuff \"}",
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(renamed["name"], "Work stuff");
+}
+
+#[tokio::test]
+async fn folder_endpoints_validate_and_404() {
+    let (app, _pool, _tmp) = setup().await;
+
+    // A blank name is a 422 + `{ "detail": ... }` envelope (never store an empty name).
+    let (status, body) = send(&app, post("/api/folders", "{\"name\":\"   \"}")).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(body["detail"].is_string());
+
+    // Nesting under a non-existent parent is a 422.
+    let (status, _) = send(
+        &app,
+        post(
+            "/api/folders",
+            &format!("{{\"name\":\"x\",\"parent_id\":\"{}\"}}", Uuid::new_v4()),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+
+    // Rename / delete of an unknown id is a 404.
+    let missing = Uuid::new_v4();
+    let (status, _) = send(
+        &app,
+        patch(&format!("/api/folders/{missing}"), "{\"name\":\"y\"}"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, _) = send(&app, del(&format!("/api/folders/{missing}"))).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn reparent_folder_endpoint_guards_cycles() {
+    let (app, _pool, _tmp) = setup().await;
+    let (_, a) = send(&app, post("/api/folders", "{\"name\":\"A\"}")).await;
+    let (_, b) = send(&app, post("/api/folders", "{\"name\":\"B\"}")).await;
+    let a_id = a["id"].as_str().unwrap().to_string();
+    let b_id = b["id"].as_str().unwrap().to_string();
+
+    // Move B under A.
+    let (status, moved) = send(
+        &app,
+        put(
+            &format!("/api/folders/{b_id}/parent"),
+            &format!("{{\"parent_id\":\"{a_id}\"}}"),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(moved["parent_id"], a_id.as_str());
+
+    // Into itself is a 422.
+    let (status, _) = send(
+        &app,
+        put(
+            &format!("/api/folders/{a_id}/parent"),
+            &format!("{{\"parent_id\":\"{a_id}\"}}"),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+
+    // Into a descendant (A under its own child B) is a 422 cycle.
+    let (status, _) = send(
+        &app,
+        put(
+            &format!("/api/folders/{a_id}/parent"),
+            &format!("{{\"parent_id\":\"{b_id}\"}}"),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+
+    // A non-existent parent is a 422.
+    let (status, _) = send(
+        &app,
+        put(
+            &format!("/api/folders/{a_id}/parent"),
+            &format!("{{\"parent_id\":\"{}\"}}", Uuid::new_v4()),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+
+    // Detaching B to the root is allowed.
+    let (status, detached) = send(
+        &app,
+        put(
+            &format!("/api/folders/{b_id}/parent"),
+            "{\"parent_id\":null}",
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(detached["parent_id"].is_null());
+
+    // An unknown folder is a 404.
+    let (status, _) = send(
+        &app,
+        put(
+            &format!("/api/folders/{}/parent", Uuid::new_v4()),
+            "{\"parent_id\":null}",
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn files_and_unfiles_a_meeting() {
+    let (app, pool, _tmp) = setup().await;
+    let meeting = queries::create_meeting(&pool, "Kickoff", "f", "", chrono::Utc::now())
+        .await
+        .unwrap();
+    let (_, folder) = send(&app, post("/api/folders", "{\"name\":\"Clients\"}")).await;
+    let folder_id = folder["id"].as_str().unwrap().to_string();
+
+    // File the meeting; the returned row and the list both reflect the assignment.
+    let (status, filed) = send(
+        &app,
+        put(
+            &format!("/api/meetings/{}/folder", meeting.id),
+            &format!("{{\"folder_id\":\"{folder_id}\"}}"),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(filed["folder_id"], folder_id.as_str());
+    let (_, listed) = send(&app, get("/api/meetings")).await;
+    assert_eq!(listed["items"][0]["folder_id"], folder_id.as_str());
+
+    // Filing under a non-existent folder is a 422.
+    let (status, _) = send(
+        &app,
+        put(
+            &format!("/api/meetings/{}/folder", meeting.id),
+            &format!("{{\"folder_id\":\"{}\"}}", Uuid::new_v4()),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+
+    // A null folder_id un-files it.
+    let (status, cleared) = send(
+        &app,
+        put(
+            &format!("/api/meetings/{}/folder", meeting.id),
+            "{\"folder_id\":null}",
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(cleared["folder_id"].is_null());
+
+    // An unknown meeting is a 404.
+    let (status, _) = send(
+        &app,
+        put(
+            &format!("/api/meetings/{}/folder", Uuid::new_v4()),
+            "{\"folder_id\":null}",
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn deleting_a_folder_unfiles_its_meetings() {
+    let (app, pool, _tmp) = setup().await;
+    let meeting = queries::create_meeting(&pool, "M", "f", "", chrono::Utc::now())
+        .await
+        .unwrap();
+    let (_, folder) = send(&app, post("/api/folders", "{\"name\":\"Temp\"}")).await;
+    let folder_id = folder["id"].as_str().unwrap().to_string();
+    send(
+        &app,
+        put(
+            &format!("/api/meetings/{}/folder", meeting.id),
+            &format!("{{\"folder_id\":\"{folder_id}\"}}"),
+        ),
+    )
+    .await;
+
+    let (status, _) = send(&app, del(&format!("/api/folders/{folder_id}"))).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+
+    // The meeting survives, merely un-filed.
+    let (_, listed) = send(&app, get("/api/meetings")).await;
+    assert_eq!(listed["total"], 1);
+    assert!(listed["items"][0]["folder_id"].is_null());
 }
 
 #[tokio::test]

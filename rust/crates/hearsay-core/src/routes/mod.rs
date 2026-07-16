@@ -2,6 +2,7 @@
 //! query / the engine, return. Port of `src/hearsay/api/`.
 
 pub mod audio;
+pub mod folders;
 pub mod meetings;
 pub mod models;
 pub mod notes;

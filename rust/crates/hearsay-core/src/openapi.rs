@@ -4,11 +4,12 @@
 use utoipa::OpenApi;
 
 use crate::schema::{
-    AboutInfo, CatalogEntry, DownloadRequest, DownloadState, DownloadStatus, IdentityRead,
-    MeetingCreate, MeetingNotesRead, MeetingRead, MeetingStatus, MeetingUpdate, ModelCatalog,
-    ModelSettings, ModelsInfo, PermissionsInfo, RecordingSettings, ResyncEvent, SegmentRead,
-    SettingsRead, SpeakerRead, SpeakerRename, SpeakerSettings, StatusEvent, StatusInfo,
-    StorageInfo, StorageSettings, Stream, TranscriptEvent,
+    AboutInfo, CatalogEntry, DownloadRequest, DownloadState, DownloadStatus, FolderCreate,
+    FolderRead, FolderReparent, FolderUpdate, IdentityRead, MeetingCreate, MeetingFolderAssign,
+    MeetingNotesRead, MeetingRead, MeetingStatus, MeetingUpdate, ModelCatalog, ModelSettings,
+    ModelsInfo, PermissionsInfo, RecordingSettings, ResyncEvent, SegmentRead, SettingsRead,
+    SpeakerRead, SpeakerRename, SpeakerSettings, StatusEvent, StatusInfo, StorageInfo,
+    StorageSettings, Stream, TranscriptEvent,
 };
 
 #[derive(OpenApi)]
@@ -21,8 +22,14 @@ use crate::schema::{
         crate::routes::meetings::update_meeting,
         crate::routes::meetings::list_segments,
         crate::routes::meetings::stop_meeting,
+        crate::routes::meetings::assign_meeting_folder,
         crate::routes::meetings::delete_meeting,
         crate::routes::meetings::read_status,
+        crate::routes::folders::list_folders,
+        crate::routes::folders::create_folder,
+        crate::routes::folders::rename_folder,
+        crate::routes::folders::reparent_folder,
+        crate::routes::folders::delete_folder,
         crate::routes::speakers::list_speakers,
         crate::routes::speakers::rename_speaker,
         crate::routes::speakers::rediarize,
@@ -48,6 +55,11 @@ use crate::schema::{
         SegmentRead,
         SpeakerRead,
         IdentityRead,
+        FolderRead,
+        FolderCreate,
+        FolderUpdate,
+        FolderReparent,
+        MeetingFolderAssign,
         MeetingCreate,
         MeetingUpdate,
         SpeakerRename,
@@ -73,6 +85,7 @@ use crate::schema::{
     )),
     tags(
         (name = "meetings", description = "Meeting lifecycle + transcript segments"),
+        (name = "folders", description = "Nested organizational folders for meetings"),
         (name = "speakers", description = "Diarization clusters + cross-meeting identities"),
         (name = "notes", description = "Local-LLM meeting summaries + action items"),
         (name = "models", description = "Notes-model catalog + download manager"),

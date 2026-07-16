@@ -9,6 +9,198 @@
     "version": "0.1.0"
   },
   "paths": {
+    "/api/folders": {
+      "get": {
+        "tags": [
+          "folders"
+        ],
+        "operationId": "list_folders",
+        "parameters": [
+          {
+            "name": "page",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "page_size",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_FolderRead"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "folders"
+        ],
+        "operationId": "create_folder",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FolderCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FolderRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/api/folders/{id}": {
+      "delete": {
+        "tags": [
+          "folders"
+        ],
+        "operationId": "delete_folder",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "folders"
+        ],
+        "operationId": "rename_folder",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FolderUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FolderRead"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": ""
+          },
+          "422": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/api/folders/{id}/parent": {
+      "put": {
+        "tags": [
+          "folders"
+        ],
+        "operationId": "reparent_folder",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FolderReparent"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FolderRead"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": ""
+          },
+          "422": {
+            "description": ""
+          }
+        }
+      }
+    },
     "/api/identities": {
       "get": {
         "tags": [
@@ -212,6 +404,53 @@
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/MeetingUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MeetingRead"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": ""
+          },
+          "422": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/api/meetings/{id}/folder": {
+      "put": {
+        "tags": [
+          "meetings"
+        ],
+        "operationId": "assign_meeting_folder",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MeetingFolderAssign"
               }
             }
           },
@@ -955,6 +1194,84 @@
           "error"
         ]
       },
+      "FolderCreate": {
+        "type": "object",
+        "description": "Create a folder. `name` is validated non-empty, <= 255 chars; `parent_id` nests it under an\nexisting folder (omit or `null` for a root folder).",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "parent_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          }
+        }
+      },
+      "FolderRead": {
+        "type": "object",
+        "description": "An organizational folder for meetings (a node in the nested folder tree). `parent_id` is `null`\nfor a root folder.",
+        "required": [
+          "id",
+          "name",
+          "created_at",
+          "updated_at"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "name": {
+            "type": "string"
+          },
+          "parent_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "FolderReparent": {
+        "type": "object",
+        "description": "Reparent a folder. `parent_id` is the new parent, or `null` to move it to the root. Validated: a\nnon-null `parent_id` must exist and must not be the folder itself or one of its descendants (which\nwould create a cycle).",
+        "properties": {
+          "parent_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          }
+        }
+      },
+      "FolderUpdate": {
+        "type": "object",
+        "description": "Rename a folder. `name` replaces the folder's display name (validated non-empty, <= 255 chars).",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          }
+        }
+      },
       "IdentityRead": {
         "type": "object",
         "description": "A known cross-meeting person (offered as a rename suggestion).",
@@ -987,6 +1304,19 @@
               "string",
               "null"
             ]
+          }
+        }
+      },
+      "MeetingFolderAssign": {
+        "type": "object",
+        "description": "File a meeting under a folder. `folder_id` is the target folder, or `null` to un-file (move it\nback to the root/\"Unfiled\" list). Validated: a non-null `folder_id` must reference an existing\nfolder.",
+        "properties": {
+          "folder_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
           }
         }
       },
@@ -1048,7 +1378,16 @@
             "format": "date-time"
           },
           "folder": {
-            "type": "string"
+            "type": "string",
+            "description": "The on-disk recordings-directory name (not an organizational folder). To move a meeting\nbetween user folders, use `folder_id`."
+          },
+          "folder_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "The organizational [`FolderRead`] this meeting is filed under, or `null` when unfiled."
           },
           "id": {
             "type": "string",
@@ -1154,6 +1493,69 @@
           }
         }
       },
+      "Page_FolderRead": {
+        "type": "object",
+        "description": "Paginated list envelope used by every list endpoint (`{ total, page, page_size, items }`).",
+        "required": [
+          "total",
+          "page",
+          "page_size",
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "An organizational folder for meetings (a node in the nested folder tree). `parent_id` is `null`\nfor a root folder.",
+              "required": [
+                "id",
+                "name",
+                "created_at",
+                "updated_at"
+              ],
+              "properties": {
+                "created_at": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "id": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "parent_id": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "uuid"
+                },
+                "updated_at": {
+                  "type": "string",
+                  "format": "date-time"
+                }
+              }
+            }
+          },
+          "page": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "page_size": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "total": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
       "Page_IdentityRead": {
         "type": "object",
         "description": "Paginated list envelope used by every list endpoint (`{ total, page, page_size, items }`).",
@@ -1243,7 +1645,16 @@
                   "format": "date-time"
                 },
                 "folder": {
-                  "type": "string"
+                  "type": "string",
+                  "description": "The on-disk recordings-directory name (not an organizational folder). To move a meeting\nbetween user folders, use `folder_id`."
+                },
+                "folder_id": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "uuid",
+                  "description": "The organizational [`FolderRead`] this meeting is filed under, or `null` when unfiled."
                 },
                 "id": {
                   "type": "string",
@@ -1753,6 +2164,10 @@
     {
       "name": "meetings",
       "description": "Meeting lifecycle + transcript segments"
+    },
+    {
+      "name": "folders",
+      "description": "Nested organizational folders for meetings"
     },
     {
       "name": "speakers",

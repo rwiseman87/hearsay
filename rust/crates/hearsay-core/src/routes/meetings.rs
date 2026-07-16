@@ -2,7 +2,7 @@
 
 use axum::extract::State;
 use axum::http::StatusCode;
-use axum::routing::{get, post};
+use axum::routing::{get, post, put};
 use axum::Router;
 use uuid::Uuid;
 
@@ -11,7 +11,9 @@ use hearsay_db::queries;
 use crate::error::{ApiError, ApiResult};
 use crate::extract::{Json, Path, Query};
 use crate::routes::Pagination;
-use crate::schema::{MeetingCreate, MeetingRead, MeetingUpdate, Page, SegmentRead, StatusInfo};
+use crate::schema::{
+    MeetingCreate, MeetingFolderAssign, MeetingRead, MeetingUpdate, Page, SegmentRead, StatusInfo,
+};
 use crate::state::AppState;
 use hearsay_engine::LiveError;
 
@@ -27,6 +29,7 @@ pub fn router() -> Router<AppState> {
         )
         .route("/meetings/{id}/segments", get(list_segments))
         .route("/meetings/{id}/stop", post(stop_meeting))
+        .route("/meetings/{id}/folder", put(assign_meeting_folder))
         .route("/status", get(read_status))
 }
 
@@ -121,6 +124,29 @@ pub(crate) async fn update_meeting(
         ));
     }
     let meeting = queries::update_meeting_title(&state.pool, id, title)
+        .await?
+        .ok_or(ApiError::NotFound("meeting not found"))?;
+    Ok(Json(meeting.into()))
+}
+
+#[utoipa::path(
+    put, path = "/api/meetings/{id}/folder", tag = "meetings",
+    params(("id" = Uuid, Path)),
+    request_body = MeetingFolderAssign,
+    responses((status = 200, body = MeetingRead), (status = 404), (status = 422)),
+)]
+pub(crate) async fn assign_meeting_folder(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    Json(body): Json<MeetingFolderAssign>,
+) -> ApiResult<Json<MeetingRead>> {
+    // A non-null target must reference an existing folder; `None` un-files the meeting.
+    if let Some(folder_id) = body.folder_id {
+        if queries::get_folder(&state.pool, folder_id).await?.is_none() {
+            return Err(ApiError::Unprocessable("folder not found".into()));
+        }
+    }
+    let meeting = queries::assign_meeting_folder(&state.pool, id, body.folder_id)
         .await?
         .ok_or(ApiError::NotFound("meeting not found"))?;
     Ok(Json(meeting.into()))

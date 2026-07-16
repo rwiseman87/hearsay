@@ -9,6 +9,12 @@ export const queryKeys = {
     speakers: (id: string) => ["meetings", "speakers", id] as const,
     notes: (id: string) => ["meetings", "notes", id] as const,
   },
+  // Organizational folder tree for the sidebar. One prefix so a folder mutation invalidates the
+  // whole set (the tree is rebuilt client-side from the flat list).
+  folders: {
+    all: ["folders"] as const,
+    list: (page: number, pageSize: number) => ["folders", "list", page, pageSize] as const,
+  },
   // Notes-model download manager (catalog + the single active download's progress).
   models: {
     all: ["models"] as const,

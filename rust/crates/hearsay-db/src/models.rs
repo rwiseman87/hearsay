@@ -43,6 +43,11 @@ pub struct Meeting {
     /// before this column store `""`; [`Meeting::dir_path`] falls back to `default_root.join(folder)`.
     #[sqlx(default)]
     pub dir: String,
+    /// The user-facing organizational [`Folder`] this meeting is filed under, or `None` when unfiled.
+    /// Distinct from `folder` above (the on-disk directory name); set the meeting's `folder_id`, not
+    /// `folder`, to move it between folders.
+    #[sqlx(default)]
+    pub folder_id: Option<Uuid>,
 }
 
 impl Meeting {
@@ -56,6 +61,18 @@ impl Meeting {
             PathBuf::from(&self.dir)
         }
     }
+}
+
+/// A user-facing organizational folder for meetings. Folders nest via `parent_id` (`None` = a root
+/// folder); each meeting is filed under at most one folder (`Meeting::folder_id`). Deleting a folder
+/// removes its sub-folder subtree and un-files (does not delete) the meetings within.
+#[derive(Debug, Clone, PartialEq, Eq, FromRow)]
+pub struct Folder {
+    pub id: Uuid,
+    pub name: String,
+    pub parent_id: Option<Uuid>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
 }
 
 /// A transcript segment row.

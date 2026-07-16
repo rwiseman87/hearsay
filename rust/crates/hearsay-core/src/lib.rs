@@ -47,6 +47,7 @@ pub fn create_app(state: AppState) -> Router {
     let web_dir = state.settings.web_dir.clone();
 
     let protected = routes::meetings::router()
+        .merge(routes::folders::router())
         .merge(routes::speakers::router())
         .merge(routes::notes::router())
         .merge(routes::models::router())

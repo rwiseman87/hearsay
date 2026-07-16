@@ -4,6 +4,54 @@
  */
 
 export interface paths {
+    "/api/folders": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["list_folders"];
+        put?: never;
+        post: operations["create_folder"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/folders/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete: operations["delete_folder"];
+        options?: never;
+        head?: never;
+        patch: operations["rename_folder"];
+        trace?: never;
+    };
+    "/api/folders/{id}/parent": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put: operations["reparent_folder"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/identities": {
         parameters: {
             query?: never;
@@ -50,6 +98,22 @@ export interface paths {
         options?: never;
         head?: never;
         patch: operations["update_meeting"];
+        trace?: never;
+    };
+    "/api/meetings/{id}/folder": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put: operations["assign_meeting_folder"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
         trace?: never;
     };
     "/api/meetings/{id}/notes": {
@@ -364,6 +428,43 @@ export interface components {
          * @enum {string}
          */
         DownloadStatus: "idle" | "downloading" | "verifying" | "ready" | "error";
+        /**
+         * @description Create a folder. `name` is validated non-empty, <= 255 chars; `parent_id` nests it under an
+         *     existing folder (omit or `null` for a root folder).
+         */
+        FolderCreate: {
+            name: string;
+            /** Format: uuid */
+            parent_id?: string | null;
+        };
+        /**
+         * @description An organizational folder for meetings (a node in the nested folder tree). `parent_id` is `null`
+         *     for a root folder.
+         */
+        FolderRead: {
+            /** Format: date-time */
+            created_at: string;
+            /** Format: uuid */
+            id: string;
+            name: string;
+            /** Format: uuid */
+            parent_id?: string | null;
+            /** Format: date-time */
+            updated_at: string;
+        };
+        /**
+         * @description Reparent a folder. `parent_id` is the new parent, or `null` to move it to the root. Validated: a
+         *     non-null `parent_id` must exist and must not be the folder itself or one of its descendants (which
+         *     would create a cycle).
+         */
+        FolderReparent: {
+            /** Format: uuid */
+            parent_id?: string | null;
+        };
+        /** @description Rename a folder. `name` replaces the folder's display name (validated non-empty, <= 255 chars). */
+        FolderUpdate: {
+            name: string;
+        };
         /** @description A known cross-meeting person (offered as a rename suggestion). */
         IdentityRead: {
             display_name: string;
@@ -374,6 +475,15 @@ export interface components {
         /** @description Start a meeting. `title` defaults to a timestamp-derived name when omitted. */
         MeetingCreate: {
             title?: string | null;
+        };
+        /**
+         * @description File a meeting under a folder. `folder_id` is the target folder, or `null` to un-file (move it
+         *     back to the root/"Unfiled" list). Validated: a non-null `folder_id` must reference an existing
+         *     folder.
+         */
+        MeetingFolderAssign: {
+            /** Format: uuid */
+            folder_id?: string | null;
         };
         /**
          * @description A meeting's generated notes for the API: the summary + action items, and which model produced
@@ -395,7 +505,16 @@ export interface components {
             created_at: string;
             /** Format: date-time */
             ended_at?: string | null;
+            /**
+             * @description The on-disk recordings-directory name (not an organizational folder). To move a meeting
+             *     between user folders, use `folder_id`.
+             */
             folder: string;
+            /**
+             * Format: uuid
+             * @description The organizational [`FolderRead`] this meeting is filed under, or `null` when unfiled.
+             */
+            folder_id?: string | null;
             /** Format: uuid */
             id: string;
             /** Format: date-time */
@@ -446,6 +565,26 @@ export interface components {
             refine_model_exists: boolean;
         };
         /** @description Paginated list envelope used by every list endpoint (`{ total, page, page_size, items }`). */
+        Page_FolderRead: {
+            items: {
+                /** Format: date-time */
+                created_at: string;
+                /** Format: uuid */
+                id: string;
+                name: string;
+                /** Format: uuid */
+                parent_id?: string | null;
+                /** Format: date-time */
+                updated_at: string;
+            }[];
+            /** Format: int32 */
+            page: number;
+            /** Format: int32 */
+            page_size: number;
+            /** Format: int64 */
+            total: number;
+        };
+        /** @description Paginated list envelope used by every list endpoint (`{ total, page, page_size, items }`). */
         Page_IdentityRead: {
             items: {
                 display_name: string;
@@ -467,7 +606,16 @@ export interface components {
                 created_at: string;
                 /** Format: date-time */
                 ended_at?: string | null;
+                /**
+                 * @description The on-disk recordings-directory name (not an organizational folder). To move a meeting
+                 *     between user folders, use `folder_id`.
+                 */
                 folder: string;
+                /**
+                 * Format: uuid
+                 * @description The organizational [`FolderRead`] this meeting is filed under, or `null` when unfiled.
+                 */
+                folder_id?: string | null;
                 /** Format: uuid */
                 id: string;
                 /** Format: date-time */
@@ -690,6 +838,156 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    list_folders: {
+        parameters: {
+            query?: {
+                page?: number;
+                page_size?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Page_FolderRead"];
+                };
+            };
+        };
+    };
+    create_folder: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FolderCreate"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FolderRead"];
+                };
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    delete_folder: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    rename_folder: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FolderUpdate"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FolderRead"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    reparent_folder: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FolderReparent"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FolderRead"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     list_identities: {
         parameters: {
             query?: {
@@ -845,6 +1143,43 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": components["schemas"]["MeetingUpdate"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MeetingRead"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    assign_meeting_folder: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MeetingFolderAssign"];
             };
         };
         responses: {
