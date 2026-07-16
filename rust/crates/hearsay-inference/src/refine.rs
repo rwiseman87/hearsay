@@ -198,7 +198,11 @@ pub fn refine_them(
     them_samples: &[f32],
     timeout: Duration,
 ) -> Result<RefineOutput, InferenceError> {
-    refine_them_with(asr, &SwiftDiarizer::new(diarize_binary, timeout), them_samples)
+    refine_them_with(
+        asr,
+        &SwiftDiarizer::new(diarize_binary, timeout),
+        them_samples,
+    )
 }
 
 /// Spawn `hearsay-diarize <wav>` and wait for it with a deadline, killing it on expiry so a hung

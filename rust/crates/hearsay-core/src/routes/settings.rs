@@ -10,13 +10,14 @@ use std::path::{Path, PathBuf};
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::routing::{get, post, put};
-use axum::{Json, Router};
+use axum::Router;
 
 use hearsay_db::queries;
 use hearsay_db::queries::{SECTION_MODELS, SECTION_RECORDING, SECTION_SPEAKERS, SECTION_STORAGE};
 
 use crate::config::Settings;
 use crate::error::{ApiError, ApiResult};
+use crate::extract::Json;
 use crate::schema::{
     AboutInfo, ModelSettings, ModelsInfo, PermissionsInfo, RecordingSettings, SettingsRead,
     SpeakerSettings, StorageInfo, StorageSettings,

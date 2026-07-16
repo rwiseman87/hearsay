@@ -145,22 +145,6 @@ fn erase_all_data(app: tauri::AppHandle, core: tauri::State<'_, CoreChild>) -> R
     Ok(())
 }
 
-/// Open a macOS System Settings deep link (`x-apple.systempreferences:…`) via `open(1)`. The
-/// WKWebView drops navigations to non-http URL schemes, so the Permissions panel's "Open in System
-/// Settings" links route through this instead of an `<a href>`. Restricted to that one scheme so it
-/// can't be used as a general URL opener.
-#[tauri::command]
-fn open_url(url: String) -> Result<(), String> {
-    if !url.starts_with("x-apple.systempreferences:") {
-        return Err("unsupported URL scheme".into());
-    }
-    std::process::Command::new("open")
-        .arg(&url)
-        .status()
-        .map_err(|e| e.to_string())?;
-    Ok(())
-}
-
 /// Quit the app. Called after `erase_all_data` so the user can then drag Hearsay to the Trash.
 #[tauri::command]
 fn quit_app(app: tauri::AppHandle) {
@@ -190,7 +174,6 @@ fn main() {
         .manage(CoreChild(Mutex::new(None)))
         .invoke_handler(tauri::generate_handler![
             erase_all_data,
-            open_url,
             quit_app,
             pick_refine_model
         ])

@@ -1,6 +1,7 @@
 //! The production [`Transcriber`]: a `tokio::process` sidecar spoken to over stdio, byte-for-byte
-//! with `src/hearsay/transcript/live_base.py`. Feed frames are `<u32 LE sample count><f32 LE
-//! samples>` on stdin; the sidecar emits one NDJSON [`SidecarSegment`] per line on stdout.
+//! with the Swift live sidecars' stdin contract (`hearsay-{live,me,asr}` via `SidecarIO`). Feed
+//! frames are `<u32 LE sample count><f32 LE samples>` on stdin; the sidecar emits one NDJSON
+//! [`SidecarSegment`] per line on stdout.
 //!
 //! Used once `hearsay-inference` ships the sidecar binaries. The framing + parsing are unit-tested
 //! here; end-to-end spawning is exercised via a real sidecar (or the scripted fake in
@@ -187,7 +188,7 @@ struct ReadyMarker {
 }
 
 /// Read NDJSON segments from the sidecar's stdout, forwarding each parsed line to `tx`. Non-segment
-/// lines are skipped (matching the Python read loop), except the readiness marker, which is logged
+/// lines are skipped, except the readiness marker, which is logged
 /// and (for a warming spawn) fires `ready_tx` so [`ProcessTranscriber::warm`] can unblock. The
 /// channel closes when stdout hits EOF.
 async fn read_loop(

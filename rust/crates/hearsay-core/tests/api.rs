@@ -487,9 +487,11 @@ async fn renames_a_meeting_and_validates_the_title() {
     let (_, listed) = send(&app, get("/api/meetings")).await;
     assert_eq!(listed["items"][0]["title"], "New name");
 
-    // A blank title is a 400 (never let the DB store an empty name).
-    let (status, _) = send(&app, patch(meeting.id, "{\"title\":\"   \"}")).await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
+    // A blank title is a 422 + the `{ "detail": ... }` envelope (never let the DB store an empty
+    // name); input validation is 422 across the API, not a plain 400.
+    let (status, body) = send(&app, patch(meeting.id, "{\"title\":\"   \"}")).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(body["detail"].is_string());
 
     // An unknown id is a 404.
     let (status, _) = send(&app, patch(Uuid::new_v4(), "{\"title\":\"x\"}")).await;
@@ -506,6 +508,44 @@ async fn openapi_json_is_served() {
     // The active-meeting guards (R2) document a 409 on delete + rediarize.
     assert!(body["paths"]["/api/meetings/{id}"]["delete"]["responses"]["409"].is_object());
     assert!(body["paths"]["/api/meetings/{id}/rediarize"]["post"]["responses"]["409"].is_object());
+    // Input validation is documented as 422 (not 400): rename (PATCH) + start (POST).
+    assert!(body["paths"]["/api/meetings/{id}"]["patch"]["responses"]["422"].is_object());
+    assert!(body["paths"]["/api/meetings/{id}"]["patch"]["responses"]["400"].is_null());
+    assert!(body["paths"]["/api/meetings"]["post"]["responses"]["422"].is_object());
+    // The WS event frames are modeled + registered so they codegen into the TS client.
+    assert!(body["components"]["schemas"]["TranscriptEvent"].is_object());
+    assert!(body["components"]["schemas"]["StatusEvent"].is_object());
+    assert!(body["components"]["schemas"]["ResyncEvent"].is_object());
+}
+
+#[tokio::test]
+async fn extractor_rejections_are_422_with_the_detail_envelope() {
+    // axum's default extractor rejections are plain-text 400s that bypass the `{ "detail": ... }`
+    // envelope; the wrapper extractors in `crate::extract` map them to a uniform 422 envelope.
+    let (app, _pool, _tmp) = setup().await;
+
+    // A bad UUID in a `Path`.
+    let (status, body) = send(&app, get("/api/meetings/not-a-uuid")).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(body["detail"].is_string());
+
+    // An unparseable `Query` value (`page` is a u32).
+    let (status, body) = send(&app, get("/api/meetings?page=abc")).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(body["detail"].is_string());
+
+    // A malformed JSON body — extraction fails before the handler (so before the engine 503).
+    let malformed = Request::builder()
+        .method("POST")
+        .uri("/api/meetings")
+        .header("host", "127.0.0.1")
+        .header("authorization", format!("Bearer {TOKEN}"))
+        .header("content-type", "application/json")
+        .body(Body::from("{\"title\": "))
+        .unwrap();
+    let (status, body) = send(&app, malformed).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(body["detail"].is_string());
 }
 
 #[tokio::test]

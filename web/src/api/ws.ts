@@ -1,34 +1,28 @@
-import type { Stream } from "./types";
+import type { components } from "./schema";
 
-// Mirrors hearsay.schemas.segment.TranscriptEvent. The WebSocket is not part of
-// the OpenAPI schema, so this type is hand-maintained to match the backend.
-export interface TranscriptEvent {
-  kind: "partial" | "final";
-  stream: Stream;
-  speaker_label: string;
-  text: string;
-  start_s: number;
-  end_s: number;
-}
+type Schemas = components["schemas"];
 
-// A warm-up status frame (not a transcript line): the transcription sidecars are still loading their
-// models ("warming", sent as a snapshot on connect for a cold start) or have finished ("ready", the
-// live transition). Lets the UI show a "preparing" notice instead of a silent gap. Also hand-kept.
-export interface StatusEvent {
-  kind: "status";
-  state: "warming" | "ready";
-}
+// Live-transcript WebSocket frames. These are modeled in Rust (utoipa) and registered in the OpenAPI
+// components, so they codegen into `schema.ts` and no longer drift from the server: the orchestrator
+// pipeline that writes the wire bytes and these client types resolve to one source of truth. The
+// socket itself is not an OpenAPI operation, so only the frame shapes are shared, not an endpoint.
+
+// A transcript line: `partial` (interim; Them is streamed speaker-less) or `final` (persisted).
+// `stream` narrows to "me" | "them".
+export type TranscriptEvent = Schemas["TranscriptEvent"];
+
+// A warm-up status frame (not a transcript line): "warming" while the transcription sidecars load
+// their models (a snapshot on connect for a cold start), "ready" once they serve. Lets the UI show a
+// "preparing" notice instead of a silent gap.
+export type StatusEvent = Schemas["StatusEvent"];
 
 // A backfill signal (not a transcript line): the server's broadcast buffer dropped events for a
 // lagged subscriber, so the persisted transcript is ahead of this live stream. On receipt the client
 // refetches persisted segments rather than diverging. Kept out of the reducer-facing `WsMessage`
-// union — it never becomes a line. Hand-maintained like the others (the WebSocket is outside the
-// OpenAPI codegen), so the server frame in routes/ws.rs must match this shape.
-export interface ResyncEvent {
-  kind: "resync";
-}
+// union — it never becomes a line.
+export type ResyncEvent = Schemas["ResyncEvent"];
 
-// Anything the live socket can deliver, discriminated by `kind`.
+// Anything the live socket delivers on the transcript path, discriminated by `kind`.
 export type WsMessage = TranscriptEvent | StatusEvent;
 
 // Live-transcript connection state, surfaced to the UI so a dropped socket is visible instead of a

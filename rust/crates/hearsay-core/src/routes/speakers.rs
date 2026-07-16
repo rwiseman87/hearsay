@@ -1,14 +1,15 @@
 //! Speakers (diarization clusters) + identities. Port of `src/hearsay/api/speakers.py`.
 
-use axum::extract::{Path, Query, State};
+use axum::extract::State;
 use axum::routing::{get, put};
-use axum::{Json, Router};
+use axum::Router;
 use uuid::Uuid;
 
 use hearsay_db::queries;
 use hearsay_engine::LiveError;
 
 use crate::error::{ApiError, ApiResult};
+use crate::extract::{Json, Path, Query};
 use crate::routes::Pagination;
 use crate::schema::{IdentityRead, Page, SpeakerRead, SpeakerRename};
 use crate::state::AppState;
@@ -61,7 +62,7 @@ pub(crate) async fn rename_speaker(
 ) -> ApiResult<Json<SpeakerRead>> {
     let name = body.display_name.trim();
     if name.is_empty() || name.chars().count() > 255 {
-        return Err(ApiError::BadRequest(
+        return Err(ApiError::Unprocessable(
             "display_name must be 1..=255 characters".into(),
         ));
     }

@@ -305,9 +305,18 @@ mod tests {
         }
 
         for required in ["command", "reply_ok", "reply_fail", "event"] {
-            assert!(kinds.contains(required), "control.jsonl missing kind {required}");
+            assert!(
+                kinds.contains(required),
+                "control.jsonl missing kind {required}"
+            );
         }
-        assert!(events >= 10, "expected an event fixture per contract kind, got {events}");
-        assert!(count >= 13, "expected the full control fixture set, got {count}");
+        assert!(
+            events >= 10,
+            "expected an event fixture per contract kind, got {events}"
+        );
+        assert!(
+            count >= 13,
+            "expected the full control fixture set, got {count}"
+        );
     }
 }

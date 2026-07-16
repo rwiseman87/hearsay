@@ -265,3 +265,75 @@ pub struct SettingsRead {
 pub struct StatusInfo {
     pub sidecars_ready: bool,
 }
+
+// Live-transcript WebSocket frames. The socket is not itself an OpenAPI operation, but the frames it
+// broadcasts are modeled here (and registered in the OpenAPI components) so the TypeScript client
+// codegen's their shapes instead of hand-maintaining them out of the drift gate. The orchestrator
+// pipeline serializes the wire bytes today (`hearsay-orchestrator::pipeline`); these mirrors exist
+// only for codegen, so their field names + serde renames MUST stay byte-identical to that producer.
+
+/// The `kind` discriminant on a live [`TranscriptEvent`]: a pre-diarization `partial` (streamed, not
+/// persisted) or a persisted `final`. Mirrors the orchestrator's `SegmentKind` on the wire.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum TranscriptKind {
+    Partial,
+    Final,
+}
+
+/// A live transcript line pushed to the meeting WebSocket: a `partial` (interim, speaker-less for
+/// Them) or a `final` (persisted, with its resolved `speaker_label`).
+#[derive(Debug, Clone, PartialEq, Serialize, ToSchema)]
+pub struct TranscriptEvent {
+    #[schema(inline)]
+    pub kind: TranscriptKind,
+    pub stream: Stream,
+    pub speaker_label: String,
+    pub text: String,
+    pub start_s: f64,
+    pub end_s: f64,
+}
+
+/// The constant `kind` discriminant marking a [`StatusEvent`] (`"status"`), distinct from a
+/// transcript line's `partial`/`final` so the client routes it off the transcript path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum StatusKind {
+    Status,
+}
+
+/// Whether the live transcription sidecars are still loading their models (`warming`) or have
+/// finished and are serving (`ready`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum WarmState {
+    Warming,
+    Ready,
+}
+
+/// A warm-up status frame (not a transcript line): a `warming` snapshot on connect for a cold start
+/// and a `ready` transition once the sidecars finish, so the UI shows a "preparing" notice instead
+/// of a silent gap.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ToSchema)]
+pub struct StatusEvent {
+    #[schema(inline)]
+    pub kind: StatusKind,
+    #[schema(inline)]
+    pub state: WarmState,
+}
+
+/// The constant `kind` discriminant marking a [`ResyncEvent`] (`"resync"`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum ResyncKind {
+    Resync,
+}
+
+/// A backfill signal (not a transcript line): the broadcast buffer dropped events for a lagged
+/// subscriber, so the persisted transcript is ahead of this live stream. On receipt the client
+/// refetches persisted segments rather than diverging.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ToSchema)]
+pub struct ResyncEvent {
+    #[schema(inline)]
+    pub kind: ResyncKind,
+}

@@ -5,8 +5,9 @@ use utoipa::OpenApi;
 
 use crate::schema::{
     AboutInfo, IdentityRead, MeetingCreate, MeetingRead, MeetingStatus, MeetingUpdate,
-    ModelSettings, ModelsInfo, PermissionsInfo, RecordingSettings, SegmentRead, SettingsRead,
-    SpeakerRead, SpeakerRename, SpeakerSettings, StatusInfo, StorageInfo, StorageSettings, Stream,
+    ModelSettings, ModelsInfo, PermissionsInfo, RecordingSettings, ResyncEvent, SegmentRead,
+    SettingsRead, SpeakerRead, SpeakerRename, SpeakerSettings, StatusEvent, StatusInfo,
+    StorageInfo, StorageSettings, Stream, TranscriptEvent,
 };
 
 #[derive(OpenApi)]
@@ -54,6 +55,9 @@ use crate::schema::{
         AboutInfo,
         PermissionsInfo,
         StatusInfo,
+        TranscriptEvent,
+        StatusEvent,
+        ResyncEvent,
     )),
     tags(
         (name = "meetings", description = "Meeting lifecycle + transcript segments"),

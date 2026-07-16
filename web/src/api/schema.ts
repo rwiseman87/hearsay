@@ -440,6 +440,18 @@ export interface components {
         RecordingSettings: {
             record: boolean;
         };
+        /**
+         * @description A backfill signal (not a transcript line): the broadcast buffer dropped events for a lagged
+         *     subscriber, so the persisted transcript is ahead of this live stream. On receipt the client
+         *     refetches persisted segments rather than diverging.
+         */
+        ResyncEvent: {
+            /**
+             * @description The constant `kind` discriminant marking a [`ResyncEvent`] (`"resync"`).
+             * @enum {string}
+             */
+            kind: "resync";
+        };
         /** @description A transcript segment for the API. */
         SegmentRead: {
             /** Format: uuid */
@@ -496,6 +508,25 @@ export interface components {
             recognition_threshold: number;
         };
         /**
+         * @description A warm-up status frame (not a transcript line): a `warming` snapshot on connect for a cold start
+         *     and a `ready` transition once the sidecars finish, so the UI shows a "preparing" notice instead
+         *     of a silent gap.
+         */
+        StatusEvent: {
+            /**
+             * @description The constant `kind` discriminant marking a [`StatusEvent`] (`"status"`), distinct from a
+             *     transcript line's `partial`/`final` so the client routes it off the transcript path.
+             * @enum {string}
+             */
+            kind: "status";
+            /**
+             * @description Whether the live transcription sidecars are still loading their models (`warming`) or have
+             *     finished and are serving (`ready`).
+             * @enum {string}
+             */
+            state: "warming" | "ready";
+        };
+        /**
          * @description Live engine readiness for the UI to gate "Start" on. `sidecars_ready` is `true` once the
          *     pre-warmed transcription sidecars have loaded their models (so a new meeting transcribes
          *     immediately) and `false` while they are still loading after launch.
@@ -521,6 +552,25 @@ export interface components {
          * @enum {string}
          */
         Stream: "me" | "them";
+        /**
+         * @description A live transcript line pushed to the meeting WebSocket: a `partial` (interim, speaker-less for
+         *     Them) or a `final` (persisted, with its resolved `speaker_label`).
+         */
+        TranscriptEvent: {
+            /** Format: double */
+            end_s: number;
+            /**
+             * @description The `kind` discriminant on a live [`TranscriptEvent`]: a pre-diarization `partial` (streamed, not
+             *     persisted) or a persisted `final`. Mirrors the orchestrator's `SegmentKind` on the wire.
+             * @enum {string}
+             */
+            kind: "partial" | "final";
+            speaker_label: string;
+            /** Format: double */
+            start_s: number;
+            stream: components["schemas"]["Stream"];
+            text: string;
+        };
     };
     responses: never;
     parameters: never;
@@ -596,6 +646,12 @@ export interface operations {
                 };
             };
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -690,13 +746,13 @@ export interface operations {
                     "application/json": components["schemas"]["MeetingRead"];
                 };
             };
-            400: {
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content?: never;
             };
-            404: {
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };

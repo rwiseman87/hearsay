@@ -12,8 +12,8 @@ let package = Package(
     name: "hearsay-helper",
     platforms: [.macOS("14.4")],
     dependencies: [
-        // On-device AI on the Apple Neural Engine (Apache-2.0). Used only by the
-        // batch `hearsay-diarize` tool; the capture executable stays dependency-free.
+        // On-device AI on the Apple Neural Engine (Apache-2.0). Used by the audio-AI
+        // sidecars (hearsay-{live,me,diarize,asr}); the capture executable stays dependency-free.
         .package(url: "https://github.com/FluidInference/FluidAudio.git", exact: "0.15.4")
     ],
     targets: [
@@ -49,22 +49,22 @@ let package = Package(
         //
         // Post-meeting offline diarization on the ANE (FluidAudio's pyannote
         // community-1 CoreML pipeline). A one-shot batch tool: reads a wav, prints
-        // JSON speaker turns, exits. The Python core invokes it as a subprocess for
-        // `hearsay rediarize` (replaces the torch/pyannote refine). Kept a separate
+        // JSON speaker turns, exits. The Rust core invokes it as a subprocess for
+        // the offline refine (replaces the torch/pyannote refine). Kept a separate
         // target so the heavy CoreML dep never touches the lean capture binary.
         .executableTarget(
             name: "hearsay-diarize",
             dependencies: [.product(name: "FluidAudio", package: "FluidAudio")]
         ),
         // Persistent live-ASR sidecar (FluidAudio Parakeet TDT on the ANE). Loads the model
-        // once, then transcribes VAD utterances the Python core streams over stdin/stdout --
+        // once, then transcribes VAD utterances the Rust core streams over stdin/stdout --
         // replacing whisper.cpp/Metal in the live path (whose Metal backend can enter an
         // unrecoverable error state). Separate target so the capture binary stays lean.
         .executableTarget(
             name: "hearsay-asr",
             dependencies: [.product(name: "FluidAudio", package: "FluidAudio"), "SidecarIO"]
         ),
-        // Live "Them" processor: streaming diarization + Parakeet on the ANE. The Python core
+        // Live "Them" processor: streaming diarization + Parakeet on the ANE. The Rust core
         // streams the Them PCM in; as each speaker turn finalizes, this transcribes it and
         // emits a labeled segment -- so Swift owns diarization + ASR + turn assembly and the
         // core does no fusion. Separate target so the capture binary stays lean.
@@ -72,9 +72,9 @@ let package = Package(
             name: "hearsay-live",
             dependencies: [.product(name: "FluidAudio", package: "FluidAudio"), "SidecarIO"]
         ),
-        // Live "Me" processor: streaming VAD + Parakeet on the ANE. The Python core streams the
+        // Live "Me" processor: streaming VAD + Parakeet on the ANE. The Rust core streams the
         // local-mic PCM in; this segments speech and transcribes each utterance, emitting a
-        // segment -- so Swift owns VAD + ASR for Me (no Silero/Python in the live path). Me is
+        // segment -- so Swift owns VAD + ASR for Me end-to-end. Me is
         // always the local speaker, so there is no diarization. Separate target, lean capture.
         .executableTarget(
             name: "hearsay-me",

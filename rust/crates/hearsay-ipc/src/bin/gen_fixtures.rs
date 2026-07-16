@@ -13,7 +13,9 @@
 
 use std::path::PathBuf;
 
-use hearsay_ipc::{encode, to_line, Command, Event, FrameType, JsonObj, MediaFrame, Reply, SampleFormat, Stream};
+use hearsay_ipc::{
+    encode, to_line, Command, Event, FrameType, JsonObj, MediaFrame, Reply, SampleFormat, Stream,
+};
 use serde_json::{json, Value};
 
 fn hex(bytes: &[u8]) -> String {
@@ -128,7 +130,10 @@ struct ControlFixture {
 }
 
 fn control_obj(value: Value) -> JsonObj {
-    value.as_object().cloned().expect("canonical control payload is a JSON object")
+    value
+        .as_object()
+        .cloned()
+        .expect("canonical control payload is a JSON object")
 }
 
 /// Encode a control message to its exact wire line, minus the trailing `\n` the fixture omits.
@@ -258,13 +263,22 @@ fn main() {
         .map(|(desc, frame)| record(desc, frame))
         .collect();
     std::fs::write(&frames, format!("{}\n", frame_lines.join("\n"))).expect("write frames.jsonl");
-    println!("wrote {} fixtures to {}", frame_lines.len(), frames.display());
+    println!(
+        "wrote {} fixtures to {}",
+        frame_lines.len(),
+        frames.display()
+    );
 
     let control = fixtures.join("control.jsonl");
     let control_lines: Vec<String> = canonical_control()
         .iter()
         .map(|fixture| serde_json::to_string(fixture).expect("serialize control fixture"))
         .collect();
-    std::fs::write(&control, format!("{}\n", control_lines.join("\n"))).expect("write control.jsonl");
-    println!("wrote {} fixtures to {}", control_lines.len(), control.display());
+    std::fs::write(&control, format!("{}\n", control_lines.join("\n")))
+        .expect("write control.jsonl");
+    println!(
+        "wrote {} fixtures to {}",
+        control_lines.len(),
+        control.display()
+    );
 }

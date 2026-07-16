@@ -1,8 +1,8 @@
 //! Binary media-frame codec for the helper<->core IPC.
 //!
-//! Mirror of `shared/protocol/ipc.md`; the Python `hearsay.helper.protocol` and the Swift
-//! `HearsayIPC.FrameCodec` implement the same wire format. `shared/fixtures/frames.jsonl` pins the
-//! contract for all three (validated by the `golden_fixtures` integration test).
+//! Mirror of `shared/protocol/ipc.md`; the Swift `HearsayIPC.FrameCodec` implements the same wire
+//! format. `shared/fixtures/frames.jsonl` pins the contract for both (validated by the
+//! `golden_fixtures` integration test).
 //!
 //! Every media message is a fixed 28-byte little-endian header followed by `n_samples *
 //! bytes_per_sample` payload bytes (payload only for `audio` frames).
@@ -201,7 +201,10 @@ impl std::fmt::Display for ProtocolError {
             }
             ProtocolError::TruncatedPayload => write!(f, "truncated payload"),
             ProtocolError::PayloadTooLarge(n) => {
-                write!(f, "audio frame declares {n} samples, over the {MAX_PAYLOAD_LEN}-byte cap")
+                write!(
+                    f,
+                    "audio frame declares {n} samples, over the {MAX_PAYLOAD_LEN}-byte cap"
+                )
             }
         }
     }
@@ -468,7 +471,10 @@ mod tests {
         // The full decoder rejects it too (rather than attempting a huge allocation).
         let mut frame = header.clone();
         frame.extend_from_slice(&[0; 4]);
-        assert_eq!(decode(&frame), Err(ProtocolError::PayloadTooLarge(u32::MAX)));
+        assert_eq!(
+            decode(&frame),
+            Err(ProtocolError::PayloadTooLarge(u32::MAX))
+        );
 
         // One sample over the cap is rejected; the largest in-cap value is accepted.
         let max_samples = (MAX_PAYLOAD_LEN / SampleFormat::Float32.bytes_per_sample()) as u32;

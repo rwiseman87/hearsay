@@ -1,14 +1,15 @@
 //! Meetings REST router. Port of `src/hearsay/api/meetings.py`.
 
-use axum::extract::{Path, Query, State};
+use axum::extract::State;
 use axum::http::StatusCode;
 use axum::routing::{get, post};
-use axum::{Json, Router};
+use axum::Router;
 use uuid::Uuid;
 
 use hearsay_db::queries;
 
 use crate::error::{ApiError, ApiResult};
+use crate::extract::{Json, Path, Query};
 use crate::routes::Pagination;
 use crate::schema::{MeetingCreate, MeetingRead, MeetingUpdate, Page, SegmentRead, StatusInfo};
 use crate::state::AppState;
@@ -63,7 +64,7 @@ pub(crate) async fn list_meetings(
 #[utoipa::path(
     post, path = "/api/meetings", tag = "meetings",
     request_body = MeetingCreate,
-    responses((status = 201, body = MeetingRead), (status = 409), (status = 503)),
+    responses((status = 201, body = MeetingRead), (status = 409), (status = 422), (status = 503)),
 )]
 pub(crate) async fn start_meeting(
     State(state): State<AppState>,
@@ -71,7 +72,9 @@ pub(crate) async fn start_meeting(
 ) -> ApiResult<(StatusCode, Json<MeetingRead>)> {
     if let Some(title) = &body.title {
         if title.chars().count() > 255 {
-            return Err(ApiError::BadRequest("title exceeds 255 characters".into()));
+            return Err(ApiError::Unprocessable(
+                "title exceeds 255 characters".into(),
+            ));
         }
     }
     match state.engine.start_meeting(body.title).await {
@@ -101,7 +104,7 @@ pub(crate) async fn get_meeting(
     patch, path = "/api/meetings/{id}", tag = "meetings",
     params(("id" = Uuid, Path)),
     request_body = MeetingUpdate,
-    responses((status = 200, body = MeetingRead), (status = 400), (status = 404)),
+    responses((status = 200, body = MeetingRead), (status = 404), (status = 422)),
 )]
 pub(crate) async fn update_meeting(
     State(state): State<AppState>,
@@ -110,10 +113,12 @@ pub(crate) async fn update_meeting(
 ) -> ApiResult<Json<MeetingRead>> {
     let title = body.title.trim();
     if title.is_empty() {
-        return Err(ApiError::BadRequest("title must not be empty".into()));
+        return Err(ApiError::Unprocessable("title must not be empty".into()));
     }
     if title.chars().count() > 255 {
-        return Err(ApiError::BadRequest("title exceeds 255 characters".into()));
+        return Err(ApiError::Unprocessable(
+            "title exceeds 255 characters".into(),
+        ));
     }
     let meeting = queries::update_meeting_title(&state.pool, id, title)
         .await?

@@ -37,6 +37,10 @@ struct Output: Codable {
     let speakers: [SpeakerEmbedding]
 }
 
+// A dead core closes our stdout/stderr mid-write; ignore SIGPIPE so that surfaces as a throwing
+// write we can handle (exit) instead of terminating the process with no tail flush.
+signal(SIGPIPE, SIG_IGN)
+
 func emitErrorAndExit(_ message: String) -> Never {
     let payload = ["error": message]
     if let data = try? JSONSerialization.data(withJSONObject: payload) {

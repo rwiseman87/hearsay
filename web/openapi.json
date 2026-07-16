@@ -121,6 +121,9 @@
           "409": {
             "description": ""
           },
+          "422": {
+            "description": ""
+          },
           "503": {
             "description": ""
           }
@@ -225,10 +228,10 @@
               }
             }
           },
-          "400": {
+          "404": {
             "description": ""
           },
-          "404": {
+          "422": {
             "description": ""
           }
         }
@@ -1146,6 +1149,22 @@
           }
         }
       },
+      "ResyncEvent": {
+        "type": "object",
+        "description": "A backfill signal (not a transcript line): the broadcast buffer dropped events for a lagged\nsubscriber, so the persisted transcript is ahead of this live stream. On receipt the client\nrefetches persisted segments rather than diverging.",
+        "required": [
+          "kind"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "description": "The constant `kind` discriminant marking a [`ResyncEvent`] (`\"resync\"`).",
+            "enum": [
+              "resync"
+            ]
+          }
+        }
+      },
       "SegmentRead": {
         "type": "object",
         "description": "A transcript segment for the API.",
@@ -1288,6 +1307,31 @@
           }
         }
       },
+      "StatusEvent": {
+        "type": "object",
+        "description": "A warm-up status frame (not a transcript line): a `warming` snapshot on connect for a cold start\nand a `ready` transition once the sidecars finish, so the UI shows a \"preparing\" notice instead\nof a silent gap.",
+        "required": [
+          "kind",
+          "state"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "description": "The constant `kind` discriminant marking a [`StatusEvent`] (`\"status\"`), distinct from a\ntranscript line's `partial`/`final` so the client routes it off the transcript path.",
+            "enum": [
+              "status"
+            ]
+          },
+          "state": {
+            "type": "string",
+            "description": "Whether the live transcription sidecars are still loading their models (`warming`) or have\nfinished and are serving (`ready`).",
+            "enum": [
+              "warming",
+              "ready"
+            ]
+          }
+        }
+      },
       "StatusInfo": {
         "type": "object",
         "description": "Live engine readiness for the UI to gate \"Start\" on. `sidecars_ready` is `true` once the\npre-warmed transcription sidecars have loaded their models (so a new meeting transcribes\nimmediately) and `false` while they are still loading after launch.",
@@ -1345,6 +1389,45 @@
           "me",
           "them"
         ]
+      },
+      "TranscriptEvent": {
+        "type": "object",
+        "description": "A live transcript line pushed to the meeting WebSocket: a `partial` (interim, speaker-less for\nThem) or a `final` (persisted, with its resolved `speaker_label`).",
+        "required": [
+          "kind",
+          "stream",
+          "speaker_label",
+          "text",
+          "start_s",
+          "end_s"
+        ],
+        "properties": {
+          "end_s": {
+            "type": "number",
+            "format": "double"
+          },
+          "kind": {
+            "type": "string",
+            "description": "The `kind` discriminant on a live [`TranscriptEvent`]: a pre-diarization `partial` (streamed, not\npersisted) or a persisted `final`. Mirrors the orchestrator's `SegmentKind` on the wire.",
+            "enum": [
+              "partial",
+              "final"
+            ]
+          },
+          "speaker_label": {
+            "type": "string"
+          },
+          "start_s": {
+            "type": "number",
+            "format": "double"
+          },
+          "stream": {
+            "$ref": "#/components/schemas/Stream"
+          },
+          "text": {
+            "type": "string"
+          }
+        }
       }
     }
   },

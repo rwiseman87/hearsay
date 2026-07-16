@@ -1,8 +1,8 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 
-// Dev only. By default `hearsay serve` auto-picks a free port; for the Vite dev
-// proxy run it on a fixed port instead: `uv run hearsay serve --port 8137`.
+// Dev only. By default the core auto-picks a free port; for the Vite dev
+// proxy run it on a fixed port instead: `HEARSAY_SERVER_PORT=8137 make rust-serve`.
 // In production the bundle is served same-origin by the core, so these proxies
 // are unused.
 const CORE_URL = "http://127.0.0.1:8137";

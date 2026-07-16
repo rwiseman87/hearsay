@@ -8,6 +8,7 @@
 
 pub mod config;
 pub mod error;
+pub mod extract;
 pub mod openapi;
 pub mod routes;
 pub mod schema;
@@ -138,11 +139,21 @@ mod tests {
         let ws: Uri = "/ws?token=deadbeefsecret".parse().unwrap();
         assert_eq!(redact_token(&ws), "/ws?token=REDACTED");
 
-        let audio: Uri = "/api/meetings/abc/audio?token=deadbeefsecret".parse().unwrap();
-        assert_eq!(redact_token(&audio), "/api/meetings/abc/audio?token=REDACTED");
+        let audio: Uri = "/api/meetings/abc/audio?token=deadbeefsecret"
+            .parse()
+            .unwrap();
+        assert_eq!(
+            redact_token(&audio),
+            "/api/meetings/abc/audio?token=REDACTED"
+        );
 
-        let mixed: Uri = "/x?page=2&token=deadbeefsecret&page_size=50".parse().unwrap();
-        assert_eq!(redact_token(&mixed), "/x?page=2&token=REDACTED&page_size=50");
+        let mixed: Uri = "/x?page=2&token=deadbeefsecret&page_size=50"
+            .parse()
+            .unwrap();
+        assert_eq!(
+            redact_token(&mixed),
+            "/x?page=2&token=REDACTED&page_size=50"
+        );
     }
 
     #[test]

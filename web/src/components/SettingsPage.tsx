@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 
 import { api } from "../api/client";
@@ -549,9 +549,61 @@ function DangerZonePanel() {
 
 export default function SettingsPage({ onClose }: Props) {
   const [active, setActive] = useState<PanelId>("recording");
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
+
+  // Modal keyboard a11y: Escape closes, Tab/Shift-Tab cycle within the dialog, and focus returns to
+  // whatever opened it on unmount (role="dialog"/aria-modal already announce it). Runs once — the
+  // opener is captured on mount and restored on unmount — and reads onClose through a ref so a fresh
+  // onClose identity per parent render can't re-run the effect and steal focus mid-edit.
+  useEffect(() => {
+    const opener = document.activeElement as HTMLElement | null;
+    const dialog = dialogRef.current;
+    dialog?.focus();
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        onCloseRef.current();
+        return;
+      }
+      if (event.key !== "Tab" || !dialog) return;
+      const items = Array.from(
+        dialog.querySelectorAll<HTMLElement>(
+          'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+        ),
+      );
+      if (items.length === 0) return;
+      const first = items[0];
+      const last = items[items.length - 1];
+      const current = document.activeElement as HTMLElement | null;
+      const within = current !== null && items.includes(current);
+      if (event.shiftKey && (!within || current === first)) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && (!within || current === last)) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("keydown", onKeyDown);
+      opener?.focus();
+    };
+  }, []);
 
   return (
-    <div className="settings-overlay" role="dialog" aria-modal="true" aria-label="Settings">
+    <div
+      ref={dialogRef}
+      className="settings-overlay"
+      role="dialog"
+      aria-modal="true"
+      aria-label="Settings"
+      tabIndex={-1}
+    >
       <button
         type="button"
         className="settings-overlay__backdrop"

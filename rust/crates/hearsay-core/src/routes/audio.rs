@@ -5,7 +5,7 @@
 //! WebSocket) or as a normal bearer header. `ServeFile` honours Range requests, so the browser can
 //! seek. Port of `src/hearsay/api/audio.py`.
 
-use axum::extract::{Path, Request, State};
+use axum::extract::{Request, State};
 use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
@@ -17,6 +17,7 @@ use uuid::Uuid;
 
 use hearsay_db::queries;
 
+use crate::extract::Path;
 use crate::security::{bearer_token, query_token, token_matches};
 use crate::state::AppState;
 
