@@ -1,0 +1,315 @@
+//! Optional local-LLM summarization: turn a finalized transcript into a short summary + action
+//! items with a small GGUF instruct model via llama.cpp (`llama-cpp-2`) — the in-process sibling of
+//! the whisper refine. The prompt construction + reply parsing are pure and always compiled (so they
+//! are unit-tested without a model); the llama.cpp call lives behind the `notes` Cargo feature so a
+//! build without it never links llama.cpp.
+
+/// Generated notes: a short summary + a flat list of action items. The `notes` feature's
+/// [`summarize`] produces it; the pure builders/parsers below shape it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MeetingNotes {
+    pub summary: String,
+    pub action_items: Vec<String>,
+}
+
+/// Character budget for the transcript inside the prompt — a coarse cap that keeps the tokenized
+/// prompt (and thus the sized KV cache) bounded regardless of meeting length. ~48k chars ≈ ~14k
+/// tokens, comfortably under the generation context. A longer transcript is truncated (map-reduce
+/// chunking is the documented follow-up).
+const TRANSCRIPT_CHAR_BUDGET: usize = 48_000;
+
+/// Build the instruct prompt (ChatML, the default Qwen3 template) asking for a summary then a
+/// bulleted action-item list in a delimited format [`parse_notes`] can split reliably. An
+/// over-budget transcript is truncated at a char boundary with a marker.
+fn build_prompt(transcript: &str) -> String {
+    let transcript = truncate_on_char_boundary(transcript.trim(), TRANSCRIPT_CHAR_BUDGET);
+    format!(
+        "<|im_start|>system\n\
+         You are a meeting assistant. Read the transcript and produce a concise summary and a list \
+         of concrete action items.<|im_end|>\n\
+         <|im_start|>user\n\
+         Meeting transcript:\n\n{transcript}\n\n\
+         Reply in exactly this format:\n\
+         SUMMARY:\n\
+         <2 to 4 sentences>\n\
+         ACTION ITEMS:\n\
+         - <action item>\n\
+         - <action item>\n\
+         Write \"- none\" under ACTION ITEMS if there are none.<|im_end|>\n\
+         <|im_start|>assistant\n"
+    )
+}
+
+/// Truncate `s` to at most `max_bytes`, backing up to a UTF-8 char boundary, appending a marker when
+/// it actually cut. Never splits a multi-byte char.
+fn truncate_on_char_boundary(s: &str, max_bytes: usize) -> String {
+    if s.len() <= max_bytes {
+        return s.to_string();
+    }
+    let mut end = max_bytes;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}\n[transcript truncated]", &s[..end])
+}
+
+/// Parse the model's reply into a [`MeetingNotes`]. Tolerant of formatting drift: it locates the
+/// `SUMMARY:` / `ACTION ITEMS:` markers case-insensitively; without them the whole reply is the
+/// summary. Action items are the `-`/`*`/numbered lines under the marker; a lone "none" yields an
+/// empty list.
+fn parse_notes(reply: &str) -> MeetingNotes {
+    let reply = strip_chat_markers(reply);
+    let lower = reply.to_lowercase();
+
+    let action_idx = lower
+        .find("action items")
+        .or_else(|| lower.find("action item"));
+    let summary_idx = lower.find("summary");
+
+    let (summary_region, action_region) = match action_idx {
+        Some(ai) => {
+            let start = summary_idx.map(|s| s.min(ai)).unwrap_or(0);
+            (&reply[start..ai], &reply[ai..])
+        }
+        None => (reply.as_str(), ""),
+    };
+
+    let summary = clean_summary(summary_region);
+    let action_items = parse_action_items(action_region);
+    MeetingNotes {
+        summary,
+        action_items,
+    }
+}
+
+/// Drop any ChatML end/turn markers a model may echo (`<|im_end|>`, `<|im_start|>...`).
+fn strip_chat_markers(reply: &str) -> String {
+    reply
+        .split("<|im_end|>")
+        .next()
+        .unwrap_or(reply)
+        .replace("<|im_start|>assistant", "")
+        .trim()
+        .to_string()
+}
+
+/// The summary text: everything after a leading `SUMMARY:` label (if present), trimmed.
+fn clean_summary(region: &str) -> String {
+    let region = region.trim();
+    let without_label = match region.to_lowercase().find("summary") {
+        Some(idx) => {
+            let after = &region[idx..];
+            // Skip past the "summary" word and an optional following ":".
+            let rest = &after[after.find(':').map(|c| c + 1).unwrap_or(0)..];
+            if rest.is_empty() {
+                after
+            } else {
+                rest
+            }
+        }
+        None => region,
+    };
+    without_label.trim().to_string()
+}
+
+/// Extract bulleted / numbered action items under the `ACTION ITEMS:` marker. A single "none"
+/// (with or without a bullet) yields an empty list.
+fn parse_action_items(region: &str) -> Vec<String> {
+    let mut items = Vec::new();
+    for line in region.lines() {
+        let line = line.trim();
+        let item = line
+            .strip_prefix("- ")
+            .or_else(|| line.strip_prefix("* "))
+            .or_else(|| line.strip_prefix("• "))
+            .or_else(|| strip_numbered(line));
+        if let Some(item) = item {
+            let item = item.trim();
+            if item.is_empty() || item.eq_ignore_ascii_case("none") {
+                continue;
+            }
+            items.push(item.to_string());
+        }
+    }
+    items
+}
+
+/// Strip a leading `N.` / `N)` ordered-list marker, returning the remainder when it matched.
+fn strip_numbered(line: &str) -> Option<&str> {
+    let digits: String = line.chars().take_while(|c| c.is_ascii_digit()).collect();
+    if digits.is_empty() {
+        return None;
+    }
+    let rest = &line[digits.len()..];
+    rest.strip_prefix(". ").or_else(|| rest.strip_prefix(") "))
+}
+
+#[cfg(feature = "notes")]
+pub use llama::summarize;
+
+#[cfg(feature = "notes")]
+mod llama {
+    use std::num::NonZeroU32;
+    use std::path::Path;
+    use std::sync::OnceLock;
+
+    use llama_cpp_2::context::params::LlamaContextParams;
+    use llama_cpp_2::llama_backend::LlamaBackend;
+    use llama_cpp_2::llama_batch::LlamaBatch;
+    use llama_cpp_2::model::params::LlamaModelParams;
+    use llama_cpp_2::model::{AddBos, LlamaModel};
+    use llama_cpp_2::sampling::LlamaSampler;
+
+    use super::{build_prompt, parse_notes, MeetingNotes};
+    use crate::error::InferenceError;
+
+    /// Upper bound on the generation context (tokens). KV memory scales with `n_ctx`, so the context
+    /// is sized to the actual prompt + generation up to this cap (≈2.4 GB KV for a 4B model at the
+    /// cap); a transcript beyond it is truncated in [`build_prompt`].
+    const N_CTX_CAP: u32 = 16_384;
+    /// Cap on generated tokens (a summary + action items is well under this).
+    const MAX_TOKENS: usize = 1024;
+    /// Physical decode batch (and prompt-prefill chunk) size.
+    const N_BATCH: usize = 512;
+
+    fn err(context: &str, e: impl std::fmt::Display) -> InferenceError {
+        InferenceError::Summarize(format!("{context}: {e}"))
+    }
+
+    /// The process-global llama backend (`llama_backend_init` may run only once per process, and both
+    /// [`LlamaBackend`] and [`LlamaModel`] are `Send + Sync`).
+    fn backend() -> Result<&'static LlamaBackend, InferenceError> {
+        static BACKEND: OnceLock<LlamaBackend> = OnceLock::new();
+        if let Some(b) = BACKEND.get() {
+            return Ok(b);
+        }
+        let b = LlamaBackend::init().map_err(|e| err("llama backend init", e))?;
+        let _ = BACKEND.set(b);
+        Ok(BACKEND.get().expect("backend just set"))
+    }
+
+    /// Summarize `transcript` into [`MeetingNotes`] with the GGUF model at `model`: load it, run one
+    /// instruct prompt (greedy), and parse the reply. Loads the model per call and drops it on return
+    /// so the ~GBs are resident only during generation. Blocking (llama.cpp) — call via
+    /// `spawn_blocking`.
+    pub fn summarize(model: &Path, transcript: &str) -> Result<MeetingNotes, InferenceError> {
+        let backend = backend()?;
+        let llama = LlamaModel::load_from_file(backend, model, &LlamaModelParams::default())
+            .map_err(|e| err("load notes model", e))?;
+
+        let prompt = build_prompt(transcript);
+        let tokens = llama
+            .str_to_token(&prompt, AddBos::Always)
+            .map_err(|e| err("tokenize prompt", e))?;
+
+        // Size the context to the actual need (prompt + generation), capped, so KV memory is
+        // proportional to the meeting rather than a fixed worst case.
+        let want = tokens.len().saturating_add(MAX_TOKENS).saturating_add(64);
+        let n_ctx = (want as u32).min(N_CTX_CAP).max(N_BATCH as u32);
+        let ctx_params = LlamaContextParams::default().with_n_ctx(NonZeroU32::new(n_ctx));
+        let mut ctx = llama
+            .new_context(backend, ctx_params)
+            .map_err(|e| err("create llama context", e))?;
+
+        // Prefill the prompt in N_BATCH-sized chunks (a long prompt exceeds one physical batch),
+        // requesting logits only for the very last prompt token.
+        let mut batch = LlamaBatch::new(N_BATCH, 1);
+        let last = tokens.len().saturating_sub(1);
+        let mut pos: i32 = 0;
+        for chunk in tokens.chunks(N_BATCH) {
+            batch.clear();
+            for (i, &tok) in chunk.iter().enumerate() {
+                let global = pos as usize + i;
+                batch
+                    .add(tok, pos + i as i32, &[0], global == last)
+                    .map_err(|e| err("prefill batch", e))?;
+            }
+            ctx.decode(&mut batch)
+                .map_err(|e| err("prefill decode", e))?;
+            pos += chunk.len() as i32;
+        }
+
+        // Greedy generation from the last prompt logits until EOS or the token cap.
+        let mut out = String::new();
+        let mut decoder = encoding_rs::UTF_8.new_decoder();
+        let mut sampler = LlamaSampler::greedy();
+        for _ in 0..MAX_TOKENS {
+            let token = sampler.sample(&ctx, batch.n_tokens() - 1);
+            sampler.accept(token);
+            if token == llama.token_eos() {
+                break;
+            }
+            match llama.token_to_piece(token, &mut decoder, false, None) {
+                Ok(piece) => out.push_str(&piece),
+                Err(e) => return Err(err("detokenize", e)),
+            }
+            batch.clear();
+            batch
+                .add(token, pos, &[0], true)
+                .map_err(|e| err("gen batch", e))?;
+            pos += 1;
+            ctx.decode(&mut batch).map_err(|e| err("gen decode", e))?;
+        }
+
+        Ok(parse_notes(&out))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_notes_splits_summary_and_action_items() {
+        let reply = "SUMMARY:\nWe discussed the launch and the budget.\n\
+                     ACTION ITEMS:\n- Ship the beta\n- Email the client\n";
+        let notes = parse_notes(reply);
+        assert_eq!(notes.summary, "We discussed the launch and the budget.");
+        assert_eq!(
+            notes.action_items,
+            vec!["Ship the beta".to_string(), "Email the client".to_string()]
+        );
+    }
+
+    #[test]
+    fn parse_notes_handles_none_and_numbered_and_star_bullets() {
+        let none = parse_notes("SUMMARY:\nQuick sync.\nACTION ITEMS:\n- none");
+        assert!(none.action_items.is_empty());
+        assert_eq!(none.summary, "Quick sync.");
+
+        let mixed = parse_notes("Summary: A chat.\nAction items:\n1. Do X\n2) Do Y\n* Do Z");
+        assert_eq!(
+            mixed.action_items,
+            vec!["Do X".to_string(), "Do Y".to_string(), "Do Z".to_string()]
+        );
+    }
+
+    #[test]
+    fn parse_notes_without_markers_is_all_summary() {
+        let notes = parse_notes("Just a paragraph with no markers at all.");
+        assert_eq!(notes.summary, "Just a paragraph with no markers at all.");
+        assert!(notes.action_items.is_empty());
+    }
+
+    #[test]
+    fn parse_notes_strips_chatml_end_marker() {
+        let notes = parse_notes("SUMMARY:\nDone.\nACTION ITEMS:\n- Follow up<|im_end|>\nextra");
+        assert_eq!(notes.summary, "Done.");
+        assert_eq!(notes.action_items, vec!["Follow up".to_string()]);
+    }
+
+    #[test]
+    fn build_prompt_truncates_an_over_budget_transcript() {
+        let long = "word ".repeat(20_000); // ~100k chars
+        let prompt = build_prompt(&long);
+        assert!(prompt.contains("[transcript truncated]"));
+        assert!(prompt.len() < long.len());
+    }
+
+    #[test]
+    fn build_prompt_keeps_a_short_transcript_verbatim() {
+        let prompt = build_prompt("Alice: hi\nBob: hello");
+        assert!(prompt.contains("Alice: hi"));
+        assert!(!prompt.contains("[transcript truncated]"));
+    }
+}

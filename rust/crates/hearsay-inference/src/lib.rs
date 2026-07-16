@@ -14,6 +14,10 @@ mod asr;
 mod audio;
 mod diarizer;
 mod error;
+// The prompt/parse helpers are exercised by tests and by the `notes` feature's llama.cpp call; in a
+// plain build without either they are legitimately unused, so allow it there rather than gate each fn.
+#[cfg_attr(not(any(feature = "notes", test)), allow(dead_code))]
+mod notes;
 mod refine;
 #[cfg(feature = "sherpa")]
 mod sherpa_diarize;
@@ -24,6 +28,9 @@ pub use asr::{AsrSegment, WhisperAsr, DEFAULT_LANGUAGE};
 pub use audio::{read_them_channel, read_wav_mono_16k, SAMPLE_RATE};
 pub use diarizer::{DiarTurn, Diarization, Diarizer};
 pub use error::InferenceError;
+#[cfg(feature = "notes")]
+pub use notes::summarize;
+pub use notes::MeetingNotes;
 pub use refine::{
     refine_audio_file, refine_them, refine_them_with, RefineOutput, RefinedSegment, SwiftDiarizer,
 };
