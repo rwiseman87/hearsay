@@ -176,4 +176,6 @@ shared/protocol/ipc.md  IPC contract (source of truth)   ·   shared/fixtures/  
 - HEARSAY_HELPER_PATH: path to the Swift `hearsay-helper` (the `-live` / `-me` / `-diarize` sidecars resolve as siblings)
 - HEARSAY_REFINE_MODEL: default GGML whisper model for the offline refine (the Settings > Models panel overrides it per install by pointing at any downloaded `ggml-*.bin`; the change applies to the next refine, no restart)
 - HEARSAY_FLUID_MODELS_DIR: bundled FluidAudio live models the core seeds into FluidAudio's cache on first launch (set by the desktop shell; unset in dev, where FluidAudio downloads them)
-- HEARSAY_AUTO_REFINE / HEARSAY_RECORD / HEARSAY_RECOGNITION_THRESHOLD: defaults for the editable settings sections
+- HEARSAY_NOTES_MODEL: default GGUF instruct model for the optional local-LLM notes step (summary + action items); empty until one is downloaded/chosen. The Settings > Models panel overrides it per install; applies to the next generate, no restart. Requires the `notes` Cargo feature (built into `rust-serve` / `dmg`)
+- HEARSAY_MODELS_DIR: root the download manager writes notes models into and references them from (default `outputs/models`; the desktop shell points it at a persistent app-data dir so downloads survive reinstall)
+- HEARSAY_AUTO_REFINE / HEARSAY_RECORD / HEARSAY_RECOGNITION_THRESHOLD / HEARSAY_NOTES: defaults for the editable settings sections (`HEARSAY_NOTES` toggles the notes step, default off)
