@@ -12,7 +12,7 @@ use hearsay_db::{connect_options, queries, MIGRATOR};
 use hearsay_engine::{LiveEngine, LiveError};
 use hearsay_orchestrator::testing::{
     CrashingBackend, EmptyBackend, FailingBackend, GateRefiner, ScriptedBackend, ScriptedRefiner,
-    WarmingBackend, WedgeMeBackend,
+    ScriptedSummarizer, WarmingBackend, WedgeMeBackend,
 };
 use hearsay_orchestrator::{
     AudioChunk, Backend, CaptureChunk, Orchestrator, RefinedThemSegment, SegmentKind,
@@ -634,4 +634,110 @@ async fn storage_override_pins_meeting_dir_off_the_default_root() {
         refetched.dir_path(default_root.path()),
         override_root.path().join(&meeting.folder)
     );
+}
+
+/// With the `notes_enabled` override on and a summarizer wired, a stop auto-generates notes: the
+/// summary + action items are persisted and `notes.md` is written into the meeting folder.
+#[tokio::test]
+async fn stop_auto_generates_notes_when_enabled() {
+    let pool = memory_pool().await;
+    let tmp = tempfile::tempdir().unwrap();
+    // Notes default off; the `models`-section override turns it on for this stop.
+    queries::set_preference(&pool, queries::SECTION_MODELS, r#"{"notes_enabled":true}"#)
+        .await
+        .unwrap();
+
+    let chunks = vec![chunk(Stream::Them, 1_000_000_000, &[0.1, 0.2, 0.3])];
+    let them_segments = vec![seg(SegmentKind::Final, "hello there", 0.0, 1.0, Some(0))];
+    let (backend, _fed) = ScriptedBackend::new(chunks, vec![], them_segments);
+    let (summarizer, calls) =
+        ScriptedSummarizer::new("A short summary.", vec!["Do the thing".into()]);
+    let orch = orchestrator(pool.clone(), tmp.path(), backend).with_summarizer(summarizer);
+
+    let meeting = orch.start_meeting(Some("Notes Me".into())).await.unwrap();
+    // No refiner wired, so the stop finalizes straight away; notes run in the background task.
+    let stopped = orch.stop_meeting(meeting.id).await.unwrap().unwrap();
+    assert_eq!(stopped.status, MeetingStatus::Finalized);
+    orch.wait_for_refines().await;
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+    let notes = queries::get_meeting_notes(&pool, meeting.id)
+        .await
+        .unwrap()
+        .expect("notes generated at stop");
+    assert_eq!(notes.summary, "A short summary.");
+    let items: Vec<String> = serde_json::from_str(&notes.action_items).unwrap();
+    assert_eq!(items, vec!["Do the thing".to_string()]);
+
+    let notes_md =
+        std::fs::read_to_string(tmp.path().join(&meeting.folder).join("notes.md")).unwrap();
+    assert!(notes_md.contains("A short summary."));
+    assert!(notes_md.contains("Do the thing"));
+}
+
+/// The manual "Generate notes" path runs regardless of the `notes_enabled` toggle (the user asked
+/// explicitly), while auto-at-stop stays gated by it.
+#[tokio::test]
+async fn manual_generate_notes_ignores_toggle() {
+    let pool = memory_pool().await;
+    let tmp = tempfile::tempdir().unwrap();
+    // notes_enabled left at its default (off).
+
+    let chunks = vec![chunk(Stream::Them, 1_000_000_000, &[0.1, 0.2, 0.3])];
+    let them_segments = vec![seg(SegmentKind::Final, "agenda item", 0.0, 1.0, Some(0))];
+    let (backend, _fed) = ScriptedBackend::new(chunks, vec![], them_segments);
+    let (summarizer, calls) = ScriptedSummarizer::new("Manual summary.", vec![]);
+    let orch = orchestrator(pool.clone(), tmp.path(), backend).with_summarizer(summarizer);
+
+    let meeting = orch.start_meeting(None).await.unwrap();
+    orch.stop_meeting(meeting.id).await.unwrap().unwrap();
+    orch.wait_for_refines().await;
+    // Auto-notes did not run (disabled).
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    assert!(queries::get_meeting_notes(&pool, meeting.id)
+        .await
+        .unwrap()
+        .is_none());
+
+    // Manual generate runs regardless and persists.
+    orch.generate_notes(meeting.id).await.unwrap();
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    let notes = queries::get_meeting_notes(&pool, meeting.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(notes.summary, "Manual summary.");
+}
+
+/// A notes error at stop is best-effort: the stop still finalizes and no notes row is written.
+#[tokio::test]
+async fn stop_notes_error_is_best_effort() {
+    let pool = memory_pool().await;
+    let tmp = tempfile::tempdir().unwrap();
+    queries::set_preference(&pool, queries::SECTION_MODELS, r#"{"notes_enabled":true}"#)
+        .await
+        .unwrap();
+
+    let chunks = vec![chunk(Stream::Them, 1_000_000_000, &[0.1, 0.2, 0.3])];
+    let them_segments = vec![seg(SegmentKind::Final, "hi", 0.0, 1.0, Some(0))];
+    let (backend, _fed) = ScriptedBackend::new(chunks, vec![], them_segments);
+    let (summarizer, calls) = ScriptedSummarizer::failing("llama.cpp exploded");
+    let orch = orchestrator(pool.clone(), tmp.path(), backend).with_summarizer(summarizer);
+
+    let meeting = orch.start_meeting(None).await.unwrap();
+    let stopped = orch.stop_meeting(meeting.id).await.unwrap().unwrap();
+    assert_eq!(stopped.status, MeetingStatus::Finalized);
+    orch.wait_for_refines().await;
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+    // The failed notes step never wrote a row, but the meeting still finalized cleanly.
+    assert!(queries::get_meeting_notes(&pool, meeting.id)
+        .await
+        .unwrap()
+        .is_none());
+    let finalized = queries::get_meeting(&pool, meeting.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(finalized.status, MeetingStatus::Finalized);
 }

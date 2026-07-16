@@ -220,6 +220,49 @@ impl Refiner for MacRefiner {
     }
 }
 
+/// The post-meeting notes summarizer: resolve the effective GGUF notes model and run the llama.cpp
+/// summarization (`hearsay-inference`), off the async runtime (blocking). Gated behind the `notes`
+/// feature so a build without it never links llama.cpp. Wired into the orchestrator so a meeting can
+/// auto-generate notes at stop and the manual "Generate notes" route can drive the same path.
+#[cfg(feature = "notes")]
+struct LlamaSummarizer {
+    pool: SqlitePool,
+    /// Bundled config default; the effective model is the `models` preference's `notes_model` else
+    /// this, resolved from the DB at each run so a Models-panel change or completed download applies.
+    default_model: PathBuf,
+}
+
+#[cfg(feature = "notes")]
+#[async_trait]
+impl hearsay_orchestrator::Summarizer for LlamaSummarizer {
+    async fn summarize(
+        &self,
+        transcript: &str,
+    ) -> Result<hearsay_orchestrator::NotesResult, OrchestratorError> {
+        let (_enabled, model) =
+            hearsay_db::queries::effective_notes(&self.pool, false, &self.default_model)
+                .await
+                .map_err(|e| OrchestratorError::Backend(format!("resolve notes model: {e}")))?;
+        if model.as_os_str().is_empty() || !model.is_file() {
+            return Err(OrchestratorError::Backend(format!(
+                "notes model not available at {} (download or select one in Settings > Models)",
+                model.display()
+            )));
+        }
+        let transcript = transcript.to_string();
+        // llama.cpp is blocking — run off the async runtime, like the whisper refine.
+        let notes =
+            tokio::task::spawn_blocking(move || hearsay_inference::summarize(&model, &transcript))
+                .await
+                .map_err(|e| OrchestratorError::Backend(format!("notes task panicked: {e}")))?
+                .map_err(|e| OrchestratorError::Backend(format!("summarize failed: {e}")))?;
+        Ok(hearsay_orchestrator::NotesResult {
+            summary: notes.summary,
+            action_items: notes.action_items,
+        })
+    }
+}
+
 /// Assemble the macOS live engine: the Swift capture helper + FluidAudio live sidecars ([`MacBackend`])
 /// and the whisper offline refine ([`MacRefiner`]) inside an [`Orchestrator`], returned as the neutral
 /// [`LiveEngine`] the HTTP crate consumes. Prewarms the first sidecar pair and installs the
@@ -237,6 +280,8 @@ pub fn build_engine(
     record: bool,
     auto_refine: bool,
     recognition_threshold: f64,
+    notes_enabled: bool,
+    notes_model: PathBuf,
 ) -> Arc<dyn LiveEngine> {
     let backend = Arc::new(MacBackend::new(helper_path.clone(), synthetic));
     // Spawn the first sidecar pair now so its models start loading before the first meeting instead
@@ -249,15 +294,34 @@ pub fn build_engine(
     // `into_arc` wraps the orchestrator and wires its weak self-reference in one step (via
     // `Arc::new_cyclic`), so a capture death (helper crash) can finalize the meeting instead of
     // leaving it falsely live — with no separate init call to forget.
+    // Clone what the (feature-gated) summarizer needs before `pool` / `notes_model` are moved below.
+    #[cfg(feature = "notes")]
+    let notes_pool = pool.clone();
+    #[cfg(feature = "notes")]
+    let notes_default_model = notes_model.clone();
+
     let orchestrator = Orchestrator::new(pool.clone(), output_dir, backend)
-        .with_defaults(record, auto_refine, recognition_threshold)
+        .with_defaults(
+            record,
+            auto_refine,
+            recognition_threshold,
+            notes_enabled,
+            notes_model,
+        )
         .with_refiner(Arc::new(MacRefiner {
             pool,
             diarize_path: helper_path.with_file_name("hearsay-diarize"),
             default_model: refine_model,
             timeout: refine_timeout,
-        }))
-        .into_arc();
+        }));
+    // Wire the notes summarizer only when the feature is compiled in; without it, notes routes report
+    // unavailable and auto-notes is skipped (the summarizer stays `None`).
+    #[cfg(feature = "notes")]
+    let orchestrator = orchestrator.with_summarizer(Arc::new(LlamaSummarizer {
+        pool: notes_pool,
+        default_model: notes_default_model,
+    }));
+    let orchestrator = orchestrator.into_arc();
     // Start the background warm ticker: it re-warms the sidecar pool while idle (off the polled
     // `sidecars_ready` read) whenever the ANE is free. Must run within the Tokio runtime.
     orchestrator.spawn_warm_ticker();

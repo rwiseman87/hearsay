@@ -7,7 +7,7 @@ use std::path::Path;
 use async_trait::async_trait;
 use tokio::sync::{mpsc, oneshot};
 
-use hearsay_db::queries::RefineResult;
+use hearsay_db::queries::{NotesResult, RefineResult};
 
 use crate::error::OrchestratorError;
 use crate::types::{CaptureChunk, SidecarSegment, Stream};
@@ -59,6 +59,17 @@ pub trait Refiner: Send + Sync {
     /// returning the refined `Speaker N` segments + per-speaker voiceprints to persist in place of
     /// the live guesses.
     async fn refine(&self, audio_path: &Path) -> Result<RefineResult, OrchestratorError>;
+}
+
+/// The post-meeting local-LLM summarization of the finalized transcript into a summary + action
+/// items. Behind a trait for the same reason as [`Refiner`]: the orchestrator stays off
+/// `hearsay-inference` (llama.cpp / cmake) and testable with fakes; the production impl (in
+/// `hearsay-backends`) wraps `hearsay_inference::summarize`.
+#[async_trait]
+pub trait Summarizer: Send + Sync {
+    /// Summarize the rendered speaker-attributed `transcript` into a short summary + a flat list of
+    /// action items.
+    async fn summarize(&self, transcript: &str) -> Result<NotesResult, OrchestratorError>;
 }
 
 /// The capture + transcription backends for one meeting.

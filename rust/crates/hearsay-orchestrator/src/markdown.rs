@@ -12,6 +12,7 @@ use std::path::Path;
 use serde_json::json;
 
 use hearsay_db::models::{Meeting, MeetingStatus, Segment};
+use hearsay_db::queries::NotesResult;
 
 use crate::error::OrchestratorError;
 
@@ -43,6 +44,42 @@ fn render(title: &str, segments: &[Segment]) -> String {
         parts.push(seg.text.clone());
     }
     parts.join("\n") + "\n"
+}
+
+/// Render the finalized transcript as speaker-attributed text for the notes step's LLM prompt — the
+/// same `### HH:MM:SS — Speaker` grouping written to `transcript.md`. Segments must be `start_s`-ordered.
+pub fn render_transcript(title: &str, segments: &[Segment]) -> String {
+    render(title, segments)
+}
+
+/// Render the notes document: the summary, then the action items as a bulleted list (or a `_None._`
+/// placeholder when there are none).
+fn render_notes(title: &str, notes: &NotesResult) -> String {
+    let mut out = format!(
+        "# {title} — Notes\n\n## Summary\n\n{}\n",
+        notes.summary.trim()
+    );
+    out.push_str("\n## Action items\n\n");
+    if notes.action_items.is_empty() {
+        out.push_str("_None._\n");
+    } else {
+        for item in &notes.action_items {
+            out.push_str(&format!("- {}\n", item.trim()));
+        }
+    }
+    out
+}
+
+/// Write `notes.md` (summary + action items) into `dir` atomically, mirroring
+/// [`write_meeting_files`]'s crash-safe temp-file-plus-rename write.
+pub fn write_notes_md(
+    dir: &Path,
+    meeting: &Meeting,
+    notes: &NotesResult,
+) -> Result<(), OrchestratorError> {
+    std::fs::create_dir_all(dir)?;
+    write_atomic(&dir.join("notes.md"), &render_notes(&meeting.title, notes))?;
+    Ok(())
 }
 
 fn status_str(status: MeetingStatus) -> &'static str {
@@ -99,5 +136,27 @@ mod tests {
         assert_eq!(hhmmss(65.4), "00:01:05");
         assert_eq!(hhmmss(3661.0), "01:01:01");
         assert_eq!(hhmmss(-5.0), "00:00:00");
+    }
+
+    #[test]
+    fn render_notes_includes_summary_and_action_items() {
+        let notes = NotesResult {
+            summary: "We agreed on the plan.".into(),
+            action_items: vec!["Ship it".into(), "Tell Bob".into()],
+        };
+        let md = render_notes("Sync", &notes);
+        assert!(md.starts_with("# Sync — Notes"));
+        assert!(md.contains("## Summary\n\nWe agreed on the plan."));
+        assert!(md.contains("- Ship it"));
+        assert!(md.contains("- Tell Bob"));
+    }
+
+    #[test]
+    fn render_notes_empty_action_items_shows_none() {
+        let notes = NotesResult {
+            summary: "s".into(),
+            action_items: vec![],
+        };
+        assert!(render_notes("T", &notes).contains("## Action items\n\n_None._"));
     }
 }

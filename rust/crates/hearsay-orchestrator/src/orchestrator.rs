@@ -20,7 +20,7 @@ use hearsay_engine::{LiveEngine, LiveError};
 
 use crate::error::OrchestratorError;
 use crate::pipeline::{self, Pipeline};
-use crate::traits::{Backend, Refiner};
+use crate::traits::{Backend, Refiner, Summarizer};
 
 /// How often the background warm ticker re-checks the sidecar pool while idle. The check is cheap
 /// and idempotent when a healthy pair is present; on this cadence it re-spawns a warm pair that died
@@ -47,10 +47,18 @@ pub struct Orchestrator {
     default_record: bool,
     default_auto_refine: bool,
     default_recognition_threshold: f64,
+    /// Config defaults for the optional local-LLM notes step (the effective values are the stored
+    /// `models` override else these): whether to auto-generate at stop, and the fallback GGUF model.
+    default_notes_enabled: bool,
+    default_notes_model: PathBuf,
     /// The post-meeting refine. Wire it (via [`with_refiner`](Self::with_refiner)) so auto-refine is
     /// *available*; whether it actually runs at stop is gated by the effective `auto_refine` setting.
     /// `None` disables it entirely (the manual `/rediarize` route still drives the refine directly).
     refiner: Option<Arc<dyn Refiner>>,
+    /// The post-meeting notes summarizer. Wire it (via [`with_summarizer`](Self::with_summarizer)) so
+    /// notes are available; auto-generation at stop is gated by the effective `notes_enabled`, while
+    /// the manual "Generate notes" route drives it regardless. `None` disables notes entirely.
+    summarizer: Option<Arc<dyn Summarizer>>,
     /// One-permit gate serializing ANE-heavy work (P1): a live meeting holds it for its whole
     /// duration (acquired off the start path inside its pipeline) and the offline refine takes it for
     /// each run, so refine and live capture never run on the ANE at once. Always released, so it is
@@ -88,7 +96,10 @@ impl Orchestrator {
             default_record: true,
             default_auto_refine: true,
             default_recognition_threshold: 0.6,
+            default_notes_enabled: false,
+            default_notes_model: PathBuf::new(),
             refiner: None,
+            summarizer: None,
             ane_gate: Arc::new(tokio::sync::Semaphore::new(1)),
             op_lock: tokio::sync::Mutex::new(()),
             active: Mutex::new(None),
@@ -106,10 +117,14 @@ impl Orchestrator {
         record: bool,
         auto_refine: bool,
         recognition_threshold: f64,
+        notes_enabled: bool,
+        notes_model: PathBuf,
     ) -> Self {
         self.default_record = record;
         self.default_auto_refine = auto_refine;
         self.default_recognition_threshold = recognition_threshold;
+        self.default_notes_enabled = notes_enabled;
+        self.default_notes_model = notes_model;
         self
     }
 
@@ -119,6 +134,14 @@ impl Orchestrator {
     /// the refine directly regardless.
     pub fn with_refiner(mut self, refiner: Arc<dyn Refiner>) -> Self {
         self.refiner = Some(refiner);
+        self
+    }
+
+    /// Make the post-meeting [`Summarizer`] available so a meeting can auto-generate notes at stop and
+    /// the manual "Generate notes" route can drive it. Whether it runs automatically is decided per
+    /// stop by the effective `notes_enabled` setting; without it, notes are unavailable entirely.
+    pub fn with_summarizer(mut self, summarizer: Arc<dyn Summarizer>) -> Self {
+        self.summarizer = Some(summarizer);
         self
     }
 
@@ -362,6 +385,63 @@ async fn write_transcript(pool: &SqlitePool, output_dir: &Path, meeting: &Meetin
     }
 }
 
+/// Generate + persist + write a meeting's notes with `summarizer`, acquiring the shared ANE gate for
+/// the GPU-heavy generation (llama.cpp runs on the same GPU as whisper). `default_enabled` /
+/// `default_model` are the config defaults behind the effective `models`-section values; the stored
+/// `model` label is the effective notes model's file name (the summarizer resolves it itself to
+/// load). A meeting with no segments is a no-op. Shared by the manual "Generate notes" route and the
+/// auto-at-stop path.
+async fn run_notes(
+    pool: &SqlitePool,
+    output_dir: &Path,
+    ane_gate: &Arc<tokio::sync::Semaphore>,
+    summarizer: &Arc<dyn Summarizer>,
+    default_enabled: bool,
+    default_model: &Path,
+    meeting: &Meeting,
+) -> Result<(), OrchestratorError> {
+    let segments = queries::list_segments(pool, meeting.id).await?;
+    if segments.is_empty() {
+        return Ok(());
+    }
+    let transcript = crate::markdown::render_transcript(&meeting.title, &segments);
+    let (_enabled, model) = queries::effective_notes(pool, default_enabled, default_model).await?;
+    // Hold the shared permit only for the generation (waiting if a meeting/refine currently holds
+    // it), released before the DB write + notes.md (disk, not GPU). Deadlock-free like the refine.
+    let result = {
+        let _permit = ane_gate
+            .clone()
+            .acquire_owned()
+            .await
+            .expect("ANE gate semaphore is never closed");
+        summarizer.summarize(&transcript).await?
+    };
+    let model_label = model
+        .file_name()
+        .map(|f| f.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    queries::upsert_meeting_notes(pool, meeting.id, &result, &model_label).await?;
+    write_notes_file(output_dir, meeting, &result).await;
+    Ok(())
+}
+
+/// Write a meeting's `notes.md` from an in-hand result. Best-effort: a failure is logged, never
+/// surfaced (the notes are already persisted in the DB).
+async fn write_notes_file(output_dir: &Path, meeting: &Meeting, notes: &queries::NotesResult) {
+    let dir = meeting.dir_path(output_dir);
+    let meeting = meeting.clone();
+    let notes = notes.clone();
+    let write = tokio::task::spawn_blocking(move || {
+        crate::markdown::write_notes_md(&dir, &meeting, &notes)
+    })
+    .await;
+    match write {
+        Ok(Err(err)) => tracing::error!(error = %err, "failed to write notes.md"),
+        Err(err) => tracing::error!(error = %err, "notes writer panicked"),
+        Ok(Ok(())) => {}
+    }
+}
+
 #[async_trait]
 impl LiveEngine for Orchestrator {
     async fn start_meeting(&self, title: Option<String>) -> Result<Meeting, LiveError> {
@@ -437,6 +517,9 @@ impl LiveEngine for Orchestrator {
         let pool = self.pool.clone();
         let output_dir = self.output_dir.clone();
         let ane_gate = self.ane_gate.clone();
+        let summarizer = self.summarizer.clone();
+        let default_notes_enabled = self.default_notes_enabled;
+        let default_notes_model = self.default_notes_model.clone();
         let task_meeting = meeting.clone();
         let handle = tokio::spawn(async move {
             if let Some((refiner, threshold)) = refine {
@@ -445,6 +528,7 @@ impl LiveEngine for Orchestrator {
                 // it), released before the transcript write (disk, not ANE). Deadlock-free — the live
                 // side always releases at stop, this always releases when the refine returns.
                 let _permit = ane_gate
+                    .clone()
                     .acquire_owned()
                     .await
                     .expect("ANE gate semaphore is never closed");
@@ -458,6 +542,36 @@ impl LiveEngine for Orchestrator {
                         meeting = %task_meeting.id,
                         "failed to mark meeting finalized after refine"
                     );
+                }
+            }
+            // Optional local-LLM notes, after the transcript is written + the meeting is finalized so
+            // the status reflects transcription promptly (notes are supplementary). Only when a
+            // summarizer is wired and the effective `notes_enabled` is on; best-effort + logged so it
+            // never fails the stop. `run_notes` re-acquires the ANE gate (the refine has released it).
+            if let Some(summarizer) = &summarizer {
+                let enabled =
+                    queries::effective_notes(&pool, default_notes_enabled, &default_notes_model)
+                        .await
+                        .map(|(enabled, _)| enabled)
+                        .unwrap_or(default_notes_enabled);
+                if enabled {
+                    if let Err(err) = run_notes(
+                        &pool,
+                        &output_dir,
+                        &ane_gate,
+                        summarizer,
+                        default_notes_enabled,
+                        &default_notes_model,
+                        &task_meeting,
+                    )
+                    .await
+                    {
+                        tracing::warn!(
+                            error = %err,
+                            meeting = %task_meeting.id,
+                            "auto notes generation failed"
+                        );
+                    }
                 }
             }
         });
@@ -537,6 +651,30 @@ impl LiveEngine for Orchestrator {
             .map_err(OrchestratorError::from)?;
         // Rewrite transcript.md + meeting.json from the refined (+ Me) segments (best-effort, logged).
         write_transcript(&self.pool, &self.output_dir, &meeting).await;
+        Ok(())
+    }
+
+    /// Manual "Generate notes": summarize a stored meeting's finalized transcript on demand, ignoring
+    /// the `notes_enabled` toggle (the user explicitly asked). Reuses the same [`run_notes`] path the
+    /// auto-at-stop uses. [`LiveError::Unavailable`] when no summarizer is wired or the meeting does
+    /// not exist / has no transcript. The caller (the route) has already 404'd an unknown id / 409'd a
+    /// live meeting.
+    async fn generate_notes(&self, meeting_id: Uuid) -> Result<(), LiveError> {
+        let summarizer = self.summarizer.clone().ok_or(LiveError::Unavailable)?;
+        let meeting = queries::get_meeting(&self.pool, meeting_id)
+            .await
+            .map_err(OrchestratorError::from)?
+            .ok_or(LiveError::Unavailable)?;
+        run_notes(
+            &self.pool,
+            &self.output_dir,
+            &self.ane_gate,
+            &summarizer,
+            self.default_notes_enabled,
+            &self.default_notes_model,
+            &meeting,
+        )
+        .await?;
         Ok(())
     }
 

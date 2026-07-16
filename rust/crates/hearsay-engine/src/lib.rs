@@ -48,6 +48,13 @@ pub trait LiveEngine: Send + Sync {
     /// [`LiveError::Unavailable`] when no capture/inference engine is wired.
     async fn rediarize(&self, meeting_id: Uuid) -> Result<(), LiveError>;
 
+    /// Generate (or regenerate) the meeting's notes — a summary + action items — from its finalized
+    /// transcript with the local LLM, persist them, and write `notes.md`. Re-runnable on demand
+    /// (the "Generate notes" route) independent of re-diarization, and run automatically at stop when
+    /// the setting is on. [`LiveError::Unavailable`] when no summarizer/model is wired or the meeting
+    /// has no transcript to summarize.
+    async fn generate_notes(&self, meeting_id: Uuid) -> Result<(), LiveError>;
+
     /// Whether the active meeting's transcription sidecars are still loading their models, so the
     /// live WebSocket can send a warm-up snapshot to a new subscriber. `Some(true)` = still loading
     /// (a cold start), `Some(false)` = serving, `None` = not the active session. Defaults to `None`
@@ -93,6 +100,10 @@ impl LiveEngine for DisabledEngine {
     }
 
     async fn rediarize(&self, _meeting_id: Uuid) -> Result<(), LiveError> {
+        Err(LiveError::Unavailable)
+    }
+
+    async fn generate_notes(&self, _meeting_id: Uuid) -> Result<(), LiveError> {
         Err(LiveError::Unavailable)
     }
 }

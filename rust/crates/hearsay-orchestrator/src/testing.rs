@@ -10,10 +10,10 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use tokio::sync::{mpsc, oneshot, Notify};
 
-use hearsay_db::queries::{RefineResult, RefinedThemSegment};
+use hearsay_db::queries::{NotesResult, RefineResult, RefinedThemSegment};
 
 use crate::error::OrchestratorError;
-use crate::traits::{AudioSource, Backend, BackendInstance, Refiner, Transcriber};
+use crate::traits::{AudioSource, Backend, BackendInstance, Refiner, Summarizer, Transcriber};
 use crate::transcriber::SEGMENT_CHANNEL_CAPACITY;
 use crate::types::{CaptureChunk, SidecarSegment};
 
@@ -184,6 +184,45 @@ impl ScriptedRefiner {
 #[async_trait]
 impl Refiner for ScriptedRefiner {
     async fn refine(&self, _audio_path: &Path) -> Result<RefineResult, OrchestratorError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        self.result.clone().map_err(OrchestratorError::Backend)
+    }
+}
+
+/// A [`Summarizer`] that yields a fixed [`NotesResult`] (or a fixed error), ignoring the transcript,
+/// and counts how many times it ran — for testing notes generation + auto-at-stop without llama.cpp.
+pub struct ScriptedSummarizer {
+    result: Result<NotesResult, String>,
+    calls: Arc<AtomicUsize>,
+}
+
+impl ScriptedSummarizer {
+    /// A summarizer that returns `summary` + `action_items` on each call, plus a shared call counter.
+    pub fn new(summary: &str, action_items: Vec<String>) -> (Arc<Self>, Arc<AtomicUsize>) {
+        Self::from_result(Ok(NotesResult {
+            summary: summary.to_string(),
+            action_items,
+        }))
+    }
+
+    /// A summarizer that fails with `message` (to prove a notes error never fails the stop).
+    pub fn failing(message: &str) -> (Arc<Self>, Arc<AtomicUsize>) {
+        Self::from_result(Err(message.to_string()))
+    }
+
+    fn from_result(result: Result<NotesResult, String>) -> (Arc<Self>, Arc<AtomicUsize>) {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let summarizer = Arc::new(ScriptedSummarizer {
+            result,
+            calls: calls.clone(),
+        });
+        (summarizer, calls)
+    }
+}
+
+#[async_trait]
+impl Summarizer for ScriptedSummarizer {
+    async fn summarize(&self, _transcript: &str) -> Result<NotesResult, OrchestratorError> {
         self.calls.fetch_add(1, Ordering::SeqCst);
         self.result.clone().map_err(OrchestratorError::Backend)
     }
