@@ -198,6 +198,11 @@ fn main() {
             let data_dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(data_dir.join("db"))?;
             std::fs::create_dir_all(data_dir.join("recordings"))?;
+            // Notes models the user downloads land here (the .app bundle is read-only, and the core's
+            // repo-relative `outputs/models` default resolves under the read-only launch dir). Kept in
+            // app-data so downloads survive app updates.
+            let models_dir = data_dir.join("models");
+            std::fs::create_dir_all(&models_dir)?;
             let db_url = format!("sqlite://{}", data_dir.join("db/hearsay.db").display());
 
             // Private readiness handshake: the core writes {port, token} here once it is listening,
@@ -225,6 +230,7 @@ fn main() {
                     "HEARSAY_OUTPUT_DIR",
                     data_dir.join("recordings").to_string_lossy().to_string(),
                 )
+                .env("HEARSAY_MODELS_DIR", models_dir.to_string_lossy().to_string())
                 .env("DATABASE_URL", db_url)
                 .env("ENVIRONMENT", "production")
                 .env(
