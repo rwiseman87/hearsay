@@ -107,3 +107,16 @@ pub struct Preference {
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
+
+/// A meeting's generated notes row: the summary + action items produced by the optional local LLM
+/// summarization step. One row per meeting (keyed by `meeting_id`); `action_items` is a JSON array
+/// of strings and `model` records the GGUF that produced it. Cascades on meeting delete.
+#[derive(Debug, Clone, PartialEq, Eq, FromRow)]
+pub struct MeetingNotes {
+    pub meeting_id: Uuid,
+    pub summary: String,
+    pub action_items: String,
+    pub model: String,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}

@@ -7,7 +7,7 @@ use std::collections::HashMap;
 
 use hearsay_attribution::{centroid_from_bytes, centroid_to_bytes};
 use hearsay_db::models::{MeetingStatus, Stream};
-use hearsay_db::queries::{RefineResult, RefinedThemSegment};
+use hearsay_db::queries::{NotesResult, RefineResult, RefinedThemSegment};
 use hearsay_db::{connect_options, queries, MIGRATOR};
 use sqlx::sqlite::SqlitePoolOptions;
 use sqlx::SqlitePool;
@@ -696,5 +696,77 @@ async fn recognition_threshold_gates_cross_meeting_match() {
     assert_eq!(
         ord1.display_name, None,
         "0.999 threshold must reject ~0.994"
+    );
+}
+
+#[tokio::test]
+async fn meeting_notes_upsert_get_and_regenerate() {
+    let pool = memory_pool().await;
+    let meeting = queries::create_meeting(&pool, "Sync", "/tmp/sync", "", chrono::Utc::now())
+        .await
+        .unwrap();
+
+    let first = NotesResult {
+        summary: "We discussed the roadmap.".into(),
+        action_items: vec!["Ship the beta".into(), "Email the client".into()],
+    };
+    queries::upsert_meeting_notes(&pool, meeting.id, &first, "qwen3-4b")
+        .await
+        .unwrap();
+
+    let stored = queries::get_meeting_notes(&pool, meeting.id)
+        .await
+        .unwrap()
+        .expect("notes exist");
+    assert_eq!(stored.summary, first.summary);
+    assert_eq!(stored.model, "qwen3-4b");
+    let items: Vec<String> = serde_json::from_str(&stored.action_items).unwrap();
+    assert_eq!(items, first.action_items);
+    let created = stored.created_at;
+
+    // Regenerating overwrites summary/items/model in place (still one row) and preserves created_at.
+    let second = NotesResult {
+        summary: "Revised summary.".into(),
+        action_items: vec!["One item".into()],
+    };
+    queries::upsert_meeting_notes(&pool, meeting.id, &second, "smollm3-3b")
+        .await
+        .unwrap();
+    let stored = queries::get_meeting_notes(&pool, meeting.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.summary, "Revised summary.");
+    assert_eq!(stored.model, "smollm3-3b");
+    assert_eq!(stored.created_at, created, "created_at preserved on upsert");
+    let items: Vec<String> = serde_json::from_str(&stored.action_items).unwrap();
+    assert_eq!(items, vec!["One item".to_string()]);
+}
+
+#[tokio::test]
+async fn delete_meeting_cascades_notes() {
+    let pool = memory_pool().await;
+    let meeting = queries::create_meeting(&pool, "Sync", "/tmp/sync", "", chrono::Utc::now())
+        .await
+        .unwrap();
+    queries::upsert_meeting_notes(
+        &pool,
+        meeting.id,
+        &NotesResult {
+            summary: "s".into(),
+            action_items: vec![],
+        },
+        "m",
+    )
+    .await
+    .unwrap();
+
+    assert!(queries::delete_meeting(&pool, meeting.id).await.unwrap());
+    assert!(
+        queries::get_meeting_notes(&pool, meeting.id)
+            .await
+            .unwrap()
+            .is_none(),
+        "notes cascade-deleted with the meeting"
     );
 }

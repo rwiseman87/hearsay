@@ -17,7 +17,7 @@ const KNOWN_VOICEPRINTS_SQL: &str = "SELECT i.display_name, c.centroid FROM clus
      JOIN identities i ON i.id = c.identity_id \
      WHERE c.locked = 1 AND c.centroid IS NOT NULL AND c.meeting_id != ?";
 
-use crate::models::{Cluster, Identity, Meeting, MeetingStatus, Segment, Stream};
+use crate::models::{Cluster, Identity, Meeting, MeetingNotes, MeetingStatus, Segment, Stream};
 
 /// A speaker cluster joined to its bound identity's name (for the speakers list). `display_name`
 /// is `None` when the cluster is unbound; the caller renders `"Speaker {ordinal}"` in that case.
@@ -458,6 +458,58 @@ pub struct RefineResult {
     pub centroids: HashMap<i64, Vec<f32>>,
 }
 
+/// The local-LLM summarization step's output, persisted by [`upsert_meeting_notes`]: a short summary
+/// plus a flat list of action items. The orchestrator's [`crate::Summarizer`] analogue produces it
+/// from the finalized transcript.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct NotesResult {
+    pub summary: String,
+    pub action_items: Vec<String>,
+}
+
+/// Insert or replace a meeting's generated notes (one row per meeting; regenerating overwrites).
+/// `action_items` is stored as a JSON array of strings; `model` records the GGUF that produced it.
+/// `created_at` is preserved across regenerations via the upsert's `excluded`/existing coalesce so
+/// the row keeps its first-produced timestamp while `updated_at` advances.
+pub async fn upsert_meeting_notes(
+    pool: &SqlitePool,
+    meeting_id: Uuid,
+    result: &NotesResult,
+    model: &str,
+) -> Result<(), sqlx::Error> {
+    let now = Utc::now();
+    let action_items = serde_json::to_string(&result.action_items)
+        .map_err(|e| sqlx::Error::Encode(Box::new(e)))?;
+    sqlx::query(
+        "INSERT INTO meeting_notes \
+         (meeting_id, summary, action_items, model, created_at, updated_at) \
+         VALUES (?, ?, ?, ?, ?, ?) \
+         ON CONFLICT(meeting_id) DO UPDATE SET \
+         summary = excluded.summary, action_items = excluded.action_items, \
+         model = excluded.model, updated_at = excluded.updated_at",
+    )
+    .bind(meeting_id)
+    .bind(&result.summary)
+    .bind(&action_items)
+    .bind(model)
+    .bind(now)
+    .bind(now)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// A meeting's generated notes, or `None` when it has none yet.
+pub async fn get_meeting_notes(
+    pool: &SqlitePool,
+    meeting_id: Uuid,
+) -> Result<Option<MeetingNotes>, sqlx::Error> {
+    sqlx::query_as::<_, MeetingNotes>("SELECT * FROM meeting_notes WHERE meeting_id = ?")
+        .bind(meeting_id)
+        .fetch_optional(pool)
+        .await
+}
+
 /// `(display_name, centroid bytes)` for every person named + locked in a *different* meeting with a
 /// stored voiceprint — the candidates a refine matches a returning speaker against. Port of
 /// `SpeakerService.known_voiceprints`.
@@ -833,6 +885,57 @@ pub async fn effective_refine_model(
                 .and_then(|v| v.as_str().map(PathBuf::from))
         })
         .unwrap_or_else(|| default.to_path_buf()))
+}
+
+/// The stored `models` section as a raw JSON object (`None` when unset/corrupt), for the settings
+/// API to resolve each field against its own config default. Tolerates a *partial* section — e.g.
+/// the one [`set_notes_model`] writes with only `notes_model` — which a strict struct deserialize
+/// would reject, 500-ing `GET /settings` after a first download on an otherwise-default install.
+pub async fn models_section(
+    pool: &SqlitePool,
+) -> Result<Option<serde_json::Map<String, serde_json::Value>>, sqlx::Error> {
+    section_object(pool, SECTION_MODELS).await
+}
+
+/// Set the `models` section's `notes_model` to `path` (what the download manager calls on a
+/// completed download), preserving the section's other fields (`refine_model`, `notes_enabled`) by
+/// merging into the stored object rather than overwriting it.
+pub async fn set_notes_model(pool: &SqlitePool, path: &str) -> Result<(), sqlx::Error> {
+    let mut obj = section_object(pool, SECTION_MODELS)
+        .await?
+        .unwrap_or_default();
+    obj.insert(
+        "notes_model".to_string(),
+        serde_json::Value::String(path.to_string()),
+    );
+    let json = serde_json::to_string(&serde_json::Value::Object(obj))
+        .map_err(|e| sqlx::Error::Encode(Box::new(e)))?;
+    set_preference(pool, SECTION_MODELS, &json).await
+}
+
+/// Effective notes settings from the same `models` section: `(notes_enabled, notes_model)`. Each
+/// field falls back independently to its config default (a partial/corrupt row still yields usable
+/// values), matching [`effective_speakers`]. An empty stored `notes_model` is treated as unset. Read
+/// fresh at each stop/generate so a Settings or download change applies with no restart.
+pub async fn effective_notes(
+    pool: &SqlitePool,
+    default_enabled: bool,
+    default_model: &Path,
+) -> Result<(bool, PathBuf), sqlx::Error> {
+    let obj = section_object(pool, SECTION_MODELS).await?;
+    let enabled = obj
+        .as_ref()
+        .and_then(|o| o.get("notes_enabled").and_then(serde_json::Value::as_bool))
+        .unwrap_or(default_enabled);
+    let model = obj
+        .as_ref()
+        .and_then(|o| {
+            o.get("notes_model")
+                .and_then(|v| v.as_str().map(PathBuf::from))
+        })
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| default_model.to_path_buf());
+    Ok((enabled, model))
 }
 
 /// Effective `(auto_refine, recognition_threshold)`: the stored `speakers` override per field, else
