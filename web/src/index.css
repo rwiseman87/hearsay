@@ -231,6 +231,21 @@ body {
   opacity: 0.5;
 }
 
+/* WebKit (Tauri WKWebView) needs -webkit-user-drag to actually start an HTML5 drag, and
+   user-select:none so the gesture drags the row instead of selecting its text. Scoped to
+   `[draggable="true"]` so an inline rename input (draggable=false) keeps normal text selection. */
+.meetings__item[draggable="true"],
+.folder__header[draggable="true"] {
+  -webkit-user-drag: element;
+  user-select: none;
+  cursor: grab;
+}
+
+.meetings__item[draggable="true"]:active,
+.folder__header[draggable="true"]:active {
+  cursor: grabbing;
+}
+
 .folder__header {
   display: flex;
   align-items: center;
