@@ -79,6 +79,11 @@ pub(crate) struct Pipeline {
     /// held, the offline refine (which takes the same permit) cannot run on the ANE. Aborted by
     /// [`close`](Self::close) to release the permit at stop/teardown (P1).
     ane_holder: JoinHandle<()>,
+    /// Watchers that each await one sidecar's models-ready signal, then (whichever is last) broadcast
+    /// a `ready` status. Tracked so [`close`](Self::close) can abort them at teardown: a sidecar that
+    /// never signals ready would otherwise leave its watcher parked forever holding a `broadcast_tx`
+    /// clone, keeping the broadcast channel open past the pipeline's life.
+    ready_watchers: Vec<JoinHandle<()>>,
     /// True while any transcription sidecar is still loading its models (a cold start); false once
     /// all are serving. Read by the orchestrator to answer the WebSocket warm-up snapshot so the UI
     /// can show a "preparing" notice instead of a silent gap.
@@ -97,6 +102,12 @@ impl Pipeline {
         // waiting on it (e.g. if a prior refine held the ANE for this whole meeting), so stop never
         // waits the full join timeout for one.
         self.ane_holder.abort();
+        // Abort the ready-watchers: a sidecar that never signals ready would otherwise leave its
+        // watcher parked forever holding a `broadcast_tx` clone, keeping the broadcast channel open
+        // past the pipeline's life.
+        for watcher in self.ready_watchers.drain(..) {
+            watcher.abort();
+        }
         self.source.stop().await;
         // Demux never blocks (it drops-with-log on a full stream queue), so it finishes promptly
         // after capture closes; await it unbounded so its final `audio.wav` encode completes.
@@ -169,13 +180,14 @@ pub(crate) async fn spawn(
         .flatten()
         .collect();
     let warming = Arc::new(AtomicBool::new(!ready_signals.is_empty()));
+    let mut ready_watchers = Vec::new();
     if !ready_signals.is_empty() {
         let pending = Arc::new(AtomicUsize::new(ready_signals.len()));
         for ready_rx in ready_signals {
             let warming = warming.clone();
             let pending = pending.clone();
             let broadcast_tx = broadcast_tx.clone();
-            tokio::spawn(async move {
+            ready_watchers.push(tokio::spawn(async move {
                 // Fires on the sidecar's ready marker; Err if it died first — either way it is no
                 // longer loading, so count it down.
                 let _ = ready_rx.await;
@@ -183,7 +195,7 @@ pub(crate) async fn spawn(
                     warming.store(false, Ordering::SeqCst);
                     publish_status(&broadcast_tx, "ready");
                 }
-            });
+            }));
         }
     }
 
@@ -246,6 +258,7 @@ pub(crate) async fn spawn(
             demux,
             streams: vec![me_task, them_task],
             ane_holder,
+            ready_watchers,
             warming,
         },
         died_rx,
@@ -314,7 +327,7 @@ async fn stream_loop(
     role: StreamRole,
     mut transcriber: Box<dyn Transcriber>,
     mut chunk_rx: mpsc::Receiver<(f64, Vec<f32>)>,
-    mut emit_rx: mpsc::UnboundedReceiver<SidecarSegment>,
+    mut emit_rx: mpsc::Receiver<SidecarSegment>,
     pool: SqlitePool,
     meeting_id: Uuid,
     broadcast_tx: broadcast::Sender<String>,

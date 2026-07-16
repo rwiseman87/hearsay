@@ -5,17 +5,22 @@ edition.workspace = true
 publish = false
 
 [dependencies]
+hearsay-attribution = { path = "../hearsay-attribution" }
 hound = "3.5.1"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"
-sherpa-onnx = "1.13.3"
+sherpa-onnx = { version = "1.13.3", optional = true }
 tempfile = "3.27.0"
 whisper-rs = "0.16.0"
 
-# Per-OS GPU acceleration is opt-in (default = portable CPU). The installer/build selects the
-# backend for the target: `--features metal` on macOS, `vulkan` on the Intel Arc iGPU, `cuda` on
-# discrete NVIDIA. Same code, per-OS accel (see docs/architecture-cross-platform.md).
+# `sherpa` enables the cross-platform (Windows) sherpa-onnx diarize + streaming path; it is off by
+# default so the macOS bundle never compiles or links onnxruntime (macOS uses the Swift sidecars).
+#
+# Per-OS GPU acceleration for the whisper refine is opt-in (default = portable CPU). The
+# installer/build selects the backend for the target: `--features metal` on macOS, `vulkan` on the
+# Intel Arc iGPU, `cuda` on discrete NVIDIA. Same code, per-OS accel (see docs/architecture-cross-platform.md).
 [features]
+sherpa = ["dep:sherpa-onnx"]
 metal = ["whisper-rs/metal"]
 vulkan = ["whisper-rs/vulkan"]
 cuda = ["whisper-rs/cuda"]

@@ -92,19 +92,12 @@ async fn index(
         .and_then(|v| v.to_str().ok())
         .unwrap_or("127.0.0.1");
 
+    // Only the per-request CSP + nonce lives here: the nonce is minted per response, so it cannot
+    // move into the global response-header layer. `X-Content-Type-Options`, `X-Frame-Options`, and
+    // `Referrer-Policy` are applied to every response by that layer in `create_app`.
     let mut headers = HeaderMap::new();
-    let insert = |headers: &mut HeaderMap, name, value: &str| {
-        if let Ok(value) = HeaderValue::from_str(value) {
-            headers.insert(name, value);
-        }
-    };
-    insert(
-        &mut headers,
-        header::CONTENT_SECURITY_POLICY,
-        &csp(&nonce, ws_host),
-    );
-    insert(&mut headers, header::X_CONTENT_TYPE_OPTIONS, "nosniff");
-    insert(&mut headers, header::X_FRAME_OPTIONS, "DENY");
-    insert(&mut headers, header::REFERRER_POLICY, "no-referrer");
+    if let Ok(value) = HeaderValue::from_str(&csp(&nonce, ws_host)) {
+        headers.insert(header::CONTENT_SECURITY_POLICY, value);
+    }
     (headers, Html(html)).into_response()
 }

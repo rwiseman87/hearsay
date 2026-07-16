@@ -9,6 +9,10 @@ use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextPar
 
 use crate::error::InferenceError;
 
+/// Default whisper transcription language (a whisper language code). English by default; a caller
+/// overrides it via [`WhisperAsr::with_language`] (the offline refine keeps this default).
+pub const DEFAULT_LANGUAGE: &str = "en";
+
 /// One transcribed segment. Times are seconds from the start of the given audio.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AsrSegment {
@@ -21,21 +25,35 @@ pub struct AsrSegment {
 /// call so it is safe to reuse across audio.
 pub struct WhisperAsr {
     ctx: WhisperContext,
+    language: String,
 }
 
 impl WhisperAsr {
-    /// Load a GGML whisper model (e.g. `ggml-base.bin`, `ggml-large-v3-turbo.bin`).
+    /// Load a GGML whisper model (e.g. `ggml-base.bin`, `ggml-large-v3-turbo.bin`). Transcription
+    /// language defaults to [`DEFAULT_LANGUAGE`]; override it with
+    /// [`with_language`](Self::with_language).
     pub fn load(model_path: impl AsRef<Path>) -> Result<Self, InferenceError> {
         let ctx = WhisperContext::new_with_params(
             model_path.as_ref(),
             WhisperContextParameters::default(),
         )
         .map_err(|e| InferenceError::Whisper(format!("load model: {e}")))?;
-        Ok(WhisperAsr { ctx })
+        Ok(WhisperAsr {
+            ctx,
+            language: DEFAULT_LANGUAGE.to_string(),
+        })
     }
 
-    /// Transcribe 16 kHz mono `samples` (float in [-1, 1]) into timestamped segments (English,
-    /// greedy). Timestamps come from whisper's centisecond segment bounds.
+    /// Set the transcription language (a whisper language code, e.g. `"de"`, or `"auto"` to detect);
+    /// defaults to [`DEFAULT_LANGUAGE`]. The offline refine keeps the default.
+    pub fn with_language(mut self, language: impl Into<String>) -> Self {
+        self.language = language.into();
+        self
+    }
+
+    /// Transcribe 16 kHz mono `samples` (float in [-1, 1]) into timestamped segments (greedy; the
+    /// model's `language`, default English). Timestamps come from whisper's centisecond segment
+    /// bounds.
     pub fn transcribe(&self, samples: &[f32]) -> Result<Vec<AsrSegment>, InferenceError> {
         let mut state = self
             .ctx
@@ -43,7 +61,7 @@ impl WhisperAsr {
             .map_err(|e| InferenceError::Whisper(format!("create state: {e}")))?;
 
         let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
-        params.set_language(Some("en"));
+        params.set_language(Some(self.language.as_str()));
         params.set_print_special(false);
         params.set_print_progress(false);
         params.set_print_realtime(false);

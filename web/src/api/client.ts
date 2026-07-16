@@ -39,7 +39,10 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
   const timeout = AbortSignal.timeout(timeoutMs);
   const composed = signal ? AbortSignal.any([signal, timeout]) : timeout;
 
-  const headers: Record<string, string> = { Authorization: `Bearer ${getToken()}` };
+  const headers: Record<string, string> = {
+    Authorization: `Bearer ${getToken()}`,
+    "X-Request-Id": crypto.randomUUID(),
+  };
   if (body !== undefined) headers["Content-Type"] = "application/json";
 
   let response: Response;

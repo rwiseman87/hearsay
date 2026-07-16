@@ -84,6 +84,61 @@ private func controlRoundTripChecks() -> Bool {
     return ok
 }
 
+/// Decode + re-encode every committed control golden fixture (`shared/fixtures/control.jsonl`),
+/// mirroring the Rust `control_golden_fixtures` test. Rust generates the file, so this is the Swift
+/// half of the cross-language NDJSON contract check: any drift in key ordering, slash-escaping, or
+/// number formatting between the two codecs fails here.
+private func controlFixtureChecks(path: String) -> Bool {
+    var ok = true
+    func fail(_ what: String) {
+        ok = false
+        warn("  control fixture: \(what)")
+    }
+    guard let data = FileManager.default.contents(atPath: path),
+        let text = String(data: data, encoding: .utf8)
+    else {
+        warn("cannot read control fixtures at \(path)")
+        return false
+    }
+    var count = 0
+    for line in text.split(separator: "\n") {
+        guard let lineData = line.data(using: .utf8),
+            let obj = try? JSONSerialization.jsonObject(with: lineData) as? [String: Any],
+            let kind = obj["kind"] as? String,
+            let encoded = obj["encoded"] as? String
+        else {
+            fail("bad fixture line")
+            continue
+        }
+        let desc = obj["desc"] as? String ?? "?"
+        let encodedData = Data(encoded.utf8)
+        do {
+            let reencoded: Data
+            switch kind {
+            case "command":
+                reencoded = try ControlCodec.line(ControlCodec.decodeCommand(encodedData))
+            case "reply_ok", "reply_fail":
+                reencoded = try ControlCodec.line(ControlCodec.decodeReply(encodedData))
+            case "event":
+                reencoded = try ControlCodec.line(ControlCodec.decodeEvent(encodedData))
+            default:
+                fail("\(desc): unknown kind \(kind)")
+                continue
+            }
+            // ControlCodec.line appends '\n'; the fixture stores the bare line.
+            if String(decoding: reencoded, as: UTF8.self) == encoded + "\n" {
+                count += 1
+            } else {
+                fail("\(desc): re-encode drift\n    fixture: \(encoded)")
+            }
+        } catch {
+            fail("\(desc): decode error \(error)")
+        }
+    }
+    print("swift control-fixture check: \(count) control fixtures, \(ok ? "PASS" : "FAIL")")
+    return ok
+}
+
 /// Deterministic checks for the lock-free-throughput SPSC ring that carries raw audio from the tap's
 /// real-time IOProc to its drain worker — FIFO order, physical wrap-around, and newest-over-capacity
 /// drop accounting. Pure logic, so it runs off-device in the self-test.
@@ -130,6 +185,12 @@ private func spscRingChecks() -> Bool {
 /// fixture. This is the Swift side of the cross-language IPC contract check.
 private func runSelfTest(path: String) -> Bool {
     var ok = internalRoundTripChecks() && controlRoundTripChecks() && spscRingChecks()
+    // control.jsonl is the NDJSON golden; it sits beside the frames fixtures passed in `path`.
+    let controlDir = (path as NSString).deletingLastPathComponent
+    let controlPath = (controlDir as NSString).appendingPathComponent("control.jsonl")
+    if !controlFixtureChecks(path: controlPath) {
+        ok = false
+    }
     guard let data = FileManager.default.contents(atPath: path),
         let text = String(data: data, encoding: .utf8)
     else {

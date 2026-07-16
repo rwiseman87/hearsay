@@ -14,9 +14,11 @@ use std::process::{Command, ExitStatus, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use hearsay_attribution::{order_speakers, SpeakerTurn};
 use serde::Deserialize;
 
 use crate::asr::WhisperAsr;
+use crate::diarizer::{DiarTurn, Diarization, Diarizer};
 use crate::error::InferenceError;
 
 /// Contract-fixed track sample rate (Hz).
@@ -66,51 +68,96 @@ struct SpeakerEmbedding {
     embedding: Vec<f32>,
 }
 
-/// Re-diarize + re-transcribe the Them track. `diarize_binary` is the Swift `hearsay-diarize`
-/// sidecar; `them_samples` is the 16 kHz mono right channel of `audio.wav`. `timeout` bounds the
-/// diarize subprocess (killed on expiry) so a hung sidecar can never wedge the refine — and thus
-/// meeting stop. Blocking (whisper + subprocess) — call via `spawn_blocking` from async code.
-pub fn refine_them(
-    asr: &WhisperAsr,
-    diarize_binary: &Path,
-    them_samples: &[f32],
+/// The macOS diarizer: drives the Swift `hearsay-diarize` FluidAudio sidecar (file-based; a bounded
+/// subprocess) and returns its `turns` + per-speaker embeddings. The default the app wires; keeps the
+/// sidecar's current stdout-JSON / `noSpeechDetected`-stderr contract exactly as-is.
+pub struct SwiftDiarizer<'a> {
+    binary: &'a Path,
     timeout: Duration,
+}
+
+impl<'a> SwiftDiarizer<'a> {
+    /// `binary` is the Swift `hearsay-diarize` sidecar; `timeout` bounds the subprocess (killed on
+    /// expiry) so a hung sidecar can never wedge the refine — and thus meeting stop.
+    pub fn new(binary: &'a Path, timeout: Duration) -> Self {
+        Self { binary, timeout }
+    }
+}
+
+impl Diarizer for SwiftDiarizer<'_> {
+    fn diarize(&self, them_samples: &[f32]) -> Result<Diarization, InferenceError> {
+        // hearsay-diarize is file-based: write the Them track to a temp wav.
+        let tmp = tempfile::Builder::new().suffix(".wav").tempfile()?;
+        write_mono_wav(tmp.path(), them_samples)?;
+
+        let (stdout, stderr, status) = run_diarize(self.binary, tmp.path(), self.timeout)?;
+        if !status.success() {
+            let stderr = String::from_utf8_lossy(&stderr);
+            // FluidAudio reports a silent / no-remote-speech track as an error; that is benign for a
+            // refine (there is simply nothing to re-diarize), so surface it as a distinct variant the
+            // caller can treat as a no-op rather than a failure.
+            if stderr.contains("noSpeechDetected") {
+                return Err(InferenceError::NoSpeech);
+            }
+            return Err(InferenceError::Diarize(format!(
+                "hearsay-diarize failed: {}",
+                stderr.trim()
+            )));
+        }
+        let diarized: DiarizeOutput = serde_json::from_slice(&stdout)
+            .map_err(|e| InferenceError::Diarize(format!("parse diarize output: {e}")))?;
+
+        // Diarizer speaker label -> 1-based ordinal by first appearance (canonical `order_speakers`).
+        let ordering: Vec<SpeakerTurn> = diarized
+            .turns
+            .iter()
+            .map(|t| SpeakerTurn {
+                speaker: t.speaker.clone(),
+                start_s: t.start_s,
+                end_s: t.end_s,
+            })
+            .collect();
+        let ordinals = order_speakers(&ordering);
+
+        let mut turns: Vec<DiarTurn> = diarized
+            .turns
+            .iter()
+            .map(|t| DiarTurn {
+                speaker: i64::from(ordinals[&t.speaker]),
+                start_s: t.start_s,
+                end_s: t.end_s,
+            })
+            .collect();
+        turns.sort_by(|a, b| a.start_s.total_cmp(&b.start_s));
+
+        // Each speaker's raw voiceprint keyed by the same ordinal (the refine L2-normalizes it); an
+        // embedding for a label with no turn is skipped.
+        let mut embeddings: HashMap<i64, Vec<f32>> = HashMap::new();
+        for speaker in diarized.speakers {
+            if let Some(&ord) = ordinals.get(&speaker.speaker) {
+                embeddings.insert(i64::from(ord), speaker.embedding);
+            }
+        }
+
+        Ok(Diarization { turns, embeddings })
+    }
+}
+
+/// Re-diarize + re-transcribe the Them track through a [`Diarizer`]: each diarizer turn's slice of
+/// the Them track is re-transcribed with whisper into an accurate `Speaker N` segment, and each
+/// speaker's raw voiceprint is L2-normalized into a stored centroid. The diarizer-agnostic refine
+/// entry — the Swift sidecar ([`SwiftDiarizer`], via [`refine_them`]) or `SherpaDiarizer` plugs in.
+/// Blocking (whisper) — call via `spawn_blocking` from async code.
+pub fn refine_them_with(
+    asr: &WhisperAsr,
+    diarizer: &dyn Diarizer,
+    them_samples: &[f32],
 ) -> Result<RefineOutput, InferenceError> {
-    // hearsay-diarize is file-based: write the Them track to a temp wav.
-    let tmp = tempfile::Builder::new().suffix(".wav").tempfile()?;
-    write_mono_wav(tmp.path(), them_samples)?;
+    let diarization = diarizer.diarize(them_samples)?;
 
-    let (stdout, stderr, status) = run_diarize(diarize_binary, tmp.path(), timeout)?;
-    if !status.success() {
-        let stderr = String::from_utf8_lossy(&stderr);
-        // FluidAudio reports a silent / no-remote-speech track as an error; that is benign for a
-        // refine (there is simply nothing to re-diarize), so surface it as a distinct variant the
-        // caller can treat as a no-op rather than a failure.
-        if stderr.contains("noSpeechDetected") {
-            return Err(InferenceError::NoSpeech);
-        }
-        return Err(InferenceError::Diarize(format!(
-            "hearsay-diarize failed: {}",
-            stderr.trim()
-        )));
-    }
-    let diarized: DiarizeOutput = serde_json::from_slice(&stdout)
-        .map_err(|e| InferenceError::Diarize(format!("parse diarize output: {e}")))?;
-
-    // Diarizer speaker label -> 1-based ordinal by first appearance (Python `order_speakers`).
-    let mut turns = diarized.turns;
-    turns.sort_by(|a, b| a.start_s.total_cmp(&b.start_s));
-    let mut ordinal: HashMap<String, i64> = HashMap::new();
-    for turn in &turns {
-        if !ordinal.contains_key(&turn.speaker) {
-            let next = ordinal.len() as i64 + 1;
-            ordinal.insert(turn.speaker.clone(), next);
-        }
-    }
-
-    // Re-transcribe each turn's slice of the Them track.
-    let mut segments = Vec::with_capacity(turns.len());
-    for turn in &turns {
+    // Re-transcribe each turn's slice of the Them track (turns are start-sorted).
+    let mut segments = Vec::with_capacity(diarization.turns.len());
+    for turn in &diarization.turns {
         let start = (turn.start_s * SAMPLE_RATE as f64).max(0.0) as usize;
         let end = ((turn.end_s * SAMPLE_RATE as f64) as usize).min(them_samples.len());
         if end <= start {
@@ -128,18 +175,30 @@ pub fn refine_them(
             continue;
         }
         segments.push(RefinedSegment {
-            ordinal: ordinal[&turn.speaker],
+            ordinal: turn.speaker,
             text,
             start_s: turn.start_s,
             end_s: turn.end_s,
         });
     }
 
-    let centroids = build_centroids(&ordinal, &diarized.speakers);
+    let centroids = build_centroids(&diarization.embeddings);
     Ok(RefineOutput {
         segments,
         centroids,
     })
+}
+
+/// Re-diarize + re-transcribe the Them track with the Swift `hearsay-diarize` sidecar (the macOS
+/// default). Thin wrapper over [`refine_them_with`] with a [`SwiftDiarizer`]: `diarize_binary` is the
+/// sidecar and `timeout` bounds it. Blocking (whisper + subprocess) — call via `spawn_blocking`.
+pub fn refine_them(
+    asr: &WhisperAsr,
+    diarize_binary: &Path,
+    them_samples: &[f32],
+    timeout: Duration,
+) -> Result<RefineOutput, InferenceError> {
+    refine_them_with(asr, &SwiftDiarizer::new(diarize_binary, timeout), them_samples)
 }
 
 /// Spawn `hearsay-diarize <wav>` and wait for it with a deadline, killing it on expiry so a hung
@@ -195,18 +254,12 @@ fn run_diarize(
     Ok((stdout, stderr, status))
 }
 
-/// L2-normalize each speaker's embedding and key it by its 1-based ordinal (unknown speakers or
-/// empty embeddings are skipped). Port of `refine.py::_recognize_speakers`'s centroid step.
-fn build_centroids(
-    ordinal: &HashMap<String, i64>,
-    speakers: &[SpeakerEmbedding],
-) -> HashMap<i64, Vec<f32>> {
+/// L2-normalize each speaker's raw voiceprint into a stored centroid, keyed by its 1-based ordinal
+/// (empty embeddings are skipped). Port of `refine.py::_recognize_speakers`'s centroid step.
+fn build_centroids(embeddings: &HashMap<i64, Vec<f32>>) -> HashMap<i64, Vec<f32>> {
     let mut centroids = HashMap::new();
-    for speaker in speakers {
-        let Some(&ord) = ordinal.get(&speaker.speaker) else {
-            continue;
-        };
-        if let Some(centroid) = l2_normalize(&speaker.embedding) {
+    for (&ord, embedding) in embeddings {
+        if let Some(centroid) = l2_normalize(embedding) {
             centroids.insert(ord, centroid);
         }
     }
@@ -286,23 +339,10 @@ mod tests {
     }
 
     #[test]
-    fn build_centroids_keys_by_ordinal_and_skips_unknown() {
-        let ordinal = HashMap::from([("A".to_string(), 1_i64), ("B".to_string(), 2_i64)]);
-        let speakers = vec![
-            SpeakerEmbedding {
-                speaker: "A".into(),
-                embedding: vec![3.0, 4.0],
-            },
-            SpeakerEmbedding {
-                speaker: "B".into(),
-                embedding: vec![], // empty -> skipped
-            },
-            SpeakerEmbedding {
-                speaker: "C".into(), // not a diarized ordinal -> skipped
-                embedding: vec![1.0],
-            },
-        ];
-        let centroids = build_centroids(&ordinal, &speakers);
+    fn build_centroids_normalizes_and_skips_empty() {
+        let embeddings = HashMap::from([(1_i64, vec![3.0_f32, 4.0]), (2_i64, vec![])]);
+        let centroids = build_centroids(&embeddings);
+        // The empty embedding (ordinal 2) is dropped; ordinal 1 is unit-normalized.
         assert_eq!(centroids.len(), 1);
         let a = &centroids[&1];
         assert!((a[0] - 0.6).abs() < 1e-6 && (a[1] - 0.8).abs() < 1e-6);

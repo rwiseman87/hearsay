@@ -14,6 +14,7 @@ use hearsay_db::queries::{RefineResult, RefinedThemSegment};
 
 use crate::error::OrchestratorError;
 use crate::traits::{AudioSource, Backend, BackendInstance, Refiner, Transcriber};
+use crate::transcriber::SEGMENT_CHANNEL_CAPACITY;
 use crate::types::{CaptureChunk, SidecarSegment};
 
 /// A capture source that replays `chunks`, then holds the channel open (as a live capture would)
@@ -62,7 +63,7 @@ impl AudioSource for ScriptedSource {
 pub struct ScriptedTranscriber {
     to_emit: Vec<SidecarSegment>,
     fed: Arc<Mutex<Vec<f32>>>,
-    tx: Option<mpsc::UnboundedSender<SidecarSegment>>,
+    tx: Option<mpsc::Sender<SidecarSegment>>,
 }
 
 impl ScriptedTranscriber {
@@ -77,10 +78,8 @@ impl ScriptedTranscriber {
 
 #[async_trait]
 impl Transcriber for ScriptedTranscriber {
-    async fn start(
-        &mut self,
-    ) -> Result<mpsc::UnboundedReceiver<SidecarSegment>, OrchestratorError> {
-        let (tx, rx) = mpsc::unbounded_channel();
+    async fn start(&mut self) -> Result<mpsc::Receiver<SidecarSegment>, OrchestratorError> {
+        let (tx, rx) = mpsc::channel(SEGMENT_CHANNEL_CAPACITY);
         self.tx = Some(tx);
         Ok(rx)
     }
@@ -92,7 +91,7 @@ impl Transcriber for ScriptedTranscriber {
     async fn close(&mut self) {
         if let Some(tx) = self.tx.take() {
             for seg in std::mem::take(&mut self.to_emit) {
-                let _ = tx.send(seg);
+                let _ = tx.send(seg).await;
             }
             // `tx` drops here -> the segment channel closes, ending the stream task.
         }
@@ -233,9 +232,7 @@ pub struct FailingTranscriber;
 
 #[async_trait]
 impl Transcriber for FailingTranscriber {
-    async fn start(
-        &mut self,
-    ) -> Result<mpsc::UnboundedReceiver<SidecarSegment>, OrchestratorError> {
+    async fn start(&mut self) -> Result<mpsc::Receiver<SidecarSegment>, OrchestratorError> {
         Err(OrchestratorError::Backend(
             "sidecar start failed (test)".into(),
         ))
@@ -271,15 +268,13 @@ impl Backend for FailingBackend {
 pub struct WedgingTranscriber {
     release: Arc<Notify>,
     released: bool,
-    _tx: Option<mpsc::UnboundedSender<SidecarSegment>>,
+    _tx: Option<mpsc::Sender<SidecarSegment>>,
 }
 
 #[async_trait]
 impl Transcriber for WedgingTranscriber {
-    async fn start(
-        &mut self,
-    ) -> Result<mpsc::UnboundedReceiver<SidecarSegment>, OrchestratorError> {
-        let (tx, rx) = mpsc::unbounded_channel();
+    async fn start(&mut self) -> Result<mpsc::Receiver<SidecarSegment>, OrchestratorError> {
+        let (tx, rx) = mpsc::channel(SEGMENT_CHANNEL_CAPACITY);
         self._tx = Some(tx);
         Ok(rx)
     }
@@ -346,15 +341,13 @@ impl Backend for WedgeMeBackend {
 /// deterministically. Otherwise a no-op (no segments, feed ignored).
 pub struct WarmingTranscriber {
     ready_rx: Option<oneshot::Receiver<()>>,
-    tx: Option<mpsc::UnboundedSender<SidecarSegment>>,
+    tx: Option<mpsc::Sender<SidecarSegment>>,
 }
 
 #[async_trait]
 impl Transcriber for WarmingTranscriber {
-    async fn start(
-        &mut self,
-    ) -> Result<mpsc::UnboundedReceiver<SidecarSegment>, OrchestratorError> {
-        let (tx, rx) = mpsc::unbounded_channel();
+    async fn start(&mut self) -> Result<mpsc::Receiver<SidecarSegment>, OrchestratorError> {
+        let (tx, rx) = mpsc::channel(SEGMENT_CHANNEL_CAPACITY);
         self.tx = Some(tx);
         Ok(rx)
     }

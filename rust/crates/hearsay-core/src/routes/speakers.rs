@@ -74,12 +74,19 @@ pub(crate) async fn rename_speaker(
 #[utoipa::path(
     post, path = "/api/meetings/{id}/rediarize", tag = "speakers",
     params(("id" = Uuid, Path)),
-    responses((status = 200, body = Page<SpeakerRead>), (status = 404), (status = 503)),
+    responses((status = 200, body = Page<SpeakerRead>), (status = 404), (status = 409), (status = 503)),
 )]
 pub(crate) async fn rediarize(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
 ) -> ApiResult<Json<Page<SpeakerRead>>> {
+    // Never re-diarize the live meeting: its WAV is still being written, so the refine would read a
+    // partial file. The client must stop it first.
+    if state.engine.active_meeting() == Some(id) {
+        return Err(ApiError::Conflict(
+            "cannot re-diarize a meeting while it is recording".into(),
+        ));
+    }
     // Existence check here so an unknown meeting is a 404 even against a `DisabledEngine` (which
     // would otherwise answer every id with 503). The refine itself is the engine's job — one shared
     // path with the auto-refine at stop, so manual and automatic re-diarization never drift.

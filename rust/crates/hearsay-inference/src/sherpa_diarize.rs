@@ -10,12 +10,14 @@
 use std::collections::HashMap;
 use std::path::Path;
 
+use hearsay_attribution::{order_speakers, SpeakerTurn};
 use sherpa_onnx::{
     FastClusteringConfig, OfflineSpeakerDiarization, OfflineSpeakerDiarizationConfig,
     OfflineSpeakerSegmentationModelConfig, OfflineSpeakerSegmentationPyannoteModelConfig,
     SpeakerEmbeddingExtractor, SpeakerEmbeddingExtractorConfig,
 };
 
+use crate::diarizer::{DiarTurn, Diarization, Diarizer};
 use crate::error::InferenceError;
 
 /// Contract-fixed track sample rate (Hz).
@@ -50,22 +52,6 @@ impl Default for DiarizeTuning {
             min_duration_off: 0.5,
         }
     }
-}
-
-/// One diarizer turn: a 1-based speaker ordinal over `[start_s, end_s)` (meeting time).
-#[derive(Debug, Clone, PartialEq)]
-pub struct DiarTurn {
-    pub speaker: i64,
-    pub start_s: f64,
-    pub end_s: f64,
-}
-
-/// A diarization result: speaker turns + each speaker's voiceprint by ordinal (mean of its
-/// segments' audio). Mirrors the Swift `hearsay-diarize` sidecar's `turns` + `speakers` output.
-#[derive(Debug, Clone, Default)]
-pub struct SherpaDiarization {
-    pub turns: Vec<DiarTurn>,
-    pub embeddings: HashMap<i64, Vec<f32>>,
 }
 
 /// An offline speaker diarizer + speaker embedder, both ONNX (loaded once, reused per meeting).
@@ -126,49 +112,6 @@ impl SherpaDiarizer {
         Ok(Self { diarizer, embedder })
     }
 
-    /// Diarize a 16 kHz mono track: speaker turns (1-based ordinal by first appearance) + a
-    /// per-speaker mean voiceprint.
-    pub fn diarize(&self, samples: &[f32]) -> Result<SherpaDiarization, InferenceError> {
-        let result = self
-            .diarizer
-            .process(samples)
-            .ok_or_else(|| InferenceError::Diarize("diarization produced no result".into()))?;
-        let segments = result.sort_by_start_time();
-
-        // sherpa speaker index (0-based, arbitrary) -> our 1-based ordinal by first appearance
-        // (segments are start-sorted, so this matches `order_speakers`).
-        let mut ordinal: HashMap<i32, i64> = HashMap::new();
-        let mut turns = Vec::with_capacity(segments.len());
-        let mut speaker_audio: HashMap<i64, Vec<f32>> = HashMap::new();
-        for seg in &segments {
-            let next = ordinal.len() as i64 + 1;
-            let ord = *ordinal.entry(seg.speaker).or_insert(next);
-            turns.push(DiarTurn {
-                speaker: ord,
-                start_s: seg.start as f64,
-                end_s: seg.end as f64,
-            });
-            let start = ((seg.start as f64) * SAMPLE_RATE as f64).max(0.0) as usize;
-            let end = ((seg.end as f64) * SAMPLE_RATE as f64) as usize;
-            let end = end.min(samples.len());
-            if end > start {
-                speaker_audio
-                    .entry(ord)
-                    .or_default()
-                    .extend_from_slice(&samples[start..end]);
-            }
-        }
-
-        let mut embeddings = HashMap::new();
-        for (ord, audio) in &speaker_audio {
-            if let Some(embedding) = self.embed(audio)? {
-                embeddings.insert(*ord, embedding);
-            }
-        }
-
-        Ok(SherpaDiarization { turns, embeddings })
-    }
-
     /// Embed a mono 16 kHz slice into a single speaker vector (`None` if too short to embed).
     fn embed(&self, samples: &[f32]) -> Result<Option<Vec<f32>>, InferenceError> {
         let stream = self
@@ -181,5 +124,58 @@ impl SherpaDiarizer {
             return Ok(None);
         }
         Ok(self.embedder.compute(&stream))
+    }
+}
+
+impl Diarizer for SherpaDiarizer {
+    /// Diarize a 16 kHz mono track: speaker turns (1-based ordinal by first appearance) + a
+    /// per-speaker mean voiceprint.
+    fn diarize(&self, them_samples: &[f32]) -> Result<Diarization, InferenceError> {
+        let result = self
+            .diarizer
+            .process(them_samples)
+            .ok_or_else(|| InferenceError::Diarize("diarization produced no result".into()))?;
+        let segments = result.sort_by_start_time();
+
+        // sherpa speaker index (0-based, arbitrary) -> our 1-based ordinal by first appearance via
+        // the canonical `order_speakers` (segments are already start-sorted).
+        let ordering: Vec<SpeakerTurn> = segments
+            .iter()
+            .map(|seg| SpeakerTurn {
+                speaker: seg.speaker.to_string(),
+                start_s: seg.start as f64,
+                end_s: seg.end as f64,
+            })
+            .collect();
+        let ordinals = order_speakers(&ordering);
+
+        let mut turns = Vec::with_capacity(segments.len());
+        let mut speaker_audio: HashMap<i64, Vec<f32>> = HashMap::new();
+        for seg in &segments {
+            let ord = i64::from(ordinals[&seg.speaker.to_string()]);
+            turns.push(DiarTurn {
+                speaker: ord,
+                start_s: seg.start as f64,
+                end_s: seg.end as f64,
+            });
+            let start = ((seg.start as f64) * SAMPLE_RATE as f64).max(0.0) as usize;
+            let end = ((seg.end as f64) * SAMPLE_RATE as f64) as usize;
+            let end = end.min(them_samples.len());
+            if end > start {
+                speaker_audio
+                    .entry(ord)
+                    .or_default()
+                    .extend_from_slice(&them_samples[start..end]);
+            }
+        }
+
+        let mut embeddings = HashMap::new();
+        for (ord, audio) in &speaker_audio {
+            if let Some(embedding) = self.embed(audio)? {
+                embeddings.insert(*ord, embedding);
+            }
+        }
+
+        Ok(Diarization { turns, embeddings })
     }
 }

@@ -1,3 +1,4 @@
+#![cfg(feature = "sherpa")]
 //! Opt-in streaming-ASR check: transcribe the JFK clip with the 20M streaming zipformer and confirm
 //! the known words come through. Ignored by default (needs the model + clip). Run:
 //!   cargo test --manifest-path rust/Cargo.toml -p hearsay-inference streaming -- --ignored --nocapture

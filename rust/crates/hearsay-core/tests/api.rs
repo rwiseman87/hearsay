@@ -503,6 +503,9 @@ async fn openapi_json_is_served() {
     assert_eq!(status, StatusCode::OK);
     assert!(body["openapi"].is_string());
     assert!(body["paths"]["/api/meetings"].is_object());
+    // The active-meeting guards (R2) document a 409 on delete + rediarize.
+    assert!(body["paths"]["/api/meetings/{id}"]["delete"]["responses"]["409"].is_object());
+    assert!(body["paths"]["/api/meetings/{id}/rediarize"]["post"]["responses"]["409"].is_object());
 }
 
 #[tokio::test]

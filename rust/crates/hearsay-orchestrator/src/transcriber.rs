@@ -26,6 +26,13 @@ use crate::types::SidecarSegment;
 /// wedged sidecar that never closes stdout or never exits must not hang meeting stop.
 const SIDECAR_CLOSE_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// Capacity of the sidecar's segment (`emit`) channel. The read loop awaits on a full channel, so a
+/// stalled consumer (e.g. a DB write backlog) backpressures the sidecar through its blocked stdout
+/// write instead of letting segments — including finals, which must never be dropped — accumulate
+/// without bound. Segments are far lower-rate than the 128-slot PCM hand-off, so a few hundred slots
+/// is generous headroom a real burst never reaches; it only fills under a sustained stall.
+pub(crate) const SEGMENT_CHANNEL_CAPACITY: usize = 256;
+
 /// Owns one streaming sidecar process for a meeting.
 pub struct ProcessTranscriber {
     binary: PathBuf,
@@ -39,7 +46,7 @@ pub struct ProcessTranscriber {
     /// then, so [`start`](Transcriber::start) adopts the running process instead of respawning —
     /// keeping the model load off the meeting-start path. `None` for a cold transcriber, which
     /// spawns on `start`.
-    warmed_rx: Option<mpsc::UnboundedReceiver<SidecarSegment>>,
+    warmed_rx: Option<mpsc::Receiver<SidecarSegment>>,
     /// The one-shot the read loop fires on the sidecar's models-ready marker, handed to the pipeline
     /// via [`ready_signal`](Transcriber::ready_signal) so it can surface a warm-up notice until the
     /// load finishes. Set by both the cold [`start`](Transcriber::start) and
@@ -100,7 +107,7 @@ impl ProcessTranscriber {
     fn spawn_process(
         &mut self,
         ready_tx: Option<oneshot::Sender<()>>,
-    ) -> Result<mpsc::UnboundedReceiver<SidecarSegment>, OrchestratorError> {
+    ) -> Result<mpsc::Receiver<SidecarSegment>, OrchestratorError> {
         let mut child = Command::new(&self.binary)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -120,7 +127,7 @@ impl ProcessTranscriber {
         if let Some(stderr) = child.stderr.take() {
             tokio::spawn(stderr_loop(stderr, self.binary.clone()));
         }
-        let (tx, rx) = mpsc::unbounded_channel();
+        let (tx, rx) = mpsc::channel(SEGMENT_CHANNEL_CAPACITY);
         let reader = tokio::spawn(read_loop(
             stdout,
             tx,
@@ -185,7 +192,7 @@ struct ReadyMarker {
 /// channel closes when stdout hits EOF.
 async fn read_loop(
     stdout: tokio::process::ChildStdout,
-    tx: mpsc::UnboundedSender<SidecarSegment>,
+    tx: mpsc::Sender<SidecarSegment>,
     binary: PathBuf,
     mut ready_tx: Option<oneshot::Sender<()>>,
     ready_flag: Arc<AtomicBool>,
@@ -194,8 +201,11 @@ async fn read_loop(
     while let Ok(Some(line)) = lines.next_line().await {
         match serde_json::from_str::<SidecarSegment>(&line) {
             Ok(seg) => {
-                if tx.send(seg).is_err() {
-                    break; // pipeline dropped the receiver
+                // Await on a full channel: this parks the reader (and, transitively, the sidecar's
+                // stdout write) under a stalled consumer instead of dropping the segment — finals
+                // must never be lost. `Err` means the pipeline dropped the receiver.
+                if tx.send(seg).await.is_err() {
+                    break;
                 }
             }
             Err(_) => {
@@ -215,9 +225,7 @@ async fn read_loop(
 
 #[async_trait]
 impl Transcriber for ProcessTranscriber {
-    async fn start(
-        &mut self,
-    ) -> Result<mpsc::UnboundedReceiver<SidecarSegment>, OrchestratorError> {
+    async fn start(&mut self) -> Result<mpsc::Receiver<SidecarSegment>, OrchestratorError> {
         // Pre-warmed: the process is already spawned (from spawn_warming), with its models loaded or
         // still loading in the background. Adopt its stashed segment receiver without respawning; its
         // stdin/child/reader are already set, so feed()/close() work unchanged. `ready_rx` (set at

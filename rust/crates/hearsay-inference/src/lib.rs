@@ -12,16 +12,24 @@
 
 mod asr;
 mod audio;
+mod diarizer;
 mod error;
 mod refine;
+#[cfg(feature = "sherpa")]
 mod sherpa_diarize;
+#[cfg(feature = "sherpa")]
 mod sherpa_streaming;
 
-pub use asr::{AsrSegment, WhisperAsr};
+pub use asr::{AsrSegment, WhisperAsr, DEFAULT_LANGUAGE};
 pub use audio::{read_them_channel, read_wav_mono_16k, SAMPLE_RATE};
+pub use diarizer::{DiarTurn, Diarization, Diarizer};
 pub use error::InferenceError;
-pub use refine::{refine_audio_file, refine_them, RefineOutput, RefinedSegment};
-pub use sherpa_diarize::{DiarTurn, DiarizeTuning, SherpaDiarization, SherpaDiarizer};
+pub use refine::{
+    refine_audio_file, refine_them, refine_them_with, RefineOutput, RefinedSegment, SwiftDiarizer,
+};
+#[cfg(feature = "sherpa")]
+pub use sherpa_diarize::{DiarizeTuning, SherpaDiarizer};
+#[cfg(feature = "sherpa")]
 pub use sherpa_streaming::{
     StreamEvent, StreamEventKind, StreamingAsr, StreamingModel, StreamingSession,
 };

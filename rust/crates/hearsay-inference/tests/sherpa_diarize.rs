@@ -1,11 +1,12 @@
+#![cfg(feature = "sherpa")]
 //! Opt-in sherpa-onnx offline diarization check on a real 2-speaker recording. Ignored by default
 //! (needs the recording + the pyannote segmentation + wespeaker embedding ONNX models). Run:
-//!   cargo test --manifest-path rust/Cargo.toml -p hearsay-inference sherpa -- --ignored --nocapture
+//!   cargo test --manifest-path rust/Cargo.toml -p hearsay-inference --features sherpa sherpa -- --ignored --nocapture
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
-use hearsay_inference::{read_them_channel, DiarizeTuning, SherpaDiarizer};
+use hearsay_inference::{read_them_channel, DiarizeTuning, Diarizer, SherpaDiarizer};
 
 fn repo(rel: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))

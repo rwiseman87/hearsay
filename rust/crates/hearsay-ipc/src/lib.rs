@@ -23,6 +23,12 @@ pub const VERSION: u8 = 1;
 /// Fixed header size in bytes.
 pub const HEADER_SIZE: usize = 28;
 
+/// Maximum payload bytes a single media frame may declare. A real frame carries a short (~100 ms)
+/// 16 kHz mono PCM chunk; this bound (16 MiB, ~4 min of float32 at 16 kHz) is far above any
+/// legitimate frame yet rejects a corrupt/hostile `n_samples` before it can drive a huge
+/// preallocation (or, on a 32-bit target, a multiply overflow).
+pub const MAX_PAYLOAD_LEN: usize = 16 * 1024 * 1024;
+
 /// Frame kind. Wire codes: `audio`=0, `hello`=1, `heartbeat`=2, `eos`=3.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FrameType {
@@ -175,6 +181,7 @@ pub enum ProtocolError {
     AudioPayloadNotWholeSamples,
     NonAudioPayload(FrameType),
     TruncatedPayload,
+    PayloadTooLarge(u32),
 }
 
 impl std::fmt::Display for ProtocolError {
@@ -193,8 +200,21 @@ impl std::fmt::Display for ProtocolError {
                 write!(f, "{} frame must not carry a payload", t.as_str())
             }
             ProtocolError::TruncatedPayload => write!(f, "truncated payload"),
+            ProtocolError::PayloadTooLarge(n) => {
+                write!(f, "audio frame declares {n} samples, over the {MAX_PAYLOAD_LEN}-byte cap")
+            }
         }
     }
+}
+
+/// Payload byte count for an audio frame's declared `n_samples`, rejecting a value that overflows
+/// or exceeds [`MAX_PAYLOAD_LEN`] so a corrupt/hostile header cannot drive an oversized read or
+/// allocation. Shared by [`decode`] and [`expected_payload_len`] so both size a frame identically.
+fn audio_payload_len(n_samples: u32, format: SampleFormat) -> Result<usize, ProtocolError> {
+    (n_samples as usize)
+        .checked_mul(format.bytes_per_sample())
+        .filter(|&len| len <= MAX_PAYLOAD_LEN)
+        .ok_or(ProtocolError::PayloadTooLarge(n_samples))
 }
 
 impl std::error::Error for ProtocolError {}
@@ -247,7 +267,7 @@ pub fn decode(buf: &[u8]) -> Result<MediaFrame, ProtocolError> {
     let host_ts = u64::from_le_bytes(buf[12..20].try_into().unwrap());
     let n_samples = u32::from_le_bytes(buf[20..24].try_into().unwrap());
     let payload_len = if frame_type == FrameType::Audio {
-        n_samples as usize * format.bytes_per_sample()
+        audio_payload_len(n_samples, format)?
     } else {
         0
     };
@@ -285,11 +305,11 @@ pub fn expected_payload_len(header: &[u8]) -> Result<usize, ProtocolError> {
     let frame_type = FrameType::from_code(header[2])?;
     let format = SampleFormat::from_code(header[4])?;
     let n_samples = u32::from_le_bytes(header[20..24].try_into().unwrap());
-    Ok(if frame_type == FrameType::Audio {
-        n_samples as usize * format.bytes_per_sample()
+    if frame_type == FrameType::Audio {
+        audio_payload_len(n_samples, format)
     } else {
-        0
-    })
+        Ok(0)
+    }
 }
 
 #[cfg(test)]
@@ -423,5 +443,38 @@ mod tests {
             expected_payload_len(&header),
             Err(ProtocolError::UnsupportedVersion(2))
         );
+    }
+
+    #[test]
+    fn rejects_a_frame_whose_declared_samples_exceed_the_cap() {
+        // A structurally valid audio header whose n_samples would size a multi-GB payload must be
+        // rejected (not sized/allocated) by both the sizer and the decoder.
+        let mut header = encode(&MediaFrame {
+            frame_type: FrameType::Audio,
+            stream: Stream::Them,
+            format: SampleFormat::Float32,
+            seq: 0,
+            host_ts: 0,
+            payload: vec![0; 4],
+            flags: 0,
+        })
+        .unwrap()[..HEADER_SIZE]
+            .to_vec();
+        header[20..24].copy_from_slice(&u32::MAX.to_le_bytes());
+        assert_eq!(
+            expected_payload_len(&header),
+            Err(ProtocolError::PayloadTooLarge(u32::MAX))
+        );
+        // The full decoder rejects it too (rather than attempting a huge allocation).
+        let mut frame = header.clone();
+        frame.extend_from_slice(&[0; 4]);
+        assert_eq!(decode(&frame), Err(ProtocolError::PayloadTooLarge(u32::MAX)));
+
+        // One sample over the cap is rejected; the largest in-cap value is accepted.
+        let max_samples = (MAX_PAYLOAD_LEN / SampleFormat::Float32.bytes_per_sample()) as u32;
+        header[20..24].copy_from_slice(&(max_samples + 1).to_le_bytes());
+        assert!(expected_payload_len(&header).is_err());
+        header[20..24].copy_from_slice(&max_samples.to_le_bytes());
+        assert_eq!(expected_payload_len(&header).unwrap(), MAX_PAYLOAD_LEN);
     }
 }

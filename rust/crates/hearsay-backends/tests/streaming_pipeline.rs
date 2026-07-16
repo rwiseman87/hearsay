@@ -1,9 +1,10 @@
+#![cfg(feature = "sherpa")]
 //! Capstone: the entire pure-Rust live pipeline on the Mac, no Swift and no capture hardware — a
 //! recorded WAV (`WavFileSource`) drives two `SherpaTranscriber`s (sherpa streaming ASR) through the
 //! real `Orchestrator` into SQLite. This is the Windows live path minus real capture: prove the
 //! streaming ASR -> orchestrator -> persisted transcript chain works end-to-end. Ignored by default
-//! (needs the 20M streaming model + a recording).
-//!   cargo test --manifest-path rust/Cargo.toml -p hearsay-backends streaming_pipeline -- --ignored --nocapture
+//! (needs the 20M streaming model + a recording); needs the `sherpa` feature to compile.
+//!   cargo test --manifest-path rust/Cargo.toml -p hearsay-backends --features sherpa streaming_pipeline -- --ignored --nocapture
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

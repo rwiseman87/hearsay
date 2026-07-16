@@ -27,9 +27,10 @@ pub trait AudioSource: Send {
 /// `LiveSidecarProcessor`: feed the stream's PCM in, read the NDJSON segments it emits.
 #[async_trait]
 pub trait Transcriber: Send {
-    /// Spawn the sidecar and return the channel of segments it emits. Called once.
-    async fn start(&mut self)
-        -> Result<mpsc::UnboundedReceiver<SidecarSegment>, OrchestratorError>;
+    /// Spawn the sidecar and return the channel of segments it emits. Called once. The channel is
+    /// bounded (see `SEGMENT_CHANNEL_CAPACITY`): the producer awaits on a full channel so a stalled
+    /// consumer backpressures the sidecar rather than growing memory without bound.
+    async fn start(&mut self) -> Result<mpsc::Receiver<SidecarSegment>, OrchestratorError>;
 
     /// Feed one chunk of this stream's PCM (normalized mono `f32`). Takes ownership so the caller's
     /// buffer moves straight through to the sidecar/worker without a per-frame copy.

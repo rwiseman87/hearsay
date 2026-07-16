@@ -254,4 +254,60 @@ mod tests {
         assert_eq!(event.ts, 0);
         assert!(event.data.is_empty());
     }
+
+    // Cross-language golden: decode each committed control line, re-encode it, and require the exact
+    // same wire bytes back. Rust's `gen_fixtures` bin writes `shared/fixtures/control.jsonl`; the
+    // Swift `hearsay-helper selftest` runs the mirror of this check, so a one-sided change to key
+    // ordering, slash-escaping, or number formatting fails CI in one language or the other.
+    #[test]
+    fn control_golden_fixtures() {
+        use std::collections::BTreeSet;
+        use std::path::PathBuf;
+
+        // rust/crates/hearsay-ipc -> repo root -> shared/fixtures/control.jsonl
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../shared/fixtures/control.jsonl");
+        let body = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+
+        let mut kinds = BTreeSet::new();
+        let mut events = 0;
+        let mut count = 0;
+        for line in body.lines() {
+            if line.trim().is_empty() {
+                continue;
+            }
+            let record: Value = serde_json::from_str(line).expect("fixture line is JSON");
+            let desc = record["desc"].as_str().expect("fixture desc");
+            let kind = record["kind"].as_str().expect("fixture kind");
+            let encoded = record["encoded"].as_str().expect("fixture encoded");
+            kinds.insert(kind.to_string());
+
+            let reencoded = match kind {
+                "command" => to_line(&parse_command(encoded.as_bytes()).expect(desc)).unwrap(),
+                "reply_ok" | "reply_fail" => {
+                    let reply: Reply = serde_json::from_slice(encoded.as_bytes()).expect(desc);
+                    to_line(&reply).unwrap()
+                }
+                "event" => {
+                    events += 1;
+                    let event: Event = serde_json::from_slice(encoded.as_bytes()).expect(desc);
+                    to_line(&event).unwrap()
+                }
+                other => panic!("{desc}: unknown control fixture kind {other}"),
+            };
+            assert_eq!(
+                String::from_utf8(reencoded).unwrap(),
+                format!("{encoded}\n"),
+                "{desc}: re-encode drift"
+            );
+            count += 1;
+        }
+
+        for required in ["command", "reply_ok", "reply_fail", "event"] {
+            assert!(kinds.contains(required), "control.jsonl missing kind {required}");
+        }
+        assert!(events >= 10, "expected an event fixture per contract kind, got {events}");
+        assert!(count >= 13, "expected the full control fixture set, got {count}");
+    }
 }

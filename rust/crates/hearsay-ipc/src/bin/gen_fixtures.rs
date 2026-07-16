@@ -1,14 +1,20 @@
-//! Regenerate the cross-language IPC golden fixtures (`shared/fixtures/frames.jsonl`) from the
-//! canonical frames, using this crate's codec. Rust is the source of truth for the IPC contract;
-//! the Swift `hearsay-helper selftest` and this crate's `golden_fixtures` test both validate against
-//! the file this writes. Wired as part of `make codegen`.
+//! Regenerate the cross-language IPC golden fixtures from the canonical messages, using this crate's
+//! codecs. Rust is the source of truth for the IPC contract; the Swift `hearsay-helper selftest` and
+//! this crate's tests both validate against the files this writes. Wired as part of `make codegen`.
+//!
+//! Two files are emitted:
+//! - `shared/fixtures/frames.jsonl` — canonical media frames (`desc`/`header`/`payload_hex`/`encoded_hex`).
+//! - `shared/fixtures/control.jsonl` — canonical NDJSON control messages (`desc`/`kind`/`encoded`),
+//!   pinning the command / ok-reply / fail-reply / every-event wire form so the Rust and Swift
+//!   control codecs cannot silently drift on key ordering, slash-escaping, or number formatting.
 //!
 //! Ported from the retired `scripts/gen_fixtures.py`; emits the identical byte layout (Python
 //! `json.dumps` default separators + insertion-ordered keys) so the fixtures never churn.
 
 use std::path::PathBuf;
 
-use hearsay_ipc::{encode, FrameType, MediaFrame, SampleFormat, Stream};
+use hearsay_ipc::{encode, to_line, Command, Event, FrameType, JsonObj, MediaFrame, Reply, SampleFormat, Stream};
+use serde_json::{json, Value};
 
 fn hex(bytes: &[u8]) -> String {
     let mut s = String::with_capacity(bytes.len() * 2);
@@ -111,14 +117,154 @@ fn record(desc: &str, frame: &MediaFrame) -> String {
     )
 }
 
+/// One control-channel golden record: `kind` names how the validators decode `encoded` (a bare
+/// NDJSON wire line, no trailing `\n`), and `desc` identifies it. Serialized in field-declaration
+/// order, so the file is stable across regenerations.
+#[derive(serde::Serialize)]
+struct ControlFixture {
+    desc: &'static str,
+    kind: &'static str,
+    encoded: String,
+}
+
+fn control_obj(value: Value) -> JsonObj {
+    value.as_object().cloned().expect("canonical control payload is a JSON object")
+}
+
+/// Encode a control message to its exact wire line, minus the trailing `\n` the fixture omits.
+fn control_line<T: serde::Serialize>(value: &T) -> String {
+    let mut bytes = to_line(value).expect("encode canonical control message");
+    bytes.pop(); // drop the trailing '\n'
+    String::from_utf8(bytes).expect("control line is utf8")
+}
+
+fn event_fixture(desc: &'static str, event: &str, ts: u64, data: Value) -> ControlFixture {
+    ControlFixture {
+        desc,
+        kind: "event",
+        encoded: control_line(&Event {
+            event: event.to_string(),
+            ts,
+            data: control_obj(data),
+        }),
+    }
+}
+
+/// Canonical control messages: a command, an ok-reply, a fail-reply, and one event per kind in
+/// `shared/protocol/ipc.md`. `status` carries a `1/3` to pin slash-escaping; `level`/`name_hint`
+/// carry floats to pin number formatting.
+fn canonical_control() -> Vec<ControlFixture> {
+    vec![
+        ControlFixture {
+            desc: "command_start_capture",
+            kind: "command",
+            encoded: control_line(&Command {
+                id: 7,
+                cmd: "start_capture".to_string(),
+                args: control_obj(json!({"tap_mode": "global_except_self", "sample_rate": 16000})),
+            }),
+        },
+        ControlFixture {
+            desc: "reply_ok_ping",
+            kind: "reply_ok",
+            encoded: control_line(&Reply::ok(1, control_obj(json!({"pong": true})))),
+        },
+        ControlFixture {
+            desc: "reply_fail_no_permission",
+            kind: "reply_fail",
+            encoded: control_line(&Reply::fail(2, "no_permission", "microphone denied")),
+        },
+        event_fixture(
+            "event_hello",
+            "hello",
+            0,
+            json!({"helper_version": "0.1.0", "protocol_version": 1, "pid": 4242}),
+        ),
+        event_fixture(
+            "event_status",
+            "status",
+            1_000_000_000,
+            json!({"state": "degraded", "detail": "retrying 1/3", "device": "Built-in Microphone"}),
+        ),
+        event_fixture(
+            "event_permission",
+            "permission",
+            1_000_000_001,
+            json!({
+                "microphone": "granted",
+                "audio_capture": "granted",
+                "screen_recording": "denied",
+                "accessibility": "undetermined",
+                "calendar": "undetermined"
+            }),
+        ),
+        event_fixture(
+            "event_tap_health",
+            "tap_health",
+            123_456_789,
+            json!({"state": "recovered", "action": "rebuilt_tap"}),
+        ),
+        event_fixture(
+            "event_mic_health",
+            "mic_health",
+            123_456_790,
+            json!({"state": "recovered", "action": "restarted_engine"}),
+        ),
+        event_fixture(
+            "event_level",
+            "level",
+            2_000_000_000,
+            json!({"stream": "them", "rms": 0.5}),
+        ),
+        event_fixture(
+            "event_name_hint",
+            "name_hint",
+            2_000_000_001,
+            json!({"source": "ocr", "text": "Alice", "confidence": 0.75, "bbox": [10, 20, 100, 40]}),
+        ),
+        event_fixture(
+            "event_active_speaker",
+            "active_speaker",
+            2_000_000_002,
+            json!({"tile_bbox": [10, 20, 100, 40], "changed": true}),
+        ),
+        event_fixture(
+            "event_roster",
+            "roster",
+            2_000_000_003,
+            json!({
+                "event_id": "evt-1",
+                "title": "Standup",
+                "start": "2026-07-15T09:00:00Z",
+                "end": "2026-07-15T09:15:00Z",
+                "attendees": [{"name": "Alice", "email": "alice@example.com", "response": "accepted"}]
+            }),
+        ),
+        event_fixture(
+            "event_error",
+            "error",
+            2_000_000_004,
+            json!({"scope": "audio_capture", "message": "device removed", "fatal": false}),
+        ),
+    ]
+}
+
 fn main() {
-    let out =
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../shared/fixtures/frames.jsonl");
-    let lines: Vec<String> = canonical_frames()
+    let fixtures = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../shared/fixtures");
+
+    let frames = fixtures.join("frames.jsonl");
+    let frame_lines: Vec<String> = canonical_frames()
         .iter()
         .map(|(desc, frame)| record(desc, frame))
         .collect();
-    let body = format!("{}\n", lines.join("\n"));
-    std::fs::write(&out, body).expect("write frames.jsonl");
-    println!("wrote {} fixtures to {}", lines.len(), out.display());
+    std::fs::write(&frames, format!("{}\n", frame_lines.join("\n"))).expect("write frames.jsonl");
+    println!("wrote {} fixtures to {}", frame_lines.len(), frames.display());
+
+    let control = fixtures.join("control.jsonl");
+    let control_lines: Vec<String> = canonical_control()
+        .iter()
+        .map(|fixture| serde_json::to_string(fixture).expect("serialize control fixture"))
+        .collect();
+    std::fs::write(&control, format!("{}\n", control_lines.join("\n"))).expect("write control.jsonl");
+    println!("wrote {} fixtures to {}", control_lines.len(), control.display());
 }

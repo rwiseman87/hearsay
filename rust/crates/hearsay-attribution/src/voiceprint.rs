@@ -21,11 +21,15 @@ pub fn centroid_from_bytes(data: &[u8]) -> Vec<f32> {
         .collect()
 }
 
-/// Cosine similarity of two equal-length vectors, computed in f64 (matches the Python path).
+/// Cosine similarity of two vectors, computed in f64 (matches the Python path).
 ///
-/// Returns `0.0` if either vector has zero norm.
+/// Returns `0.0` if the vectors' lengths differ (e.g. a model change) or either vector has zero
+/// norm, so a length mismatch is a safe non-match in every build profile rather than a garbage
+/// score.
 pub fn cosine(a: &[f32], b: &[f32]) -> f64 {
-    debug_assert_eq!(a.len(), b.len(), "cosine of unequal-length vectors");
+    if a.len() != b.len() {
+        return 0.0;
+    }
     let na = a
         .iter()
         .map(|&x| f64::from(x) * f64::from(x))
@@ -88,6 +92,14 @@ mod tests {
         assert!((cosine(&[1.0, 2.0, 3.0], &[1.0, 2.0, 3.0]) - 1.0).abs() < 1e-12);
         assert!((cosine(&[1.0, 0.0], &[0.0, 1.0])).abs() < 1e-12);
         assert_eq!(cosine(&[0.0, 0.0], &[1.0, 1.0]), 0.0);
+    }
+
+    #[test]
+    fn cosine_length_mismatch_returns_zero() {
+        assert!((cosine(&[1.0, 2.0, 3.0], &[1.0, 2.0, 3.0]) - 1.0).abs() < 1e-12);
+        assert_eq!(cosine(&[1.0, 2.0, 3.0], &[1.0, 2.0]), 0.0);
+        assert_eq!(cosine(&[1.0, 2.0], &[1.0, 2.0, 3.0]), 0.0);
+        assert_eq!(cosine(&[], &[1.0]), 0.0);
     }
 
     #[test]

@@ -781,6 +781,7 @@ dependencies = [
 name = "hearsay-inference"
 version = "0.1.0"
 dependencies = [
+ "hearsay-attribution",
  "hound",
  "serde",
  "serde_json",
@@ -2173,6 +2174,8 @@ dependencies = [
  "tokio-util",
  "tower-layer",
  "tower-service",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]

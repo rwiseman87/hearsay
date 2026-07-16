@@ -166,24 +166,33 @@ pub(crate) async fn stop_meeting(
 #[utoipa::path(
     delete, path = "/api/meetings/{id}", tag = "meetings",
     params(("id" = Uuid, Path)),
-    responses((status = 204), (status = 404)),
+    responses((status = 204), (status = 404), (status = 409)),
 )]
 pub(crate) async fn delete_meeting(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
 ) -> ApiResult<StatusCode> {
+    // Never delete the live meeting: it would pull the recordings folder out from under the running
+    // pipeline. The client must stop it first.
+    if state.engine.active_meeting() == Some(id) {
+        return Err(ApiError::Conflict(
+            "cannot delete a meeting while it is recording".into(),
+        ));
+    }
     let meeting = queries::get_meeting(&state.pool, id)
         .await?
         .ok_or(ApiError::NotFound("meeting not found"))?;
-    // Remove the on-disk folder (audio, transcript, notes) best-effort, then the DB rows.
+    // Delete the DB rows first (segments + clusters cascade), then best-effort remove the on-disk
+    // folder — so a filesystem hiccup only logs a warning (never 500s a delete that already removed
+    // the rows), and the folder is never pulled before the rows that reference it.
+    if !queries::delete_meeting(&state.pool, id).await? {
+        return Err(ApiError::NotFound("meeting not found"));
+    }
     let folder = meeting.dir_path(&state.settings.output_dir);
     if let Err(err) = tokio::fs::remove_dir_all(&folder).await {
         if err.kind() != std::io::ErrorKind::NotFound {
             tracing::warn!(error = %err, folder = %folder.display(), "failed to remove meeting folder");
         }
-    }
-    if !queries::delete_meeting(&state.pool, id).await? {
-        return Err(ApiError::NotFound("meeting not found"));
     }
     Ok(StatusCode::NO_CONTENT)
 }

@@ -177,7 +177,7 @@ impl Orchestrator {
     ) -> Result<Meeting, OrchestratorError> {
         let when = Utc::now();
         let title = title.unwrap_or_else(|| default_title(when));
-        let folder_name = meeting_folder_name(&title, when);
+        let base_folder = meeting_folder_name(&title, when);
 
         // Effective settings (stored UI override else the config default), resolved at start so a
         // change takes effect on the next meeting. Resolve them *before* the INSERT so the row is
@@ -185,7 +185,12 @@ impl Orchestrator {
         // recordings root is pinned onto the meeting so it stays locatable if Storage later changes.
         let output_root = queries::effective_output_dir(&self.pool, &self.output_dir).await?;
         let record = queries::effective_record(&self.pool, self.default_record).await?;
-        let dir = output_root.join(&folder_name);
+        // Folder names have minute resolution, so two same-title meetings within one minute would
+        // otherwise resolve to one shared directory that a later delete would wipe. Resolve the first
+        // free `<base>`, `<base>-2`, … under the effective root; `start_meeting` is op-lock-serialized
+        // so this check-then-create can't race in-process, and the `dir` UNIQUE index (0004) is the
+        // cross-process backstop.
+        let (folder_name, dir) = unique_meeting_dir(&output_root, &base_folder);
         let dir_str = dir.to_string_lossy().into_owned();
 
         let meeting =
@@ -561,6 +566,23 @@ fn meeting_folder_name(title: &str, when: DateTime<Utc>) -> String {
     format!("{}_{}", when.format("%Y-%m-%d_%H%M"), slugify(title))
 }
 
+/// Resolve a per-meeting directory under `output_root` that does not already exist, so two same-title
+/// meetings within one minute never resolve to (and a later delete then wipe) one shared folder.
+/// Returns the chosen leaf `folder` name and its absolute path: `base` when free, else the first free
+/// `base-2`, `base-3`, … suffix.
+fn unique_meeting_dir(output_root: &Path, base: &str) -> (String, PathBuf) {
+    let mut folder = base.to_string();
+    let mut suffix = 1u32;
+    loop {
+        let dir = output_root.join(&folder);
+        if !dir.exists() {
+            return (folder, dir);
+        }
+        suffix += 1;
+        folder = format!("{base}-{suffix}");
+    }
+}
+
 /// Lowercase, collapse every run of non-`[a-z0-9]` to a single `-`, trim `-`; empty -> `"meeting"`.
 /// Matches Python `slugify` (`re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")`).
 fn slugify(title: &str) -> String {
@@ -617,6 +639,24 @@ mod tests {
             "2026-07-02_0905_weekly-sync"
         );
         assert_eq!(default_title(when), "Meeting 2026-07-02 09:05");
+    }
+
+    #[test]
+    fn unique_meeting_dir_suffixes_on_collision() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let base = "2026-07-02_0905_weekly-sync";
+
+        // A free base name is used as-is.
+        let (folder, dir) = unique_meeting_dir(root, base);
+        assert_eq!(folder, base);
+        assert_eq!(dir, root.join(base));
+
+        // Once that directory exists, the next resolves to `-2`, then `-3`.
+        std::fs::create_dir(root.join(base)).unwrap();
+        assert_eq!(unique_meeting_dir(root, base).0, format!("{base}-2"));
+        std::fs::create_dir(root.join(format!("{base}-2"))).unwrap();
+        assert_eq!(unique_meeting_dir(root, base).0, format!("{base}-3"));
     }
 
     async fn memory_pool() -> SqlitePool {

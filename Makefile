@@ -3,6 +3,7 @@
 PKG := helper
 RUST := rust
 FIXTURES := shared/fixtures/frames.jsonl
+CONTROL_FIXTURES := shared/fixtures/control.jsonl
 # Rust core serve: its own DB (separate from any dev DB) + a stable port.
 RUST_DB := sqlite://$(CURDIR)/outputs/db/hearsay-rust.db
 RUST_PORT ?= 8799
@@ -49,7 +50,7 @@ codegen-check: ## Fail if the committed IPC fixtures / OpenAPI / web types drift
 	cargo run --manifest-path $(RUST)/Cargo.toml -p hearsay-ipc --bin gen_fixtures
 	cargo run --manifest-path $(RUST)/Cargo.toml -p hearsay-core -- --dump-openapi > web/openapi.json
 	cd web && npm run codegen
-	git diff --exit-code -- $(FIXTURES) web/openapi.json web/src/api/schema.ts
+	git diff --exit-code -- $(FIXTURES) $(CONTROL_FIXTURES) web/openapi.json web/src/api/schema.ts
 
 web-install: ## Install pinned web deps (npm ci)
 	cd web && npm ci
