@@ -230,7 +230,10 @@ fn main() {
                     "HEARSAY_OUTPUT_DIR",
                     data_dir.join("recordings").to_string_lossy().to_string(),
                 )
-                .env("HEARSAY_MODELS_DIR", models_dir.to_string_lossy().to_string())
+                .env(
+                    "HEARSAY_MODELS_DIR",
+                    models_dir.to_string_lossy().to_string(),
+                )
                 .env("DATABASE_URL", db_url)
                 .env("ENVIRONMENT", "production")
                 .env(
