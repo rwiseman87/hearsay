@@ -3,8 +3,11 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "./client";
 import { queryKeys } from "./queryKeys";
 import type {
+  DownloadState,
   MeetingCreate,
+  MeetingNotesRead,
   MeetingRead,
+  ModelCatalog,
   ModelSettings,
   PageIdentity,
   PageMeeting,
@@ -173,6 +176,67 @@ export function useRediarize(meetingId: string) {
   });
 }
 
+// Persisted meeting notes (local-LLM summary + action items). The endpoint 404s when notes have
+// not been generated yet, which is the normal empty state — don't retry it, and let the caller
+// render the "generate" affordance rather than an error.
+export function useMeetingNotes(meetingId: string | null) {
+  return useQuery({
+    queryKey: queryKeys.meetings.notes(meetingId ?? "none"),
+    queryFn: () => api.get<MeetingNotesRead>(`/api/meetings/${meetingId}/notes`),
+    enabled: meetingId !== null,
+    retry: false,
+  });
+}
+
+// Generate (or regenerate) a meeting's notes from its finalized transcript. A local-LLM pass (cold
+// model load + generation), so it gets the same long timeout as the refine; on success the server
+// persisted the row, so seed it straight into the cache.
+export function useGenerateNotes(meetingId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () =>
+      api.post<MeetingNotesRead>(`/api/meetings/${meetingId}/notes`, undefined, {
+        timeoutMs: REFINE_TIMEOUT_MS,
+      }),
+    onSuccess: (notes) => {
+      qc.setQueryData<MeetingNotesRead>(queryKeys.meetings.notes(meetingId), notes);
+    },
+  });
+}
+
+// The notes-model catalog (curated, ungated GGUF models) annotated with which are installed.
+export function useModelCatalog() {
+  return useQuery({
+    queryKey: queryKeys.models.catalog,
+    queryFn: () => api.get<ModelCatalog>("/api/models/catalog"),
+  });
+}
+
+// The single active model download's progress. Polls quickly while a download is running (to move
+// the progress bar) and stops once idle/ready/errored — re-armed when a new download starts.
+export function useDownloadStatus() {
+  return useQuery({
+    queryKey: queryKeys.models.download,
+    queryFn: () => api.get<DownloadState>("/api/models/download"),
+    refetchInterval: (query) => {
+      const status = query.state.data?.status;
+      return status === "downloading" || status === "verifying" ? 1_000 : false;
+    },
+  });
+}
+
+// Start downloading a catalog model by id (single-at-a-time; idempotent for an already-installed
+// one). Seed the returned snapshot so polling picks up immediately.
+export function useStartDownload() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.post<DownloadState>("/api/models/download", { id }),
+    onSuccess: (state) => {
+      qc.setQueryData<DownloadState>(queryKeys.models.download, state);
+    },
+  });
+}
+
 // Editable settings (the writable overlay over the env defaults).
 export function useSettings() {
   return useQuery({
@@ -233,19 +297,23 @@ export function useUpdateStorage() {
   });
 }
 
-// Update the offline-refine whisper model path; server validates the file (absolute, exists, GGML
-// magic) and returns the canonicalized path. Patch the section, and mark the file as resolving
-// since the server only returns 200 for a model it verified on disk.
+// Update the `models` section (refine whisper model + the notes toggle/model). The server validates
+// any changed model file (absolute, exists, correct magic) and returns the canonicalized section, so
+// a 200 means the refine model resolves; a non-empty notes model likewise resolves (empty = unset).
+// Callers send the whole section — the server full-replaces it — so never omit a field you mean to
+// keep. Patch the cache from the returned section.
 export function useUpdateModels() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (body: ModelSettings) => api.put<ModelSettings>("/api/settings/models", body),
     onSuccess: (models) => {
+      // Patch the section for instant input feedback, then refetch for authoritative `models_info`:
+      // a notes-only change echoes the (possibly non-existent, bundled) refine path back unchanged,
+      // which the server accepts without re-checking, so we can't assume either file resolves.
       qc.setQueryData<SettingsRead>(queryKeys.settings.all, (old) =>
-        old
-          ? { ...old, models, models_info: { ...old.models_info, refine_model_exists: true } }
-          : old,
+        old ? { ...old, models } : old,
       );
+      qc.invalidateQueries({ queryKey: queryKeys.settings.all });
     },
   });
 }

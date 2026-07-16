@@ -7,6 +7,13 @@ export const queryKeys = {
     // All segment pages are fetched under one query (see useSegments), so the key is per-meeting.
     segments: (id: string) => ["meetings", "segments", id] as const,
     speakers: (id: string) => ["meetings", "speakers", id] as const,
+    notes: (id: string) => ["meetings", "notes", id] as const,
+  },
+  // Notes-model download manager (catalog + the single active download's progress).
+  models: {
+    all: ["models"] as const,
+    catalog: ["models", "catalog"] as const,
+    download: ["models", "download"] as const,
   },
   identities: {
     all: ["identities"] as const,

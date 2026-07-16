@@ -4,6 +4,7 @@ import { useRediarize, useStopMeeting } from "../api/hooks";
 import { getToken } from "../api/token";
 import type { MeetingRead } from "../api/types";
 import { useTranscript } from "../hooks/useTranscript";
+import { NotesPanel } from "./NotesPanel";
 import { SpeakerPanel } from "./SpeakerPanel";
 
 function formatTime(seconds: number): string {
@@ -214,6 +215,7 @@ export function TranscriptView({ meeting }: Props) {
         </p>
       ) : null}
       <SpeakerPanel meetingId={meeting.id} />
+      <NotesPanel meetingId={meeting.id} recording={recording} />
       <ol
         className="transcript__lines"
         ref={linesRef}

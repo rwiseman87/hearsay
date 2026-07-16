@@ -52,6 +52,22 @@ export interface paths {
         patch: operations["update_meeting"];
         trace?: never;
     };
+    "/api/meetings/{id}/notes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["read_notes"];
+        put?: never;
+        post: operations["generate_notes"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/meetings/{id}/rediarize": {
         parameters: {
             query?: never;
@@ -126,6 +142,38 @@ export interface paths {
         get?: never;
         put?: never;
         post: operations["stop_meeting"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/models/catalog": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["catalog"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/models/download": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["download_status"];
+        put?: never;
+        post: operations["start_download"];
         delete?: never;
         options?: never;
         head?: never;
@@ -282,6 +330,40 @@ export interface components {
             /** Format: int32 */
             protocol_version: number;
         };
+        /** @description One downloadable notes model in the in-app catalog (the internal repo/file/sha are not exposed). */
+        CatalogEntry: {
+            context: string;
+            id: string;
+            /** @description Whether this model's file already resolves in the models dir (downloaded). */
+            installed: boolean;
+            license: string;
+            name: string;
+            note: string;
+            recommended: boolean;
+            /** Format: int64 */
+            size_bytes: number;
+        };
+        /** @description Request body for starting a catalog download: the catalog `id` to fetch. */
+        DownloadRequest: {
+            id: string;
+        };
+        /** @description A snapshot of the (single, at-a-time) model download, polled by the UI like sidecar readiness. */
+        DownloadState: {
+            /** Format: int64 */
+            downloaded_bytes: number;
+            /** @description A human-readable detail (an error reason, or the resolved path when ready). */
+            message?: string | null;
+            /** @description The catalog id being downloaded (or last downloaded), if any. */
+            model_id?: string | null;
+            status: components["schemas"]["DownloadStatus"];
+            /** Format: int64 */
+            total_bytes: number;
+        };
+        /**
+         * @description Where a download is in its lifecycle.
+         * @enum {string}
+         */
+        DownloadStatus: "idle" | "downloading" | "verifying" | "ready" | "error";
         /** @description A known cross-meeting person (offered as a rename suggestion). */
         IdentityRead: {
             display_name: string;
@@ -292,6 +374,20 @@ export interface components {
         /** @description Start a meeting. `title` defaults to a timestamp-derived name when omitted. */
         MeetingCreate: {
             title?: string | null;
+        };
+        /**
+         * @description A meeting's generated notes for the API: the summary + action items, and which model produced
+         *     them. `action_items` is decoded from the stored JSON array (a corrupt row degrades to empty
+         *     rather than failing the read, matching the settings-section tolerance).
+         */
+        MeetingNotesRead: {
+            action_items: string[];
+            /** Format: date-time */
+            created_at: string;
+            model: string;
+            summary: string;
+            /** Format: date-time */
+            updated_at: string;
         };
         /** @description A meeting row for the API. */
         MeetingRead: {
@@ -319,20 +415,34 @@ export interface components {
         MeetingUpdate: {
             title: string;
         };
+        /** @description The notes-model catalog + where downloads land, for the Settings > Models picker. */
+        ModelCatalog: {
+            items: components["schemas"]["CatalogEntry"][];
+            models_dir: string;
+        };
         /**
-         * @description Models: the offline-refine whisper model path. Editable section; the effective value is the
-         *     stored override, else the bundled config default. Only the refine (post-meeting re-transcription)
-         *     uses whisper — live transcription is the FluidAudio/ANE sidecars and is not configured here.
+         * @description Models: the offline-refine whisper model path plus the optional local-LLM notes step (enable +
+         *     its GGUF model). Editable section; each effective value is the stored override, else the config
+         *     default. Live transcription is the FluidAudio/ANE sidecars and is not configured here.
          */
         ModelSettings: {
+            /**
+             * @description Generate a summary + action items at meeting stop (the optional local-LLM notes step).
+             *     `#[serde(default)]` so a `models` row written before notes existed still deserializes.
+             */
+            notes_enabled?: boolean;
+            /** @description GGUF model path for the notes step; empty until one is downloaded or chosen. */
+            notes_model?: string;
             refine_model: string;
         };
         /**
-         * @description Read-only model facts shown alongside the editable models section: the bundled default (so the
-         *     UI can offer a reset target) and whether the effective model file currently resolves on disk.
+         * @description Read-only model facts shown alongside the editable models section: the bundled/config defaults
+         *     (reset targets) and whether each effective model file currently resolves on disk.
          */
         ModelsInfo: {
+            default_notes_model: string;
             default_refine_model: string;
+            notes_model_exists: boolean;
             refine_model_exists: boolean;
         };
         /** @description Paginated list envelope used by every list endpoint (`{ total, page, page_size, items }`). */
@@ -760,6 +870,78 @@ export interface operations {
             };
         };
     };
+    read_notes: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MeetingNotesRead"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    generate_notes: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MeetingNotesRead"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     rediarize: {
         parameters: {
             query?: never;
@@ -908,6 +1090,79 @@ export interface operations {
                 content?: never;
             };
             503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    catalog: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ModelCatalog"];
+                };
+            };
+        };
+    };
+    download_status: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DownloadState"];
+                };
+            };
+        };
+    };
+    start_download: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DownloadRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DownloadState"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };

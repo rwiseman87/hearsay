@@ -237,6 +237,81 @@
         }
       }
     },
+    "/api/meetings/{id}/notes": {
+      "get": {
+        "tags": [
+          "notes"
+        ],
+        "operationId": "read_notes",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MeetingNotesRead"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": ""
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "notes"
+        ],
+        "operationId": "generate_notes",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MeetingNotesRead"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          },
+          "422": {
+            "description": ""
+          },
+          "503": {
+            "description": ""
+          }
+        }
+      }
+    },
     "/api/meetings/{id}/rediarize": {
       "post": {
         "tags": [
@@ -447,6 +522,80 @@
             "description": ""
           },
           "503": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/api/models/catalog": {
+      "get": {
+        "tags": [
+          "models"
+        ],
+        "operationId": "catalog",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ModelCatalog"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/models/download": {
+      "get": {
+        "tags": [
+          "models"
+        ],
+        "operationId": "download_status",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DownloadState"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "models"
+        ],
+        "operationId": "start_download",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DownloadRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DownloadState"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
             "description": ""
           }
         }
@@ -705,6 +854,107 @@
           }
         }
       },
+      "CatalogEntry": {
+        "type": "object",
+        "description": "One downloadable notes model in the in-app catalog (the internal repo/file/sha are not exposed).",
+        "required": [
+          "id",
+          "name",
+          "size_bytes",
+          "license",
+          "context",
+          "note",
+          "recommended",
+          "installed"
+        ],
+        "properties": {
+          "context": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "installed": {
+            "type": "boolean",
+            "description": "Whether this model's file already resolves in the models dir (downloaded)."
+          },
+          "license": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "note": {
+            "type": "string"
+          },
+          "recommended": {
+            "type": "boolean"
+          },
+          "size_bytes": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "DownloadRequest": {
+        "type": "object",
+        "description": "Request body for starting a catalog download: the catalog `id` to fetch.",
+        "required": [
+          "id"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          }
+        }
+      },
+      "DownloadState": {
+        "type": "object",
+        "description": "A snapshot of the (single, at-a-time) model download, polled by the UI like sidecar readiness.",
+        "required": [
+          "status",
+          "downloaded_bytes",
+          "total_bytes"
+        ],
+        "properties": {
+          "downloaded_bytes": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "message": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "A human-readable detail (an error reason, or the resolved path when ready)."
+          },
+          "model_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The catalog id being downloaded (or last downloaded), if any."
+          },
+          "status": {
+            "$ref": "#/components/schemas/DownloadStatus"
+          },
+          "total_bytes": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "DownloadStatus": {
+        "type": "string",
+        "description": "Where a download is in its lifecycle.",
+        "enum": [
+          "idle",
+          "downloading",
+          "verifying",
+          "ready",
+          "error"
+        ]
+      },
       "IdentityRead": {
         "type": "object",
         "description": "A known cross-meeting person (offered as a rename suggestion).",
@@ -737,6 +987,39 @@
               "string",
               "null"
             ]
+          }
+        }
+      },
+      "MeetingNotesRead": {
+        "type": "object",
+        "description": "A meeting's generated notes for the API: the summary + action items, and which model produced\nthem. `action_items` is decoded from the stored JSON array (a corrupt row degrades to empty\nrather than failing the read, matching the settings-section tolerance).",
+        "required": [
+          "summary",
+          "action_items",
+          "model",
+          "created_at",
+          "updated_at"
+        ],
+        "properties": {
+          "action_items": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "model": {
+            "type": "string"
+          },
+          "summary": {
+            "type": "string"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
           }
         }
       },
@@ -808,13 +1091,40 @@
           }
         }
       },
+      "ModelCatalog": {
+        "type": "object",
+        "description": "The notes-model catalog + where downloads land, for the Settings > Models picker.",
+        "required": [
+          "items",
+          "models_dir"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CatalogEntry"
+            }
+          },
+          "models_dir": {
+            "type": "string"
+          }
+        }
+      },
       "ModelSettings": {
         "type": "object",
-        "description": "Models: the offline-refine whisper model path. Editable section; the effective value is the\nstored override, else the bundled config default. Only the refine (post-meeting re-transcription)\nuses whisper — live transcription is the FluidAudio/ANE sidecars and is not configured here.",
+        "description": "Models: the offline-refine whisper model path plus the optional local-LLM notes step (enable +\nits GGUF model). Editable section; each effective value is the stored override, else the config\ndefault. Live transcription is the FluidAudio/ANE sidecars and is not configured here.",
         "required": [
           "refine_model"
         ],
         "properties": {
+          "notes_enabled": {
+            "type": "boolean",
+            "description": "Generate a summary + action items at meeting stop (the optional local-LLM notes step).\n`#[serde(default)]` so a `models` row written before notes existed still deserializes."
+          },
+          "notes_model": {
+            "type": "string",
+            "description": "GGUF model path for the notes step; empty until one is downloaded or chosen."
+          },
           "refine_model": {
             "type": "string"
           }
@@ -822,14 +1132,22 @@
       },
       "ModelsInfo": {
         "type": "object",
-        "description": "Read-only model facts shown alongside the editable models section: the bundled default (so the\nUI can offer a reset target) and whether the effective model file currently resolves on disk.",
+        "description": "Read-only model facts shown alongside the editable models section: the bundled/config defaults\n(reset targets) and whether each effective model file currently resolves on disk.",
         "required": [
           "default_refine_model",
-          "refine_model_exists"
+          "refine_model_exists",
+          "default_notes_model",
+          "notes_model_exists"
         ],
         "properties": {
+          "default_notes_model": {
+            "type": "string"
+          },
           "default_refine_model": {
             "type": "string"
+          },
+          "notes_model_exists": {
+            "type": "boolean"
           },
           "refine_model_exists": {
             "type": "boolean"
@@ -1439,6 +1757,14 @@
     {
       "name": "speakers",
       "description": "Diarization clusters + cross-meeting identities"
+    },
+    {
+      "name": "notes",
+      "description": "Local-LLM meeting summaries + action items"
+    },
+    {
+      "name": "models",
+      "description": "Notes-model catalog + download manager"
     },
     {
       "name": "settings",

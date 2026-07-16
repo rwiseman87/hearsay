@@ -1,17 +1,22 @@
 import { useEffect, useRef, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
 
 import { api } from "../api/client";
 import {
+  useDownloadStatus,
+  useModelCatalog,
   usePermissions,
   useResetModels,
   useSettings,
+  useStartDownload,
   useUpdateModels,
   useUpdateRecording,
   useUpdateSpeakers,
   useUpdateStorage,
 } from "../api/hooks";
-import type { SpeakerSettings } from "../api/types";
+import { queryKeys } from "../api/queryKeys";
+import type { ModelSettings, SpeakerSettings } from "../api/types";
 
 // The Danger Zone's erase/quit actions are Tauri IPC (desktop shell), not the loopback HTTP API, so
 // they only exist in the packaged app. In a plain browser (dev) the shell isn't there.
@@ -190,25 +195,67 @@ function SpeakersPanel() {
 }
 
 function ModelsPanel() {
+  const qc = useQueryClient();
   const settings = useSettings();
   const update = useUpdateModels();
   const reset = useResetModels();
+  const catalog = useModelCatalog();
+  const download = useDownloadStatus();
+  const startDownload = useStartDownload();
   const models = settings.data?.models;
   const info = settings.data?.models_info;
   const [path, setPath] = useState("");
+  const [notesPath, setNotesPath] = useState("");
+  const [selectedId, setSelectedId] = useState("");
 
-  // Re-sync the input when the server value changes; depend on the primitive, not the settings object.
+  // Re-sync the inputs when the server values change; depend on the primitives, not the objects.
   const refineModel = models?.refine_model;
   useEffect(() => {
     if (refineModel !== undefined) setPath(refineModel);
   }, [refineModel]);
+  const notesModel = models?.notes_model;
+  useEffect(() => {
+    if (notesModel !== undefined) setNotesPath(notesModel);
+  }, [notesModel]);
+
+  // Default the catalog dropdown to the recommended model once the catalog loads.
+  const catalogItems = catalog.data?.items;
+  useEffect(() => {
+    if (!catalogItems || catalogItems.length === 0 || selectedId) return;
+    setSelectedId((catalogItems.find((m) => m.recommended) ?? catalogItems[0]).id);
+  }, [catalogItems, selectedId]);
+
+  // A finished download has repointed the notes model server-side — refetch settings (notes_model +
+  // notes_model_exists) and the catalog (installed flags) so the panel reflects it.
+  const dlStatus = download.data?.status;
+  const dlModel = download.data?.model_id;
+  useEffect(() => {
+    if (dlStatus === "ready") {
+      qc.invalidateQueries({ queryKey: queryKeys.settings.all });
+      qc.invalidateQueries({ queryKey: queryKeys.models.catalog });
+    }
+  }, [dlStatus, dlModel, qc]);
 
   if (settings.isLoading || !models || !info) return <p className="muted">Loading…</p>;
 
   const busy = update.isPending || reset.isPending;
+  const notesEnabled = models.notes_enabled ?? false;
+  const storedNotesModel = models.notes_model ?? "";
+
+  // Every save PUTs the whole `models` section (the server full-replaces it), so carry the other
+  // fields through untouched — a refine-model save must not wipe a downloaded notes model, and a
+  // notes toggle must not disturb the refine model.
+  const commit = (patch: Partial<ModelSettings>) =>
+    update.mutate({
+      refine_model: models.refine_model,
+      notes_enabled: notesEnabled,
+      notes_model: storedNotesModel,
+      ...patch,
+    });
+
   const onSave = () => {
     const trimmed = path.trim();
-    if (trimmed) update.mutate({ refine_model: trimmed });
+    if (trimmed) commit({ refine_model: trimmed });
   };
 
   // Native open-file dialog (desktop only — the shell surfaces it via Tauri IPC). Picking a file
@@ -222,11 +269,13 @@ function ModelsPanel() {
     }
     if (picked) {
       setPath(picked);
-      update.mutate({ refine_model: picked });
+      commit({ refine_model: picked });
     }
   };
 
   const isDefault = models.refine_model === info.default_refine_model;
+  const selected = catalogItems?.find((m) => m.id === selectedId);
+  const downloading = dlStatus === "downloading" || dlStatus === "verifying";
 
   return (
     <div className="settings__panel">
@@ -265,11 +314,6 @@ function ModelsPanel() {
             existing model.
           </p>
         ) : null}
-        {update.isError ? (
-          <p className="settings__error" role="alert">
-            {(update.error as Error).message}
-          </p>
-        ) : null}
       </div>
       <dl className="settings__facts">
         <div>
@@ -291,6 +335,119 @@ function ModelsPanel() {
           </dd>
         </div>
       </dl>
+
+      <div className="settings__field settings__field--divided">
+        <label className="settings__row">
+          <input
+            type="checkbox"
+            checked={notesEnabled}
+            disabled={busy}
+            onChange={(event) => commit({ notes_enabled: event.target.checked })}
+          />
+          <span className="settings__row-body">
+            <span className="settings__row-label">Summarize meetings</span>
+            <span className="settings__row-hint muted">
+              When a meeting ends, generate a summary and action items with a local model (you can
+              also generate them on demand from any finished meeting). Applies to your next meeting.
+            </span>
+          </span>
+        </label>
+
+        <span className="settings__row-label">Summarization model</span>
+        <div className="settings__inline">
+          <select
+            aria-label="Summarization model"
+            value={selectedId}
+            disabled={busy || downloading || !catalogItems}
+            onChange={(event) => setSelectedId(event.target.value)}
+          >
+            {(catalogItems ?? []).map((m) => (
+              <option key={m.id} value={m.id}>
+                {m.name} — {formatBytes(m.size_bytes)}
+                {m.recommended ? " (recommended)" : ""}
+                {m.installed ? " · installed" : ""}
+              </option>
+            ))}
+          </select>
+          <button
+            type="button"
+            onClick={() => selected && startDownload.mutate(selected.id)}
+            disabled={!selected || downloading || startDownload.isPending}
+          >
+            {selected?.installed ? "Use" : "Download"}
+          </button>
+        </div>
+        {selected ? (
+          <span className="settings__row-hint muted">
+            {selected.note} · {selected.context} context · {selected.license}
+          </span>
+        ) : null}
+
+        {downloading ? (
+          <div className="settings__download">
+            <progress
+              aria-label="Model download progress"
+              value={download.data?.downloaded_bytes ?? 0}
+              max={download.data?.total_bytes || 1}
+            />
+            <span className="settings__row-hint muted">
+              {dlStatus === "verifying"
+                ? "Verifying…"
+                : `Downloading ${formatBytes(download.data?.downloaded_bytes ?? 0)} / ${formatBytes(
+                    download.data?.total_bytes ?? 0,
+                  )}`}
+            </span>
+          </div>
+        ) : null}
+        {dlStatus === "error" ? (
+          <p className="settings__error" role="alert">
+            {download.data?.message ?? "Download failed."}
+          </p>
+        ) : null}
+        {startDownload.isError ? (
+          <p className="settings__error" role="alert">
+            {(startDownload.error as Error).message}
+          </p>
+        ) : null}
+        {notesEnabled && !info.notes_model_exists && !downloading ? (
+          <p className="settings__error" role="alert">
+            Summaries are on, but no model is ready. Download one above, or point at a local file.
+          </p>
+        ) : null}
+
+        <details className="settings__advanced">
+          <summary>Use a local model file</summary>
+          <div className="settings__inline">
+            <input
+              value={notesPath}
+              spellCheck={false}
+              disabled={busy}
+              aria-label="Summarization model path"
+              placeholder="/path/to/model.gguf"
+              onChange={(event) => setNotesPath(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") commit({ notes_model: notesPath.trim() });
+              }}
+            />
+            <button
+              type="button"
+              onClick={() => commit({ notes_model: notesPath.trim() })}
+              disabled={busy || notesPath.trim() === storedNotesModel}
+            >
+              {update.isPending ? "Checking…" : "Save"}
+            </button>
+          </div>
+          <span className="settings__row-hint muted">
+            Absolute path to a downloaded <code>.gguf</code> instruct model. Clear it to unset.
+          </span>
+        </details>
+
+        {update.isError ? (
+          <p className="settings__error" role="alert">
+            {(update.error as Error).message}
+          </p>
+        ) : null}
+      </div>
     </div>
   );
 }
