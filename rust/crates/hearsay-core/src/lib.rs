@@ -9,6 +9,7 @@
 pub mod config;
 pub mod error;
 pub mod extract;
+pub mod models;
 pub mod openapi;
 pub mod routes;
 pub mod schema;
@@ -47,6 +48,8 @@ pub fn create_app(state: AppState) -> Router {
 
     let protected = routes::meetings::router()
         .merge(routes::speakers::router())
+        .merge(routes::notes::router())
+        .merge(routes::models::router())
         .merge(routes::settings::router())
         .route_layer(from_fn_with_state(state.clone(), routes::require_token));
     let api = protected.merge(routes::audio::router());

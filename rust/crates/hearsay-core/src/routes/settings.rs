@@ -88,19 +88,36 @@ async fn resolve_storage(state: &AppState) -> ApiResult<StorageSettings> {
 }
 
 async fn resolve_models(state: &AppState) -> ApiResult<ModelSettings> {
-    match queries::get_preference(&state.pool, SECTION_MODELS).await? {
-        Some(json) => serde_json::from_str(&json)
-            .map_err(|e| ApiError::Internal(format!("corrupt models preference: {e}"))),
-        None => Ok(ModelSettings {
-            refine_model: state.settings.refine_model.to_string_lossy().to_string(),
-        }),
-    }
+    // Resolve each field independently against its config default rather than deserializing the whole
+    // section as a struct: the download manager merges in just `notes_model`, so the stored object is
+    // often partial (no `refine_model`), which a strict struct parse would reject. Mirrors the
+    // per-field `effective_*` readers in `hearsay-db`.
+    let obj = queries::models_section(&state.pool).await?;
+    let field = |key: &str| {
+        obj.as_ref()
+            .and_then(|o| o.get(key).and_then(|v| v.as_str()))
+            .map(str::to_string)
+    };
+    Ok(ModelSettings {
+        refine_model: field("refine_model")
+            .unwrap_or_else(|| state.settings.refine_model.to_string_lossy().to_string()),
+        notes_enabled: obj
+            .as_ref()
+            .and_then(|o| o.get("notes_enabled").and_then(serde_json::Value::as_bool))
+            .unwrap_or(state.settings.notes_enabled),
+        notes_model: field("notes_model")
+            .unwrap_or_else(|| state.settings.notes_model.to_string_lossy().to_string()),
+    })
 }
 
 fn models_info(state: &AppState, effective: &ModelSettings) -> ModelsInfo {
     ModelsInfo {
         default_refine_model: state.settings.refine_model.to_string_lossy().to_string(),
         refine_model_exists: Path::new(&effective.refine_model).is_file(),
+        default_notes_model: state.settings.notes_model.to_string_lossy().to_string(),
+        // An empty notes_model is "unset", not "missing file" — report it as not-resolving.
+        notes_model_exists: !effective.notes_model.is_empty()
+            && Path::new(&effective.notes_model).is_file(),
     }
 }
 
@@ -235,17 +252,39 @@ pub(crate) async fn update_models(
     State(state): State<AppState>,
     Json(body): Json<ModelSettings>,
 ) -> ApiResult<Json<ModelSettings>> {
-    let input = body.refine_model.trim().to_string();
-    if input.is_empty() {
+    // Only validate the refine model when it actually changes. The client echoes the current value
+    // back when it is only editing the notes fields (one PUT covers the whole `models` section), and
+    // the effective refine model may be the bundled default — a relative path the absolute-path check
+    // would reject. `reset_models` (DELETE) is the channel for reverting to that default.
+    let current = resolve_models(&state).await?;
+    let refine_input = body.refine_model.trim().to_string();
+    let refine_model = if refine_input == current.refine_model {
+        refine_input
+    } else if refine_input.is_empty() {
         return Err(ApiError::Unprocessable(
             "refine_model must not be empty".into(),
         ));
-    }
-    let resolved = tokio::task::spawn_blocking(move || validate_refine_model(&input))
-        .await
-        .map_err(|e| ApiError::Internal(format!("refine_model validation panicked: {e}")))??;
+    } else {
+        tokio::task::spawn_blocking(move || validate_refine_model(&refine_input))
+            .await
+            .map_err(|e| ApiError::Internal(format!("refine_model validation panicked: {e}")))??
+    };
+
+    // The notes model is optional: empty means "not chosen yet" (the notes step stays unavailable
+    // until one is downloaded/selected). Validate the file only when a path is provided.
+    let notes_input = body.notes_model.trim().to_string();
+    let notes_model = if notes_input.is_empty() {
+        String::new()
+    } else {
+        tokio::task::spawn_blocking(move || validate_notes_model(&notes_input))
+            .await
+            .map_err(|e| ApiError::Internal(format!("notes_model validation panicked: {e}")))??
+    };
+
     let stored = ModelSettings {
-        refine_model: resolved,
+        refine_model,
+        notes_enabled: body.notes_enabled,
+        notes_model,
     };
     store_section(&state, SECTION_MODELS, &stored).await?;
     Ok(Json(stored))
@@ -373,6 +412,41 @@ fn validate_refine_model(input: &str) -> Result<String, ApiError> {
     if magic != [0x6c, 0x6d, 0x67, 0x67] {
         return Err(ApiError::Unprocessable(format!(
             "{} is not a GGML whisper model (expected a ggml-*.bin file)",
+            resolved.display()
+        )));
+    }
+    Ok(resolved.to_string_lossy().to_string())
+}
+
+/// Resolve `input` to an absolute, existing, readable GGUF file or a 422 — the notes step loads this
+/// model with llama.cpp at each run, so reject a bad path at the boundary. Same shape as
+/// [`validate_refine_model`] but checks the **GGUF** magic (the ASCII bytes `GGUF` = `0x47 0x47 0x55
+/// 0x46`, the first 4 bytes of every `.gguf` model) so pointing the notes step at a whisper `.bin`
+/// or an unrelated file is caught here, not as a cryptic llama.cpp load failure at generate time.
+fn validate_notes_model(input: &str) -> Result<String, ApiError> {
+    let expanded = expand_home(input);
+    let path = Path::new(&expanded);
+    if !path.is_absolute() {
+        return Err(ApiError::Unprocessable(
+            "notes_model must be an absolute path".into(),
+        ));
+    }
+    let resolved = std::fs::canonicalize(path)
+        .map_err(|_| ApiError::Unprocessable(format!("{expanded} does not exist")))?;
+    if !resolved.is_file() {
+        return Err(ApiError::Unprocessable(format!(
+            "{} is not a file",
+            resolved.display()
+        )));
+    }
+    let mut magic = [0u8; 4];
+    std::fs::File::open(&resolved)
+        .and_then(|mut f| std::io::Read::read_exact(&mut f, &mut magic))
+        .map_err(|_| ApiError::Unprocessable(format!("{} is not readable", resolved.display())))?;
+    // GGUF files start with the ASCII bytes "GGUF".
+    if magic != [0x47, 0x47, 0x55, 0x46] {
+        return Err(ApiError::Unprocessable(format!(
+            "{} is not a GGUF model (expected a .gguf file)",
             resolved.display()
         )));
     }

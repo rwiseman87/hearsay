@@ -21,12 +21,18 @@ uuid = { version = "1.23.4", features = ["v4", "serde"] }
 chrono = { version = "0.4.45", features = ["serde"] }
 sqlx = { version = "0.9.0", default-features = false, features = ["runtime-tokio", "sqlite", "uuid", "chrono"] }
 tower = { version = "0.5.3", features = ["util"] }
+# Notes-model download manager (always compiled — independent of the `notes` inference feature so the
+# `/api/models` surface + codegen stay identical across feature states). ureq: blocking HTTPS with a
+# bundled rustls + webpki roots (no OS cert dep, no async runtime pulled in — runs in spawn_blocking).
+ureq = "3.3.0"
+sha2 = "0.10.9"
 
 # GPU backends for the offline whisper refine, forwarded through `hearsay-backends` to
 # `hearsay-inference`'s whisper-rs. Off by default (CPU); the macOS bundle + `rust-serve` build with
 # `metal` (see the Makefile) — a large win on Apple Silicon. vulkan/cuda are here for the planned
 # cross-platform builds; enable one per target (building a backend the host lacks fails).
 [features]
+notes = ["hearsay-backends/notes"]
 metal = ["hearsay-backends/metal"]
 vulkan = ["hearsay-backends/vulkan"]
 cuda = ["hearsay-backends/cuda"]

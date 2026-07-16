@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use uuid::Uuid;
 
-use hearsay_db::models::{Identity, Meeting, Segment};
+use hearsay_db::models::{Identity, Meeting, MeetingNotes, Segment};
 use hearsay_db::queries::SpeakerRow;
 
 /// Lifecycle state of a meeting (lowercase on the wire): `recording` while live, `refining` while the
@@ -81,6 +81,30 @@ impl From<Meeting> for MeetingRead {
             ended_at: m.ended_at,
             created_at: m.created_at,
             updated_at: m.updated_at,
+        }
+    }
+}
+
+/// A meeting's generated notes for the API: the summary + action items, and which model produced
+/// them. `action_items` is decoded from the stored JSON array (a corrupt row degrades to empty
+/// rather than failing the read, matching the settings-section tolerance).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct MeetingNotesRead {
+    pub summary: String,
+    pub action_items: Vec<String>,
+    pub model: String,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+impl From<MeetingNotes> for MeetingNotesRead {
+    fn from(n: MeetingNotes) -> Self {
+        MeetingNotesRead {
+            summary: n.summary,
+            action_items: serde_json::from_str(&n.action_items).unwrap_or_default(),
+            model: n.model,
+            created_at: n.created_at,
+            updated_at: n.updated_at,
         }
     }
 }
@@ -205,20 +229,79 @@ pub struct StorageInfo {
     pub meeting_count: i64,
 }
 
-/// Models: the offline-refine whisper model path. Editable section; the effective value is the
-/// stored override, else the bundled config default. Only the refine (post-meeting re-transcription)
-/// uses whisper — live transcription is the FluidAudio/ANE sidecars and is not configured here.
+/// Models: the offline-refine whisper model path plus the optional local-LLM notes step (enable +
+/// its GGUF model). Editable section; each effective value is the stored override, else the config
+/// default. Live transcription is the FluidAudio/ANE sidecars and is not configured here.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ModelSettings {
     pub refine_model: String,
+    /// Generate a summary + action items at meeting stop (the optional local-LLM notes step).
+    /// `#[serde(default)]` so a `models` row written before notes existed still deserializes.
+    #[serde(default)]
+    pub notes_enabled: bool,
+    /// GGUF model path for the notes step; empty until one is downloaded or chosen.
+    #[serde(default)]
+    pub notes_model: String,
 }
 
-/// Read-only model facts shown alongside the editable models section: the bundled default (so the
-/// UI can offer a reset target) and whether the effective model file currently resolves on disk.
+/// Read-only model facts shown alongside the editable models section: the bundled/config defaults
+/// (reset targets) and whether each effective model file currently resolves on disk.
 #[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct ModelsInfo {
     pub default_refine_model: String,
     pub refine_model_exists: bool,
+    pub default_notes_model: String,
+    pub notes_model_exists: bool,
+}
+
+/// One downloadable notes model in the in-app catalog (the internal repo/file/sha are not exposed).
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct CatalogEntry {
+    pub id: String,
+    pub name: String,
+    pub size_bytes: i64,
+    pub license: String,
+    pub context: String,
+    pub note: String,
+    pub recommended: bool,
+    /// Whether this model's file already resolves in the models dir (downloaded).
+    pub installed: bool,
+}
+
+/// The notes-model catalog + where downloads land, for the Settings > Models picker.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct ModelCatalog {
+    pub items: Vec<CatalogEntry>,
+    pub models_dir: String,
+}
+
+/// Where a download is in its lifecycle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum DownloadStatus {
+    Idle,
+    Downloading,
+    Verifying,
+    Ready,
+    Error,
+}
+
+/// A snapshot of the (single, at-a-time) model download, polled by the UI like sidecar readiness.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct DownloadState {
+    pub status: DownloadStatus,
+    /// The catalog id being downloaded (or last downloaded), if any.
+    pub model_id: Option<String>,
+    pub downloaded_bytes: i64,
+    pub total_bytes: i64,
+    /// A human-readable detail (an error reason, or the resolved path when ready).
+    pub message: Option<String>,
+}
+
+/// Request body for starting a catalog download: the catalog `id` to fetch.
+#[derive(Debug, Clone, Deserialize, ToSchema)]
+pub struct DownloadRequest {
+    pub id: String,
 }
 
 /// Read-only build/runtime facts for the About panel (`protocol_version` is the core's IPC

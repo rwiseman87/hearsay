@@ -44,6 +44,18 @@ pub struct Settings {
     /// in a prior meeting (`HEARSAY_RECOGNITION_THRESHOLD`, default 0.6; the `speakers` section
     /// overrides it).
     pub recognition_threshold: f64,
+    /// Default for the optional local-LLM notes step: generate a summary + action items at stop
+    /// (`HEARSAY_NOTES`, default off — opt-in, and needs a downloaded model). The `models` settings
+    /// section overrides it per install.
+    pub notes_enabled: bool,
+    /// Default GGUF model for the notes step (`HEARSAY_NOTES_MODEL`, default empty — unset until the
+    /// user downloads or points at one). The `models` section overrides it; read fresh at each
+    /// stop/generate so a Models-panel change or a completed download applies with no restart.
+    pub notes_model: PathBuf,
+    /// Root the download manager writes models into and references them from
+    /// (`HEARSAY_MODELS_DIR`, default `outputs/models`; the desktop shell points it at a persistent
+    /// app-data dir so downloaded models survive reinstall).
+    pub models_dir: PathBuf,
     /// Path to the desktop shell's handshake file (`HEARSAY_HANDSHAKE_PATH`): the private 0600 file
     /// the shell reads once for `{port, token}`. `None` in headless dev, where no handshake is written.
     pub handshake_path: Option<PathBuf>,
@@ -168,6 +180,7 @@ impl Settings {
         let auto_refine = env_bool("HEARSAY_AUTO_REFINE", false, &mut problems);
         let record = env_bool("HEARSAY_RECORD", true, &mut problems);
         let recognition_threshold = env_recognition_threshold(0.6, &mut problems);
+        let notes_enabled = env_bool("HEARSAY_NOTES", false, &mut problems);
         let refine_timeout =
             Duration::from_secs(env_u64("HEARSAY_REFINE_TIMEOUT_SECS", 1800, &mut problems));
 
@@ -205,6 +218,9 @@ impl Settings {
             auto_refine,
             record,
             recognition_threshold,
+            notes_enabled,
+            notes_model: PathBuf::from(env_or("HEARSAY_NOTES_MODEL", "")),
+            models_dir: PathBuf::from(env_or("HEARSAY_MODELS_DIR", "outputs/models")),
             handshake_path: env_path("HEARSAY_HANDSHAKE_PATH"),
             fluid_models_dir: env_path("HEARSAY_FLUID_MODELS_DIR"),
             home_dir: env_path("HOME"),

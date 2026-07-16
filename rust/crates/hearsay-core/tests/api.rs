@@ -36,6 +36,9 @@ fn test_settings(output_dir: PathBuf, web_dir: PathBuf) -> Settings {
         auto_refine: false,
         record: true,
         recognition_threshold: 0.6,
+        notes_enabled: false,
+        notes_model: PathBuf::from("no-notes-model"),
+        models_dir: PathBuf::from("no-models-dir"),
         handshake_path: None,
         fluid_models_dir: None,
         home_dir: None,
@@ -711,4 +714,152 @@ async fn validates_refine_model_and_round_trips_override() {
     assert_eq!(body["refine_model"], "no-model");
     let (_status, body) = send(&app, get("/api/settings")).await;
     assert_eq!(body["models"]["refine_model"], "no-model");
+}
+
+#[tokio::test]
+async fn settings_models_section_carries_notes_fields() {
+    let (app, _pool, _tmp) = setup().await;
+    let (status, body) = send(&app, get("/api/settings")).await;
+    assert_eq!(status, StatusCode::OK);
+    // The notes controls live on the models section (config defaults; no override, no file on disk).
+    assert_eq!(body["models"]["notes_enabled"], false);
+    assert_eq!(body["models"]["notes_model"], "no-notes-model");
+    assert_eq!(body["models_info"]["default_notes_model"], "no-notes-model");
+    assert_eq!(body["models_info"]["notes_model_exists"], false);
+}
+
+#[tokio::test]
+async fn validates_notes_model_on_models_update() {
+    let (app, _pool, tmp) = setup().await;
+
+    // A real refine model so the refine field validates; the notes field is what we're exercising.
+    let refine = tmp.path().join("ggml-test.bin");
+    std::fs::write(&refine, [0x6c, 0x6d, 0x67, 0x67, 0, 0, 0, 0]).unwrap();
+    let refine_arg = serde_json::to_string(&refine.to_string_lossy()).unwrap();
+
+    // A non-GGUF notes model is rejected on the magic check (422, not a DB 500).
+    let not_gguf = tmp.path().join("not-a-model.gguf");
+    std::fs::write(&not_gguf, b"this is not gguf").unwrap();
+    let notes_arg = serde_json::to_string(&not_gguf.to_string_lossy()).unwrap();
+    let (status, _) = send(
+        &app,
+        put(
+            "/api/settings/models",
+            &format!(
+                "{{\"refine_model\":{refine_arg},\"notes_enabled\":true,\"notes_model\":{notes_arg}}}"
+            ),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+
+    // A file with the GGUF magic ("GGUF") is accepted and the toggle round-trips.
+    let gguf = tmp.path().join("qwen3.gguf");
+    std::fs::write(&gguf, [0x47, 0x47, 0x55, 0x46, 0, 0, 0, 0]).unwrap();
+    let gguf_arg = serde_json::to_string(&gguf.to_string_lossy()).unwrap();
+    let (status, body) = send(
+        &app,
+        put(
+            "/api/settings/models",
+            &format!(
+                "{{\"refine_model\":{refine_arg},\"notes_enabled\":true,\"notes_model\":{gguf_arg}}}"
+            ),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["notes_enabled"], true);
+    assert!(body["notes_model"].as_str().is_some_and(|s| !s.is_empty()));
+
+    // The override wins on the next read and the notes model resolves.
+    let (_status, body) = send(&app, get("/api/settings")).await;
+    assert_eq!(body["models"]["notes_enabled"], true);
+    assert_eq!(body["models_info"]["notes_model_exists"], true);
+}
+
+#[tokio::test]
+async fn generate_notes_is_404_then_unavailable() {
+    let (app, pool, _tmp) = setup().await;
+    let post = |id: Uuid| {
+        Request::builder()
+            .method("POST")
+            .uri(format!("/api/meetings/{id}/notes"))
+            .header("host", "127.0.0.1")
+            .header("authorization", format!("Bearer {TOKEN}"))
+            .body(Body::empty())
+            .unwrap()
+    };
+
+    // Unknown meeting is a 404 even without an engine wired.
+    let (status, _) = send(&app, post(Uuid::new_v4())).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    // A real meeting against `DisabledEngine` reports the notes step unavailable.
+    let meeting = queries::create_meeting(&pool, "M", "f", "", chrono::Utc::now())
+        .await
+        .unwrap();
+    let (status, _) = send(&app, post(meeting.id)).await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+}
+
+#[tokio::test]
+async fn read_notes_is_404_when_absent() {
+    let (app, pool, _tmp) = setup().await;
+    let meeting = queries::create_meeting(&pool, "M", "f", "", chrono::Utc::now())
+        .await
+        .unwrap();
+    let (status, _) = send(&app, get(&format!("/api/meetings/{}/notes", meeting.id))).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn models_catalog_lists_curated_models_and_download_starts_idle() {
+    let (app, _pool, _tmp) = setup().await;
+
+    let (status, body) = send(&app, get("/api/models/catalog")).await;
+    assert_eq!(status, StatusCode::OK);
+    let items = body["items"].as_array().unwrap();
+    assert!(items.len() >= 2, "catalog should list several models");
+    // Exactly one recommended default; none installed against a scratch models dir.
+    assert_eq!(items.iter().filter(|m| m["recommended"] == true).count(), 1);
+    assert!(items.iter().all(|m| m["installed"] == false));
+    assert!(body["models_dir"].as_str().is_some());
+
+    // No download has run yet.
+    let (status, body) = send(&app, get("/api/models/download")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["status"], "idle");
+    assert_eq!(body["downloaded_bytes"], 0);
+}
+
+#[tokio::test]
+async fn settings_tolerates_a_partial_models_section_from_a_download() {
+    // A completed download merges in only `notes_model` (no `refine_model`), leaving the stored
+    // `models` section partial. `GET /settings` must resolve each field against its default rather
+    // than failing to deserialize the section (which would 500 an otherwise-default install).
+    let (app, pool, _tmp) = setup().await;
+    queries::set_notes_model(&pool, "/models/qwen3.gguf")
+        .await
+        .unwrap();
+
+    let (status, body) = send(&app, get("/api/settings")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["models"]["notes_model"], "/models/qwen3.gguf");
+    // `refine_model` falls back to the config default, not an error.
+    assert_eq!(body["models"]["refine_model"], "no-model");
+}
+
+#[tokio::test]
+async fn download_unknown_model_is_404() {
+    let (app, _pool, _tmp) = setup().await;
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/models/download")
+        .header("host", "127.0.0.1")
+        .header("authorization", format!("Bearer {TOKEN}"))
+        .header("content-type", "application/json")
+        .body(Body::from(r#"{"id":"no-such-model"}"#))
+        .unwrap();
+    let (status, _) = send(&app, req).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
 }

@@ -4,7 +4,8 @@
 use utoipa::OpenApi;
 
 use crate::schema::{
-    AboutInfo, IdentityRead, MeetingCreate, MeetingRead, MeetingStatus, MeetingUpdate,
+    AboutInfo, CatalogEntry, DownloadRequest, DownloadState, DownloadStatus, IdentityRead,
+    MeetingCreate, MeetingNotesRead, MeetingRead, MeetingStatus, MeetingUpdate, ModelCatalog,
     ModelSettings, ModelsInfo, PermissionsInfo, RecordingSettings, ResyncEvent, SegmentRead,
     SettingsRead, SpeakerRead, SpeakerRename, SpeakerSettings, StatusEvent, StatusInfo,
     StorageInfo, StorageSettings, Stream, TranscriptEvent,
@@ -26,6 +27,11 @@ use crate::schema::{
         crate::routes::speakers::rename_speaker,
         crate::routes::speakers::rediarize,
         crate::routes::speakers::list_identities,
+        crate::routes::notes::generate_notes,
+        crate::routes::notes::read_notes,
+        crate::routes::models::catalog,
+        crate::routes::models::download_status,
+        crate::routes::models::start_download,
         crate::routes::settings::read_settings,
         crate::routes::settings::read_permissions,
         crate::routes::settings::update_recording,
@@ -52,6 +58,12 @@ use crate::schema::{
         StorageInfo,
         ModelSettings,
         ModelsInfo,
+        MeetingNotesRead,
+        CatalogEntry,
+        ModelCatalog,
+        DownloadStatus,
+        DownloadState,
+        DownloadRequest,
         AboutInfo,
         PermissionsInfo,
         StatusInfo,
@@ -62,6 +74,8 @@ use crate::schema::{
     tags(
         (name = "meetings", description = "Meeting lifecycle + transcript segments"),
         (name = "speakers", description = "Diarization clusters + cross-meeting identities"),
+        (name = "notes", description = "Local-LLM meeting summaries + action items"),
+        (name = "models", description = "Notes-model catalog + download manager"),
         (name = "settings", description = "Editable preferences + live permission status"),
     ),
 )]

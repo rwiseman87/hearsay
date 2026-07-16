@@ -65,6 +65,8 @@ async fn main() -> Result<(), BoxError> {
         settings.record,
         settings.auto_refine,
         settings.recognition_threshold,
+        settings.notes_enabled,
+        settings.notes_model.clone(),
     );
     // A prior hard exit (SIGKILL / panic / power loss) can strand a meeting row `recording` or
     // `refining` forever, with no session to finalize it. Nothing is active at startup, so sweep and
