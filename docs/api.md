@@ -5,7 +5,7 @@ with `make rust-serve`, which binds `127.0.0.1` on a free port and prints the UR
 per-session token:
 
 ```
-open: http://127.0.0.1:8137/?token=<token>
+open: http://127.0.0.1:<port>/?token=<token>
 ```
 
 The OpenAPI document is served at `/openapi.json` (it drives the TypeScript codegen).

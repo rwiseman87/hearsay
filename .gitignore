@@ -1,18 +1,11 @@
-# Python-generated files
-__pycache__/
-*.py[oc]
+# Build output (web bundle etc.)
 build/
 dist/
-wheels/
-*.egg-info
 
-# Virtual environments
-.venv
-
-# Tooling caches
-.mypy_cache/
-.ruff_cache/
-.pytest_cache/
+# Local secrets / env (AWS Bedrock creds etc.) — never commit
+.env
+.env.*
+!.env.example
 
 # Swift
 .build/
