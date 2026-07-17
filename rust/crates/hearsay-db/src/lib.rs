@@ -3,7 +3,7 @@
 //!
 //! Queries are runtime-checked
 //! (`sqlx::query`/`query_as`); the compile-time `query!` macros (offline `.sqlx` cache) are a
-//! future upgrade. See `docs/architecture-cross-platform.md`.
+//! future upgrade. See `docs/architecture.md`.
 
 pub mod models;
 pub mod queries;

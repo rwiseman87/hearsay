@@ -23,7 +23,7 @@ encoding_rs = { version = "0.8.35", optional = true }
 #
 # Per-OS GPU acceleration for the whisper refine is opt-in (default = portable CPU). The
 # installer/build selects the backend for the target: `--features metal` on macOS, `vulkan` on the
-# Intel Arc iGPU, `cuda` on discrete NVIDIA. Same code, per-OS accel (see docs/architecture-cross-platform.md).
+# Intel Arc iGPU, `cuda` on discrete NVIDIA. Same code, per-OS accel (see docs/architecture.md).
 [features]
 sherpa = ["dep:sherpa-onnx"]
 notes = ["dep:llama-cpp-2", "dep:encoding_rs"]

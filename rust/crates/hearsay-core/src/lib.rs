@@ -4,7 +4,7 @@
 //! TypeScript codegen.
 //!
 //! The application entrypoint. See
-//! `docs/architecture-cross-platform.md`.
+//! `docs/architecture.md`.
 
 pub mod config;
 pub mod error;
