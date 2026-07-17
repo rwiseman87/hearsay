@@ -362,6 +362,12 @@ pub struct ModelSettings {
     /// GGUF model path for the notes step; empty until one is downloaded or chosen.
     #[serde(default)]
     pub notes_model: String,
+    /// User-editable prompt template for the notes step (its `{transcript}` placeholder is filled
+    /// with the finalized transcript). Empty means "use the built-in default"
+    /// (`ModelsInfo::default_notes_prompt`). `#[serde(default)]` so a `models` row written before the
+    /// prompt existed still deserializes.
+    #[serde(default)]
+    pub notes_prompt: String,
 }
 
 /// Read-only model facts shown alongside the editable models section: the bundled/config defaults
@@ -372,6 +378,9 @@ pub struct ModelsInfo {
     pub refine_model_exists: bool,
     pub default_notes_model: String,
     pub notes_model_exists: bool,
+    /// The built-in default notes prompt template (the reset target + the effective value when the
+    /// editable `notes_prompt` is empty).
+    pub default_notes_prompt: String,
 }
 
 /// One downloadable notes model in the in-app catalog (the internal repo/file/sha are not exposed).

@@ -8,7 +8,7 @@
 
 use std::path::PathBuf;
 
-use hearsay_inference::summarize;
+use hearsay_inference::{summarize, DEFAULT_NOTES_PROMPT};
 
 const TRANSCRIPT: &str = "\
 Me: Thanks everyone for joining. We need to lock the Q3 launch date and decide who owns the migration.
@@ -26,7 +26,7 @@ fn summarizes_a_short_meeting() {
             .expect("set HEARSAY_NOTES_MODEL to an absolute .gguf path"),
     );
 
-    let notes = summarize(&model, TRANSCRIPT).expect("summarize failed");
+    let notes = summarize(&model, DEFAULT_NOTES_PROMPT, TRANSCRIPT).expect("summarize failed");
 
     println!("SUMMARY:\n{}\n", notes.summary);
     println!("ACTION ITEMS:");

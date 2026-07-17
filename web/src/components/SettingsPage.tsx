@@ -206,6 +206,7 @@ function ModelsPanel() {
   const info = settings.data?.models_info;
   const [path, setPath] = useState("");
   const [notesPath, setNotesPath] = useState("");
+  const [notesPrompt, setNotesPrompt] = useState("");
   const [selectedId, setSelectedId] = useState("");
 
   // Re-sync the inputs when the server values change; depend on the primitives, not the objects.
@@ -217,6 +218,15 @@ function ModelsPanel() {
   useEffect(() => {
     if (notesModel !== undefined) setNotesPath(notesModel);
   }, [notesModel]);
+  // Prefill the prompt editor with the effective template: the stored override, or the built-in
+  // default when it is unset (empty), so the box always shows what a generate would actually use.
+  const notesPromptValue = models?.notes_prompt;
+  const defaultNotesPrompt = info?.default_notes_prompt;
+  useEffect(() => {
+    if (notesPromptValue !== undefined) {
+      setNotesPrompt(notesPromptValue || defaultNotesPrompt || "");
+    }
+  }, [notesPromptValue, defaultNotesPrompt]);
 
   // Default the catalog dropdown to the recommended model once the catalog loads.
   const catalogItems = catalog.data?.items;
@@ -241,15 +251,20 @@ function ModelsPanel() {
   const busy = update.isPending || reset.isPending;
   const notesEnabled = models.notes_enabled ?? false;
   const storedNotesModel = models.notes_model ?? "";
+  const storedNotesPrompt = models.notes_prompt ?? "";
+  // The prompt in effect right now: the stored override, else the built-in default (an empty
+  // override means "use default"). Drives the Save/Reset disabled state.
+  const effectiveNotesPrompt = storedNotesPrompt || info.default_notes_prompt;
 
   // Every save PUTs the whole `models` section (the server full-replaces it), so carry the other
-  // fields through untouched — a refine-model save must not wipe a downloaded notes model, and a
-  // notes toggle must not disturb the refine model.
+  // fields through untouched — a refine-model save must not wipe a downloaded notes model, a notes
+  // toggle must not disturb the refine model, and none of them may drop a saved prompt.
   const commit = (patch: Partial<ModelSettings>) =>
     update.mutate({
       refine_model: models.refine_model,
       notes_enabled: notesEnabled,
       notes_model: storedNotesModel,
+      notes_prompt: storedNotesPrompt,
       ...patch,
     });
 
@@ -441,6 +456,44 @@ function ModelsPanel() {
             Absolute path to a downloaded <code>.gguf</code> instruct model. Clear it to unset.
           </span>
         </details>
+
+        <div className="settings__field">
+          <span className="settings__row-label">Notes prompt</span>
+          <textarea
+            className="settings__prompt"
+            value={notesPrompt}
+            spellCheck={false}
+            disabled={busy}
+            rows={8}
+            aria-label="Notes prompt template"
+            onChange={(event) => setNotesPrompt(event.target.value)}
+          />
+          <div className="settings__inline">
+            <button
+              type="button"
+              onClick={() => commit({ notes_prompt: notesPrompt })}
+              disabled={busy || notesPrompt === effectiveNotesPrompt}
+            >
+              {update.isPending ? "Saving…" : "Save"}
+            </button>
+            <button
+              type="button"
+              className="settings__link-btn"
+              disabled={busy || notesPrompt === info.default_notes_prompt}
+              onClick={() => {
+                setNotesPrompt(info.default_notes_prompt);
+                commit({ notes_prompt: "" });
+              }}
+            >
+              Reset to default
+            </button>
+          </div>
+          <span className="settings__row-hint muted">
+            The instruction sent to the summarization model. Put <code>{"{transcript}"}</code> where
+            the meeting transcript should go (it is appended if you omit it). Applies to your next
+            generate.
+          </span>
+        </div>
 
         {update.isError ? (
           <p className="settings__error" role="alert">

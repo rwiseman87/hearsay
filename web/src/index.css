@@ -710,6 +710,30 @@ button:not(:disabled):hover {
   gap: 6px;
 }
 
+/* The resizable, scrolling notes content region; its height is driven by --notes-height (a drag on
+   .notes__resizer, persisted in localStorage). */
+.notes__scroll {
+  height: var(--notes-height, 200px);
+  min-height: 0;
+  overflow-y: auto;
+}
+
+/* Horizontal drag handle below the notes body — the vertical analogue of .app__resizer. Transparent
+   until hovered/focused, then it lights up as the grab seam. */
+.notes__resizer {
+  height: 6px;
+  cursor: row-resize;
+  background: transparent;
+  touch-action: none;
+}
+
+.notes__resizer:hover,
+.notes__resizer:active,
+.notes__resizer:focus-visible {
+  background: var(--accent);
+  outline: none;
+}
+
 .notes__subhead {
   margin: 6px 0 0;
   font-size: 12px;
@@ -882,6 +906,16 @@ button:not(:disabled):hover {
   flex-direction: column;
   gap: 6px;
   margin-top: 18px;
+}
+
+.settings__prompt {
+  width: 100%;
+  min-height: 120px;
+  padding: 8px;
+  font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 12px;
+  line-height: 1.5;
+  resize: vertical;
 }
 
 .settings__slider {

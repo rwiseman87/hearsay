@@ -617,6 +617,13 @@ export interface components {
             notes_enabled?: boolean;
             /** @description GGUF model path for the notes step; empty until one is downloaded or chosen. */
             notes_model?: string;
+            /**
+             * @description User-editable prompt template for the notes step (its `{transcript}` placeholder is filled
+             *     with the finalized transcript). Empty means "use the built-in default"
+             *     (`ModelsInfo::default_notes_prompt`). `#[serde(default)]` so a `models` row written before the
+             *     prompt existed still deserializes.
+             */
+            notes_prompt?: string;
             refine_model: string;
         };
         /**
@@ -625,6 +632,11 @@ export interface components {
          */
         ModelsInfo: {
             default_notes_model: string;
+            /**
+             * @description The built-in default notes prompt template (the reset target + the effective value when the
+             *     editable `notes_prompt` is empty).
+             */
+            default_notes_prompt: string;
             default_refine_model: string;
             notes_model_exists: boolean;
             refine_model_exists: boolean;

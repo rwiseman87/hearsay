@@ -230,6 +230,10 @@ struct LlamaSummarizer {
     /// Bundled config default; the effective model is the `models` preference's `notes_model` else
     /// this, resolved from the DB at each run so a Models-panel change or completed download applies.
     default_model: PathBuf,
+    /// Config default prompt template; the effective template is the `models` preference's
+    /// `notes_prompt` else this, resolved from the DB at each run so a Models-panel edit applies with
+    /// no restart.
+    default_prompt: String,
 }
 
 #[cfg(feature = "notes")]
@@ -249,13 +253,18 @@ impl hearsay_orchestrator::Summarizer for LlamaSummarizer {
                 model.display()
             )));
         }
+        let template =
+            hearsay_db::queries::effective_notes_prompt(&self.pool, &self.default_prompt)
+                .await
+                .map_err(|e| OrchestratorError::Backend(format!("resolve notes prompt: {e}")))?;
         let transcript = transcript.to_string();
         // llama.cpp is blocking — run off the async runtime, like the whisper refine.
-        let notes =
-            tokio::task::spawn_blocking(move || hearsay_inference::summarize(&model, &transcript))
-                .await
-                .map_err(|e| OrchestratorError::Backend(format!("notes task panicked: {e}")))?
-                .map_err(|e| OrchestratorError::Backend(format!("summarize failed: {e}")))?;
+        let notes = tokio::task::spawn_blocking(move || {
+            hearsay_inference::summarize(&model, &template, &transcript)
+        })
+        .await
+        .map_err(|e| OrchestratorError::Backend(format!("notes task panicked: {e}")))?
+        .map_err(|e| OrchestratorError::Backend(format!("summarize failed: {e}")))?;
         Ok(hearsay_orchestrator::NotesResult {
             summary: notes.summary,
             action_items: notes.action_items,
@@ -282,6 +291,7 @@ pub fn build_engine(
     recognition_threshold: f64,
     notes_enabled: bool,
     notes_model: PathBuf,
+    notes_prompt: String,
 ) -> Arc<dyn LiveEngine> {
     let backend = Arc::new(MacBackend::new(helper_path.clone(), synthetic));
     // Spawn the first sidecar pair now so its models start loading before the first meeting instead
@@ -299,6 +309,10 @@ pub fn build_engine(
     let notes_pool = pool.clone();
     #[cfg(feature = "notes")]
     let notes_default_model = notes_model.clone();
+    // The prompt template is consumed only by the feature-gated summarizer below; discard it without
+    // the feature so the parameter is not flagged unused under `-D warnings`.
+    #[cfg(not(feature = "notes"))]
+    let _ = notes_prompt;
 
     let orchestrator = Orchestrator::new(pool.clone(), output_dir, backend)
         .with_defaults(
@@ -320,6 +334,7 @@ pub fn build_engine(
     let orchestrator = orchestrator.with_summarizer(Arc::new(LlamaSummarizer {
         pool: notes_pool,
         default_model: notes_default_model,
+        default_prompt: notes_prompt,
     }));
     let orchestrator = orchestrator.into_arc();
     // Start the background warm ticker: it re-warms the sidecar pool while idle (off the polled

@@ -24,6 +24,11 @@ use crate::schema::{
 };
 use crate::state::AppState;
 
+/// Upper bound on the editable notes prompt template (characters). Bounds the tokenized prompt at
+/// the boundary (the transcript itself is separately capped in the prompt builder) so an over-large
+/// paste is a 422, never a runaway llama.cpp context.
+const MAX_NOTES_PROMPT_LEN: usize = 8_000;
+
 /// Routes served under the `/api` prefix (token-gated by the caller).
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -107,6 +112,7 @@ async fn resolve_models(state: &AppState) -> ApiResult<ModelSettings> {
             .unwrap_or(state.settings.notes_enabled),
         notes_model: field("notes_model")
             .unwrap_or_else(|| state.settings.notes_model.to_string_lossy().to_string()),
+        notes_prompt: field("notes_prompt").unwrap_or_else(|| state.settings.notes_prompt.clone()),
     })
 }
 
@@ -118,6 +124,7 @@ fn models_info(state: &AppState, effective: &ModelSettings) -> ModelsInfo {
         // An empty notes_model is "unset", not "missing file" — report it as not-resolving.
         notes_model_exists: !effective.notes_model.is_empty()
             && Path::new(&effective.notes_model).is_file(),
+        default_notes_prompt: state.settings.notes_prompt.clone(),
     }
 }
 
@@ -281,10 +288,20 @@ pub(crate) async fn update_models(
             .map_err(|e| ApiError::Internal(format!("notes_model validation panicked: {e}")))??
     };
 
+    // The prompt template is optional: empty means "use the built-in default". Trim and length-cap
+    // it at the boundary so an over-large paste is a 422, never a runaway prompt at generate time.
+    let notes_prompt = body.notes_prompt.trim().to_string();
+    if notes_prompt.chars().count() > MAX_NOTES_PROMPT_LEN {
+        return Err(ApiError::Unprocessable(format!(
+            "notes_prompt exceeds {MAX_NOTES_PROMPT_LEN} characters"
+        )));
+    }
+
     let stored = ModelSettings {
         refine_model,
         notes_enabled: body.notes_enabled,
         notes_model,
+        notes_prompt,
     };
     store_section(&state, SECTION_MODELS, &stored).await?;
     Ok(Json(stored))

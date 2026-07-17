@@ -52,6 +52,11 @@ pub struct Settings {
     /// user downloads or points at one). The `models` section overrides it; read fresh at each
     /// stop/generate so a Models-panel change or a completed download applies with no restart.
     pub notes_model: PathBuf,
+    /// Default prompt template for the notes step (`HEARSAY_NOTES_PROMPT`, default the built-in
+    /// [`hearsay_backends::DEFAULT_NOTES_PROMPT`]). The template's `{transcript}` placeholder is
+    /// filled with the finalized transcript. The `models` section overrides it per install; read
+    /// fresh at each generate so a Models-panel edit applies with no restart.
+    pub notes_prompt: String,
     /// Root the download manager writes models into and references them from
     /// (`HEARSAY_MODELS_DIR`, default `outputs/models`; the desktop shell points it at a persistent
     /// app-data dir so downloaded models survive reinstall).
@@ -220,6 +225,10 @@ impl Settings {
             recognition_threshold,
             notes_enabled,
             notes_model: PathBuf::from(env_or("HEARSAY_NOTES_MODEL", "")),
+            notes_prompt: env_or(
+                "HEARSAY_NOTES_PROMPT",
+                hearsay_backends::DEFAULT_NOTES_PROMPT,
+            ),
             models_dir: PathBuf::from(env_or("HEARSAY_MODELS_DIR", "outputs/models")),
             handshake_path: env_path("HEARSAY_HANDSHAKE_PATH"),
             fluid_models_dir: env_path("HEARSAY_FLUID_MODELS_DIR"),

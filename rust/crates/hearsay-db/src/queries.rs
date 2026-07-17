@@ -1216,6 +1216,24 @@ pub async fn effective_notes(
     Ok((enabled, model))
 }
 
+/// Effective notes prompt template from the same `models` section: the stored `notes_prompt`
+/// override, else `default`. An empty/whitespace stored value is treated as unset (fall back to the
+/// default), mirroring [`effective_notes`]'s handling of an empty `notes_model`. Read fresh at each
+/// generate so a Settings change applies with no restart.
+pub async fn effective_notes_prompt(
+    pool: &SqlitePool,
+    default: &str,
+) -> Result<String, sqlx::Error> {
+    Ok(section_object(pool, SECTION_MODELS)
+        .await?
+        .and_then(|o| {
+            o.get("notes_prompt")
+                .and_then(|v| v.as_str().map(str::to_string))
+        })
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| default.to_string()))
+}
+
 /// Effective `(auto_refine, recognition_threshold)`: the stored `speakers` override per field, else
 /// the matching default. Each field falls back independently, so a partial/corrupt row still yields
 /// usable values.

@@ -38,6 +38,7 @@ fn test_settings(output_dir: PathBuf, web_dir: PathBuf) -> Settings {
         recognition_threshold: 0.6,
         notes_enabled: false,
         notes_model: PathBuf::from("no-notes-model"),
+        notes_prompt: "Summarize:\n{transcript}".into(),
         models_dir: PathBuf::from("no-models-dir"),
         handshake_path: None,
         fluid_models_dir: None,
@@ -1005,6 +1006,12 @@ async fn settings_models_section_carries_notes_fields() {
     assert_eq!(body["models"]["notes_model"], "no-notes-model");
     assert_eq!(body["models_info"]["default_notes_model"], "no-notes-model");
     assert_eq!(body["models_info"]["notes_model_exists"], false);
+    // With no stored override, the effective prompt is the config default (also the reset target).
+    assert_eq!(body["models"]["notes_prompt"], "Summarize:\n{transcript}");
+    assert_eq!(
+        body["models_info"]["default_notes_prompt"],
+        "Summarize:\n{transcript}"
+    );
 }
 
 #[tokio::test]
@@ -1054,6 +1061,40 @@ async fn validates_notes_model_on_models_update() {
     let (_status, body) = send(&app, get("/api/settings")).await;
     assert_eq!(body["models"]["notes_enabled"], true);
     assert_eq!(body["models_info"]["notes_model_exists"], true);
+}
+
+#[tokio::test]
+async fn notes_prompt_round_trips_and_caps_length() {
+    let (app, _pool, _tmp) = setup().await;
+
+    // A custom prompt is stored and wins on the next read. `refine_model` echoes the current config
+    // default (equal to current, so no file is needed to pass validation); notes_model stays empty.
+    let (status, body) = send(
+        &app,
+        put(
+            "/api/settings/models",
+            "{\"refine_model\":\"no-model\",\"notes_enabled\":false,\"notes_model\":\"\",\"notes_prompt\":\"Recap:\\n{transcript}\"}",
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["notes_prompt"], "Recap:\n{transcript}");
+    let (_status, body) = send(&app, get("/api/settings")).await;
+    assert_eq!(body["models"]["notes_prompt"], "Recap:\n{transcript}");
+
+    // An over-long prompt is a 422 at the boundary, never a runaway prompt at generate time.
+    let huge = "x".repeat(8_001);
+    let (status, _) = send(
+        &app,
+        put(
+            "/api/settings/models",
+            &format!(
+                "{{\"refine_model\":\"no-model\",\"notes_enabled\":false,\"notes_model\":\"\",\"notes_prompt\":\"{huge}\"}}"
+            ),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
 }
 
 #[tokio::test]

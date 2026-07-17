@@ -18,6 +18,9 @@ pub mod reconcile;
 mod streaming_transcriber;
 
 pub use hearsay_capture::{probe_permissions, PermissionsSnapshot};
+// The default notes prompt lives with the prompt builder in `hearsay-inference`; re-export it so
+// `hearsay-core` (which reaches inference only through this crate) can seed the config default.
+pub use hearsay_inference::DEFAULT_NOTES_PROMPT;
 pub use mac::build_engine;
 #[cfg(feature = "sherpa")]
 pub use streaming_transcriber::SherpaTranscriber;

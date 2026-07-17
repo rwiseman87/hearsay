@@ -18,26 +18,36 @@ pub struct MeetingNotes {
 /// chunking is the documented follow-up).
 const TRANSCRIPT_CHAR_BUDGET: usize = 48_000;
 
-/// Build the instruct prompt (ChatML, the default Qwen3 template) asking for a summary then a
-/// bulleted action-item list in a delimited format [`parse_notes`] can split reliably. An
-/// over-budget transcript is truncated at a char boundary with a marker.
-fn build_prompt(transcript: &str) -> String {
+/// The default, user-editable notes prompt: the full instruction body with a `{transcript}`
+/// placeholder marking where the meeting transcript is injected. It keeps the delimited
+/// `SUMMARY:` / `ACTION ITEMS:` format [`parse_notes`] splits on, so the shipped default reproduces
+/// today's behavior; a user who edits the format away just gets a plain summary (parsing degrades
+/// gracefully). The `Settings > Models` panel overrides it per install. The ChatML turn markers are
+/// added by [`build_prompt`] and are deliberately not part of the editable template.
+pub const DEFAULT_NOTES_PROMPT: &str = "You are a meeting assistant. Read the transcript and \
+     produce a concise summary and a list of concrete action items.\n\n\
+     Meeting transcript:\n\n\
+     {transcript}\n\n\
+     Reply in exactly this format:\n\
+     SUMMARY:\n\
+     <2 to 4 sentences>\n\
+     ACTION ITEMS:\n\
+     - <action item>\n\
+     - <action item>\n\
+     Write \"- none\" under ACTION ITEMS if there are none.";
+
+/// Build the instruct prompt from `template`: substitute its `{transcript}` placeholder with the
+/// (truncated) `transcript`, then wrap the result in the ChatML user/assistant turns (the default
+/// Qwen3 template). A template with no `{transcript}` placeholder gets the transcript appended so it
+/// is never dropped. An over-budget transcript is truncated at a char boundary with a marker.
+fn build_prompt(template: &str, transcript: &str) -> String {
     let transcript = truncate_on_char_boundary(transcript.trim(), TRANSCRIPT_CHAR_BUDGET);
-    format!(
-        "<|im_start|>system\n\
-         You are a meeting assistant. Read the transcript and produce a concise summary and a list \
-         of concrete action items.<|im_end|>\n\
-         <|im_start|>user\n\
-         Meeting transcript:\n\n{transcript}\n\n\
-         Reply in exactly this format:\n\
-         SUMMARY:\n\
-         <2 to 4 sentences>\n\
-         ACTION ITEMS:\n\
-         - <action item>\n\
-         - <action item>\n\
-         Write \"- none\" under ACTION ITEMS if there are none.<|im_end|>\n\
-         <|im_start|>assistant\n"
-    )
+    let body = if template.contains("{transcript}") {
+        template.replace("{transcript}", &transcript)
+    } else {
+        format!("{template}\n\n{transcript}")
+    };
+    format!("<|im_start|>user\n{body}<|im_end|>\n<|im_start|>assistant\n")
 }
 
 /// Truncate `s` to at most `max_bytes`, backing up to a UTF-8 char boundary, appending a marker when
@@ -188,16 +198,21 @@ mod llama {
         Ok(BACKEND.get().expect("backend just set"))
     }
 
-    /// Summarize `transcript` into [`MeetingNotes`] with the GGUF model at `model`: load it, run one
-    /// instruct prompt (greedy), and parse the reply. Loads the model per call and drops it on return
-    /// so the ~GBs are resident only during generation. Blocking (llama.cpp) — call via
-    /// `spawn_blocking`.
-    pub fn summarize(model: &Path, transcript: &str) -> Result<MeetingNotes, InferenceError> {
+    /// Summarize `transcript` into [`MeetingNotes`] with the GGUF model at `model`, using the
+    /// user-editable `template` (its `{transcript}` placeholder is filled with the transcript): load
+    /// the model, run one instruct prompt (greedy), and parse the reply. Loads the model per call and
+    /// drops it on return so the ~GBs are resident only during generation. Blocking (llama.cpp) —
+    /// call via `spawn_blocking`.
+    pub fn summarize(
+        model: &Path,
+        template: &str,
+        transcript: &str,
+    ) -> Result<MeetingNotes, InferenceError> {
         let backend = backend()?;
         let llama = LlamaModel::load_from_file(backend, model, &LlamaModelParams::default())
             .map_err(|e| err("load notes model", e))?;
 
-        let prompt = build_prompt(transcript);
+        let prompt = build_prompt(template, transcript);
         let tokens = llama
             .str_to_token(&prompt, AddBos::Always)
             .map_err(|e| err("tokenize prompt", e))?;
@@ -301,15 +316,32 @@ mod tests {
     #[test]
     fn build_prompt_truncates_an_over_budget_transcript() {
         let long = "word ".repeat(20_000); // ~100k chars
-        let prompt = build_prompt(&long);
+        let prompt = build_prompt(DEFAULT_NOTES_PROMPT, &long);
         assert!(prompt.contains("[transcript truncated]"));
         assert!(prompt.len() < long.len());
     }
 
     #[test]
     fn build_prompt_keeps_a_short_transcript_verbatim() {
-        let prompt = build_prompt("Alice: hi\nBob: hello");
+        let prompt = build_prompt(DEFAULT_NOTES_PROMPT, "Alice: hi\nBob: hello");
         assert!(prompt.contains("Alice: hi"));
         assert!(!prompt.contains("[transcript truncated]"));
+    }
+
+    #[test]
+    fn build_prompt_substitutes_the_transcript_placeholder() {
+        let prompt = build_prompt("Summarize this:\n{transcript}\nThanks.", "Alice: hi");
+        assert!(prompt.contains("Summarize this:\nAlice: hi\nThanks."));
+        assert!(!prompt.contains("{transcript}"));
+        // The ChatML scaffolding is added by build_prompt, not the template.
+        assert!(prompt.starts_with("<|im_start|>user\n"));
+        assert!(prompt.ends_with("<|im_start|>assistant\n"));
+    }
+
+    #[test]
+    fn build_prompt_appends_transcript_when_placeholder_missing() {
+        let prompt = build_prompt("Just summarize the meeting.", "Alice: hi\nBob: hello");
+        assert!(prompt.contains("Just summarize the meeting."));
+        assert!(prompt.contains("Alice: hi\nBob: hello"));
     }
 }

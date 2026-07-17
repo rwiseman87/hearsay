@@ -1665,6 +1665,10 @@
             "type": "string",
             "description": "GGUF model path for the notes step; empty until one is downloaded or chosen."
           },
+          "notes_prompt": {
+            "type": "string",
+            "description": "User-editable prompt template for the notes step (its `{transcript}` placeholder is filled\nwith the finalized transcript). Empty means \"use the built-in default\"\n(`ModelsInfo::default_notes_prompt`). `#[serde(default)]` so a `models` row written before the\nprompt existed still deserializes."
+          },
           "refine_model": {
             "type": "string"
           }
@@ -1677,11 +1681,16 @@
           "default_refine_model",
           "refine_model_exists",
           "default_notes_model",
-          "notes_model_exists"
+          "notes_model_exists",
+          "default_notes_prompt"
         ],
         "properties": {
           "default_notes_model": {
             "type": "string"
+          },
+          "default_notes_prompt": {
+            "type": "string",
+            "description": "The built-in default notes prompt template (the reset target + the effective value when the\neditable `notes_prompt` is empty)."
           },
           "default_refine_model": {
             "type": "string"
