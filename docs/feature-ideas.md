@@ -1,15 +1,9 @@
-# Features ideas
+# Feature ideas
 
-- System device choices
-- Additional model choices
-- Action item / Summarization
-    - Would still need a small model that could run on a local machine with min specs
-    - Should be toggleable
-- Meeting folders
-- Data deletion
-    - Should have the option to actually delete the data and/or enhance messaging around how to delete
-- Editing transcript/notes
-    - How should persistence be handled?
-- Exports
-- Echo detection/fixes
-- Search
+Backlog of unbuilt ideas. Items are removed as they ship — summarization/notes, meeting folders,
+data deletion, transcript/notes editing, and search have all landed and been dropped from this list.
+
+- System device choices (pick input/output devices)
+- Additional model choices (live ASR / diarization variants)
+- Exports (transcript / notes to other formats)
+- Echo detection / fixes

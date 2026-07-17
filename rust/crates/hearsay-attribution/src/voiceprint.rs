@@ -2,8 +2,7 @@
 //!
 //! A centroid is a fixed-length float vector stored as little-endian float32 bytes on a cluster
 //! (`clusters.centroid`); once that cluster is named and locked it becomes a recognizable
-//! voiceprint, so a later meeting can match a new speaker to it by cosine similarity. Port of
-//! `hearsay.diarization.voiceprint`.
+//! voiceprint, so a later meeting can match a new speaker to it by cosine similarity.
 
 /// Serialize a centroid as little-endian float32 bytes for `clusters.centroid`.
 pub fn centroid_to_bytes(centroid: &[f32]) -> Vec<u8> {
@@ -21,7 +20,7 @@ pub fn centroid_from_bytes(data: &[u8]) -> Vec<f32> {
         .collect()
 }
 
-/// Cosine similarity of two vectors, computed in f64 (matches the Python path).
+/// Cosine similarity of two vectors, computed in f64.
 ///
 /// Returns `0.0` if the vectors' lengths differ (e.g. a model change) or either vector has zero
 /// norm, so a length mismatch is a safe non-match in every build profile rather than a garbage
@@ -54,7 +53,7 @@ pub fn cosine(a: &[f32], b: &[f32]) -> f64 {
 /// Name of the known voiceprint most similar to `centroid` with cosine `>= threshold`.
 ///
 /// `None` if nothing clears the threshold. Voiceprints of a different length (a model change) are
-/// skipped rather than compared. On ties the earliest-listed match wins (matches the Python path).
+/// skipped rather than compared. On ties the earliest-listed match wins.
 pub fn match_identity<'a>(
     centroid: &[f32],
     known: &'a [(String, Vec<f32>)],

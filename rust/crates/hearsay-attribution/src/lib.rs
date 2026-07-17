@@ -1,9 +1,7 @@
 //! Speaker attribution — pure logic (no ML, no I/O), unit-tested in isolation.
 //!
-//! Rust port of the pure attribution logic in the Python core: cross-meeting voiceprint matching
-//! (`hearsay.diarization.voiceprint`) and the diarization mapping helpers `order_speakers` /
-//! `assign_segment_speaker` (`hearsay.diarization.offline`). See
-//! `docs/architecture-cross-platform.md`.
+//! Cross-meeting voiceprint matching plus the diarization mapping helpers `order_speakers` /
+//! `assign_segment_speaker`. See `docs/architecture-cross-platform.md`.
 
 pub mod mapping;
 pub mod voiceprint;

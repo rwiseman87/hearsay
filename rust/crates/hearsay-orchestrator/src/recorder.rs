@@ -1,5 +1,4 @@
-//! One timeline-accurate stereo `audio.wav` per meeting, written incrementally. Port of
-//! `src/hearsay/transcript/recorder.py`.
+//! One timeline-accurate stereo `audio.wav` per meeting, written incrementally.
 //!
 //! Fed the pipeline's PCM chunks (float in [-1, 1], stamped with a meeting-relative `t0_s` on the
 //! shared `host_ts` clock), it places Me on the left channel and Them on the right by meeting time,

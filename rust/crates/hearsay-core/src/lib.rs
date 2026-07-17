@@ -3,7 +3,7 @@
 //! `hearsay-orchestrator`), serves the React UI bundle, and exposes an OpenAPI document for the
 //! TypeScript codegen.
 //!
-//! Port of `src/hearsay/api/` and the application entrypoint. See
+//! The application entrypoint. See
 //! `docs/architecture-cross-platform.md`.
 
 pub mod config;

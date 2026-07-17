@@ -60,7 +60,7 @@ impl FrameType {
         }
     }
 
-    /// JSON/DB string form (matches the Python `StrEnum` value).
+    /// JSON/DB string form.
     pub fn as_str(self) -> &'static str {
         match self {
             FrameType::Audio => "audio",
@@ -96,7 +96,7 @@ impl Stream {
         }
     }
 
-    /// JSON/DB string form (matches the Python `StrEnum` value).
+    /// JSON/DB string form.
     pub fn as_str(self) -> &'static str {
         match self {
             Stream::Me => "me",
@@ -138,7 +138,7 @@ impl SampleFormat {
         }
     }
 
-    /// JSON/DB string form (matches the Python `StrEnum` value).
+    /// JSON/DB string form.
     pub fn as_str(self) -> &'static str {
         match self {
             SampleFormat::Int16 => "int16",

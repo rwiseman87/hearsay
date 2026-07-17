@@ -1,7 +1,7 @@
-//! ORM row types + enums for the SQLite schema. Port of `src/hearsay/models/`.
+//! ORM row types + enums for the SQLite schema.
 //!
 //! Every table has a UUID primary key and `created_at` / `updated_at` timestamps. Enums are
-//! stored as their lowercase string values (matching the Python `StrEnum` serialization).
+//! stored as their lowercase string values.
 
 use std::path::{Path, PathBuf};
 
@@ -119,7 +119,7 @@ pub struct Cluster {
 
 /// A user-settings overlay row: one settings section stored as a JSON object string. The settings
 /// service resolves the effective value as this stored override when present, else the config
-/// default. Port of `src/hearsay/models/preference.py`.
+/// default.
 #[derive(Debug, Clone, PartialEq, Eq, FromRow)]
 pub struct Preference {
     pub id: Uuid,

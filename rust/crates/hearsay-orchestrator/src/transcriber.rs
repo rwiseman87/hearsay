@@ -1,9 +1,9 @@
 //! The production [`Transcriber`]: a `tokio::process` sidecar spoken to over stdio, byte-for-byte
-//! with the Swift live sidecars' stdin contract (`hearsay-{live,me,asr}` via `SidecarIO`). Feed
+//! with the Swift live sidecars' stdin contract (`hearsay-{live,me}` via `SidecarIO`). Feed
 //! frames are `<u32 LE sample count><f32 LE samples>` on stdin; the sidecar emits one NDJSON
 //! [`SidecarSegment`] per line on stdout.
 //!
-//! Used once `hearsay-inference` ships the sidecar binaries. The framing + parsing are unit-tested
+//! Used in production to drive the Swift live sidecars (shipped from the `helper/` package). The framing + parsing are unit-tested
 //! here; end-to-end spawning is exercised via a real sidecar (or the scripted fake in
 //! [`crate::testing`]).
 

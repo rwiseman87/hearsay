@@ -1,4 +1,4 @@
-//! Speakers (diarization clusters) + identities. Port of `src/hearsay/api/speakers.py`.
+//! Speakers (diarization clusters) + identities.
 
 use axum::extract::State;
 use axum::routing::{get, put};

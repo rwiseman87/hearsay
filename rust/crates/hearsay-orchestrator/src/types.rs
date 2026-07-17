@@ -1,6 +1,5 @@
 //! Value types shared across the orchestrator: audio chunks from capture and the transcript
-//! segments a sidecar emits. Ports of `hearsay.helper.media_channel.AudioChunk` and the sidecars'
-//! NDJSON segment shape (`hearsay.transcript.live_base`).
+//! segments a sidecar emits.
 
 use serde::{Deserialize, Serialize};
 
@@ -24,7 +23,7 @@ pub struct CaptureChunk {
 }
 
 /// Whether a sidecar segment is an in-progress partial (streamed to the UI only) or a finalized
-/// turn (also persisted + appended). Serializes lowercase to match the Python `Literal`.
+/// turn (also persisted + appended). Serializes lowercase.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum SegmentKind {

@@ -1,12 +1,12 @@
 import AVFoundation
 import Foundation
 
-/// Shared stdio plumbing for the streaming sidecars (`hearsay-live`, `hearsay-me`, `hearsay-asr`).
+/// Shared stdio plumbing for the streaming sidecars (`hearsay-live`, `hearsay-me`).
 ///
 /// Each sidecar reads length-prefixed PCM frames on stdin and writes NDJSON on stdout; this target
 /// holds the framing, the JSON emit (with the dead-core SIGPIPE handling), the stderr logger, and the
 /// PCM-buffer builder so they live in one place — in particular the stdin length cap, which must be
-/// applied identically by all three. Deliberately dependency-free (only Foundation + AVFoundation, both
+/// applied identically by both. Deliberately dependency-free (only Foundation + AVFoundation, both
 /// system frameworks) so linking it never pulls FluidAudio/CoreML into a lean binary.
 
 /// Upper bound on a single stdin frame's sample count. A desynced stream can present a garbage 4-byte

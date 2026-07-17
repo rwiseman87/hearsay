@@ -1,5 +1,10 @@
 # Hearsay — Design Review & Architecture (UML)
 
+> **Superseded / historical (2026-07).** Accurate at its writing, but it predates the
+> `hearsay-backends` refactor and the notes / folders / search / editing features. Kept for
+> provenance; for current state see the code + the 2026-07-17 pre-remote review & cleanup pass.
+> Several findings here (e.g. A1 seam bypass, B1 sherpa-in-binary, B3 `order_speakers`) are fixed.
+
 Method: this document is derived from the **source code** (crate manifests, trait definitions,
 call edges, SQL schema, socket wiring, Swift capture code), not from the other design docs — where
 the two diverge, the code is authoritative. Reviewed at `main` (post `feat/packaging-dmg-uninstall`

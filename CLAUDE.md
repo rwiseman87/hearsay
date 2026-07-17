@@ -19,11 +19,11 @@ Multi-process, local-only (Apple Silicon, macOS 14.4+; Windows is the remaining 
   name hints over IPC.
 - **Swift sidecars** (`helper/`, FluidAudio on the Apple Neural Engine) — the audio-AI: `hearsay-live` (live
   Them diarization + Parakeet ASR), `hearsay-me` (live Me VAD + Parakeet), `hearsay-diarize` (post-meeting
-  refine), `hearsay-asr` (Parakeet, used by the refine). The core spawns + feeds each over stdio.
+  refine). The core spawns + feeds each over stdio.
 - **Rust core** (`rust/crates/`) — orchestration (spawns the helper + sidecars, routes PCM), speaker
-  attribution (clusters + cross-meeting voiceprints + manual labels), the offline refine (whisper), LLM
-  notes (later phase), Markdown, persistence, and a loopback axum HTTP + WebSocket API. The whisper
-  offline ASR is the only ML it runs in-process.
+  attribution (clusters + cross-meeting voiceprints + manual labels), the offline refine (whisper),
+  optional local-LLM notes (llama.cpp, off by default), Markdown, persistence, and a loopback axum HTTP +
+  WebSocket API. The whisper refine and the optional notes LLM are the only ML it runs in-process.
 - **Web UI** (`web/`) — typed React frontend served by the core, shown in a Tauri WKWebView window. The
   **Tauri shell** (`web/src-tauri/`) bundles + spawns the core and the Swift sidecars.
 
@@ -36,13 +36,14 @@ control). Capture is device-local by design and cannot be centralized.
 rust/crates/
   hearsay-core/         axum HTTP+WS API: config, routes/ (thin), schema (utoipa->TS), security, state; the app binary
   hearsay-db/           SQLite via SQLx: models, queries, migrations/ (forward-only .sql)
-  hearsay-orchestrator/ capture routing + Transcriber/AudioSource seams + pipeline + markdown/recorder (implements LiveEngine)
+  hearsay-orchestrator/ capture routing + Transcriber/AudioSource seams + pipeline + markdown/recorder + notes seam (implements LiveEngine)
   hearsay-engine/       LiveEngine trait seam + DisabledEngine placeholder (no dependency cycle)
+  hearsay-backends/     per-OS backend wiring: MacBackend/MacRefiner + build_engine (rediarize + notes)
   hearsay-capture/      AudioSource trait + SwiftHelperSource (spawns hearsay-helper) + the TCC permissions probe
-  hearsay-inference/    whisper offline ASR + the refine
+  hearsay-inference/    whisper offline ASR + the refine + optional local-LLM notes (llama-cpp-2)
   hearsay-attribution/  speaker clustering / voiceprint match / segment-speaker assignment (pure logic)
   hearsay-ipc/          binary frame codec + NDJSON control codec (source of truth for the IPC contract) + gen_fixtures bin
-helper/                 SwiftPM: hearsay-{helper,live,me,diarize,asr} executables + HearsayIPC library
+helper/                 SwiftPM: hearsay-{helper,live,me,diarize} executables + HearsayIPC + SidecarIO libraries
 web/                    React + TS frontend; web/src-tauri/ is the Tauri desktop shell
 shared/protocol/ipc.md  IPC contract (source of truth)   ·   shared/fixtures/   golden frames (Rust-generated)
 ```
@@ -82,7 +83,7 @@ shared/protocol/ipc.md  IPC contract (source of truth)   ·   shared/fixtures/  
 ## Swift Helper
 
 - SwiftPM package in `helper/`: the `hearsay-helper` capture executable + the FluidAudio/ANE sidecars
-  (`hearsay-{live,me,diarize,asr}`) + the `HearsayIPC` library. Deployment macOS 14.4. `make swift-build`
+  (`hearsay-{live,me,diarize}`) + the `HearsayIPC` + `SidecarIO` libraries. Deployment macOS 14.4. `make swift-build`
   builds explicit products (a bare `swift build` pulls in FluidAudio's broken CLI target).
 - All TCC-guarded native work lives in the capture helper (mic, audio capture, screen recording,
   accessibility, calendar); it stays lean (no FluidAudio). The heavy CoreML dep is isolated in the sidecar

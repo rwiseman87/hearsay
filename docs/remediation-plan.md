@@ -1,5 +1,9 @@
 # Architecture-review remediation plan
 
+> **Superseded / historical.** WP1-WP7 landed; WP8-WP10 were substantially addressed afterward
+> (the `hearsay-backends` extraction, 422 conformance, data-integrity + concurrency hardening).
+> Kept for provenance; current state lives in the code + the 2026-07-17 pre-remote cleanup pass.
+
 Source: full-repo architecture/engineering review, 2026-07-14 (Rust crates, Swift helper package,
 web/Tauri shell, build/CI). Every item below was verified against code at review time; references
 are `file:line` on branch `feat/packaging-dmg-uninstall`. Line numbers will drift — the finding

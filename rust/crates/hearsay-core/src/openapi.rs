@@ -1,5 +1,5 @@
-//! OpenAPI document (utoipa). Drives the TypeScript codegen for the shared web UI, matching the
-//! Python OpenAPI->TS pipeline. `GET /openapi.json` serves it; `--dump-openapi` prints it.
+//! OpenAPI document (utoipa). Drives the TypeScript codegen for the shared web UI.
+//! `GET /openapi.json` serves it; `--dump-openapi` prints it.
 
 use utoipa::OpenApi;
 

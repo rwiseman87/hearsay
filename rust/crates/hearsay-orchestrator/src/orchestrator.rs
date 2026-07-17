@@ -1,6 +1,6 @@
 //! [`Orchestrator`]: the [`LiveEngine`] implementation. Owns the single active meeting (Phase 1
 //! records one at a time), serialized by an async op-lock; the sync accessors read the active
-//! session behind a std mutex. Port of `hearsay.transcript.session.SessionManager`.
+//! session behind a std mutex.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
@@ -128,8 +128,8 @@ impl Orchestrator {
         self
     }
 
-    /// Make the post-meeting [`Refiner`] available so a meeting can auto-refine at stop (Python
-    /// `SessionManager._maybe_auto_refine`). Whether it runs is decided per stop by the effective
+    /// Make the post-meeting [`Refiner`] available so a meeting can auto-refine at stop. Whether it
+    /// runs is decided per stop by the effective
     /// `auto_refine` setting. Without it, stop just finalizes; the manual `/rediarize` route drives
     /// the refine directly regardless.
     pub fn with_refiner(mut self, refiner: Arc<dyn Refiner>) -> Self {
@@ -283,7 +283,7 @@ impl Orchestrator {
         });
     }
 
-    /// Resolve whether a stop should auto-refine this meeting (Python `_maybe_auto_refine`'s gate):
+    /// Resolve whether a stop should auto-refine this meeting (the auto-refine gate):
     /// a [`Refiner`] must be wired, the effective `auto_refine` setting on, and a recorded
     /// `audio.wav` present. Returns the refiner + the effective recognition threshold when it
     /// should; `None` (with the reason logged) when the live finals should stand as the transcript.
@@ -460,7 +460,7 @@ impl LiveEngine for Orchestrator {
         let (meeting, refine) = {
             let _op = self.op_lock.lock().await;
             // Take + close the active session if it is this meeting (stopping a non-active meeting
-            // id still finalizes its row, matching the Python SessionManager).
+            // id still finalizes its row).
             let session = {
                 let mut guard = self.active.lock().unwrap();
                 if guard.as_ref().is_some_and(|s| s.meeting_id == meeting_id) {
@@ -718,13 +718,12 @@ impl Drop for Orchestrator {
     }
 }
 
-/// Default meeting title when the caller does not supply one (matches Python `_default_title`).
+/// Default meeting title when the caller does not supply one.
 fn default_title(when: DateTime<Utc>) -> String {
     format!("Meeting {}", when.format("%Y-%m-%d %H:%M"))
 }
 
-/// `<YYYY-MM-DD_HHMM>_<slug>` — the per-meeting on-disk folder name (matches Python
-/// `meeting_folder_name`).
+/// `<YYYY-MM-DD_HHMM>_<slug>` — the per-meeting on-disk folder name.
 fn meeting_folder_name(title: &str, when: DateTime<Utc>) -> String {
     format!("{}_{}", when.format("%Y-%m-%d_%H%M"), slugify(title))
 }
@@ -747,7 +746,6 @@ fn unique_meeting_dir(output_root: &Path, base: &str) -> (String, PathBuf) {
 }
 
 /// Lowercase, collapse every run of non-`[a-z0-9]` to a single `-`, trim `-`; empty -> `"meeting"`.
-/// Matches Python `slugify` (`re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")`).
 fn slugify(title: &str) -> String {
     let mut out = String::with_capacity(title.len());
     let mut pending_dash = false;

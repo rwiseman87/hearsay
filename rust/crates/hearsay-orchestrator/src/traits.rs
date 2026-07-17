@@ -13,7 +13,7 @@ use crate::error::OrchestratorError;
 use crate::types::{CaptureChunk, SidecarSegment, Stream};
 
 /// A per-OS audio capture source. Streams stream-tagged 16 kHz mono PCM on one monotonic clock;
-/// the channel closes when capture stops. Port of the Python `Capture` / media channel.
+/// the channel closes when capture stops.
 #[async_trait]
 pub trait AudioSource: Send {
     /// Begin capture and return the channel of stream-tagged chunks. Called once.
@@ -23,8 +23,8 @@ pub trait AudioSource: Send {
     async fn stop(&mut self);
 }
 
-/// A streaming audio-AI sidecar for one stream (VAD/diarization + ASR). Port of the Python
-/// `LiveSidecarProcessor`: feed the stream's PCM in, read the NDJSON segments it emits.
+/// A streaming audio-AI sidecar for one stream (VAD/diarization + ASR): feed the stream's PCM in,
+/// read the NDJSON segments it emits.
 #[async_trait]
 pub trait Transcriber: Send {
     /// Spawn the sidecar and return the channel of segments it emits. Called once. The channel is
@@ -79,8 +79,8 @@ pub struct BackendInstance {
     pub them: Box<dyn Transcriber>,
 }
 
-/// Builds a fresh [`BackendInstance`] per `start_meeting` (the Rust analogue of the Python
-/// `capture_factory` + pipeline factory). The production backend spawns capture + inference
+/// Builds a fresh [`BackendInstance`] per `start_meeting`. The production backend spawns capture +
+/// inference
 /// sidecars; tests inject a scripted one.
 pub trait Backend: Send + Sync {
     /// Build the capture source + the Me/Them transcribers for one meeting.

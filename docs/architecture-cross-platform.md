@@ -1,13 +1,12 @@
 # Cross-platform architecture (macOS + Windows) — target
 
-**Status (2026-07-02):** the **macOS foundation is built and validated end-to-end** on branch
-`feat/cross-platform-rust-tauri` (all 8 Rust crates implemented; `hearsay-core` runs the full live app
-on the Mac — capture + streaming captions + diarization + offline refine — confirmed in the frontend).
-The **Windows path is the remaining work** (cpal capture + a pure-Rust streaming transcriber/diarizer).
-Not merged to `main`; the project is pre-ship (POC). This document is the agreed foundation for making
-Hearsay run on both macOS and Windows and ship as a single, signed, one-click installer per OS to
-technical **and** non-technical users. It supersedes the macOS-only assumptions in `CLAUDE.md` where they
-conflict. Canonical roadmap + progress: `docs/TODO.md`.
+**Status:** the **macOS foundation is built and validated end-to-end** and lives on `main` (9 Rust
+crates; `hearsay-core` runs the full live app on the Mac — capture + streaming captions + diarization
++ offline refine + optional local-LLM notes — confirmed in the frontend). The **Windows path is the
+remaining work** (cpal capture + a pure-Rust streaming transcriber/diarizer). This document is the
+agreed foundation for making Hearsay run on both macOS and Windows and ship as a single, signed,
+one-click installer per OS to technical **and** non-technical users. It supersedes the macOS-only
+assumptions in `CLAUDE.md` where they conflict. Canonical roadmap + progress: `docs/TODO.md`.
 
 **Update (2026-07-14):** the Python backend has been removed — the Rust core is now the sole backend
 and the source of truth for the OpenAPI + IPC-fixture codegen.
@@ -32,7 +31,7 @@ and the source of truth for the OpenAPI + IPC-fixture codegen.
 flowchart TB
     subgraph app["ONE Rust + Tauri app -> signed installer per OS, no interpreter bundle"]
         ui["React + TS UI<br/>(system webview: WKWebView / WebView2)"]
-        core["Rust core: axum HTTP+WS - SQLite/SeaORM - utoipa->TS<br/>orchestration - speaker attribution - tracing (JSON)"]
+        core["Rust core: axum HTTP+WS - SQLite/SQLx - utoipa->TS<br/>orchestration - speaker attribution - tracing (JSON)"]
         ui <-->|"loopback HTTP/WS + session token"| core
     end
 
@@ -60,7 +59,7 @@ flowchart TB
 |---|---|---|
 | Shell + distribution | Tauri v2: `.dmg`/`.app` + `.msi`/NSIS, system webview, signing, notarization, auto-updater | Shared (one config, two targets) |
 | Frontend | React/TS, unchanged, talks HTTP/WS to the core | Shared (100%) |
-| Core | Rust: axum + tower, SeaORM/SQLx + SQLite (WAL), utoipa (OpenAPI->TS), tracing, serde + validator, `tokio::process` supervisor, `bytes` codec | Shared (100%) |
+| Core | Rust: axum + tower, SQLx + SQLite (WAL), utoipa (OpenAPI->TS), tracing, serde, `tokio::process` supervisor, `bytes` codec | Shared (100%) |
 | Capture | Rust/cpal (WASAPI loopback on Win, Core Audio on Mac) behind a trait; Swift helper as the Mac fallback if cpal's loopback does not preserve Me/Them + the Teams workaround | Per-OS (thin, isolated) |
 | Inference | whisper.cpp (ggml) + Silero VAD (ONNX) + sherpa-onnx/pyannote diarization + pure-Rust Segmenter; per-OS GPU backend (Metal/Vulkan/CUDA/CoreML) | Shared code, per-OS accel |
 
@@ -121,9 +120,9 @@ No -> FluidAudio stays the Mac tier and we carry two ASR backends (everything el
 
 ## Rust workspace layout
 
-See `rust/` (`rust/README.md` for the crate map + status). As of 2026-07-02, **all 8 crates are
-implemented (71 tests, gated by `make ci`) and the macOS live path runs end-to-end** — validated in the
-frontend through `hearsay-core`'s binary. The `LiveEngine` trait seam (with a `DisabledEngine` placeholder)
+See `rust/` (`rust/README.md` for the crate map + status). **All 9 crates are implemented (gated by
+`make ci`) and the macOS live path runs end-to-end** — validated in the frontend through
+`hearsay-core`'s binary. The `LiveEngine` trait seam (with a `DisabledEngine` placeholder)
 lives in the neutral `hearsay-engine` crate — `hearsay-core` consumes it for the capture-dependent routes
 and `hearsay-orchestrator` implements it, without a dependency cycle. `hearsay-orchestrator` drives an
 `AudioSource` + `Transcriber`s behind traits, tested with scripted fakes.

@@ -1,7 +1,7 @@
 //! Typed application settings, resolved from the environment with loopback-safe defaults.
 //!
-//! Rust counterpart of `src/hearsay/config/settings.py`. Kept small and stdlib-only (no config
-//! crate): every field has a default and an environment override.
+//! Kept small and stdlib-only (no config crate): every field has a default and an environment
+//! override.
 
 use std::env;
 use std::net::IpAddr;

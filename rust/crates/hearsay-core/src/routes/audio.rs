@@ -3,7 +3,7 @@
 //! Auth accepts the per-session token either as the `?token=` query param (an `<audio>` element
 //! cannot set an Authorization header, so the browser passes it in the URL, mirroring the
 //! WebSocket) or as a normal bearer header. `ServeFile` honours Range requests, so the browser can
-//! seek. Port of `src/hearsay/api/audio.py`.
+//! seek.
 
 use axum::extract::{Request, State};
 use axum::http::{header, StatusCode};

@@ -1,6 +1,5 @@
 //! The live transcription pipeline: route each stream's PCM to its transcriber and persist +
-//! broadcast the segments it emits. Port of `hearsay.transcript.pipeline` + the two sidecar
-//! processors (`live.py` / `live_me.py`).
+//! broadcast the segments it emits.
 //!
 //! Task layout:
 //! - `demux` — reads the capture channel, anchors the shared epoch clock, and forwards each chunk
@@ -402,8 +401,8 @@ async fn stream_loop(
     }
 }
 
-/// A transcript event pushed to WebSocket subscribers. Field order + names match the Python
-/// `TranscriptEvent` (`kind`, `stream`, `speaker_label`, `text`, `start_s`, `end_s`).
+/// A transcript event pushed to WebSocket subscribers. Field order + names are fixed by the wire
+/// contract: `kind`, `stream`, `speaker_label`, `text`, `start_s`, `end_s`.
 #[derive(Serialize)]
 struct TranscriptEvent<'a> {
     kind: SegmentKind,

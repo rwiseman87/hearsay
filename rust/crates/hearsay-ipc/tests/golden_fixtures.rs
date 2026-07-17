@@ -1,5 +1,5 @@
 //! Validates the Rust codec against the cross-language golden fixtures in
-//! `shared/fixtures/frames.jsonl` — the same vectors the Python and Swift codecs check in CI.
+//! `shared/fixtures/frames.jsonl` — the same vectors the Swift codec checks in CI.
 //!
 //! For each fixture: (a) decode `encoded_hex` and assert it matches the header fields + payload,
 //! then (b) re-encode and assert the bytes are exactly `encoded_hex`.

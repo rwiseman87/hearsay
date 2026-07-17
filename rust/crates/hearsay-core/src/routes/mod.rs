@@ -1,5 +1,5 @@
 //! HTTP routers + the loopback-hardening and token middleware. Routers stay thin: validate, call a
-//! query / the engine, return. Port of `src/hearsay/api/`.
+//! query / the engine, return.
 
 pub mod audio;
 pub mod folders;

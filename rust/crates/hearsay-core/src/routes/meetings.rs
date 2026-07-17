@@ -1,4 +1,4 @@
-//! Meetings REST router. Port of `src/hearsay/api/meetings.py`.
+//! Meetings REST router.
 
 use std::path::PathBuf;
 

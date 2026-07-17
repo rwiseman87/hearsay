@@ -1,10 +1,10 @@
 //! NDJSON control-channel codec for the helper<->core IPC.
 //!
-//! Mirror of the control half of `shared/protocol/ipc.md`, the Swift `HearsayIPC.ControlCodec`,
-//! and the Python `hearsay.helper.control`. One UTF-8 JSON object per line, terminated by `\n`:
+//! Mirror of the control half of `shared/protocol/ipc.md` and the Swift `HearsayIPC.ControlCodec`.
+//! One UTF-8 JSON object per line, terminated by `\n`:
 //! [`Command`] (core -> helper), [`Reply`] (helper -> core, correlated by `id`), and [`Event`]
 //! (helper -> core, unsolicited). Keys are serialized in sorted order for a deterministic wire
-//! (matches Python `sort_keys` / Swift `.sortedKeys`).
+//! (matches Swift `.sortedKeys`).
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -119,7 +119,7 @@ impl From<serde_json::Error> for ControlError {
 /// Serialize a control message to one NDJSON line (sorted keys, terminated by `\n`).
 ///
 /// Used for [`Command`], [`Reply`], and [`Event`]. Routing through a [`serde_json::Value`] (whose
-/// object is a sorted map) makes the key order deterministic, matching the Python and Swift encoders.
+/// object is a sorted map) makes the key order deterministic, matching the Swift encoder.
 pub fn to_line<T: Serialize>(value: &T) -> Result<Vec<u8>, ControlError> {
     let mut bytes = serde_json::to_vec(&serde_json::to_value(value)?)?;
     bytes.push(b'\n');

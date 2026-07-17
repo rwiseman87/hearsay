@@ -3,8 +3,6 @@
 //! The core binds to 127.0.0.1, but loopback is not a security boundary: other local processes and
 //! browser pages can reach it. A per-session bearer token gates every request; the Host check blocks
 //! DNS-rebinding and the Origin check blocks cross-site (including WebSocket) calls from other pages.
-//!
-//! Port of `src/hearsay/api/security.py`.
 
 /// Loopback hostnames the Host / Origin checks accept.
 const LOOPBACK_HOSTS: [&str; 3] = ["127.0.0.1", "localhost", "::1"];

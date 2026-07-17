@@ -1,7 +1,6 @@
 //! Post-meeting offline refine: re-diarize the Them track (reusing the Swift `hearsay-diarize`
 //! FluidAudio sidecar — the same offline diarizer the live path's sidecars come from) and
-//! re-transcribe each speaker turn with whisper → accurate `Speaker N` segments. Port of the
-//! diarize + re-transcribe core of `src/hearsay/transcript/refine.py`.
+//! re-transcribe each speaker turn with whisper → accurate `Speaker N` segments.
 //!
 //! [`refine_them`] also returns each speaker's voiceprint (from the diarizer's per-speaker mean
 //! embedding); persistence, cross-meeting recognition, and carry-forward of locked manual labels
@@ -270,8 +269,8 @@ fn build_centroids(embeddings: &HashMap<i64, Vec<f32>>) -> HashMap<i64, Vec<f32>
     centroids
 }
 
-/// Unit-length a voiceprint so stored centroids match the cosine convention (norm computed in f64,
-/// matching the Python path). `None` for an empty vector; a zero vector is returned unchanged.
+/// Unit-length a voiceprint so stored centroids match the cosine convention (norm computed in f64).
+/// `None` for an empty vector; a zero vector is returned unchanged.
 fn l2_normalize(vector: &[f32]) -> Option<Vec<f32>> {
     if vector.is_empty() {
         return None;

@@ -4,8 +4,7 @@
 //! touches the guarded Core Audio tap (Them) + mic (Me). The core spawns it, listens on the two Unix
 //! sockets it connects back to (`control.sock` NDJSON + `media.sock` binary frames, per
 //! `shared/protocol/ipc.md`), sends `start_capture`, and pumps the 16 kHz PCM frames it streams into
-//! [`CaptureChunk`]s. Port of `src/hearsay/helper/supervisor.py` + `media_channel.py` +
-//! `control_channel.py`, reusing the `hearsay-ipc` codec. `--synthetic` drives the whole path with
+//! [`CaptureChunk`]s, reusing the `hearsay-ipc` codec. `--synthetic` drives the whole path with
 //! generated audio (no TCC prompts) for testing.
 //!
 //! **Windows (later):** WASAPI loopback (Them) + mic (Me) via cpal, behind the same trait.
@@ -343,8 +342,8 @@ const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 /// The TCC states the helper reports; anything else is coerced to "unknown" by the API layer.
 const VALID_STATES: [&str; 3] = ["granted", "denied", "undetermined"];
 
-/// A live TCC-permission snapshot read from the capture helper. Port of the Python
-/// `probe_permissions`. Never an error: a missing or unresponsive helper yields
+/// A live TCC-permission snapshot read from the capture helper. Never an error: a missing or
+/// unresponsive helper yields
 /// `available = false` with every field `None` (the API renders those as `"unknown"`).
 #[derive(Debug, Clone, Default)]
 pub struct PermissionsSnapshot {

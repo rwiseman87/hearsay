@@ -17,8 +17,8 @@ A multi-process, local-only app (Apple Silicon, macOS 14.4+; Windows planned):
 - **Swift sidecars** (`helper/`, FluidAudio on the Apple Neural Engine) — live diarization +
   ASR (`hearsay-live`, `hearsay-me`) and the post-meeting refine (`hearsay-diarize`).
 - **Rust core** (`rust/crates/`) — orchestration, speaker attribution, the whisper offline
-  refine, persistence, Markdown output, and a loopback axum HTTP + WebSocket API. Spawns and
-  supervises the helper + sidecars.
+  refine, optional local-LLM notes, persistence, Markdown output, and a loopback axum HTTP +
+  WebSocket API. Spawns and supervises the helper + sidecars.
 - **Web UI** (`web/`) — a typed React frontend (Vite + React 19 + TanStack Query) served by the
   core with the session token injected, shown in a Tauri WKWebView window.
 
@@ -44,7 +44,10 @@ the Apple Neural Engine → SQLite + live `transcript.md` + the loopback REST/We
 React UI. Remote speakers are labeled **Speaker 1..N** live and refined by a whole-track pass at
 stop (`hearsay-diarize` + whisper), which also recognizes returning people by voiceprint; **rename
 them to real people** in the UI — names persist and carry across meetings. Me is the mic channel
-and is never diarized. See [`docs/TODO.md`](docs/TODO.md) for the phase-by-phase tracker.
+and is never diarized. Post-capture, the app also does **full-text search** across transcripts,
+**transcript/notes editing**, **nested meeting folders** (drag-and-drop), and an optional
+**local-LLM notes** step (summary + action items via llama.cpp, off by default). See
+[`docs/TODO.md`](docs/TODO.md) for the phase-by-phase tracker.
 
 ## Quickstart
 
@@ -100,13 +103,14 @@ then drag `Hearsay.app` to the Trash. Full build/install/uninstall notes are in
 rust/crates/
   hearsay-core/         axum HTTP+WS API: config, routes/, schema (utoipa->TS), security, state; the app binary
   hearsay-db/           SQLite via SQLx: models, queries, forward-only migrations/
-  hearsay-orchestrator/ capture routing + Transcriber/AudioSource seams + pipeline + markdown/recorder
+  hearsay-orchestrator/ capture routing + Transcriber/AudioSource seams + pipeline + markdown/recorder + notes seam
   hearsay-engine/       LiveEngine trait seam + DisabledEngine placeholder
+  hearsay-backends/     per-OS backend wiring: MacBackend/MacRefiner + build_engine (rediarize/notes)
   hearsay-capture/      AudioSource trait + SwiftHelperSource (spawns hearsay-helper) + the TCC permissions probe
-  hearsay-inference/    whisper offline ASR + the refine
+  hearsay-inference/    whisper offline ASR + the refine + optional local-LLM notes (llama-cpp-2)
   hearsay-attribution/  speaker clustering / voiceprint match / segment-speaker assignment (pure logic)
   hearsay-ipc/          binary frame codec + NDJSON control codec (IPC contract source of truth) + gen_fixtures
-helper/                 SwiftPM: hearsay-{helper,live,me,diarize,asr} executables + HearsayIPC library
+helper/                 SwiftPM: hearsay-{helper,live,me,diarize} executables + HearsayIPC + SidecarIO libraries
 web/                    React UI (Vite + TS): typed fetch client, TanStack Query, OpenAPI-generated types
 web/src-tauri/          the Tauri desktop shell (bundles + spawns the core + sidecars)
 shared/                 IPC contract (ipc.md) + golden frame fixtures

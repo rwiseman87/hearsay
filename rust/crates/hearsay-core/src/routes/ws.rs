@@ -1,4 +1,4 @@
-//! Live transcript WebSocket. Port of `src/hearsay/api/ws.py`.
+//! Live transcript WebSocket.
 //!
 //! Auth mirrors REST but over the handshake: the Origin must be loopback and the per-session token
 //! is passed as a `?token=` query parameter (browsers cannot set Authorization headers on a

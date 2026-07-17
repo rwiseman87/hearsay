@@ -39,7 +39,7 @@ private func internalRoundTripChecks() -> Bool {
 }
 
 /// Control-channel (NDJSON) encode/decode round-trips, plus a golden wire-format
-/// assertion so the Python core and the Swift helper agree byte-for-byte.
+/// assertion so the Rust core (hearsay-ipc) and the Swift helper agree byte-for-byte.
 private func controlRoundTripChecks() -> Bool {
     var ok = true
     func check(_ cond: Bool, _ what: String) {

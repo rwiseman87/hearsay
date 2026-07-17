@@ -1,5 +1,5 @@
-//! API error type. Renders as a `{ "detail": "..." }` JSON envelope with the right status,
-//! mirroring FastAPI's `HTTPException`. DB failures collapse to a 500 (never leak SQL to the client).
+//! API error type. Renders as a `{ "detail": "..." }` JSON envelope with the right status —
+//! the core's own axum error shape. DB failures collapse to a 500 (never leak SQL to the client).
 
 use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};

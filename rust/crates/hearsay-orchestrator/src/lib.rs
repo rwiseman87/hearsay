@@ -3,10 +3,8 @@
 //! 16 kHz PCM to its [`Transcriber`], and persists + broadcasts the partial/final segments the
 //! transcribers emit.
 //!
-//! Rust port of `src/hearsay/transcript/` (the `SessionManager` + pipeline + sidecar processors)
-//! and `src/hearsay/helper/supervisor.py`. The [`Orchestrator`] implements the
-//! [`hearsay_engine::LiveEngine`] seam, so wiring it into `hearsay-core` replaces the built-in
-//! `DisabledEngine`.
+//! The [`Orchestrator`] implements the [`hearsay_engine::LiveEngine`] seam, so wiring it into
+//! `hearsay-core` replaces the built-in `DisabledEngine`.
 //!
 //! The two external backends are behind traits so the whole lifecycle is testable without real
 //! audio or model sidecars:

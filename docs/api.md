@@ -118,6 +118,27 @@ right; sample N is meeting second N/16000, so a segment's `start_s` maps straigh
 header. Supports `Range` requests (`206 Partial Content`) for seeking. `404` if the meeting is
 unknown or was recorded with `audio.record` off.
 
+### `PATCH /api/meetings/{id}` — rename / move a meeting
+
+Updates the meeting's `title` and/or `folder_id`. Returns the updated `MeetingRead`; `404` if
+unknown, `422` on a blank title.
+
+### `PATCH /api/meetings/{id}/segments/{segment_id}` — edit a transcript line
+
+Replaces one segment's `text` (the DB is the source of truth; `transcript.md` is re-exported
+best-effort). Scoped to the meeting — `404` if the segment is not in it — `422` on empty/over-long
+text, and `409` if the meeting is currently recording.
+
+### `PUT /api/meetings/{id}/folder` — move a meeting into a folder
+
+Body `{ "folder_id": "<uuid>" }` (or `null` to un-file to the root). `404` if the meeting or the
+target folder is unknown.
+
+### `POST /api/meetings/{id}/reveal` — reveal in the OS file manager
+
+Opens the meeting's recordings folder (audio, transcript, notes) in Finder. The path is derived
+server-side from the meeting, never client-supplied. `503` if it cannot be opened.
+
 ## Speakers and identities
 
 A diarized **Them** speaker is a *cluster*; renaming it binds the cluster to a cross-meeting
@@ -151,6 +172,13 @@ curl -X PUT http://127.0.0.1:8137/api/meetings/$MID/speakers/$CID \
   -d '{"display_name": "Alice"}'
 ```
 
+### `POST /api/meetings/{id}/rediarize` — re-run the offline refine
+
+Re-diarizes and re-transcribes the Them track for the whole meeting (the "Refine speakers" button):
+global clustering, overlap handling, and voiceprint recognition of returning people. Manual (locked)
+labels are carried across. Returns the updated `MeetingRead`; `404` if unknown, `503` if the refine
+model/sidecar is unavailable.
+
 ### `GET /api/identities` — known people (rename suggestions)
 
 Paginated, most-recently-updated first. Powers the rename autocomplete — a name from one meeting
@@ -161,6 +189,54 @@ is offered in the next.
 { "total": 1, "page": 1, "page_size": 50, "items": [ { "id": "i7...", "display_name": "Alice", "email": null } ] }
 ```
 
+## Folders
+
+Meetings can be organized into a tree of folders (the sidebar). A folder has an optional `parent_id`;
+deleting a folder cascade-deletes its sub-folders but **un-files** its meetings to the root (meetings
+are never deleted). List endpoints are paginated.
+
+- **`GET /api/folders`** — list folders (flat; the UI builds the tree).
+- **`POST /api/folders`** — create — `{ "name", "parent_id"? }`; `422` on a blank name.
+- **`PATCH /api/folders/{id}`** — rename — `{ "name" }`; `404` if unknown, `422` on blank.
+- **`PUT /api/folders/{id}/parent`** — move — `{ "parent_id": "<uuid>" | null }`; rejects a cycle (a
+  folder cannot become its own descendant).
+- **`DELETE /api/folders/{id}`** — delete (cascades sub-folders, un-files meetings); `204`, `404` if unknown.
+
+## Search
+
+### `GET /api/search` — full-text transcript search
+
+Query params: `q` (the search string), `page`, `page_size`. Runs an FTS5 match over finalized
+**transcript** segments (not titles or notes). The query is sanitized to plain terms (FTS operators
+stripped) and bound as a parameter, so an empty/all-punctuation query returns an empty page rather
+than an error. Returns the paginated envelope of `SearchHit`s (meeting + matching segment + a
+highlighted snippet).
+
+```sh
+curl "http://127.0.0.1:8137/api/search?q=budget&page=1&page_size=50" -H "Authorization: Bearer $TOKEN"
+```
+
+## Notes (optional local-LLM summary)
+
+Available when the core is built with the `notes` feature; generation also requires a downloaded
+notes model (see Models). Produces a summary + action items from the **finalized** transcript —
+best-effort, never blocks stop.
+
+- **`GET /api/meetings/{id}/notes`** — read the stored notes (`404` if none yet).
+- **`POST /api/meetings/{id}/notes`** — generate / regenerate; `409` if the meeting is recording,
+  `503` if no notes model is configured.
+- **`PATCH /api/meetings/{id}/notes`** — edit the summary / action items; `422` on over-long input,
+  `409` if recording.
+
+## Models (notes-model download manager)
+
+Present regardless of the `notes` build feature. A small fixed catalog of GGUF instruct models is
+downloaded on demand into `HEARSAY_MODELS_DIR`, verified by SHA-256.
+
+- **`GET /api/models/catalog`** — the catalog + each entry's installed state + the models directory.
+- **`GET /api/models/download`** — the current download's status (idle / downloading + progress / error).
+- **`POST /api/models/download`** — start downloading a catalog model — `{ "id" }` (one at a time).
+
 ## Settings
 
 Editable preferences (a writable overlay over the env/startup defaults) plus read-only build and
@@ -168,7 +244,8 @@ permission facts. See [settings-panels.md](settings-panels.md) for the panel mod
 
 ### `GET /api/settings` — the effective settings
 
-Returns every section: `recording`, `speakers`, `storage`, plus read-only `storage_info` and `about`.
+Returns every editable section — `recording`, `speakers`, `storage`, `models` — plus read-only
+`storage_info` and `about`.
 
 ```json
 // 200 OK
@@ -176,15 +253,21 @@ Returns every section: `recording`, `speakers`, `storage`, plus read-only `stora
   "recording": { "record": true },
   "speakers": { "auto_refine": true, "recognition_threshold": 0.6 },
   "storage": { "output_dir": "/Users/you/.../outputs/recordings" },
+  "models": { "notes_enabled": false, "notes_model": "", "notes_prompt": "<template with {transcript}>", "refine_model": ".../ggml-large-v3-turbo.bin" },
   "storage_info": { "output_dir": "...", "database_path": ".../hearsay.db", "tracked_bytes": 12345, "meeting_count": 3 },
   "about": { "app_version": "0.1.0", "environment": "production", "protocol_version": 1, "database_path": ".../hearsay.db" }
 }
 ```
 
-### `PUT /api/settings/{recording,speakers,storage}` — update one section
+### `PUT /api/settings/{recording,speakers,storage,models}` — update one section
 
 Each takes that section's body and returns it. `storage` validates `output_dir` (absolute, existing,
-writable) and `speakers` validates `recognition_threshold` in `0..=1` — both `422` on a bad value.
+writable), `speakers` validates `recognition_threshold` in `0..=1`, and `models` validates the notes
+model path (must exist and be a GGUF) and the prompt length — all `422` on a bad value.
+
+### `POST /api/settings/reveal` — reveal the data folder
+
+Opens the recordings root in the OS file manager (server-derived path). `503` if it cannot be opened.
 
 ### `GET /api/settings/permissions` — live TCC status
 
@@ -197,6 +280,13 @@ persists. Degrades to `helper_available: false` + every field `unknown` when the
   "audio_capture": "undetermined", "screen_recording": "undetermined",
   "accessibility": "undetermined", "calendar": "undetermined" }
 ```
+
+## Status
+
+### `GET /api/status` — live app status
+
+A light poll for the header: the active meeting (if any), sidecar readiness/warming, and
+refine/notes progress. Read-only and cheap to poll.
 
 ## WebSocket: live transcript
 

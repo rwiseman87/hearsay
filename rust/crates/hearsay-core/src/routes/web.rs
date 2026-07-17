@@ -1,4 +1,4 @@
-//! Serve the built web UI (`web/dist`) over the loopback API. Port of `src/hearsay/api/web.py`.
+//! Serve the built web UI (`web/dist`) over the loopback API.
 //!
 //! The bundle is optional: if it has not been built, no routes are mounted and the API still runs
 //! (used by tests and headless `serve`). When present, `GET /` returns `index.html` with the

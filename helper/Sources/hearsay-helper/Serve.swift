@@ -11,7 +11,7 @@ import HearsayIPC
 ///
 /// Wire choice: audio frames are **float32**. The capture graph already produces
 /// 16 kHz mono `Float`, so the payload is a zero-cost, lossless reinterpret; the
-/// Python reader converts to int16 when it writes `.wav` files.
+/// core's recorder converts to int16 when it writes `.wav` files.
 final class Serve: @unchecked Sendable {
     private let socketDir: String
     private let synthetic: Bool

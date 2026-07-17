@@ -1,10 +1,9 @@
-//! Per-meeting `transcript.md` + `meeting.json` output. Port of
-//! `src/hearsay/export/local_markdown.py` (the `LocalMarkdownSink` render + atomic write).
+//! Per-meeting `transcript.md` + `meeting.json` output (rendered, then atomically written).
 //!
 //! Written once at stop from the finalized DB segments (already ordered by `start_s`), so the folder
 //! is self-describing after a meeting. Consecutive same-speaker segments group under one
-//! `### HH:MM:SS — Speaker` header. The Python sink also appends live for mid-meeting crash-safety;
-//! that live-append path is a deferred follow-up (the live transcript is on the WS + in the DB).
+//! `### HH:MM:SS — Speaker` header. A live-append path for mid-meeting crash-safety is a deferred
+//! follow-up (the live transcript is on the WS + in the DB).
 
 use std::ffi::OsString;
 use std::path::Path;
@@ -16,7 +15,7 @@ use hearsay_db::queries::NotesResult;
 
 use crate::error::OrchestratorError;
 
-/// `HH:MM:SS` from meeting-relative seconds (matches Python `_hhmmss`).
+/// `HH:MM:SS` from meeting-relative seconds.
 fn hhmmss(seconds: f64) -> String {
     let total = seconds.max(0.0) as u64;
     format!(

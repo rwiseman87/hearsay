@@ -13,9 +13,9 @@ import Foundation
 //    "speakers":[{"speaker":"S1","embedding":[0.01, ...]}, ...]}
 //
 // The per-speaker embeddings (FluidAudio's mean-of-segments speaker database) are
-// the cross-meeting voiceprints the Python refine stores + matches, so no separate
+// the cross-meeting voiceprints the Rust refine stores + matches, so no separate
 // ONNX embedder is needed. All FluidAudio diagnostics go to stderr, so stdout is
-// clean JSON. The Python core (`hearsay rediarize`) invokes this as a subprocess.
+// clean JSON. The Rust core (`POST /api/meetings/{id}/rediarize`) invokes this as a subprocess.
 // CoreML models auto-download from public HuggingFace repos on first run.
 
 struct Turn: Codable {
@@ -76,7 +76,7 @@ do {
     }
     let speakerCount = Set(result.segments.map { $0.speakerId }).count
     // The offline pipeline populates a per-speaker mean embedding (the voiceprint);
-    // emit it so the Python refine can store + match it across meetings.
+    // emit it so the Rust refine can store + match it across meetings.
     let speakers = (result.speakerDatabase ?? [:]).map {
         SpeakerEmbedding(speaker: $0.key, embedding: $0.value)
     }

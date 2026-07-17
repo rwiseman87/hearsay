@@ -1,7 +1,7 @@
-//! Request/response DTOs. Port of `src/hearsay/schemas/`.
+//! Request/response DTOs.
 //!
 //! Serialized to JSON for the loopback API and described via `utoipa::ToSchema` so the OpenAPI
-//! spec can drive the TypeScript codegen (matching the Python OpenAPI->TS pipeline).
+//! spec can drive the TypeScript codegen.
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};

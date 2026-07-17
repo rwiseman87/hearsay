@@ -8,8 +8,8 @@
 //!   pinning the command / ok-reply / fail-reply / every-event wire form so the Rust and Swift
 //!   control codecs cannot silently drift on key ordering, slash-escaping, or number formatting.
 //!
-//! Ported from the retired `scripts/gen_fixtures.py`; emits the identical byte layout (Python
-//! `json.dumps` default separators + insertion-ordered keys) so the fixtures never churn.
+//! Emits a stable byte layout (spaced `", "` / `": "` separators + insertion-ordered keys) so the
+//! fixtures never churn.
 
 use std::path::PathBuf;
 

@@ -1,5 +1,5 @@
 //! Diarization mapping helpers: diarizer speaker labels -> "Speaker N" ordinals, and per-segment
-//! speaker assignment by turn overlap. Port of the pure functions in `hearsay.diarization.offline`.
+//! speaker assignment by turn overlap.
 
 use std::collections::HashMap;
 

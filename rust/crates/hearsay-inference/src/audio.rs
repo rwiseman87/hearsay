@@ -48,7 +48,7 @@ pub fn read_wav_mono_16k(path: impl AsRef<Path>) -> Result<Vec<f32>, InferenceEr
 
 /// Read the Them (right) channel of the stereo 16 kHz `audio.wav` as mono `f32` (the refine reads
 /// it — it is as clean as a Them-only recording since Me/Them are separate capture devices). Falls
-/// back to a mono file's only channel. Port of Python `read_them_channel`.
+/// back to a mono file's only channel.
 pub fn read_them_channel(path: impl AsRef<Path>) -> Result<Vec<f32>, InferenceError> {
     let mut reader = hound::WavReader::open(path)
         .map_err(|e| InferenceError::Audio(format!("open wav: {e}")))?;

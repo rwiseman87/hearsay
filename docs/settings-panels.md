@@ -1,16 +1,17 @@
 # Settings page — how it works
 
 The Settings page (header **Settings** button, lazy-loaded overlay) is backed by the Rust core. It
-has five data panels plus a Tauri-only Data & Uninstall panel:
+has six data panels plus a Tauri-only Data & Uninstall panel:
 
 | Panel | Editable | Read-only |
 | --- | --- | --- |
 | Recording & Privacy | `record` (keep meeting audio) | — |
 | Speakers | `auto_refine`, `recognition_threshold` | — |
+| Models | refine model path; notes toggle + notes model + prompt (with the download manager) | download catalog + progress |
 | Storage | `output_dir` (default recordings location, validated) | DB path, tracked bytes, meeting count |
 | Permissions | — | live TCC status (helper `check_permissions`) + helper version |
 | About | — | app version, environment, IPC protocol version, DB path |
-| Data & Uninstall | reveal data folder / erase all data / quit (Tauri IPC) | — |
+| Data & Uninstall | reveal data folder (HTTP `POST /api/settings/reveal`); erase all data + quit (Tauri IPC) | — |
 
 ## Settings take effect at runtime
 
@@ -116,7 +117,12 @@ cache-patching mutation).
   the private `TCCAccessPreflight` SPI in `helper/.../Permissions.swift`); `screen_recording` /
   `accessibility` / `calendar` are `undetermined` stubs until their capture phases land.
 
-## Models panel (not yet built) — verification (FluidAudio 0.15.4)
+## Live-sidecar model selectors (proposed) — FluidAudio 0.15.4 verification
+
+> Note: the **shipped** Settings > Models panel covers the whisper **refine** model and the optional
+> local-LLM **notes** model (catalog + download + selection + prompt). The selectors described below
+> are a *separate, still-unbuilt* idea — swapping the live FluidAudio **sidecar** models (Parakeet
+> ASR version, LSEEND diarizer variant). This section is the design for that future work.
 
 Verification is **complete** (read the pinned checkout at `helper/.build/checkouts/FluidAudio`:
 `ModelNames.swift` + each manager's `load*`). No invented model names are needed. This is a Swift
@@ -126,7 +132,6 @@ Exact load call sites today:
 
 - `hearsay-live/main.swift` — `LSEENDModel.loadFromHuggingFace(variant: .ami, stepSize: .step500ms,
   computeUnits: .cpuOnly)`; `AsrModels.downloadAndLoad(version: .v3)`; `StreamingUnifiedAsrManager()`.
-- `hearsay-asr/main.swift` — `AsrModels.downloadAndLoad(version: .v3)`.
 - `hearsay-me/main.swift` — `VadManager()`; `StreamingUnifiedAsrManager()`.
 - `hearsay-diarize/main.swift` — `OfflineDiarizerManager()` (`.process(url)`).
 
@@ -135,14 +140,14 @@ Key finding: **only 2 of the 5 model slots are actually swappable.**
 | Phase | Sidecar | Load API | Swappable | Real options |
 | --- | --- | --- | --- | --- |
 | Live Them — diarization | live | `LSEENDModel.loadFromHuggingFace(variant:stepSize:)` | yes | variant {ami, callhome, dihard2, dihard3} × step {100/200/300/400/500 ms} |
-| Live + batch — final ASR | live, asr | `AsrModels.downloadAndLoad(version:)` | yes | Parakeet TDT `.v2` / `.v3` (`AsrModelVersion`) |
+| Live — final ASR | live | `AsrModels.downloadAndLoad(version:)` | yes | Parakeet TDT `.v2` / `.v3` (`AsrModelVersion`) |
 | Live — partial ASR | live, me | `StreamingUnifiedAsrManager.loadModels()` | no | fixed "Parakeet Unified 0.6B"; only latency + `encoderPrecision` int8/fp16 |
 | Live Me — VAD | me | `VadManager()` | no | single Silero VAD; `VadConfig` tuning only |
 | Offline refine — diarization | diarize | `OfflineDiarizerManager(config:)` | no | single pyannote community-1; `OfflineDiarizerConfig` thresholds only |
 
 Revised plan (smaller than the original Fast/Balanced/Accurate preset idea, since 3 of 5 slots are
-fixed): expose **two** real selectors — Transcription model (Parakeet TDT v2 vs v3; shared by the
-`hearsay-asr` + `hearsay-live` finals) and Live diarization (LSEEND variant × step) — and render the
+fixed): expose **two** real selectors — Transcription model (Parakeet TDT v2 vs v3, used by the
+`hearsay-live` finals) and Live diarization (LSEEND variant × step) — and render the
 fixed slots read-only. Wiring: a `models` overlay section (`schema.rs` + `routes/settings.rs` +
 `config.rs`) -> sidecar CLI args (e.g. `--asr-version v3`, `--diar-variant ami --diar-step 500ms`)
 parsed in the four sidecars mapping strings to the FluidAudio enums -> `make swift-build`. A download

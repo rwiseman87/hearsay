@@ -1,6 +1,6 @@
 //! Test fixture: a minimal transcription sidecar for the `ProcessTranscriber` integration test.
 //!
-//! Speaks the same stdio contract as the real sidecars (and the Python `live_base.py`): emits the
+//! Speaks the same stdio contract as the real sidecars: emits the
 //! `{"ready":true}` marker once "loaded", then reads `<u32 LE sample count><count * f32 LE>` feed
 //! frames on stdin, emits one NDJSON `final` segment per frame on stdout, and on EOF emits a closing
 //! `tail` segment then exits. Not shipped — it exists only so the crate's integration tests can

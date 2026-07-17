@@ -42,7 +42,7 @@ public enum ProtocolError: Error, Equatable {
     case badPayload
 }
 
-/// One media frame. `nSamples` is derived from the payload (mirrors the Python codec).
+/// One media frame. `nSamples` is derived from the payload (mirrors the Rust `hearsay-ipc` codec).
 public struct MediaFrame: Equatable, Sendable {
     public let type: FrameType
     public let stream: StreamKind

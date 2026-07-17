@@ -687,7 +687,7 @@ pub struct RefinedThemSegment {
 
 /// The offline refine's output persisted by [`replace_them_segments`]: the re-transcribed segments
 /// plus each speaker's L2-normalized voiceprint by 1-based ordinal (empty when the diarizer emits
-/// none). Mirrors the `turn_segments` + `ordinal_centroids` the Python `apply_turn_diarization` takes.
+/// none).
 #[derive(Debug, Clone, Default)]
 pub struct RefineResult {
     pub segments: Vec<RefinedThemSegment>,

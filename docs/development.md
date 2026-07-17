@@ -34,8 +34,8 @@ The `Makefile` is the task runner.
 | `make codegen-check` | Fail if any of those drift from the Rust source. |
 | `make audit` | CVE scan (`cargo audit` + `npm audit`). |
 | `make licenses` | Fail on any copyleft dependency (`cargo deny`, policy in `rust/deny.toml`). |
-| `make ci` | The native gate: lint + tests + codegen drift + audit + licenses. Must stay green. |
-| `make web-ci` | The web gate: `npm ci` + `tsc` + `vite build`. |
+| `make ci` | The full gate: lint (+ Tauri shell) + tests + codegen drift + version check + audit + licenses + web CI. Must stay green. |
+| `make web-ci` | The web gate: `npm ci` + `tsc` + ESLint + `vite build`. |
 | `make web-build` / `make web-typecheck` | Build the UI bundle (`web/dist`) / type-check it. |
 | `make rust-serve` (`serve`) | Run the core (`SYNTHETIC=1` for no-permission plumbing). |
 | `make dmg` | Build the unsigned/ad-hoc `.dmg` (see [packaging.md](packaging.md)). |
@@ -46,7 +46,7 @@ The `Makefile` is the task runner.
 
 ```sh
 make rust-serve                       # auto-picks a free port; prints URL + per-session token
-HEARSAY_SERVER_PORT=8137 make rust-serve
+RUST_PORT=8137 make rust-serve
 SYNTHETIC=1 make rust-serve           # drive the pipeline with generated audio (no mic/TCC)
 ```
 
@@ -69,28 +69,38 @@ For frontend development with hot reload, run the core on a fixed port and Vite 
 proxies `/api` + `/ws` to the core; see `web/vite.config.ts`):
 
 ```sh
-HEARSAY_SERVER_PORT=8137 make rust-serve   # terminal 1
+RUST_PORT=8137 make rust-serve   # terminal 1
 cd web && npm run dev                        # terminal 2 -> http://localhost:5173/?token=<token>
 ```
 
 API TypeScript types are generated from the core's OpenAPI schema — never hand-edited: `make codegen`
 runs `hearsay-core --dump-openapi` (-> `web/openapi.json`) then `openapi-typescript`
 (-> `web/src/api/schema.ts`), and also regenerates the golden IPC fixtures from `hearsay-ipc`.
-`make codegen-check` (and CI) fail if any of those drift. The WebSocket `TranscriptEvent` is not in
-the OpenAPI schema, so it is hand-mirrored in `web/src/api/ws.ts`.
+`make codegen-check` (and CI) fail if any of those drift. The WebSocket event types
+(`TranscriptEvent`, `StatusEvent`, `ResyncEvent`) are modeled in the OpenAPI schema too, so
+`web/src/api/ws.ts` aliases the generated `schema.ts` types rather than hand-maintaining them.
 
 ## Models
 
 **ASR + diarization models** live in the Swift sidecars (FluidAudio on the ANE): Parakeet TDT for
-ASR (`hearsay-asr` / `hearsay-me` / `hearsay-live`), pyannote community-1 as CoreML for the offline
-diarizer (`hearsay-diarize`). Their CoreML models are ungated and auto-download + compile on first
-use — no fetch step, no HF token.
+ASR (`hearsay-live` / `hearsay-me`), pyannote community-1 as CoreML for the offline diarizer
+(`hearsay-diarize`). Their CoreML models are ungated and auto-download + compile on first use — no
+fetch step, no HF token.
 
 **The offline refine** re-transcribes diarized turns with whisper (`hearsay-inference`), which needs
 a GGML model. Download `ggml-large-v3-turbo.bin` into `outputs/models/` (the default
 `HEARSAY_REFINE_MODEL` path); without it, auto-refine and `POST /api/meetings/{id}/rediarize` report
 the sidecar/model as unavailable rather than failing the meeting. Packaging bundles this model into
 the `.app` (see [packaging.md](packaging.md)).
+
+**Notes (optional local LLM).** When the `notes` feature is built in (`make rust-serve` and `make
+dmg` build it) and enabled (`HEARSAY_NOTES`, default off), stopping a meeting generates a summary +
+action items from the finalized transcript with a local GGUF instruct model (llama.cpp via
+`llama-cpp-2`). The model is chosen in **Settings > Models**, which lists a small catalog and
+downloads the pick into `HEARSAY_MODELS_DIR` (`outputs/models` by default) with a SHA-256 check.
+`HEARSAY_NOTES_MODEL` sets the active model path and `HEARSAY_NOTES_PROMPT` the template (its
+`{transcript}` placeholder is filled at generation). Notes are best-effort — a missing model or a
+generation error never fails the meeting.
 
 The live Them stream is labeled Speaker 1..N by `hearsay-live`; the refine re-diarizes the whole Them
 track for better accuracy and recognizes returning people by voiceprint. It runs on demand via the
@@ -114,6 +124,10 @@ Common overrides:
 | Record meeting audio (`audio.wav`) | `HEARSAY_RECORD` | `true` |
 | Auto-refine at finalize | `HEARSAY_AUTO_REFINE` | `false` |
 | Recognition threshold | `HEARSAY_RECOGNITION_THRESHOLD` | `0.6` |
+| Notes (local-LLM summary) | `HEARSAY_NOTES` | `false` |
+| Notes model (GGUF) | `HEARSAY_NOTES_MODEL` | (unset until one is downloaded) |
+| Notes prompt template | `HEARSAY_NOTES_PROMPT` | built-in template |
+| Models download dir | `HEARSAY_MODELS_DIR` | `<repo>/outputs/models` |
 | Environment | `ENVIRONMENT` | `development` |
 
 `HEARSAY_RECORD` / `HEARSAY_AUTO_REFINE` / `HEARSAY_RECOGNITION_THRESHOLD` are the defaults for the

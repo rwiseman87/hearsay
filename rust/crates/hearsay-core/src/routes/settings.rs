@@ -1,5 +1,4 @@
-//! Editable settings + live permission probe. Port of `src/hearsay/api/settings.py` +
-//! `services/settings.py` + `services/permissions.py`.
+//! Editable settings + live permission probe.
 //!
 //! Routers stay thin: resolve the effective value (stored `preferences` override, else the config
 //! default), validate, persist, return. `GET /settings` returns every section; `PUT /{section}`
@@ -41,8 +40,8 @@ pub fn router() -> Router<AppState> {
         .route("/settings/reveal", post(reveal_output_dir))
 }
 
-/// The local DB file path for display; avoid leaking credentials for a remote DB URL. Mirrors the
-/// Python `_database_path` (strip the `sqlite://` scheme, else report an external database).
+/// The local DB file path for display; avoid leaking credentials for a remote DB URL: strip the
+/// `sqlite://` scheme, else report an external database.
 fn database_path(url: &str) -> String {
     if !url.starts_with("sqlite") {
         return "(external database)".to_string();
@@ -375,8 +374,8 @@ async fn store_section<T: serde::Serialize>(
     Ok(())
 }
 
-/// Resolve `input` to an absolute, existing, writable directory or a 422. Mirrors the Python
-/// `_validate_output_dir` (expand `~`, require absolute, resolve, is-dir, write-probe).
+/// Resolve `input` to an absolute, existing, writable directory or a 422:
+/// expand `~`, require absolute, resolve, is-dir, write-probe.
 fn validate_output_dir(input: &str) -> Result<String, ApiError> {
     let expanded = expand_home(input);
     let path = Path::new(&expanded);
@@ -470,7 +469,7 @@ fn validate_notes_model(input: &str) -> Result<String, ApiError> {
     Ok(resolved.to_string_lossy().to_string())
 }
 
-/// Expand a leading `~/` to `$HOME` (matching Python's `expanduser`); otherwise unchanged.
+/// Expand a leading `~/` to `$HOME`; otherwise unchanged.
 fn expand_home(input: &str) -> String {
     match input.strip_prefix("~/") {
         Some(rest) => match std::env::var("HOME") {
