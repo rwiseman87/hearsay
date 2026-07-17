@@ -14,6 +14,13 @@
 # proprietary — so they are `publish = false` and skipped via `private.ignore` below rather than by
 # claiming an OSS license they do not have.
 
+[graph]
+# Resolve the dependency graph with ALL features enabled so optional-feature deps
+# (notes/llama-cpp-2, sherpa-onnx/onnxruntime, metal/vulkan/cuda) are license-checked too. The
+# default (default-features-only) graph prunes them, so a future copyleft optional dep would slip
+# past CI. Verified all-features stays fully permissive (2026-07-17).
+all-features = true
+
 [licenses]
 version = 2
 confidence-threshold = 0.9
@@ -29,7 +36,6 @@ allow = [
     "ISC",
     "Zlib",
     "Unicode-3.0",
-    "Unicode-DFS-2016",
     "CC0-1.0",
     "BSL-1.0",
     "CDLA-Permissive-2.0", # webpki-roots (Mozilla CA bundle) — permissive data license

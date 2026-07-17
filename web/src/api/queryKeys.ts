@@ -17,7 +17,6 @@ export const queryKeys = {
   },
   // Notes-model download manager (catalog + the single active download's progress).
   models: {
-    all: ["models"] as const,
     catalog: ["models", "catalog"] as const,
     download: ["models", "download"] as const,
   },
@@ -27,7 +26,6 @@ export const queryKeys = {
   },
   // Full-text transcript search, keyed by the (trimmed) query string.
   search: {
-    all: ["search"] as const,
     query: (q: string) => ["search", q] as const,
   },
   settings: {

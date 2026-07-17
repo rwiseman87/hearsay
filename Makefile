@@ -11,7 +11,7 @@ RUST_PORT ?= 8799
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-16s\033[0m %s\n", $$1, $$2}'
 
-HELPER_PRODUCTS := --product hearsay-helper --product hearsay-diarize --product hearsay-asr --product hearsay-live --product hearsay-me
+HELPER_PRODUCTS := --product hearsay-helper --product hearsay-diarize --product hearsay-live --product hearsay-me
 swift-build: ## Build the Swift helper executables (explicit products skip FluidAudio's CLI, which has a type-check bug)
 	swift build --package-path $(PKG) $(HELPER_PRODUCTS)
 

@@ -9,4 +9,4 @@ pub mod mapping;
 pub mod voiceprint;
 
 pub use mapping::{assign_segment_speaker, order_speakers, SpeakerTurn};
-pub use voiceprint::{centroid_from_bytes, centroid_to_bytes, cosine, match_identity};
+pub use voiceprint::{centroid_from_bytes, centroid_to_bytes, match_identity};
