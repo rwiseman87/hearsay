@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
-import { useRediarize, useStopMeeting } from "../api/hooks";
+import { useEditSegment, useRediarize, useRevealMeeting, useStopMeeting } from "../api/hooks";
 import { getToken } from "../api/token";
 import type { MeetingRead } from "../api/types";
 import { useTranscript } from "../hooks/useTranscript";
@@ -16,13 +16,45 @@ function formatTime(seconds: number): string {
   return `${minutes}:${secs}`;
 }
 
-interface Props {
-  meeting: MeetingRead | null;
+// Wrap each case-insensitive occurrence of `query` in `text` with a <mark> (the in-meeting find
+// highlight). Returns the raw text when there is no query.
+function highlightMatches(text: string, query: string): ReactNode {
+  const q = query.trim();
+  if (!q) return text;
+  const lower = text.toLowerCase();
+  const needle = q.toLowerCase();
+  const out: ReactNode[] = [];
+  let i = 0;
+  let key = 0;
+  while (i < text.length) {
+    const idx = lower.indexOf(needle, i);
+    if (idx === -1) {
+      out.push(text.slice(i));
+      break;
+    }
+    if (idx > i) out.push(text.slice(i, idx));
+    out.push(
+      <mark key={key++} className="find-hit">
+        {text.slice(idx, idx + q.length)}
+      </mark>,
+    );
+    i = idx + q.length;
+  }
+  return out;
 }
 
-export function TranscriptView({ meeting }: Props) {
+interface Props {
+  meeting: MeetingRead | null;
+  // A request to scroll to and highlight the line nearest `startS` (from a global search result).
+  // `nonce` changes on every jump so repeated jumps to the same moment re-trigger.
+  jumpTo?: { startS: number; nonce: number } | null;
+}
+
+export function TranscriptView({ meeting, jumpTo }: Props) {
   const stop = useStopMeeting();
   const rediarize = useRediarize(meeting?.id ?? "");
+  const reveal = useRevealMeeting();
+  const editSegment = useEditSegment(meeting?.id ?? "");
   const { lines, connection, preparing } = useTranscript(meeting);
 
   const audioRef = useRef<HTMLAudioElement>(null);
@@ -40,6 +72,18 @@ export function TranscriptView({ meeting }: Props) {
   const gainRef = useRef<GainNode | null>(null);
   const volumeRef = useRef(1);
 
+  // In-meeting find (client-side over the loaded lines).
+  const [findQuery, setFindQuery] = useState("");
+  const [findIndex, setFindIndex] = useState(0);
+  // Inline text edit: the id of the segment being edited plus its draft text.
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editText, setEditText] = useState("");
+  // Confirm gate for a re-diarize that would discard manual edits to remote-speaker lines.
+  const [confirmRefine, setConfirmRefine] = useState(false);
+  // The line briefly highlighted after a search jump (cleared on a timer).
+  const [jumpIndex, setJumpIndex] = useState<number | null>(null);
+  const handledJump = useRef(0);
+
   // The audio.wav timeline is meeting-relative (sample N = second N), so the currently-playing
   // line is the last one whose start time has passed.
   const activeIndex = useMemo(() => {
@@ -51,11 +95,34 @@ export function TranscriptView({ meeting }: Props) {
     return index;
   }, [lines, currentTime]);
 
-  // Reset playback state when switching meetings; the <audio> element remounts per meeting, so drop
-  // the old Web Audio graph and let the next play rebuild it against the new element.
+  // Indices of lines matching the find query, in document order.
+  const matchIndices = useMemo(() => {
+    const q = findQuery.trim().toLowerCase();
+    if (!q) return [] as number[];
+    const out: number[] = [];
+    for (let i = 0; i < lines.length; i++) {
+      if (lines[i].text.toLowerCase().includes(q)) out.push(i);
+    }
+    return out;
+  }, [lines, findQuery]);
+
+  // Scroll a specific line (by its render index) into the middle of the list viewport.
+  const scrollToLine = (index: number) => {
+    linesRef.current
+      ?.querySelector<HTMLElement>(`[data-index="${index}"]`)
+      ?.scrollIntoView({ block: "center" });
+  };
+
+  // Reset per-meeting UI state when switching meetings; the <audio> element remounts per meeting, so
+  // drop the old Web Audio graph and let the next play rebuild it against the new element.
   useEffect(() => {
     setCurrentTime(0);
     setHasAudio(true);
+    setFindQuery("");
+    setFindIndex(0);
+    setEditingId(null);
+    setConfirmRefine(false);
+    setJumpIndex(null);
     pinnedToBottom.current = true; // a freshly opened meeting follows the latest by default
     void audioCtxRef.current?.close();
     audioCtxRef.current = null;
@@ -78,6 +145,34 @@ export function TranscriptView({ meeting }: Props) {
     activeRef.current?.scrollIntoView({ block: "nearest" });
   }, [activeIndex]);
 
+  // A search jump: once the transcript has loaded, scroll to and highlight the line nearest the
+  // target moment. Keyed on the jump nonce so it fires once per request.
+  useEffect(() => {
+    if (!jumpTo || jumpTo.nonce === handledJump.current || lines.length === 0) return;
+    handledJump.current = jumpTo.nonce;
+    let target = 0;
+    for (let i = 0; i < lines.length; i++) {
+      if (lines[i].start_s <= jumpTo.startS) target = i;
+    }
+    setJumpIndex(target);
+    pinnedToBottom.current = false;
+    scrollToLine(target);
+  }, [jumpTo, lines]);
+
+  // Clear the jump highlight after a moment.
+  useEffect(() => {
+    if (jumpIndex === null) return;
+    const t = setTimeout(() => setJumpIndex(null), 2500);
+    return () => clearTimeout(t);
+  }, [jumpIndex]);
+
+  // Scroll to the current find match as the pointer moves through the matches.
+  useEffect(() => {
+    if (matchIndices.length === 0) return;
+    const clamped = Math.min(findIndex, matchIndices.length - 1);
+    scrollToLine(matchIndices[clamped]);
+  }, [findIndex, matchIndices]);
+
   if (!meeting) {
     return (
       <section className="transcript transcript--empty">
@@ -88,6 +183,36 @@ export function TranscriptView({ meeting }: Props) {
 
   const recording = meeting.status === "recording";
   const audioUrl = `/api/meetings/${meeting.id}/audio?token=${encodeURIComponent(getToken())}`;
+  const editedThemCount = lines.filter((line) => line.stream === "them" && line.edited).length;
+  const currentMatch = matchIndices.length > 0 ? matchIndices[Math.min(findIndex, matchIndices.length - 1)] : -1;
+
+  const stepMatch = (delta: number) => {
+    if (matchIndices.length === 0) return;
+    setFindIndex((prev) => (prev + delta + matchIndices.length) % matchIndices.length);
+  };
+
+  const startEdit = (id: string, text: string) => {
+    setEditingId(id);
+    setEditText(text);
+    editSegment.reset();
+  };
+  const cancelEdit = () => {
+    setEditingId(null);
+    setEditText("");
+  };
+  const saveEdit = (id: string) => {
+    const trimmed = editText.trim();
+    if (!trimmed) return;
+    editSegment.mutate({ segmentId: id, text: trimmed }, { onSuccess: cancelEdit });
+  };
+
+  const onRefine = () => {
+    if (editedThemCount > 0) {
+      setConfirmRefine(true);
+      return;
+    }
+    rediarize.mutate();
+  };
 
   const seekTo = (seconds: number) => {
     const audio = audioRef.current;
@@ -133,19 +258,53 @@ export function TranscriptView({ meeting }: Props) {
   return (
     <section className="transcript">
       <header className="transcript__header">
-        <h2>{meeting.title}</h2>
-        {recording ? (
-          <button type="button" onClick={() => stop.mutate(meeting.id)} disabled={stop.isPending}>
-            {stop.isPending ? "Stopping…" : "Stop"}
+        <div className="transcript__title">
+          <h2>{meeting.title}</h2>
+          <span className={`badge badge--${meeting.status}`}>{meeting.status}</span>
+        </div>
+        <div className="transcript__actions">
+          <button
+            type="button"
+            className="transcript__reveal"
+            onClick={() => reveal.mutate(meeting.id)}
+            disabled={reveal.isPending}
+            title="Open this meeting's folder (audio, transcript, notes) in Finder"
+          >
+            {reveal.isPending ? "Opening…" : "Show files"}
           </button>
-        ) : (
-          <div className="transcript__actions">
-            <span className="badge badge--finalized">finalized</span>
-            <button type="button" onClick={() => rediarize.mutate()} disabled={rediarize.isPending}>
-              {rediarize.isPending ? "Refining…" : "Refine speakers"}
+          {recording ? (
+            <button type="button" onClick={() => stop.mutate(meeting.id)} disabled={stop.isPending}>
+              {stop.isPending ? "Stopping…" : "Stop"}
             </button>
-          </div>
-        )}
+          ) : (
+            <>
+              {confirmRefine ? (
+                <span className="transcript__confirm">
+                  <span className="transcript__confirm-text">
+                    Discard {editedThemCount} edit{editedThemCount === 1 ? "" : "s"}?
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setConfirmRefine(false);
+                      rediarize.mutate();
+                    }}
+                    disabled={rediarize.isPending}
+                  >
+                    Refine anyway
+                  </button>
+                  <button type="button" onClick={() => setConfirmRefine(false)}>
+                    Cancel
+                  </button>
+                </span>
+              ) : (
+                <button type="button" onClick={onRefine} disabled={rediarize.isPending}>
+                  {rediarize.isPending ? "Refining…" : "Refine speakers"}
+                </button>
+              )}
+            </>
+          )}
+        </div>
       </header>
       {!recording && hasAudio ? (
         <div className="player">
@@ -214,8 +373,72 @@ export function TranscriptView({ meeting }: Props) {
           {(rediarize.error as Error).message}
         </p>
       ) : null}
+      {reveal.isError ? (
+        <p className="transcript__error" role="alert">
+          Could not open the folder: {(reveal.error as Error).message}
+        </p>
+      ) : null}
+      {editSegment.isError ? (
+        <p className="transcript__error" role="alert">
+          Could not save the edit: {(editSegment.error as Error).message}
+        </p>
+      ) : null}
       <SpeakerPanel meetingId={meeting.id} />
       <NotesPanel meetingId={meeting.id} recording={recording} />
+      <div className="transcript__toolbar">
+        <span className="transcript__toolbar-title">
+          Transcript
+          {!recording && lines.length > 0 ? (
+            <span className="transcript__toolbar-hint"> · hover a line to edit</span>
+          ) : null}
+        </span>
+        {!recording && lines.length > 0 ? (
+          <div className="find" role="search">
+            <input
+              className="find__input"
+              type="search"
+              placeholder="Find in transcript…"
+              aria-label="Find in transcript"
+              value={findQuery}
+              onChange={(event) => {
+                setFindQuery(event.target.value);
+                setFindIndex(0);
+              }}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") {
+                  event.preventDefault();
+                  stepMatch(event.shiftKey ? -1 : 1);
+                } else if (event.key === "Escape") {
+                  setFindQuery("");
+                }
+              }}
+            />
+            <span className="find__count" aria-live="polite">
+              {findQuery.trim()
+                ? `${matchIndices.length ? Math.min(findIndex, matchIndices.length - 1) + 1 : 0}/${matchIndices.length}`
+                : ""}
+            </span>
+            <button
+              type="button"
+              className="find__nav"
+              aria-label="Previous match"
+              disabled={matchIndices.length === 0}
+              onClick={() => stepMatch(-1)}
+            >
+              ↑
+            </button>
+            <button
+              type="button"
+              className="find__nav"
+              aria-label="Next match"
+              disabled={matchIndices.length === 0}
+              onClick={() => stepMatch(1)}
+            >
+              ↓
+            </button>
+          </div>
+        ) : null}
+      </div>
       <ol
         className="transcript__lines"
         ref={linesRef}
@@ -226,21 +449,92 @@ export function TranscriptView({ meeting }: Props) {
       >
         {lines.map((line, index) => {
           const active = index === activeIndex;
+          const editing = editingId != null && line.id === editingId;
+          const canEdit = !recording && !!line.id;
+          const className =
+            `line line--${line.stream}` +
+            (line.kind === "partial" ? " line--partial" : "") +
+            (active ? " line--active" : "") +
+            (index === jumpIndex ? " line--jump" : "") +
+            (matchIndices.includes(index) ? " line--match" : "") +
+            (index === currentMatch ? " line--match-current" : "");
           return (
             <li
               key={`${line.stream}:${line.start_s}:${line.kind}`}
+              data-index={index}
               ref={active ? activeRef : null}
-              className={
-                `line line--${line.stream}` +
-                (line.kind === "partial" ? " line--partial" : "") +
-                (active ? " line--active" : "")
-              }
-              onClick={() => seekTo(line.start_s)}
-              title="Jump to this moment"
+              className={className}
+              onClick={() => {
+                if (!editing) seekTo(line.start_s);
+              }}
+              title={editing ? undefined : "Jump to this moment"}
             >
               <span className="line__time">{formatTime(line.start_s)}</span>
               <span className="line__speaker">{line.speaker_label}</span>
-              <span className="line__text">{line.text}</span>
+              {editing ? (
+                <form
+                  className="line__edit"
+                  onClick={(event) => event.stopPropagation()}
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    if (line.id) saveEdit(line.id);
+                  }}
+                >
+                  <textarea
+                    className="line__edit-input"
+                    value={editText}
+                    autoFocus
+                    aria-label="Edit transcript line"
+                    disabled={editSegment.isPending}
+                    onChange={(event) => setEditText(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Escape") cancelEdit();
+                    }}
+                  />
+                  <div className="line__edit-actions">
+                    <button
+                      type="submit"
+                      className="line__save"
+                      disabled={editSegment.isPending || editText.trim() === ""}
+                    >
+                      {editSegment.isPending ? "Saving…" : "Save"}
+                    </button>
+                    <button
+                      type="button"
+                      className="line__cancel"
+                      disabled={editSegment.isPending}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        cancelEdit();
+                      }}
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </form>
+              ) : (
+                <span className="line__text">
+                  {highlightMatches(line.text, findQuery)}
+                  {line.edited ? <span className="line__edited-pill">edited</span> : null}
+                </span>
+              )}
+              {canEdit && !editing ? (
+                <button
+                  type="button"
+                  className="line__edit-btn"
+                  aria-label="Edit this line"
+                  title="Edit this line"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    if (line.id) startEdit(line.id, line.text);
+                  }}
+                >
+                  <span className="line__edit-icon" aria-hidden="true">
+                    ✎
+                  </span>
+                  <span className="line__edit-label">Edit</span>
+                </button>
+              ) : null}
             </li>
           );
         })}

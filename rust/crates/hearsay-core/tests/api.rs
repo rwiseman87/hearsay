@@ -1142,3 +1142,243 @@ async fn download_unknown_model_is_404() {
     let (status, _) = send(&app, req).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
+
+#[tokio::test]
+async fn search_finds_segments_across_meetings() {
+    let (app, pool, _tmp) = setup().await;
+    let a = queries::create_meeting(&pool, "Planning", "a", "", chrono::Utc::now())
+        .await
+        .unwrap();
+    let b = queries::create_meeting(&pool, "Retro", "b", "", chrono::Utc::now())
+        .await
+        .unwrap();
+    queries::insert_segment(
+        &pool,
+        a.id,
+        Stream::Them,
+        "Speaker 1",
+        "we should ship the widget",
+        1.0,
+        2.0,
+        None,
+    )
+    .await
+    .unwrap();
+    queries::insert_segment(
+        &pool,
+        b.id,
+        Stream::Me,
+        "Me",
+        "the widget needs tests",
+        3.0,
+        4.0,
+        None,
+    )
+    .await
+    .unwrap();
+    queries::insert_segment(
+        &pool,
+        b.id,
+        Stream::Them,
+        "Speaker 1",
+        "unrelated chatter",
+        5.0,
+        6.0,
+        None,
+    )
+    .await
+    .unwrap();
+
+    // A term present in two meetings returns a hit from each, with its meeting context + a snippet.
+    let (status, body) = send(&app, get("/api/search?q=widget")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["total"], 2);
+    let meeting_ids: Vec<String> = body["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|h| h["meeting_id"].as_str().unwrap().to_string())
+        .collect();
+    assert!(meeting_ids.contains(&a.id.to_string()));
+    assert!(meeting_ids.contains(&b.id.to_string()));
+    // The snippet wraps the match in the U+E000/U+E001 sentinels for client-side highlighting.
+    assert!(body["items"][0]["snippet"]
+        .as_str()
+        .unwrap()
+        .contains('\u{E000}'));
+
+    // A non-matching term is an empty page, not an error.
+    let (status, body) = send(&app, get("/api/search?q=nonexistentxyz")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["total"], 0);
+
+    // An empty query is a valid empty result (not a 422).
+    let (status, body) = send(&app, get("/api/search?q=")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["total"], 0);
+}
+
+#[tokio::test]
+async fn editing_a_segment_updates_the_search_index() {
+    let (app, pool, _tmp) = setup().await;
+    let m = queries::create_meeting(&pool, "M", "f", "", chrono::Utc::now())
+        .await
+        .unwrap();
+    let seg = queries::insert_segment(
+        &pool,
+        m.id,
+        Stream::Me,
+        "Me",
+        "aardvark original",
+        1.0,
+        2.0,
+        None,
+    )
+    .await
+    .unwrap();
+
+    let (status, body) = send(
+        &app,
+        patch(
+            &format!("/api/meetings/{}/segments/{}", m.id, seg.id),
+            r#"{"text":"pangolin replacement"}"#,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["text"], "pangolin replacement");
+    assert_eq!(body["edited"], true);
+
+    // The FTS `segments_au` trigger re-indexed the edit: the new text matches, the old does not.
+    let (_s, found) = send(&app, get("/api/search?q=pangolin")).await;
+    assert_eq!(found["total"], 1);
+    let (_s, gone) = send(&app, get("/api/search?q=aardvark")).await;
+    assert_eq!(gone["total"], 0);
+}
+
+#[tokio::test]
+async fn edit_segment_validates_and_404s() {
+    let (app, pool, _tmp) = setup().await;
+    let m = queries::create_meeting(&pool, "M", "f", "", chrono::Utc::now())
+        .await
+        .unwrap();
+    let seg = queries::insert_segment(&pool, m.id, Stream::Me, "Me", "hello", 1.0, 2.0, None)
+        .await
+        .unwrap();
+
+    // Empty/whitespace text is rejected at the boundary.
+    let (status, _) = send(
+        &app,
+        patch(
+            &format!("/api/meetings/{}/segments/{}", m.id, seg.id),
+            r#"{"text":"   "}"#,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+
+    // Unknown segment id is a 404.
+    let (status, _) = send(
+        &app,
+        patch(
+            &format!("/api/meetings/{}/segments/{}", m.id, Uuid::new_v4()),
+            r#"{"text":"x"}"#,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn edit_notes_marks_edited_and_tracks_stale() {
+    let (app, pool, _tmp) = setup().await;
+    let m = queries::create_meeting(&pool, "M", "f", "", chrono::Utc::now())
+        .await
+        .unwrap();
+    queries::insert_segment(&pool, m.id, Stream::Me, "Me", "hello there", 1.0, 2.0, None)
+        .await
+        .unwrap();
+    // Seed generated notes (as the LLM step would).
+    queries::upsert_meeting_notes(
+        &pool,
+        m.id,
+        &queries::NotesResult {
+            summary: "auto summary".into(),
+            action_items: vec!["do a thing".into()],
+        },
+        "test-model",
+    )
+    .await
+    .unwrap();
+
+    // Freshly generated notes: not edited, not stale.
+    let (status, body) = send(&app, get(&format!("/api/meetings/{}/notes", m.id))).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["edited"], false);
+    assert_eq!(body["stale"], false);
+
+    // Editing a segment after the notes were generated makes them stale.
+    let seg = queries::list_segments(&pool, m.id).await.unwrap().remove(0);
+    let (status, _) = send(
+        &app,
+        patch(
+            &format!("/api/meetings/{}/segments/{}", m.id, seg.id),
+            r#"{"text":"hello world"}"#,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (_s, body) = send(&app, get(&format!("/api/meetings/{}/notes", m.id))).await;
+    assert_eq!(body["stale"], true);
+
+    // Editing the notes sets `edited` and clears `stale` (they are now the newest write). Blank
+    // action items are dropped.
+    let (status, body) = send(
+        &app,
+        patch(
+            &format!("/api/meetings/{}/notes", m.id),
+            r#"{"summary":"hand edited","action_items":["fixed item",""]}"#,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["summary"], "hand edited");
+    assert_eq!(body["edited"], true);
+    assert_eq!(body["stale"], false);
+    assert_eq!(body["action_items"].as_array().unwrap().len(), 1);
+
+    // The edit persists on a subsequent read (until a regenerate would clear `edited`).
+    let (_s, body) = send(&app, get(&format!("/api/meetings/{}/notes", m.id))).await;
+    assert_eq!(body["edited"], true);
+    assert_eq!(body["stale"], false);
+}
+
+#[tokio::test]
+async fn edit_notes_is_404_without_generated_notes() {
+    let (app, pool, _tmp) = setup().await;
+    let m = queries::create_meeting(&pool, "M", "f", "", chrono::Utc::now())
+        .await
+        .unwrap();
+    let (status, _) = send(
+        &app,
+        patch(
+            &format!("/api/meetings/{}/notes", m.id),
+            r#"{"summary":"x","action_items":[]}"#,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn reveal_unknown_meeting_is_404() {
+    // Only the not-found path is exercised (it returns before touching the OS file manager, so the
+    // test has no side effect); the success path opens Finder and is left to manual verification.
+    let (app, _pool, _tmp) = setup().await;
+    let (status, _) = send(
+        &app,
+        post(&format!("/api/meetings/{}/reveal", Uuid::new_v4()), ""),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}

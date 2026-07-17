@@ -71,6 +71,14 @@ pub trait LiveEngine: Send + Sync {
         true
     }
 
+    /// Re-render a meeting's on-disk exports (`transcript.md` + `meeting.json`, and `notes.md` when it
+    /// has notes) from the current DB rows. Called best-effort after an in-app edit so the exported
+    /// files stay in step with the edited transcript/notes; the DB remains the source of truth
+    /// regardless. Default no-op for engines without an export path (e.g. [`DisabledEngine`]).
+    async fn export_meeting(&self, _meeting_id: Uuid) -> Result<(), LiveError> {
+        Ok(())
+    }
+
     /// Await any in-flight background work (e.g. a post-stop refine + transcript write) so a graceful
     /// shutdown does not cut one off mid-write. Default no-op for engines with no background tasks.
     async fn shutdown(&self) {}

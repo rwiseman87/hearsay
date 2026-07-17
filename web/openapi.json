@@ -549,6 +549,54 @@
             "description": ""
           }
         }
+      },
+      "patch": {
+        "tags": [
+          "notes"
+        ],
+        "operationId": "edit_notes",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NotesEdit"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MeetingNotesRead"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          },
+          "422": {
+            "description": ""
+          }
+        }
       }
     },
     "/api/meetings/{id}/rediarize": {
@@ -583,6 +631,37 @@
             "description": ""
           },
           "409": {
+            "description": ""
+          },
+          "503": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/api/meetings/{id}/reveal": {
+      "post": {
+        "tags": [
+          "meetings"
+        ],
+        "summary": "Open this meeting's recordings folder (audio, transcript, notes, meeting.json) in the OS file\nmanager — the per-meeting analog of the Settings \"Reveal data folder\" action, reusing the same\n`open`-in-Finder helper. Runs in the core (a native process in the user's login session), reached\nover the same-origin HTTP API. Failures surface the reason (not a generic 500) so a broken reveal\nis diagnosable.",
+        "operationId": "reveal_meeting",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": ""
+          },
+          "404": {
             "description": ""
           },
           "503": {
@@ -638,6 +717,65 @@
                 }
               }
             }
+          }
+        }
+      }
+    },
+    "/api/meetings/{id}/segments/{segment_id}": {
+      "patch": {
+        "tags": [
+          "meetings"
+        ],
+        "operationId": "edit_segment",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "segment_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SegmentEdit"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SegmentRead"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          },
+          "422": {
+            "description": ""
           }
         }
       }
@@ -835,6 +973,59 @@
             "description": ""
           },
           "409": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/api/search": {
+      "get": {
+        "tags": [
+          "search"
+        ],
+        "operationId": "search",
+        "parameters": [
+          {
+            "name": "q",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "page_size",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_SearchHit"
+                }
+              }
+            }
+          },
+          "422": {
             "description": ""
           }
         }
@@ -1328,7 +1519,9 @@
           "action_items",
           "model",
           "created_at",
-          "updated_at"
+          "updated_at",
+          "edited",
+          "stale"
         ],
         "properties": {
           "action_items": {
@@ -1341,8 +1534,16 @@
             "type": "string",
             "format": "date-time"
           },
+          "edited": {
+            "type": "boolean",
+            "description": "Whether these notes have been manually edited (drives the \"edited\" badge + the regenerate\noverwrite warning)."
+          },
           "model": {
             "type": "string"
+          },
+          "stale": {
+            "type": "boolean",
+            "description": "Whether the transcript changed after these notes were generated/edited — i.e. the notes may be\nout of date. Computed at read time (a mutating response sets it `false`)."
           },
           "summary": {
             "type": "string"
@@ -1490,6 +1691,25 @@
           },
           "refine_model_exists": {
             "type": "boolean"
+          }
+        }
+      },
+      "NotesEdit": {
+        "type": "object",
+        "description": "A manual notes edit: replace the `summary` and `action_items`. Validated at the boundary\n(length-bounded summary, capped item count/length).",
+        "required": [
+          "summary",
+          "action_items"
+        ],
+        "properties": {
+          "action_items": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "summary": {
+            "type": "string"
           }
         }
       },
@@ -1693,6 +1913,83 @@
           }
         }
       },
+      "Page_SearchHit": {
+        "type": "object",
+        "description": "Paginated list envelope used by every list endpoint (`{ total, page, page_size, items }`).",
+        "required": [
+          "total",
+          "page",
+          "page_size",
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "One transcript-search hit for the API: the matched segment with enough meeting context to render\nand navigate to it. `snippet` is the matched text with each match wrapped in the private-use\nsentinels U+E000/U+E001, which the client swaps for highlight markup.",
+              "required": [
+                "meeting_id",
+                "meeting_title",
+                "meeting_status",
+                "started_at",
+                "segment_id",
+                "stream",
+                "speaker_label",
+                "start_s",
+                "snippet"
+              ],
+              "properties": {
+                "meeting_id": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "meeting_status": {
+                  "$ref": "#/components/schemas/MeetingStatus"
+                },
+                "meeting_title": {
+                  "type": "string"
+                },
+                "segment_id": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "snippet": {
+                  "type": "string"
+                },
+                "speaker_label": {
+                  "type": "string"
+                },
+                "start_s": {
+                  "type": "number",
+                  "format": "double"
+                },
+                "started_at": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "stream": {
+                  "$ref": "#/components/schemas/Stream"
+                }
+              }
+            }
+          },
+          "page": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "page_size": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "total": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
       "Page_SegmentRead": {
         "type": "object",
         "description": "Paginated list envelope used by every list endpoint (`{ total, page, page_size, items }`).",
@@ -1714,7 +2011,8 @@
                 "speaker_label",
                 "text",
                 "start_s",
-                "end_s"
+                "end_s",
+                "edited"
               ],
               "properties": {
                 "cluster_id": {
@@ -1723,6 +2021,10 @@
                     "null"
                   ],
                   "format": "uuid"
+                },
+                "edited": {
+                  "type": "boolean",
+                  "description": "Whether this segment's text has been manually edited (drives the \"edited\" badge + the\ndiscard-on-refine warning)."
                 },
                 "end_s": {
                   "type": "number",
@@ -1894,6 +2196,66 @@
           }
         }
       },
+      "SearchHit": {
+        "type": "object",
+        "description": "One transcript-search hit for the API: the matched segment with enough meeting context to render\nand navigate to it. `snippet` is the matched text with each match wrapped in the private-use\nsentinels U+E000/U+E001, which the client swaps for highlight markup.",
+        "required": [
+          "meeting_id",
+          "meeting_title",
+          "meeting_status",
+          "started_at",
+          "segment_id",
+          "stream",
+          "speaker_label",
+          "start_s",
+          "snippet"
+        ],
+        "properties": {
+          "meeting_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "meeting_status": {
+            "$ref": "#/components/schemas/MeetingStatus"
+          },
+          "meeting_title": {
+            "type": "string"
+          },
+          "segment_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "snippet": {
+            "type": "string"
+          },
+          "speaker_label": {
+            "type": "string"
+          },
+          "start_s": {
+            "type": "number",
+            "format": "double"
+          },
+          "started_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "stream": {
+            "$ref": "#/components/schemas/Stream"
+          }
+        }
+      },
+      "SegmentEdit": {
+        "type": "object",
+        "description": "A manual transcript edit: replace a segment's `text`. Validated at the boundary (non-empty,\nlength-bounded).",
+        "required": [
+          "text"
+        ],
+        "properties": {
+          "text": {
+            "type": "string"
+          }
+        }
+      },
       "SegmentRead": {
         "type": "object",
         "description": "A transcript segment for the API.",
@@ -1903,7 +2265,8 @@
           "speaker_label",
           "text",
           "start_s",
-          "end_s"
+          "end_s",
+          "edited"
         ],
         "properties": {
           "cluster_id": {
@@ -1912,6 +2275,10 @@
               "null"
             ],
             "format": "uuid"
+          },
+          "edited": {
+            "type": "boolean",
+            "description": "Whether this segment's text has been manually edited (drives the \"edited\" badge + the\ndiscard-on-refine warning)."
           },
           "end_s": {
             "type": "number",
@@ -2176,6 +2543,10 @@
     {
       "name": "notes",
       "description": "Local-LLM meeting summaries + action items"
+    },
+    {
+      "name": "search",
+      "description": "Full-text transcript search across meetings"
     },
     {
       "name": "models",

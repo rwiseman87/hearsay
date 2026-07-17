@@ -74,6 +74,39 @@ interface SidebarCtx {
   setDragging: (drag: Drag) => void;
 }
 
+// A crisp disclosure chevron that rotates from ▸ (collapsed) to ▾ (expanded); an SVG reads far
+// cleaner at this size than a font glyph (which looked like a stray dot).
+function Chevron({ open }: { open: boolean }) {
+  return (
+    <svg
+      className="folder__chevron-svg"
+      style={{ transform: open ? "rotate(90deg)" : "none" }}
+      width="9"
+      height="9"
+      viewBox="0 0 16 16"
+      aria-hidden="true"
+    >
+      <path
+        d="M5.5 3L11 8l-5.5 5"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2.2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+// A small filled folder glyph, so a folder reads unmistakably as a folder.
+function FolderGlyph() {
+  return (
+    <svg width="15" height="13" viewBox="0 0 16 14" aria-hidden="true" fill="currentColor">
+      <path d="M0 2.4A1.4 1.4 0 011.4 1h3.9c.37 0 .72.15.99.41L7.6 2.6h7A1.4 1.4 0 0116 4v7.6A1.4 1.4 0 0114.6 13H1.4A1.4 1.4 0 010 11.6V2.4z" />
+    </svg>
+  );
+}
+
 function MeetingRow({
   meeting,
   depth,
@@ -166,9 +199,12 @@ function MeetingRow({
         </form>
       ) : (
         <>
+          <span className="meetings__lead" aria-hidden="true" />
           <button type="button" className="meetings__open" onClick={() => ctx.onSelect(meeting.id)}>
             <span className="meetings__title">{meeting.title}</span>
-            <span className={`badge badge--${meeting.status}`}>{meeting.status}</span>
+            {meeting.status !== "finalized" ? (
+              <span className={`badge badge--${meeting.status}`}>{meeting.status}</span>
+            ) : null}
           </button>
           {confirming ? (
             <span className="meetings__confirm">
@@ -324,8 +360,11 @@ function FolderNode({
           aria-label={collapsed ? `Expand ${folder.name}` : `Collapse ${folder.name}`}
           onClick={() => ctx.toggleCollapse(folder.id)}
         >
-          <span className="folder__chevron">{collapsed ? "▸" : "▾"}</span>
+          <Chevron open={!collapsed} />
         </button>
+        <span className="folder__icon" aria-hidden="true">
+          <FolderGlyph />
+        </span>
         {editing ? (
           <form
             className="meetings__edit"
@@ -476,14 +515,14 @@ function FolderNode({
               </button>
             </form>
           ) : null}
-          {childFolders.map((child) => (
-            <FolderNode key={child.id} folder={child} depth={depth + 1} ctx={ctx} />
-          ))}
           <ul className="folder__meetings">
             {folderMeetings.map((meeting) => (
               <MeetingRow key={meeting.id} meeting={meeting} depth={depth + 1} ctx={ctx} />
             ))}
           </ul>
+          {childFolders.map((child) => (
+            <FolderNode key={child.id} folder={child} depth={depth + 1} ctx={ctx} />
+          ))}
         </>
       ) : null}
     </div>
@@ -535,8 +574,11 @@ function UnfiledSection({ meetings, ctx }: { meetings: MeetingRead[]; ctx: Sideb
           aria-label={collapsed ? "Expand Unfiled" : "Collapse Unfiled"}
           onClick={() => ctx.toggleCollapse("unfiled")}
         >
-          <span className="folder__chevron">{collapsed ? "▸" : "▾"}</span>
+          <Chevron open={!collapsed} />
         </button>
+        <span className="folder__icon" aria-hidden="true">
+          <FolderGlyph />
+        </span>
         <button type="button" className="folder__name" onClick={() => ctx.toggleCollapse("unfiled")}>
           Unfiled
         </button>

@@ -129,7 +129,7 @@ export interface paths {
         delete?: never;
         options?: never;
         head?: never;
-        patch?: never;
+        patch: operations["edit_notes"];
         trace?: never;
     };
     "/api/meetings/{id}/rediarize": {
@@ -142,6 +142,29 @@ export interface paths {
         get?: never;
         put?: never;
         post: operations["rediarize"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/meetings/{id}/reveal": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Open this meeting's recordings folder (audio, transcript, notes, meeting.json) in the OS file
+         *     manager — the per-meeting analog of the Settings "Reveal data folder" action, reusing the same
+         *     `open`-in-Finder helper. Runs in the core (a native process in the user's login session), reached
+         *     over the same-origin HTTP API. Failures surface the reason (not a generic 500) so a broken reveal
+         *     is diagnosable.
+         */
+        post: operations["reveal_meeting"];
         delete?: never;
         options?: never;
         head?: never;
@@ -162,6 +185,22 @@ export interface paths {
         options?: never;
         head?: never;
         patch?: never;
+        trace?: never;
+    };
+    "/api/meetings/{id}/segments/{segment_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch: operations["edit_segment"];
         trace?: never;
     };
     "/api/meetings/{id}/speakers": {
@@ -238,6 +277,22 @@ export interface paths {
         get: operations["download_status"];
         put?: never;
         post: operations["start_download"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/search": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["search"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -494,7 +549,17 @@ export interface components {
             action_items: string[];
             /** Format: date-time */
             created_at: string;
+            /**
+             * @description Whether these notes have been manually edited (drives the "edited" badge + the regenerate
+             *     overwrite warning).
+             */
+            edited: boolean;
             model: string;
+            /**
+             * @description Whether the transcript changed after these notes were generated/edited — i.e. the notes may be
+             *     out of date. Computed at read time (a mutating response sets it `false`).
+             */
+            stale: boolean;
             summary: string;
             /** Format: date-time */
             updated_at: string;
@@ -563,6 +628,14 @@ export interface components {
             default_refine_model: string;
             notes_model_exists: boolean;
             refine_model_exists: boolean;
+        };
+        /**
+         * @description A manual notes edit: replace the `summary` and `action_items`. Validated at the boundary
+         *     (length-bounded summary, capped item count/length).
+         */
+        NotesEdit: {
+            action_items: string[];
+            summary: string;
         };
         /** @description Paginated list envelope used by every list endpoint (`{ total, page, page_size, items }`). */
         Page_FolderRead: {
@@ -633,10 +706,39 @@ export interface components {
             total: number;
         };
         /** @description Paginated list envelope used by every list endpoint (`{ total, page, page_size, items }`). */
+        Page_SearchHit: {
+            items: {
+                /** Format: uuid */
+                meeting_id: string;
+                meeting_status: components["schemas"]["MeetingStatus"];
+                meeting_title: string;
+                /** Format: uuid */
+                segment_id: string;
+                snippet: string;
+                speaker_label: string;
+                /** Format: double */
+                start_s: number;
+                /** Format: date-time */
+                started_at: string;
+                stream: components["schemas"]["Stream"];
+            }[];
+            /** Format: int32 */
+            page: number;
+            /** Format: int32 */
+            page_size: number;
+            /** Format: int64 */
+            total: number;
+        };
+        /** @description Paginated list envelope used by every list endpoint (`{ total, page, page_size, items }`). */
         Page_SegmentRead: {
             items: {
                 /** Format: uuid */
                 cluster_id?: string | null;
+                /**
+                 * @description Whether this segment's text has been manually edited (drives the "edited" badge + the
+                 *     discard-on-refine warning).
+                 */
+                edited: boolean;
                 /** Format: double */
                 end_s: number;
                 /** Format: uuid */
@@ -710,10 +812,42 @@ export interface components {
              */
             kind: "resync";
         };
+        /**
+         * @description One transcript-search hit for the API: the matched segment with enough meeting context to render
+         *     and navigate to it. `snippet` is the matched text with each match wrapped in the private-use
+         *     sentinels U+E000/U+E001, which the client swaps for highlight markup.
+         */
+        SearchHit: {
+            /** Format: uuid */
+            meeting_id: string;
+            meeting_status: components["schemas"]["MeetingStatus"];
+            meeting_title: string;
+            /** Format: uuid */
+            segment_id: string;
+            snippet: string;
+            speaker_label: string;
+            /** Format: double */
+            start_s: number;
+            /** Format: date-time */
+            started_at: string;
+            stream: components["schemas"]["Stream"];
+        };
+        /**
+         * @description A manual transcript edit: replace a segment's `text`. Validated at the boundary (non-empty,
+         *     length-bounded).
+         */
+        SegmentEdit: {
+            text: string;
+        };
         /** @description A transcript segment for the API. */
         SegmentRead: {
             /** Format: uuid */
             cluster_id?: string | null;
+            /**
+             * @description Whether this segment's text has been manually edited (drives the "edited" badge + the
+             *     discard-on-refine warning).
+             */
+            edited: boolean;
             /** Format: double */
             end_s: number;
             /** Format: uuid */
@@ -1277,6 +1411,49 @@ export interface operations {
             };
         };
     };
+    edit_notes: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["NotesEdit"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MeetingNotesRead"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     rediarize: {
         parameters: {
             query?: never;
@@ -1316,6 +1493,37 @@ export interface operations {
             };
         };
     };
+    reveal_meeting: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     list_segments: {
         parameters: {
             query?: {
@@ -1337,6 +1545,50 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["Page_SegmentRead"];
                 };
+            };
+        };
+    };
+    edit_segment: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                segment_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SegmentEdit"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SegmentRead"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };
@@ -1498,6 +1750,35 @@ export interface operations {
                 content?: never;
             };
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    search: {
+        parameters: {
+            query?: {
+                q?: string;
+                page?: number;
+                page_size?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Page_SearchHit"];
+                };
+            };
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };

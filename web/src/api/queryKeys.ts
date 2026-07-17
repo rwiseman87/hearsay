@@ -25,6 +25,11 @@ export const queryKeys = {
     all: ["identities"] as const,
     list: (page: number, pageSize: number) => ["identities", "list", page, pageSize] as const,
   },
+  // Full-text transcript search, keyed by the (trimmed) query string.
+  search: {
+    all: ["search"] as const,
+    query: (q: string) => ["search", q] as const,
+  },
   settings: {
     all: ["settings"] as const,
     permissions: ["settings", "permissions"] as const,

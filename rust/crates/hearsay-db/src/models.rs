@@ -88,6 +88,10 @@ pub struct Segment {
     pub end_s: f64,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    /// Set once a user manually edits this segment's text, so the UI can badge it and warn before a
+    /// re-diarize would discard the edit. Defaults to `0`; refine-inserted segments are unedited.
+    #[sqlx(default)]
+    pub edited: bool,
 }
 
 /// A person identity row (a named, recognizable speaker).
@@ -136,4 +140,8 @@ pub struct MeetingNotes {
     pub model: String,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    /// Set once a user manually edits these notes, so a regenerate can warn before overwriting them.
+    /// Cleared (`0`) whenever the LLM (re)generates the notes.
+    #[sqlx(default)]
+    pub edited: bool,
 }

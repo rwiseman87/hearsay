@@ -6,6 +6,7 @@ pub mod folders;
 pub mod meetings;
 pub mod models;
 pub mod notes;
+pub mod search;
 pub mod settings;
 pub mod speakers;
 pub mod web;

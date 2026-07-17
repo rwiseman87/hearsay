@@ -9,7 +9,7 @@ use utoipa::ToSchema;
 use uuid::Uuid;
 
 use hearsay_db::models::{Folder, Identity, Meeting, MeetingNotes, Segment};
-use hearsay_db::queries::SpeakerRow;
+use hearsay_db::queries::{SearchHitRow, SpeakerRow};
 
 /// Lifecycle state of a meeting (lowercase on the wire): `recording` while live, `refining` while the
 /// post-stop refine + transcript write run in the background, then `finalized`.
@@ -123,6 +123,12 @@ pub struct MeetingNotesRead {
     pub model: String,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    /// Whether these notes have been manually edited (drives the "edited" badge + the regenerate
+    /// overwrite warning).
+    pub edited: bool,
+    /// Whether the transcript changed after these notes were generated/edited — i.e. the notes may be
+    /// out of date. Computed at read time (a mutating response sets it `false`).
+    pub stale: bool,
 }
 
 impl From<MeetingNotes> for MeetingNotesRead {
@@ -133,8 +139,18 @@ impl From<MeetingNotes> for MeetingNotesRead {
             model: n.model,
             created_at: n.created_at,
             updated_at: n.updated_at,
+            edited: n.edited,
+            stale: false,
         }
     }
+}
+
+/// A manual notes edit: replace the `summary` and `action_items`. Validated at the boundary
+/// (length-bounded summary, capped item count/length).
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+pub struct NotesEdit {
+    pub summary: String,
+    pub action_items: Vec<String>,
 }
 
 /// A transcript segment for the API.
@@ -147,6 +163,9 @@ pub struct SegmentRead {
     pub text: String,
     pub start_s: f64,
     pub end_s: f64,
+    /// Whether this segment's text has been manually edited (drives the "edited" badge + the
+    /// discard-on-refine warning).
+    pub edited: bool,
 }
 
 impl From<Segment> for SegmentRead {
@@ -159,6 +178,46 @@ impl From<Segment> for SegmentRead {
             text: s.text,
             start_s: s.start_s,
             end_s: s.end_s,
+            edited: s.edited,
+        }
+    }
+}
+
+/// A manual transcript edit: replace a segment's `text`. Validated at the boundary (non-empty,
+/// length-bounded).
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+pub struct SegmentEdit {
+    pub text: String,
+}
+
+/// One transcript-search hit for the API: the matched segment with enough meeting context to render
+/// and navigate to it. `snippet` is the matched text with each match wrapped in the private-use
+/// sentinels U+E000/U+E001, which the client swaps for highlight markup.
+#[derive(Debug, Clone, PartialEq, Serialize, ToSchema)]
+pub struct SearchHit {
+    pub meeting_id: Uuid,
+    pub meeting_title: String,
+    pub meeting_status: MeetingStatus,
+    pub started_at: DateTime<Utc>,
+    pub segment_id: Uuid,
+    pub stream: Stream,
+    pub speaker_label: String,
+    pub start_s: f64,
+    pub snippet: String,
+}
+
+impl From<SearchHitRow> for SearchHit {
+    fn from(row: SearchHitRow) -> Self {
+        SearchHit {
+            meeting_id: row.meeting_id,
+            meeting_title: row.meeting_title,
+            meeting_status: row.meeting_status.into(),
+            started_at: row.started_at,
+            segment_id: row.segment_id,
+            stream: row.stream.into(),
+            speaker_label: row.speaker_label,
+            start_s: row.start_s,
+            snippet: row.snippet,
         }
     }
 }

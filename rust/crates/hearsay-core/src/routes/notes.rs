@@ -13,12 +13,21 @@ use hearsay_engine::LiveError;
 
 use crate::error::{ApiError, ApiResult};
 use crate::extract::{Json, Path};
-use crate::schema::MeetingNotesRead;
+use crate::schema::{MeetingNotesRead, NotesEdit};
 use crate::state::AppState;
+
+/// Boundary limits for a manual notes edit (reject over-large payloads as 422, never let them reach
+/// the DB / LLM prompt).
+const MAX_SUMMARY_LEN: usize = 20_000;
+const MAX_ACTION_ITEMS: usize = 200;
+const MAX_ACTION_ITEM_LEN: usize = 2_000;
 
 /// Routes served under the `/api` prefix (token-gated by the caller).
 pub fn router() -> Router<AppState> {
-    Router::new().route("/meetings/{id}/notes", post(generate_notes).get(read_notes))
+    Router::new().route(
+        "/meetings/{id}/notes",
+        post(generate_notes).get(read_notes).patch(edit_notes),
+    )
 }
 
 #[utoipa::path(
@@ -73,5 +82,64 @@ pub(crate) async fn read_notes(
     let notes = queries::get_meeting_notes(&state.pool, id)
         .await?
         .ok_or(ApiError::NotFound("no notes for this meeting"))?;
+    // The notes are "stale" when the transcript changed after they were generated/edited — a later
+    // segment edit bumps that segment's `updated_at` past the notes' `updated_at`.
+    let stale = queries::latest_segment_update(&state.pool, id)
+        .await?
+        .is_some_and(|latest| latest > notes.updated_at);
+    let mut read = MeetingNotesRead::from(notes);
+    read.stale = stale;
+    Ok(Json(read))
+}
+
+#[utoipa::path(
+    patch, path = "/api/meetings/{id}/notes", tag = "notes",
+    params(("id" = Uuid, Path)),
+    request_body = NotesEdit,
+    responses((status = 200, body = MeetingNotesRead), (status = 404), (status = 409), (status = 422)),
+)]
+pub(crate) async fn edit_notes(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    Json(body): Json<NotesEdit>,
+) -> ApiResult<Json<MeetingNotesRead>> {
+    // Editing is finalized-only: never touch a meeting whose transcript is still being written.
+    if state.engine.active_meeting() == Some(id) {
+        return Err(ApiError::Conflict(
+            "cannot edit notes for a meeting while it is recording".into(),
+        ));
+    }
+    let summary = body.summary.trim();
+    if summary.chars().count() > MAX_SUMMARY_LEN {
+        return Err(ApiError::Unprocessable(format!(
+            "summary exceeds {MAX_SUMMARY_LEN} characters"
+        )));
+    }
+    if body.action_items.len() > MAX_ACTION_ITEMS {
+        return Err(ApiError::Unprocessable(format!(
+            "too many action items (max {MAX_ACTION_ITEMS})"
+        )));
+    }
+    // Drop blank items (a trailing empty input is normal in the editor) and length-check the rest.
+    let mut items: Vec<String> = Vec::with_capacity(body.action_items.len());
+    for item in &body.action_items {
+        let trimmed = item.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if trimmed.chars().count() > MAX_ACTION_ITEM_LEN {
+            return Err(ApiError::Unprocessable(format!(
+                "an action item exceeds {MAX_ACTION_ITEM_LEN} characters"
+            )));
+        }
+        items.push(trimmed.to_string());
+    }
+    let notes = queries::update_meeting_notes(&state.pool, id, summary, &items)
+        .await?
+        .ok_or(ApiError::NotFound("no notes for this meeting"))?;
+    // Keep notes.md in step with the edit (best-effort; the DB is the source of truth).
+    if let Err(err) = state.engine.export_meeting(id).await {
+        tracing::warn!(error = ?err, meeting_id = %id, "notes edit: re-export failed");
+    }
     Ok(Json(notes.into()))
 }

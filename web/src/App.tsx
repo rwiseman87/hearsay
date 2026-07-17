@@ -12,6 +12,7 @@ import {
 import { useMeetings } from "./api/hooks";
 import type { MeetingRead } from "./api/types";
 import { MeetingList } from "./components/MeetingList";
+import { SearchBox } from "./components/SearchBox";
 import { TranscriptView } from "./components/TranscriptView";
 
 // Route-level code splitting: the settings page loads only when opened.
@@ -46,6 +47,16 @@ export function App() {
   const items = meetings.data?.items ?? [];
   const selected: MeetingRead | null = items.find((m) => m.id === selectedId) ?? null;
 
+  // A pending "jump to this moment" from a global search result. The nonce makes each jump distinct
+  // so repeated jumps to the same meeting/time re-trigger the scroll in TranscriptView.
+  const [jump, setJump] = useState<{ meetingId: string; startS: number; nonce: number } | null>(null);
+  const jumpNonce = useRef(0);
+  const onJump = (meetingId: string, startS: number) => {
+    setSelectedId(meetingId);
+    jumpNonce.current += 1;
+    setJump({ meetingId, startS, nonce: jumpNonce.current });
+  };
+
   const onResizeStart = (event: ReactPointerEvent<HTMLDivElement>) => {
     event.preventDefault();
     drag.current = { startX: event.clientX, startWidth: sidebarWidth };
@@ -69,6 +80,7 @@ export function App() {
     <div className="app">
       <header className="app__bar">
         <h1 className="app__title">Hearsay - It's what happened, probably</h1>
+        <SearchBox onJump={onJump} />
         <button type="button" className="app__settings" onClick={() => setShowSettings(true)}>
           Settings
         </button>
@@ -98,7 +110,10 @@ export function App() {
           onPointerUp={onResizeEnd}
           onKeyDown={onResizeKey}
         />
-        <TranscriptView meeting={selected} />
+        <TranscriptView
+          meeting={selected}
+          jumpTo={jump && jump.meetingId === selectedId ? { startS: jump.startS, nonce: jump.nonce } : null}
+        />
       </main>
       {showSettings ? (
         <Suspense fallback={null}>

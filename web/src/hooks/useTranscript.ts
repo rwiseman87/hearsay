@@ -15,6 +15,10 @@ export interface TranscriptLine {
   text: string;
   start_s: number;
   end_s: number;
+  // The persisted segment id + edited flag, present only on DB-seeded finals (live WS lines have no
+  // row yet). Drive the inline edit affordance + the "edited" badge; undefined lines are not editable.
+  id?: string;
+  edited?: boolean;
 }
 
 interface State {

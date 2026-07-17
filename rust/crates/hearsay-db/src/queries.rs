@@ -202,6 +202,7 @@ pub async fn insert_segment(
         end_s,
         created_at: now,
         updated_at: now,
+        edited: false,
     };
     sqlx::query(
         "INSERT INTO segments \
@@ -506,6 +507,85 @@ pub async fn list_segments_page(
     .await
 }
 
+/// One transcript-search hit: the matched segment plus the meeting it belongs to and a `snippet()`
+/// of the matching text. The snippet wraps each match in the private-use sentinels U+E000/U+E001
+/// (`char(57344)`/`char(57345)`) so the client can highlight without any HTML in the payload.
+#[derive(Debug, Clone, PartialEq, FromRow)]
+pub struct SearchHitRow {
+    pub meeting_id: Uuid,
+    pub meeting_title: String,
+    pub meeting_status: MeetingStatus,
+    pub started_at: DateTime<Utc>,
+    pub segment_id: Uuid,
+    pub stream: Stream,
+    pub speaker_label: String,
+    pub start_s: f64,
+    pub snippet: String,
+}
+
+/// Total number of segments matching an FTS5 `MATCH` query (for the paginated list envelope).
+/// `match_query` is a bound parameter built by the caller from sanitized tokens.
+pub async fn count_search(pool: &SqlitePool, match_query: &str) -> Result<i64, sqlx::Error> {
+    sqlx::query_scalar("SELECT COUNT(*) FROM segments_fts WHERE segments_fts MATCH ?")
+        .bind(match_query)
+        .fetch_one(pool)
+        .await
+}
+
+/// One page of transcript-search hits across every meeting, ranked by FTS5 relevance (`rank`).
+/// Joins the FTS index back to `segments` (for the segment + its timing/speaker) and `meetings` (for
+/// the meeting context each hit is shown under).
+pub async fn search_segments(
+    pool: &SqlitePool,
+    match_query: &str,
+    limit: i64,
+    offset: i64,
+) -> Result<Vec<SearchHitRow>, sqlx::Error> {
+    sqlx::query_as::<_, SearchHitRow>(
+        "SELECT m.id AS meeting_id, m.title AS meeting_title, m.status AS meeting_status, \
+         m.started_at AS started_at, s.id AS segment_id, s.stream AS stream, \
+         s.speaker_label AS speaker_label, s.start_s AS start_s, \
+         snippet(segments_fts, 0, char(57344), char(57345), '…', 12) AS snippet \
+         FROM segments_fts \
+         JOIN segments s ON s.rowid = segments_fts.rowid \
+         JOIN meetings m ON m.id = s.meeting_id \
+         WHERE segments_fts MATCH ? ORDER BY rank LIMIT ? OFFSET ?",
+    )
+    .bind(match_query)
+    .bind(limit)
+    .bind(offset)
+    .fetch_all(pool)
+    .await
+}
+
+/// Overwrite a segment's transcript `text` (a manual edit), marking it `edited` and stamping
+/// `updated_at`. Scoped by `meeting_id` so an id from another meeting cannot be edited via this
+/// meeting's route. Returns the updated row, or `None` when no such segment exists. The FTS index
+/// re-syncs automatically via the `segments_au` trigger, so the edit is immediately searchable.
+pub async fn update_segment_text(
+    pool: &SqlitePool,
+    meeting_id: Uuid,
+    segment_id: Uuid,
+    text: &str,
+) -> Result<Option<Segment>, sqlx::Error> {
+    let result = sqlx::query(
+        "UPDATE segments SET text = ?, edited = 1, updated_at = ? WHERE id = ? AND meeting_id = ?",
+    )
+    .bind(text)
+    .bind(Utc::now())
+    .bind(segment_id)
+    .bind(meeting_id)
+    .execute(pool)
+    .await?;
+    if result.rows_affected() == 0 {
+        return Ok(None);
+    }
+    sqlx::query_as::<_, Segment>("SELECT * FROM segments WHERE id = ?")
+        .bind(segment_id)
+        .fetch_optional(pool)
+        .await
+}
+
 /// A meeting's speaker clusters joined to their bound identity names, ordered by ordinal.
 pub async fn list_speaker_rows(
     pool: &SqlitePool,
@@ -642,7 +722,7 @@ pub async fn upsert_meeting_notes(
          VALUES (?, ?, ?, ?, ?, ?) \
          ON CONFLICT(meeting_id) DO UPDATE SET \
          summary = excluded.summary, action_items = excluded.action_items, \
-         model = excluded.model, updated_at = excluded.updated_at",
+         model = excluded.model, updated_at = excluded.updated_at, edited = 0",
     )
     .bind(meeting_id)
     .bind(&result.summary)
@@ -663,6 +743,48 @@ pub async fn get_meeting_notes(
     sqlx::query_as::<_, MeetingNotes>("SELECT * FROM meeting_notes WHERE meeting_id = ?")
         .bind(meeting_id)
         .fetch_optional(pool)
+        .await
+}
+
+/// Overwrite a meeting's notes with a manual edit: replace the summary + action items, mark `edited`,
+/// and stamp `updated_at`. `action_items` is stored as a JSON array of strings (matching
+/// [`upsert_meeting_notes`]); `model` is left as-is (the notes still originated from that model, now
+/// hand-corrected). Returns the updated row, or `None` when the meeting has no notes row yet — editing
+/// applies only to already-generated notes.
+pub async fn update_meeting_notes(
+    pool: &SqlitePool,
+    meeting_id: Uuid,
+    summary: &str,
+    action_items: &[String],
+) -> Result<Option<MeetingNotes>, sqlx::Error> {
+    let items =
+        serde_json::to_string(action_items).map_err(|e| sqlx::Error::Encode(Box::new(e)))?;
+    let result = sqlx::query(
+        "UPDATE meeting_notes SET summary = ?, action_items = ?, edited = 1, updated_at = ? \
+         WHERE meeting_id = ?",
+    )
+    .bind(summary)
+    .bind(&items)
+    .bind(Utc::now())
+    .bind(meeting_id)
+    .execute(pool)
+    .await?;
+    if result.rows_affected() == 0 {
+        return Ok(None);
+    }
+    get_meeting_notes(pool, meeting_id).await
+}
+
+/// The most recent `updated_at` across a meeting's segments, or `None` when it has none. Compared
+/// against a notes row's `updated_at` to tell whether the transcript changed *after* the notes were
+/// generated — the "notes out of date" hint that prompts a regenerate.
+pub async fn latest_segment_update(
+    pool: &SqlitePool,
+    meeting_id: Uuid,
+) -> Result<Option<DateTime<Utc>>, sqlx::Error> {
+    sqlx::query_scalar("SELECT MAX(updated_at) FROM segments WHERE meeting_id = ?")
+        .bind(meeting_id)
+        .fetch_one(pool)
         .await
 }
 

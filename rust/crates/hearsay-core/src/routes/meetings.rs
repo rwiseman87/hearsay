@@ -1,8 +1,10 @@
 //! Meetings REST router. Port of `src/hearsay/api/meetings.py`.
 
+use std::path::PathBuf;
+
 use axum::extract::State;
 use axum::http::StatusCode;
-use axum::routing::{get, post, put};
+use axum::routing::{get, patch, post, put};
 use axum::Router;
 use uuid::Uuid;
 
@@ -10,12 +12,17 @@ use hearsay_db::queries;
 
 use crate::error::{ApiError, ApiResult};
 use crate::extract::{Json, Path, Query};
+use crate::routes::settings::reveal_in_file_manager;
 use crate::routes::Pagination;
 use crate::schema::{
-    MeetingCreate, MeetingFolderAssign, MeetingRead, MeetingUpdate, Page, SegmentRead, StatusInfo,
+    MeetingCreate, MeetingFolderAssign, MeetingRead, MeetingUpdate, Page, SegmentEdit, SegmentRead,
+    StatusInfo,
 };
 use crate::state::AppState;
 use hearsay_engine::LiveError;
+
+/// Max length (chars) of an edited segment's text; longer is rejected at the boundary.
+const MAX_SEGMENT_TEXT_LEN: usize = 20_000;
 
 /// Routes served under the `/api` prefix (token-gated by the caller).
 pub fn router() -> Router<AppState> {
@@ -28,8 +35,10 @@ pub fn router() -> Router<AppState> {
                 .delete(delete_meeting),
         )
         .route("/meetings/{id}/segments", get(list_segments))
+        .route("/meetings/{id}/segments/{segment_id}", patch(edit_segment))
         .route("/meetings/{id}/stop", post(stop_meeting))
         .route("/meetings/{id}/folder", put(assign_meeting_folder))
+        .route("/meetings/{id}/reveal", post(reveal_meeting))
         .route("/status", get(read_status))
 }
 
@@ -177,6 +186,42 @@ pub(crate) async fn list_segments(
 }
 
 #[utoipa::path(
+    patch, path = "/api/meetings/{id}/segments/{segment_id}", tag = "meetings",
+    params(("id" = Uuid, Path), ("segment_id" = Uuid, Path)),
+    request_body = SegmentEdit,
+    responses((status = 200, body = SegmentRead), (status = 404), (status = 409), (status = 422)),
+)]
+pub(crate) async fn edit_segment(
+    State(state): State<AppState>,
+    Path((id, segment_id)): Path<(Uuid, Uuid)>,
+    Json(body): Json<SegmentEdit>,
+) -> ApiResult<Json<SegmentRead>> {
+    // Editing is finalized-only: while recording, the live pipeline is still writing segments.
+    if state.engine.active_meeting() == Some(id) {
+        return Err(ApiError::Conflict(
+            "cannot edit a segment while the meeting is recording".into(),
+        ));
+    }
+    let text = body.text.trim();
+    if text.is_empty() {
+        return Err(ApiError::Unprocessable("text must not be empty".into()));
+    }
+    if text.chars().count() > MAX_SEGMENT_TEXT_LEN {
+        return Err(ApiError::Unprocessable(format!(
+            "text exceeds {MAX_SEGMENT_TEXT_LEN} characters"
+        )));
+    }
+    let segment = queries::update_segment_text(&state.pool, id, segment_id, text)
+        .await?
+        .ok_or(ApiError::NotFound("segment not found"))?;
+    // Keep transcript.md in step with the edit (best-effort; the DB is the source of truth).
+    if let Err(err) = state.engine.export_meeting(id).await {
+        tracing::warn!(error = ?err, meeting_id = %id, "segment edit: re-export failed");
+    }
+    Ok(Json(segment.into()))
+}
+
+#[utoipa::path(
     post, path = "/api/meetings/{id}/stop", tag = "meetings",
     params(("id" = Uuid, Path)),
     responses((status = 200, body = MeetingRead), (status = 404), (status = 503)),
@@ -225,5 +270,29 @@ pub(crate) async fn delete_meeting(
             tracing::warn!(error = %err, folder = %folder.display(), "failed to remove meeting folder");
         }
     }
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Open this meeting's recordings folder (audio, transcript, notes, meeting.json) in the OS file
+/// manager — the per-meeting analog of the Settings "Reveal data folder" action, reusing the same
+/// `open`-in-Finder helper. Runs in the core (a native process in the user's login session), reached
+/// over the same-origin HTTP API. Failures surface the reason (not a generic 500) so a broken reveal
+/// is diagnosable.
+#[utoipa::path(
+    post, path = "/api/meetings/{id}/reveal", tag = "meetings",
+    params(("id" = Uuid, Path)),
+    responses((status = 204), (status = 404), (status = 503)),
+)]
+pub(crate) async fn reveal_meeting(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+) -> ApiResult<StatusCode> {
+    let meeting = queries::get_meeting(&state.pool, id)
+        .await?
+        .ok_or(ApiError::NotFound("meeting not found"))?;
+    let dir: PathBuf = meeting.dir_path(&state.settings.output_dir);
+    tokio::task::spawn_blocking(move || reveal_in_file_manager(&dir))
+        .await
+        .map_err(|e| ApiError::Internal(format!("reveal task panicked: {e}")))??;
     Ok(StatusCode::NO_CONTENT)
 }

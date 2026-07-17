@@ -321,7 +321,7 @@ pub(crate) async fn reveal_output_dir(State(state): State<AppState>) -> ApiResul
 /// minimal process environment). `dir` is app-controlled (the effective recordings dir), never
 /// user-supplied, so there is no argument-injection surface. Errors carry the reason for the UI.
 #[cfg(target_os = "macos")]
-fn reveal_in_file_manager(dir: &Path) -> ApiResult<()> {
+pub(crate) fn reveal_in_file_manager(dir: &Path) -> ApiResult<()> {
     tracing::info!(dir = %dir.display(), "reveal: opening recordings dir in Finder");
     let status = std::process::Command::new("/usr/bin/open")
         .arg(dir)
@@ -340,7 +340,7 @@ fn reveal_in_file_manager(dir: &Path) -> ApiResult<()> {
 /// Non-macOS placeholder: the Windows port (planned) will use `explorer`; other targets have no
 /// file manager to drive.
 #[cfg(not(target_os = "macos"))]
-fn reveal_in_file_manager(_dir: &Path) -> ApiResult<()> {
+pub(crate) fn reveal_in_file_manager(_dir: &Path) -> ApiResult<()> {
     Err(ApiError::Unavailable(
         "revealing the recordings folder is not supported on this platform".into(),
     ))

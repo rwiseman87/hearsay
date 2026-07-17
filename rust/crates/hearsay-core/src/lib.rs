@@ -51,6 +51,7 @@ pub fn create_app(state: AppState) -> Router {
         .merge(routes::speakers::router())
         .merge(routes::notes::router())
         .merge(routes::models::router())
+        .merge(routes::search::router())
         .merge(routes::settings::router())
         .route_layer(from_fn_with_state(state.clone(), routes::require_token));
     let api = protected.merge(routes::audio::router());

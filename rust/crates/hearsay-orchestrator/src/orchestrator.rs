@@ -678,6 +678,31 @@ impl LiveEngine for Orchestrator {
         Ok(())
     }
 
+    /// Best-effort re-export after an in-app edit: rewrite `transcript.md` + `meeting.json` from the
+    /// current segments, and `notes.md` when the meeting has notes. A missing meeting is a no-op. The
+    /// file writers log their own failures (the DB edit already succeeded), so this only surfaces an
+    /// error if reading the meeting/notes rows fails.
+    async fn export_meeting(&self, meeting_id: Uuid) -> Result<(), LiveError> {
+        let Some(meeting) = queries::get_meeting(&self.pool, meeting_id)
+            .await
+            .map_err(OrchestratorError::from)?
+        else {
+            return Ok(());
+        };
+        write_transcript(&self.pool, &self.output_dir, &meeting).await;
+        if let Some(notes) = queries::get_meeting_notes(&self.pool, meeting_id)
+            .await
+            .map_err(OrchestratorError::from)?
+        {
+            let result = queries::NotesResult {
+                summary: notes.summary,
+                action_items: serde_json::from_str(&notes.action_items).unwrap_or_default(),
+            };
+            write_notes_file(&self.output_dir, &meeting, &result).await;
+        }
+        Ok(())
+    }
+
     async fn shutdown(&self) {
         self.wait_for_refines().await;
     }

@@ -14,6 +14,7 @@ import type {
   PageFolder,
   PageIdentity,
   PageMeeting,
+  PageSearchHit,
   PageSegment,
   PageSpeaker,
   PermissionsInfo,
@@ -118,6 +119,31 @@ export function useDeleteMeeting() {
   return useMutation({
     mutationFn: (id: string) => api.delete<void>(`/api/meetings/${id}`),
     onSuccess: () => qc.invalidateQueries({ queryKey: queryKeys.meetings.all }),
+  });
+}
+
+// Open a meeting's recordings folder (audio, transcript, notes, meeting.json) in the OS file
+// manager. Runs in the core (a native process), reached over the same-origin HTTP API — the same
+// channel Settings' "Reveal data folder" uses, which works in the packaged app.
+export function useRevealMeeting() {
+  return useMutation({
+    mutationFn: (id: string) => api.post<void>(`/api/meetings/${id}/reveal`),
+  });
+}
+
+// Edit a transcript segment's text (fix an ASR mishearing). The server marks the segment `edited`,
+// re-exports transcript.md, and returns the updated row; invalidate the meeting's segments so the
+// transcript re-renders with the edit (and its "edited" badge).
+export function useEditSegment(meetingId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ segmentId, text }: { segmentId: string; text: string }) =>
+      api.patch<SegmentRead>(`/api/meetings/${meetingId}/segments/${segmentId}`, { text }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: queryKeys.meetings.segments(meetingId) });
+      // The transcript changed, so any generated notes may now be stale — refresh them.
+      qc.invalidateQueries({ queryKey: queryKeys.meetings.notes(meetingId) });
+    },
   });
 }
 
@@ -266,6 +292,30 @@ export function useGenerateNotes(meetingId: string) {
     onSuccess: (notes) => {
       qc.setQueryData<MeetingNotesRead>(queryKeys.meetings.notes(meetingId), notes);
     },
+  });
+}
+
+// Edit a meeting's notes (summary + action items). The server marks them `edited`, re-exports
+// notes.md, and returns the updated row (with `stale: false`); seed it into the cache.
+export function useEditNotes(meetingId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: { summary: string; action_items: string[] }) =>
+      api.patch<MeetingNotesRead>(`/api/meetings/${meetingId}/notes`, body),
+    onSuccess: (notes) => {
+      qc.setQueryData<MeetingNotesRead>(queryKeys.meetings.notes(meetingId), notes);
+    },
+  });
+}
+
+// Full-text transcript search across every meeting. Enabled only for a non-empty query; the caller
+// debounces the input so keystrokes don't each hit the endpoint.
+export function useSearch(query: string) {
+  const q = query.trim();
+  return useQuery({
+    queryKey: queryKeys.search.query(q),
+    queryFn: () => api.get<PageSearchHit>(`/api/search?q=${encodeURIComponent(q)}&page=1&page_size=50`),
+    enabled: q.length > 0,
   });
 }
 
