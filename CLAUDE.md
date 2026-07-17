@@ -8,7 +8,7 @@ AWS Bedrock is configurable.
 Ships as **one Rust + Tauri application** — a signed installer per OS, no interpreter bundle. The
 Rust core is the single source of truth (there is no Python backend; it was removed 2026-07-14 once
 the Rust port reached parity). Canonical architecture: `docs/architecture-cross-platform.md`.
-Resumable task tracker: `docs/TODO.md`. IPC contract: `shared/protocol/ipc.md`.
+IPC contract: `shared/protocol/ipc.md`.
 
 ## Architecture
 

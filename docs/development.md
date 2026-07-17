@@ -131,7 +131,7 @@ Common overrides:
 | Environment | `ENVIRONMENT` | `development` |
 
 `HEARSAY_RECORD` / `HEARSAY_AUTO_REFINE` / `HEARSAY_RECOGNITION_THRESHOLD` are the defaults for the
-editable Settings sections; a stored preference overrides them (see [settings-panels.md](settings-panels.md)).
+editable Settings sections; a stored preference overrides them.
 
 **Audio recording + playback.** When recording is on (default), each meeting records one
 timeline-accurate **stereo** `audio.wav` (Me = left channel, Them = right). This single file serves

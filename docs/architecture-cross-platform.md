@@ -6,7 +6,7 @@ crates; `hearsay-core` runs the full live app on the Mac — capture + streaming
 remaining work** (cpal capture + a pure-Rust streaming transcriber/diarizer). This document is the
 agreed foundation for making Hearsay run on both macOS and Windows and ship as a single, signed,
 one-click installer per OS to technical **and** non-technical users. It supersedes the macOS-only
-assumptions in `CLAUDE.md` where they conflict. Canonical roadmap + progress: `docs/TODO.md`.
+assumptions in `CLAUDE.md` where they conflict.
 
 **Update (2026-07-14):** the Python backend has been removed — the Rust core is now the sole backend
 and the source of truth for the OpenAPI + IPC-fixture codegen.

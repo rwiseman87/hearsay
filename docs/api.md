@@ -240,7 +240,7 @@ downloaded on demand into `HEARSAY_MODELS_DIR`, verified by SHA-256.
 ## Settings
 
 Editable preferences (a writable overlay over the env/startup defaults) plus read-only build and
-permission facts. See [settings-panels.md](settings-panels.md) for the panel model.
+permission facts.
 
 ### `GET /api/settings` — the effective settings
 

@@ -1,6 +1,6 @@
 //! Local-only inference for Hearsay.
 //!
-//! Being built Mac-first, smallest-verifiable-first (see `docs/TODO.md`): the offline ASR path is
+//! Being built Mac-first, smallest-verifiable-first: the offline ASR path is
 //! implemented — [`WhisperAsr`] loads a GGML whisper model and transcribes 16 kHz mono audio into
 //! timestamped segments (whisper.cpp via `whisper-rs`; CPU by default, GPU accel — Metal / Vulkan /
 //! CUDA — is a `whisper-rs` Cargo feature). This is the accuracy-verification harness and the

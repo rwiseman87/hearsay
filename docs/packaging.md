@@ -127,7 +127,7 @@ flowchart TD
 
 - **Not notarized** — by design; recipients run the `xattr` quarantine strip once.
 - **Some panels are informational, not yet editable** — Recording / Speakers / Storage edits take
-  effect on the next meeting (persisted and read at runtime; see `docs/settings-panels.md`). The
+  effect on the next meeting (persisted and read at runtime). The
   Models panel is not built yet, and only Microphone reports a real permission status (the other TCC
   rows read `undetermined` until their capture phases land).
 - **Large DMG** — the ~1.5 GB `ggml-large-v3-turbo` refine model plus the ~1.1 GB FluidAudio live

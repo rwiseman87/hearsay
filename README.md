@@ -46,8 +46,7 @@ stop (`hearsay-diarize` + whisper), which also recognizes returning people by vo
 them to real people** in the UI — names persist and carry across meetings. Me is the mic channel
 and is never diarized. Post-capture, the app also does **full-text search** across transcripts,
 **transcript/notes editing**, **nested meeting folders** (drag-and-drop), and an optional
-**local-LLM notes** step (summary + action items via llama.cpp, off by default). See
-[`docs/TODO.md`](docs/TODO.md) for the phase-by-phase tracker.
+**local-LLM notes** step (summary + action items via llama.cpp, off by default).
 
 ## Quickstart
 
@@ -95,7 +94,6 @@ then drag `Hearsay.app` to the Trash. Full build/install/uninstall notes are in
 | [docs/api.md](docs/api.md) | REST + WebSocket reference: auth model, endpoints, request/response examples. |
 | [docs/packaging.md](docs/packaging.md) | Build the unsigned macOS `.dmg` (no Apple account), install past Gatekeeper, and the in-app erase/uninstall flow. |
 | [shared/protocol/ipc.md](shared/protocol/ipc.md) | The helper <-> core IPC contract (source of truth). |
-| [docs/TODO.md](docs/TODO.md) | Durable, resumable progress tracker. |
 
 ## Repo layout
 
