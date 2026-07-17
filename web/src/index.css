@@ -235,7 +235,14 @@ body {
 
 .meetings__confirm {
   display: flex;
+  flex-wrap: wrap;
   gap: 4px;
+}
+
+.meetings__confirm-hint {
+  flex-basis: 100%;
+  font-size: 11px;
+  color: var(--muted);
 }
 
 .meetings__confirm-yes,

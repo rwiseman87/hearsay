@@ -75,6 +75,17 @@ fn find(id: &str) -> Option<&'static Model> {
     CATALOG.iter().find(|m| m.id == id)
 }
 
+/// Cheap on-disk integrity gate: the file exists and begins with the GGUF magic. Not a full hash
+/// (that runs only on the network path), but it stops a truncated or foreign file that merely
+/// matches the expected byte size from being adopted as a model and handed to llama.cpp.
+fn is_gguf(path: &Path) -> bool {
+    let Ok(mut f) = std::fs::File::open(path) else {
+        return false;
+    };
+    let mut magic = [0u8; 4];
+    f.read_exact(&mut magic).is_ok() && &magic == b"GGUF"
+}
+
 /// Manages the catalog + the single active download and its progress. Held in `AppState` behind an
 /// `Arc`; the progress state is a `Mutex` the background download task updates as bytes arrive.
 pub struct DownloadManager {
@@ -98,7 +109,7 @@ impl DownloadManager {
 
     /// The current download snapshot.
     pub fn status(&self) -> DownloadState {
-        self.state.lock().unwrap().clone()
+        self.state.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
     /// The catalog annotated with which models already resolve on disk, plus the models dir.
@@ -113,7 +124,7 @@ impl DownloadManager {
                 context: m.context.to_string(),
                 note: m.note.to_string(),
                 recommended: m.recommended,
-                installed: self.models_dir.join(m.file).is_file(),
+                installed: is_gguf(&self.models_dir.join(m.file)),
             })
             .collect();
         ModelCatalog {
@@ -128,7 +139,7 @@ impl DownloadManager {
     pub fn start(&self, id: &str, pool: SqlitePool) -> Result<DownloadState, StartError> {
         let model = find(id).ok_or(StartError::UnknownModel)?;
         {
-            let mut st = self.state.lock().unwrap();
+            let mut st = self.state.lock().unwrap_or_else(|e| e.into_inner());
             if matches!(
                 st.status,
                 DownloadStatus::Downloading | DownloadStatus::Verifying
@@ -147,12 +158,15 @@ impl DownloadManager {
         let dest = self.models_dir.join(model.file);
         let state = self.state.clone();
 
-        // Already downloaded (size matches) -> no network, just (re)point the preference.
-        if dest.metadata().map(|m| m.len() as i64).unwrap_or(-1) == model.size_bytes {
+        // Already downloaded (size matches + GGUF magic) -> no network, just (re)point the
+        // preference. The magic check keeps a same-size non-model file from being adopted.
+        if dest.metadata().map(|m| m.len() as i64).unwrap_or(-1) == model.size_bytes
+            && is_gguf(&dest)
+        {
             let path = dest.to_string_lossy().to_string();
             tokio::spawn(async move {
                 let _ = hearsay_db::queries::set_notes_model(&pool, &path).await;
-                let mut st = state.lock().unwrap();
+                let mut st = state.lock().unwrap_or_else(|e| e.into_inner());
                 st.status = DownloadStatus::Ready;
                 st.downloaded_bytes = st.total_bytes;
                 st.message = Some(path);
@@ -179,13 +193,13 @@ impl DownloadManager {
             match dl.unwrap_or_else(|e| Err(format!("download task panicked: {e}"))) {
                 Ok(path) => {
                     let _ = hearsay_db::queries::set_notes_model(&pool, &path).await;
-                    let mut st = state.lock().unwrap();
+                    let mut st = state.lock().unwrap_or_else(|e| e.into_inner());
                     st.status = DownloadStatus::Ready;
                     st.downloaded_bytes = st.total_bytes;
                     st.message = Some(path);
                 }
                 Err(reason) => {
-                    let mut st = state.lock().unwrap();
+                    let mut st = state.lock().unwrap_or_else(|e| e.into_inner());
                     st.status = DownloadStatus::Error;
                     st.message = Some(reason);
                 }
@@ -223,9 +237,14 @@ fn download_and_verify(
     let mut hasher = Sha256::new();
     let existing = std::fs::metadata(part).map(|m| m.len()).unwrap_or(0);
 
+    // ureq's `timeout_recv_body` is a whole-body deadline, not an idle timeout: a flat 120 s failed
+    // every multi-GB catalog download on normal broadband. Budget it from the model size at a ~1
+    // Mbit/s floor (10-min minimum) so legitimate slow links complete; a truly-stuck transfer still
+    // trips it, and the next start resumes from the `.part`.
+    let body_deadline = Duration::from_secs((expected_size / 125_000).max(600));
     let agent = ureq::Agent::config_builder()
         .timeout_connect(Some(Duration::from_secs(30)))
-        .timeout_recv_body(Some(Duration::from_secs(120)))
+        .timeout_recv_body(Some(body_deadline))
         .build()
         .new_agent();
     let mut req = agent.get(url);
@@ -263,7 +282,7 @@ fn download_and_verify(
 
     let mut downloaded = if resuming { existing } else { 0 };
     {
-        let mut st = state.lock().unwrap();
+        let mut st = state.lock().unwrap_or_else(|e| e.into_inner());
         st.downloaded_bytes = downloaded as i64;
         st.total_bytes = expected_size as i64;
     }
@@ -277,11 +296,22 @@ fn download_and_verify(
         if n == 0 {
             break;
         }
+        downloaded += n as u64;
+        // Hard stop: never write past the known model size, so a misbehaving host cannot fill the
+        // disk (the post-loop size check alone would run only after the whole body was written).
+        if downloaded > expected_size {
+            let _ = std::fs::remove_file(part);
+            return Err(format!(
+                "model host sent more than the expected {expected_size} bytes; discarded"
+            ));
+        }
         file.write_all(&buf[..n])
             .map_err(|e| format!("write partial: {e}"))?;
         hasher.update(&buf[..n]);
-        downloaded += n as u64;
-        state.lock().unwrap().downloaded_bytes = downloaded as i64;
+        state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .downloaded_bytes = downloaded as i64;
     }
     file.flush().map_err(|e| format!("flush partial: {e}"))?;
     drop(file);
@@ -292,7 +322,7 @@ fn download_and_verify(
         ));
     }
 
-    state.lock().unwrap().status = DownloadStatus::Verifying;
+    state.lock().unwrap_or_else(|e| e.into_inner()).status = DownloadStatus::Verifying;
     let got = hex_lower(&hasher.finalize());
     if got != expected_sha {
         let _ = std::fs::remove_file(part);
@@ -342,8 +372,11 @@ mod tests {
         let cat = mgr.catalog();
         assert_eq!(cat.items.len(), CATALOG.len());
         assert!(cat.items.iter().all(|e| !e.installed));
-        // Drop a file matching the first model and it reports installed.
-        std::fs::write(tmp.path().join(CATALOG[0].file), b"x").unwrap();
+        // A same-name file that is not a GGUF is not adopted (the magic integrity gate).
+        std::fs::write(tmp.path().join(CATALOG[0].file), b"not a gguf").unwrap();
+        assert!(!mgr.catalog().items[0].installed);
+        // A file with the GGUF magic reports installed.
+        std::fs::write(tmp.path().join(CATALOG[0].file), b"GGUF\0\0\0\0").unwrap();
         assert!(mgr.catalog().items[0].installed);
     }
 }

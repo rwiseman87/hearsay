@@ -414,6 +414,11 @@ function FolderNode({
             ) : null}
             {confirming ? (
               <span className="meetings__confirm">
+                {childFolders.length > 0 ? (
+                  <span className="meetings__confirm-hint" role="alert">
+                    Delete this folder and all its sub-folders? Meetings inside move to Unfiled.
+                  </span>
+                ) : null}
                 <button
                   type="button"
                   className="meetings__confirm-yes"

@@ -441,16 +441,23 @@ pub async fn delete_folder(pool: &SqlitePool, id: Uuid) -> Result<bool, sqlx::Er
 /// Whether `candidate` is `ancestor` itself or lives somewhere in its subtree. This is the cycle
 /// guard for reparenting: moving folder `X` under `candidate` is illegal when
 /// `folder_is_descendant(candidate, X)` (it would place `X` inside its own subtree). Walks the
-/// `parent_id` chain up from `candidate`; the loop is bounded by the tree depth.
+/// `parent_id` chain up from `candidate`, bounded by a visited-set so a (corrupt) pre-existing cycle
+/// cannot spin the loop forever.
 pub async fn folder_is_descendant(
     pool: &SqlitePool,
     candidate: Uuid,
     ancestor: Uuid,
 ) -> Result<bool, sqlx::Error> {
+    let mut seen = std::collections::HashSet::new();
     let mut current = Some(candidate);
     while let Some(id) = current {
         if id == ancestor {
             return Ok(true);
+        }
+        // The reparent guard keeps the tree acyclic, but a corrupt cycle must never spin this loop
+        // (it would pin a pool connection): stop the first time a folder is revisited.
+        if !seen.insert(id) {
+            break;
         }
         current =
             sqlx::query_scalar::<_, Option<Uuid>>("SELECT parent_id FROM folders WHERE id = ?")
@@ -1179,16 +1186,26 @@ pub async fn models_section(
 /// completed download), preserving the section's other fields (`refine_model`, `notes_enabled`) by
 /// merging into the stored object rather than overwriting it.
 pub async fn set_notes_model(pool: &SqlitePool, path: &str) -> Result<(), sqlx::Error> {
-    let mut obj = section_object(pool, SECTION_MODELS)
-        .await?
-        .unwrap_or_default();
-    obj.insert(
-        "notes_model".to_string(),
-        serde_json::Value::String(path.to_string()),
-    );
-    let json = serde_json::to_string(&serde_json::Value::Object(obj))
-        .map_err(|e| sqlx::Error::Encode(Box::new(e)))?;
-    set_preference(pool, SECTION_MODELS, &json).await
+    // Atomic single-statement merge (not read-modify-write): `json_set` updates only `$.notes_model`
+    // in place, preserving the section's other fields, so a background download completing here
+    // cannot race a concurrent settings write into a lost update.
+    let now = Utc::now();
+    sqlx::query(
+        "INSERT INTO preferences (id, section, value, created_at, updated_at) \
+         VALUES (?, ?, json_object('notes_model', ?), ?, ?) \
+         ON CONFLICT(section) DO UPDATE SET \
+             value = json_set(preferences.value, '$.notes_model', ?), \
+             updated_at = excluded.updated_at",
+    )
+    .bind(Uuid::new_v4())
+    .bind(SECTION_MODELS)
+    .bind(path)
+    .bind(now)
+    .bind(now)
+    .bind(path)
+    .execute(pool)
+    .await?;
+    Ok(())
 }
 
 /// Effective notes settings from the same `models` section: `(notes_enabled, notes_model)`. Each

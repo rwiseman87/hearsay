@@ -103,43 +103,49 @@ impl Diarizer for SwiftDiarizer<'_> {
                 stderr.trim()
             )));
         }
-        let diarized: DiarizeOutput = serde_json::from_slice(&stdout)
-            .map_err(|e| InferenceError::Diarize(format!("parse diarize output: {e}")))?;
-
-        // Diarizer speaker label -> 1-based ordinal by first appearance (canonical `order_speakers`).
-        let ordering: Vec<SpeakerTurn> = diarized
-            .turns
-            .iter()
-            .map(|t| SpeakerTurn {
-                speaker: t.speaker.clone(),
-                start_s: t.start_s,
-                end_s: t.end_s,
-            })
-            .collect();
-        let ordinals = order_speakers(&ordering);
-
-        let mut turns: Vec<DiarTurn> = diarized
-            .turns
-            .iter()
-            .map(|t| DiarTurn {
-                speaker: i64::from(ordinals[&t.speaker]),
-                start_s: t.start_s,
-                end_s: t.end_s,
-            })
-            .collect();
-        turns.sort_by(|a, b| a.start_s.total_cmp(&b.start_s));
-
-        // Each speaker's raw voiceprint keyed by the same ordinal (the refine L2-normalizes it); an
-        // embedding for a label with no turn is skipped.
-        let mut embeddings: HashMap<i64, Vec<f32>> = HashMap::new();
-        for speaker in diarized.speakers {
-            if let Some(&ord) = ordinals.get(&speaker.speaker) {
-                embeddings.insert(i64::from(ord), speaker.embedding);
-            }
-        }
-
-        Ok(Diarization { turns, embeddings })
+        parse_diarization(&stdout)
     }
+}
+
+/// Parse the `hearsay-diarize` sidecar's stdout JSON into a [`Diarization`]: speaker labels mapped to
+/// 1-based ordinals by first appearance (canonical `order_speakers`), turns start-sorted, and each
+/// speaker's raw voiceprint keyed by the same ordinal (an embedding for a label with no turn is
+/// skipped; the refine L2-normalizes it later). Pure (no I/O), so the parse + ordinal mapping is
+/// unit-tested against a fixture without the sidecar.
+fn parse_diarization(stdout: &[u8]) -> Result<Diarization, InferenceError> {
+    let diarized: DiarizeOutput = serde_json::from_slice(stdout)
+        .map_err(|e| InferenceError::Diarize(format!("parse diarize output: {e}")))?;
+
+    let ordering: Vec<SpeakerTurn> = diarized
+        .turns
+        .iter()
+        .map(|t| SpeakerTurn {
+            speaker: t.speaker.clone(),
+            start_s: t.start_s,
+            end_s: t.end_s,
+        })
+        .collect();
+    let ordinals = order_speakers(&ordering);
+
+    let mut turns: Vec<DiarTurn> = diarized
+        .turns
+        .iter()
+        .map(|t| DiarTurn {
+            speaker: i64::from(ordinals[&t.speaker]),
+            start_s: t.start_s,
+            end_s: t.end_s,
+        })
+        .collect();
+    turns.sort_by(|a, b| a.start_s.total_cmp(&b.start_s));
+
+    let mut embeddings: HashMap<i64, Vec<f32>> = HashMap::new();
+    for speaker in diarized.speakers {
+        if let Some(&ord) = ordinals.get(&speaker.speaker) {
+            embeddings.insert(i64::from(ord), speaker.embedding);
+        }
+    }
+
+    Ok(Diarization { turns, embeddings })
 }
 
 /// Re-diarize + re-transcribe the Them track through a [`Diarizer`]: each diarizer turn's slice of
@@ -349,5 +355,58 @@ mod tests {
         assert_eq!(centroids.len(), 1);
         let a = &centroids[&1];
         assert!((a[0] - 0.6).abs() < 1e-6 && (a[1] - 0.8).abs() < 1e-6);
+    }
+
+    #[test]
+    fn parse_diarization_orders_speakers_by_time_and_keys_embeddings() {
+        // Turns out of order: A first appears at 1.0, B at 5.0 -> A=1, B=2 (order_speakers sorts by
+        // start). The returned turns are start-sorted; embeddings are keyed by the same ordinal.
+        let json = br#"{
+            "turns": [
+                {"speaker": "B", "start_s": 5.0, "end_s": 6.0},
+                {"speaker": "A", "start_s": 1.0, "end_s": 2.0},
+                {"speaker": "B", "start_s": 8.0, "end_s": 9.0}
+            ],
+            "speakers": [
+                {"speaker": "A", "embedding": [0.1, 0.2]},
+                {"speaker": "B", "embedding": [0.3, 0.4]}
+            ]
+        }"#;
+        let d = parse_diarization(json).unwrap();
+        assert_eq!(
+            d.turns.iter().map(|t| t.start_s).collect::<Vec<_>>(),
+            vec![1.0, 5.0, 8.0]
+        );
+        assert_eq!(d.turns[0].speaker, 1); // A @1.0
+        assert_eq!(d.turns[1].speaker, 2); // B @5.0
+        assert_eq!(d.turns[2].speaker, 2); // B @8.0
+        assert_eq!(d.embeddings[&1], vec![0.1, 0.2]); // A
+        assert_eq!(d.embeddings[&2], vec![0.3, 0.4]); // B
+    }
+
+    #[test]
+    fn parse_diarization_defaults_missing_speakers_and_skips_unturned_embeddings() {
+        // No `speakers` field -> empty embeddings, not a parse failure.
+        let d = parse_diarization(br#"{"turns":[{"speaker":"S1","start_s":0.0,"end_s":1.0}]}"#)
+            .unwrap();
+        assert_eq!(d.turns.len(), 1);
+        assert_eq!(d.turns[0].speaker, 1);
+        assert!(d.embeddings.is_empty());
+
+        // An embedding for a label with no turn is skipped (not keyed to a phantom ordinal).
+        let d2 = parse_diarization(
+            br#"{"turns":[{"speaker":"S1","start_s":0.0,"end_s":1.0}],
+                 "speakers":[{"speaker":"ghost","embedding":[1.0]}]}"#,
+        )
+        .unwrap();
+        assert!(d2.embeddings.is_empty());
+    }
+
+    #[test]
+    fn parse_diarization_rejects_malformed_json() {
+        assert!(matches!(
+            parse_diarization(b"not json at all"),
+            Err(InferenceError::Diarize(_))
+        ));
     }
 }
