@@ -1,7 +1,7 @@
 //! Speaker attribution — pure logic (no ML, no I/O), unit-tested in isolation.
 //!
 //! Cross-meeting voiceprint matching plus the diarization mapping helpers `order_speakers` /
-//! `assign_segment_speaker`. See `docs/architecture-cross-platform.md`.
+//! `assign_segment_speaker`. See `docs/architecture.md`.
 
 pub mod mapping;
 pub mod voiceprint;

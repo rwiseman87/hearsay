@@ -6,7 +6,7 @@
 //! CUDA — is a `whisper-rs` Cargo feature). This is the accuracy-verification harness and the
 //! orchestrator's post-meeting refine.
 //!
-//! Still to come (see the crate stub notes / `docs/architecture-cross-platform.md`): offline
+//! Still to come (see `docs/architecture.md`): offline
 //! diarization (Silero VAD + a speaker-embedding ONNX model) with WER/DER scoring, then the
 //! streaming `Transcriber` sidecar for live captions.
 

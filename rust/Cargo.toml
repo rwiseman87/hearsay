@@ -1,5 +1,5 @@
 # Hearsay Rust workspace — cross-platform (macOS + Windows) foundation.
-# Target architecture: ../docs/architecture-cross-platform.md
+# Architecture: ../docs/architecture.md
 #
 # Scaffold only: crates are stubs with no external dependencies yet. Dependencies are added and
 # pinned to verified latest versions as each crate is implemented (see rust/README.md).

@@ -20,7 +20,7 @@
 //! wired, [`Orchestrator::stop_meeting`] auto-runs the post-meeting refine (re-diarize +
 //! re-transcribe the Them track, replacing the live guesses) before writing the transcript —
 //! best-effort, so a missing recording or a refine error never fails the stop. See
-//! `docs/architecture-cross-platform.md`.
+//! `docs/architecture.md`.
 
 mod error;
 mod markdown;

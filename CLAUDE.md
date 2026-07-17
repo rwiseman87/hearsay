@@ -6,9 +6,8 @@ speakers, and streams Markdown notes. Transcription, diarization, and the LLM ru
 AWS Bedrock is configurable.
 
 Ships as **one Rust + Tauri application** — a signed installer per OS, no interpreter bundle. The
-Rust core is the single source of truth (there is no Python backend; it was removed 2026-07-14 once
-the Rust port reached parity). Canonical architecture: `docs/architecture-cross-platform.md`.
-IPC contract: `shared/protocol/ipc.md`.
+Rust core is the single backend and the single source of truth (there is no Python backend).
+Canonical architecture: `docs/architecture.md`. IPC contract: `shared/protocol/ipc.md`.
 
 ## Architecture
 
@@ -131,7 +130,7 @@ shared/protocol/ipc.md  IPC contract (source of truth)   ·   shared/fixtures/  
 
 ## Speaker Identification (guardrails)
 
-- Layers today: channel (Me/Them) + diarization (Them only, Swift/ANE) + cross-meeting voiceprints + manual
+- Layers: channel (Me/Them) + diarization (Them only, Swift/ANE) + cross-meeting voiceprints + manual
   labels. Calendar roster + active-speaker hints are the Phase-3 additions.
 - Bind a diarization cluster -> name by **weighted majority vote** over many sparse hints (the Phase-3 design);
   a single wrong hint must never flip a stable binding. Manual labels lock a binding (votes cannot override).
@@ -158,14 +157,14 @@ shared/protocol/ipc.md  IPC contract (source of truth)   ·   shared/fixtures/  
 
 ## Dependency Decisions
 
-- Rust core canonical (2026-07-14): the Python FastAPI backend was removed once the Rust `hearsay-core`
-  reached parity. Rust is a single self-contained artifact (no interpreter bundle), shares ~90% across
-  macOS + Windows, and makes the loopback API + OpenAPI codegen the one source of truth.
+- Rust core canonical: a single self-contained artifact (no interpreter bundle, no Python backend),
+  ~90% shared across macOS + Windows, with the loopback API + OpenAPI codegen as the one source of
+  truth.
 - Persistence: local-first SQLite via SQLx + forward-only SQL migrations. Single-user desktop app, so no
   Postgres server; the SQLx layer keeps a future Postgres/central pivot cheap.
-- macOS inference reuses the proven Swift/FluidAudio (ANE) sidecars for live ASR + diarization; the offline
+- macOS inference uses the Swift/FluidAudio (ANE) sidecars for live ASR + diarization; the offline
   refine is whisper (`hearsay-inference`). The whisper.cpp-vs-FluidAudio unification for macOS is the one
-  open, verification-gated decision (see `docs/architecture-cross-platform.md`).
+  open, verification-gated decision (see `docs/architecture.md`).
 
 ## Environment Variables
 
