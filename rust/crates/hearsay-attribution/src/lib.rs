@@ -6,5 +6,5 @@
 pub mod mapping;
 pub mod voiceprint;
 
-pub use mapping::{assign_segment_speaker, order_speakers, SpeakerTurn};
+pub use mapping::{assign_segment_speaker, max_overlap_turn, order_speakers, SpeakerTurn};
 pub use voiceprint::{centroid_from_bytes, centroid_to_bytes, match_identity};

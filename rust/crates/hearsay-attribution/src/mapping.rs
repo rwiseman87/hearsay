@@ -26,6 +26,30 @@ pub fn order_speakers(turns: &[SpeakerTurn]) -> HashMap<String, u32> {
     ordinal
 }
 
+/// Index of the turn most overlapping segment `[start_s, end_s]`, or `None` if none overlaps.
+///
+/// Turn times are track-relative; `offset_s` shifts them onto the meeting clock the segment
+/// timestamps use. On a tie the earliest turn wins. Index-returning so a caller keying turns by
+/// something other than the label (e.g. a numeric ordinal) can map the result onto its own list.
+pub fn max_overlap_turn(
+    start_s: f64,
+    end_s: f64,
+    turns: &[SpeakerTurn],
+    offset_s: f64,
+) -> Option<usize> {
+    let mut best: Option<usize> = None;
+    let mut best_overlap = 0.0_f64;
+    for (i, turn) in turns.iter().enumerate() {
+        let overlap =
+            f64::min(end_s, turn.end_s + offset_s) - f64::max(start_s, turn.start_s + offset_s);
+        if overlap > best_overlap {
+            best_overlap = overlap;
+            best = Some(i);
+        }
+    }
+    best
+}
+
 /// Speaker label whose turn most overlaps segment `[start_s, end_s]` (meeting time).
 ///
 /// Turn times are track-relative; `offset_s` shifts them onto the meeting clock the segment
@@ -36,17 +60,7 @@ pub fn assign_segment_speaker(
     turns: &[SpeakerTurn],
     offset_s: f64,
 ) -> Option<&str> {
-    let mut best_label: Option<&str> = None;
-    let mut best_overlap = 0.0_f64;
-    for turn in turns {
-        let overlap =
-            f64::min(end_s, turn.end_s + offset_s) - f64::max(start_s, turn.start_s + offset_s);
-        if overlap > best_overlap {
-            best_overlap = overlap;
-            best_label = Some(turn.speaker.as_str());
-        }
-    }
-    best_label
+    max_overlap_turn(start_s, end_s, turns, offset_s).map(|i| turns[i].speaker.as_str())
 }
 
 #[cfg(test)]
@@ -87,6 +101,17 @@ mod tests {
         assert_eq!(assign_segment_speaker(3.0, 6.0, &turns, 0.0), Some("A"));
         // [6,9]: A overlap = 5-6 < 0; B overlap = 9-6 = 3 -> B.
         assert_eq!(assign_segment_speaker(6.0, 9.0, &turns, 0.0), Some("B"));
+    }
+
+    #[test]
+    fn max_overlap_turn_returns_index_and_breaks_ties_to_earliest() {
+        let turns = vec![turn("A", 0.0, 5.0), turn("B", 4.0, 10.0)];
+        // [3,6]: A overlap = 2, B overlap = 2; tie -> earliest index 0.
+        assert_eq!(max_overlap_turn(3.0, 6.0, &turns, 0.0), Some(0));
+        // [6,9]: only B overlaps -> index 1.
+        assert_eq!(max_overlap_turn(6.0, 9.0, &turns, 0.0), Some(1));
+        // No overlap -> None.
+        assert_eq!(max_overlap_turn(100.0, 101.0, &turns, 0.0), None);
     }
 
     #[test]

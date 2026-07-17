@@ -45,10 +45,19 @@ fn refines_real_meeting_them_track() {
         "expected >= 2 speakers, got {}",
         speakers.len()
     );
-    // Each recognized speaker should carry a stored voiceprint (FluidAudio emits per-speaker means).
-    assert_eq!(
-        output.centroids.len(),
+    // Whole-track attribution keeps a voiceprint only for speakers that appear in the segments (a
+    // speaker may also lack an embedding), so voiceprints never exceed attributed speakers, and each
+    // belongs to one of them.
+    assert!(
+        !output.centroids.is_empty() && output.centroids.len() <= speakers.len(),
+        "expected 1..={} voiceprints, got {}",
         speakers.len(),
-        "expected one voiceprint per speaker"
+        output.centroids.len()
     );
+    for ordinal in output.centroids.keys() {
+        assert!(
+            speakers.contains(ordinal),
+            "voiceprint for unattributed speaker {ordinal}"
+        );
+    }
 }

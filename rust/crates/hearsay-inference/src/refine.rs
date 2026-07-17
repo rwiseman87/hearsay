@@ -6,17 +6,17 @@
 //! embedding); persistence, cross-meeting recognition, and carry-forward of locked manual labels
 //! all live in `hearsay_db::replace_them_segments`, which both this refine's callers go through.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::Read;
 use std::path::Path;
 use std::process::{Command, ExitStatus, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use hearsay_attribution::{order_speakers, SpeakerTurn};
+use hearsay_attribution::{max_overlap_turn, order_speakers, SpeakerTurn};
 use serde::Deserialize;
 
-use crate::asr::WhisperAsr;
+use crate::asr::{AsrSegment, WhisperAsr};
 use crate::diarizer::{DiarTurn, Diarization, Diarizer};
 use crate::error::InferenceError;
 
@@ -148,50 +148,106 @@ fn parse_diarization(stdout: &[u8]) -> Result<Diarization, InferenceError> {
     Ok(Diarization { turns, embeddings })
 }
 
-/// Re-diarize + re-transcribe the Them track through a [`Diarizer`]: each diarizer turn's slice of
-/// the Them track is re-transcribed with whisper into an accurate `Speaker N` segment, and each
-/// speaker's raw voiceprint is L2-normalized into a stored centroid. The diarizer-agnostic refine
-/// entry — the Swift sidecar ([`SwiftDiarizer`], via [`refine_them`]) or `SherpaDiarizer` plugs in.
-/// Blocking (whisper) — call via `spawn_blocking` from async code.
+/// Re-diarize + re-transcribe the Them track through a [`Diarizer`]: the whole track is transcribed
+/// once with whisper, then each ASR segment is attributed to the diarizer turn it most overlaps
+/// ([`assemble_refined_segments`]) into `Speaker N` segments, and each speaker's raw voiceprint is
+/// L2-normalized into a stored centroid. Transcribing whole-track (rather than slicing the track at
+/// turn boundaries and transcribing each turn alone) gives whisper full context and never skips
+/// inter-turn audio, so no speech is dropped. The diarizer-agnostic refine entry — the Swift sidecar
+/// ([`SwiftDiarizer`], via [`refine_them`]) or `SherpaDiarizer` plugs in. Blocking (whisper) — call
+/// via `spawn_blocking` from async code.
 pub fn refine_them_with(
     asr: &WhisperAsr,
     diarizer: &dyn Diarizer,
     them_samples: &[f32],
 ) -> Result<RefineOutput, InferenceError> {
     let diarization = diarizer.diarize(them_samples)?;
+    let asr_segments = asr.transcribe(them_samples)?;
+    let segments = assemble_refined_segments(&asr_segments, &diarization.turns);
 
-    // Re-transcribe each turn's slice of the Them track (turns are start-sorted).
-    let mut segments = Vec::with_capacity(diarization.turns.len());
-    for turn in &diarization.turns {
-        let start = (turn.start_s * SAMPLE_RATE as f64).max(0.0) as usize;
-        let end = ((turn.end_s * SAMPLE_RATE as f64) as usize).min(them_samples.len());
-        if end <= start {
-            continue;
-        }
-        let text = asr
-            .transcribe(&them_samples[start..end])?
-            .into_iter()
-            .map(|s| s.text)
-            .collect::<Vec<_>>()
-            .join(" ")
-            .trim()
-            .to_string();
-        if text.is_empty() {
-            continue;
-        }
-        segments.push(RefinedSegment {
-            ordinal: turn.speaker,
-            text,
-            start_s: turn.start_s,
-            end_s: turn.end_s,
-        });
-    }
-
-    let centroids = build_centroids(&diarization.embeddings);
+    // Keep a voiceprint only for a speaker that actually appears in the refined segments. Whole-track
+    // overlap attribution can leave a speaker whose speech was entirely overlap-dominated with no
+    // segment; that speaker has no cluster to store a voiceprint on, so an orphan centroid would only
+    // waste a cross-meeting recognition match. This keeps `centroids` ⊆ the segments' speakers.
+    let present: HashSet<i64> = segments.iter().map(|s| s.ordinal).collect();
+    let mut centroids = build_centroids(&diarization.embeddings);
+    centroids.retain(|ordinal, _| present.contains(ordinal));
     Ok(RefineOutput {
         segments,
         centroids,
     })
+}
+
+/// Attribute each whole-track ASR segment to the diarizer turn it most overlaps (falling back to the
+/// nearest turn in time when a segment overlaps none, so no transcribed text is dropped), then merge
+/// consecutive same-speaker segments into one `RefinedSegment`. Empty `turns` yields no segments —
+/// there is no speaker to attribute to, which the refine's callers treat as a no-op. Pure — no ML or
+/// I/O, so it is unit-tested without whisper or the diarizer sidecar.
+fn assemble_refined_segments(
+    asr_segments: &[AsrSegment],
+    turns: &[DiarTurn],
+) -> Vec<RefinedSegment> {
+    if turns.is_empty() {
+        return Vec::new();
+    }
+    // Adapt the ordinal-keyed turns to the shared overlap helper; the label is unused — the returned
+    // index maps back to the turn's ordinal below.
+    let overlap_turns: Vec<SpeakerTurn> = turns
+        .iter()
+        .map(|t| SpeakerTurn {
+            speaker: String::new(),
+            start_s: t.start_s,
+            end_s: t.end_s,
+        })
+        .collect();
+
+    let mut segments: Vec<RefinedSegment> = Vec::new();
+    for seg in asr_segments {
+        let text = seg.text.trim();
+        if text.is_empty() {
+            continue;
+        }
+        let idx = max_overlap_turn(seg.start_s, seg.end_s, &overlap_turns, 0.0)
+            .unwrap_or_else(|| nearest_turn(seg.start_s, seg.end_s, turns));
+        let ordinal = turns[idx].speaker;
+        match segments.last_mut() {
+            Some(last) if last.ordinal == ordinal => {
+                last.text.push(' ');
+                last.text.push_str(text);
+                last.end_s = seg.end_s;
+            }
+            _ => segments.push(RefinedSegment {
+                ordinal,
+                text: text.to_string(),
+                start_s: seg.start_s,
+                end_s: seg.end_s,
+            }),
+        }
+    }
+    segments
+}
+
+/// Index of the turn closest in time to segment `[start_s, end_s]` (0 distance if the segment's
+/// midpoint falls inside a turn). `turns` must be non-empty. The fallback for a segment overlapping
+/// no turn, so its text is still attributed rather than dropped.
+fn nearest_turn(start_s: f64, end_s: f64, turns: &[DiarTurn]) -> usize {
+    let mid = (start_s + end_s) / 2.0;
+    let mut best = 0;
+    let mut best_dist = f64::INFINITY;
+    for (i, turn) in turns.iter().enumerate() {
+        let dist = if mid < turn.start_s {
+            turn.start_s - mid
+        } else if mid > turn.end_s {
+            mid - turn.end_s
+        } else {
+            0.0
+        };
+        if dist < best_dist {
+            best_dist = dist;
+            best = i;
+        }
+    }
+    best
 }
 
 /// Re-diarize + re-transcribe the Them track with the Swift `hearsay-diarize` sidecar (the macOS
@@ -408,5 +464,62 @@ mod tests {
             parse_diarization(b"not json at all"),
             Err(InferenceError::Diarize(_))
         ));
+    }
+
+    fn diar(speaker: i64, start_s: f64, end_s: f64) -> DiarTurn {
+        DiarTurn {
+            speaker,
+            start_s,
+            end_s,
+        }
+    }
+
+    fn asr(text: &str, start_s: f64, end_s: f64) -> AsrSegment {
+        AsrSegment {
+            text: text.to_string(),
+            start_s,
+            end_s,
+        }
+    }
+
+    #[test]
+    fn assemble_attributes_each_segment_by_max_overlap() {
+        let turns = vec![diar(1, 0.0, 5.0), diar(2, 5.0, 10.0)];
+        let segs = vec![asr("hello", 0.5, 4.0), asr("world", 5.5, 9.0)];
+        let out = assemble_refined_segments(&segs, &turns);
+        assert_eq!(out.len(), 2);
+        assert_eq!((out[0].ordinal, out[0].text.as_str()), (1, "hello"));
+        assert_eq!((out[1].ordinal, out[1].text.as_str()), (2, "world"));
+    }
+
+    #[test]
+    fn assemble_merges_consecutive_same_speaker_segments() {
+        let turns = vec![diar(1, 0.0, 10.0)];
+        let segs = vec![asr("hello", 0.0, 2.0), asr("there", 2.0, 4.0)];
+        let out = assemble_refined_segments(&segs, &turns);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].ordinal, 1);
+        assert_eq!(out[0].text, "hello there");
+        // The merged segment spans the first start to the last end.
+        assert_eq!((out[0].start_s, out[0].end_s), (0.0, 4.0));
+    }
+
+    #[test]
+    fn assemble_keeps_unoverlapped_text_via_nearest_turn() {
+        // A segment overlapping no turn is attributed to the nearest turn, never dropped.
+        let turns = vec![diar(1, 0.0, 5.0), diar(2, 50.0, 55.0)];
+        let out = assemble_refined_segments(&[asr("stray", 6.0, 7.0)], &turns);
+        assert_eq!(out.len(), 1);
+        assert_eq!((out[0].ordinal, out[0].text.as_str()), (1, "stray"));
+    }
+
+    #[test]
+    fn assemble_skips_blank_segments_and_empty_turns() {
+        let turns = vec![diar(1, 0.0, 5.0)];
+        let out = assemble_refined_segments(&[asr("   ", 0.0, 1.0), asr("real", 1.0, 2.0)], &turns);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].text, "real");
+        // No turns -> nothing to attribute to.
+        assert!(assemble_refined_segments(&[asr("hi", 0.0, 1.0)], &[]).is_empty());
     }
 }
