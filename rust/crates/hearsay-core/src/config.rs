@@ -44,6 +44,17 @@ pub struct Settings {
     /// in a prior meeting (`HEARSAY_RECOGNITION_THRESHOLD`, default 0.6; the `speakers` section
     /// overrides it).
     pub recognition_threshold: f64,
+    /// Default master switch for the inactivity watchdog: nudge (then auto-end) a meeting that runs
+    /// on with no speech (`HEARSAY_INACTIVITY_PROMPT`, default on). The `recording` section overrides
+    /// it per install.
+    pub inactivity_prompt: bool,
+    /// Default minutes of continuous silence (no Me/Them speech) before the in-app "still recording?"
+    /// prompt (`HEARSAY_INACTIVITY_PROMPT_MINUTES`, default 5; the `recording` section overrides it).
+    pub inactivity_prompt_minutes: u64,
+    /// Default minutes of continuous silence before the meeting auto-ends with a logged transcript
+    /// marker (`HEARSAY_INACTIVITY_END_MINUTES`, default 10; must exceed the prompt threshold; the
+    /// `recording` section overrides it).
+    pub inactivity_end_minutes: u64,
     /// Default for the optional local-LLM notes step: generate a summary + action items at stop
     /// (`HEARSAY_NOTES`, default off — opt-in, and needs a downloaded model). The `models` settings
     /// section overrides it per install.
@@ -185,6 +196,10 @@ impl Settings {
         let auto_refine = env_bool("HEARSAY_AUTO_REFINE", false, &mut problems);
         let record = env_bool("HEARSAY_RECORD", true, &mut problems);
         let recognition_threshold = env_recognition_threshold(0.6, &mut problems);
+        let inactivity_prompt = env_bool("HEARSAY_INACTIVITY_PROMPT", true, &mut problems);
+        let inactivity_prompt_minutes =
+            env_u64("HEARSAY_INACTIVITY_PROMPT_MINUTES", 5, &mut problems);
+        let inactivity_end_minutes = env_u64("HEARSAY_INACTIVITY_END_MINUTES", 10, &mut problems);
         let notes_enabled = env_bool("HEARSAY_NOTES", false, &mut problems);
         let refine_timeout =
             Duration::from_secs(env_u64("HEARSAY_REFINE_TIMEOUT_SECS", 1800, &mut problems));
@@ -223,6 +238,9 @@ impl Settings {
             auto_refine,
             record,
             recognition_threshold,
+            inactivity_prompt,
+            inactivity_prompt_minutes,
+            inactivity_end_minutes,
             notes_enabled,
             notes_model: PathBuf::from(env_or("HEARSAY_NOTES_MODEL", "")),
             notes_prompt: env_or(

@@ -116,6 +116,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/meetings/{id}/keep-recording": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * "Keep recording": reset the active meeting's inactivity clock so a present-but-quiet user is not
+         *     nudged again or auto-ended. A no-op for any meeting that is not the current recording session
+         *     (404) — there is no clock to reset. Idempotent and cheap; the client calls it when the user
+         *     dismisses the "still recording?" prompt.
+         */
+        post: operations["keep_recording"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/meetings/{id}/notes": {
         parameters: {
             query?: never;
@@ -806,10 +828,33 @@ export interface components {
             screen_recording: string;
         };
         /**
-         * @description Recording & privacy — the single audio-retention switch (keep one WAV per meeting for playback
-         *     + the post-meeting refine). Editable section; a request body and part of [`SettingsRead`].
+         * @description An inactivity nudge (not a transcript line): the meeting has had no detected speech for
+         *     `silent_seconds`, so the UI shows a "still recording?" banner (Stop / Keep recording). If silence
+         *     continues to the end threshold the meeting auto-ends. Mirrors the orchestrator's `PromptEvent` on
+         *     the wire.
+         */
+        PromptEvent: {
+            /**
+             * @description The constant `kind` discriminant marking a [`PromptEvent`] (`"prompt"`).
+             * @enum {string}
+             */
+            kind: "prompt";
+            /** Format: int64 */
+            silent_seconds: number;
+        };
+        /**
+         * @description Recording & privacy — the audio-retention switch (keep one WAV per meeting for playback + the
+         *     post-meeting refine) plus the inactivity watchdog: whether to nudge (then auto-end) a meeting left
+         *     recording through silence, and the silence thresholds in minutes (the prompt fires at
+         *     `inactivity_prompt_minutes`, the auto-end at the larger `inactivity_end_minutes`). Editable
+         *     section; a request body and part of [`SettingsRead`].
          */
         RecordingSettings: {
+            /** Format: int32 */
+            inactivity_end_minutes: number;
+            inactivity_prompt_enabled: boolean;
+            /** Format: int32 */
+            inactivity_prompt_minutes: number;
             record: boolean;
         };
         /**
@@ -1344,6 +1389,31 @@ export interface operations {
                 content?: never;
             };
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    keep_recording: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -1904,6 +1974,12 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["RecordingSettings"];
                 };
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };

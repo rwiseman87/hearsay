@@ -27,12 +27,17 @@ interface State {
   // True while the transcription sidecars are still loading their models (a cold start), so the UI
   // shows a "preparing" notice instead of a silent gap. Driven by the WS warm-up status frames.
   preparing: boolean;
+  // Set when the server nudges that no speech has been detected for a while (the "still recording?"
+  // banner); carries how long it has been silent. Cleared when speech resumes (any transcript line),
+  // on reset, or by the user acting on the banner. Driven by the WS `prompt` frames.
+  inactivityPrompt: { silentSeconds: number } | null;
 }
 
 type Action =
   | { type: "reset" }
   | { type: "seed"; segments: SegmentRead[]; replace: boolean }
-  | { type: "event"; event: WsMessage };
+  | { type: "event"; event: WsMessage }
+  | { type: "dismissPrompt" };
 
 const lineKey = (line: { stream: string; start_s: number }): string =>
   `${line.stream}:${line.start_s}`;
@@ -40,7 +45,7 @@ const lineKey = (line: { stream: string; start_s: number }): string =>
 function reducer(state: State, action: Action): State {
   switch (action.type) {
     case "reset":
-      return { finals: new Map(), partials: new Map(), preparing: false };
+      return { finals: new Map(), partials: new Map(), preparing: false, inactivityPrompt: null };
     case "seed": {
       // While recording, merge the DB snapshot with the live WS finals (a stale fetch may lag
       // behind the socket). Once finalized, the DB is authoritative -- and the auto-refine has
@@ -54,6 +59,7 @@ function reducer(state: State, action: Action): State {
         finals,
         partials: action.replace ? new Map() : state.partials,
         preparing: state.preparing,
+        inactivityPrompt: state.inactivityPrompt,
       };
     }
     case "event": {
@@ -62,25 +68,32 @@ function reducer(state: State, action: Action): State {
       if (message.kind === "status") {
         return { ...state, preparing: message.state === "warming" };
       }
+      // Inactivity nudge (not a transcript line): raise the "still recording?" banner.
+      if (message.kind === "prompt") {
+        return { ...state, inactivityPrompt: { silentSeconds: message.silent_seconds } };
+      }
       const event = message;
-      // A transcript arriving proves the sidecars are serving, so clear the notice defensively.
+      // A transcript arriving proves the sidecars are serving (clear the "preparing" notice) and is
+      // speech, so it clears any active inactivity prompt.
       if (event.kind === "final") {
         const finals = new Map(state.finals);
         finals.set(lineKey(event), event);
         // A final supersedes the stream's in-flight partial.
         const partials = new Map(state.partials);
         partials.delete(event.stream);
-        return { finals, partials, preparing: false };
+        return { finals, partials, preparing: false, inactivityPrompt: null };
       }
       const partials = new Map(state.partials);
       partials.set(event.stream, event);
-      return { finals: state.finals, partials, preparing: false };
+      return { finals: state.finals, partials, preparing: false, inactivityPrompt: null };
     }
+    case "dismissPrompt":
+      return { ...state, inactivityPrompt: null };
   }
 }
 
 function init(): State {
-  return { finals: new Map(), partials: new Map(), preparing: false };
+  return { finals: new Map(), partials: new Map(), preparing: false, inactivityPrompt: null };
 }
 
 export interface TranscriptState {
@@ -90,6 +103,13 @@ export interface TranscriptState {
   // True while the live transcription sidecars are still loading their models, so the UI can show a
   // "preparing" notice during the start-up gap of a cold start (a pre-warmed start never sets it).
   preparing: boolean;
+  // Set while the server is nudging that no speech has been detected for a while (the "still
+  // recording?" banner); carries the silent duration. `null` when there is no active nudge.
+  inactivityPrompt: { silentSeconds: number } | null;
+  // Locally dismiss the inactivity banner (the "Keep recording" / "Stop" actions hide it until the
+  // next server nudge). Does not reset the server clock — the caller pairs it with the keep-recording
+  // mutation for that.
+  dismissInactivityPrompt: () => void;
 }
 
 // Merges DB-persisted finals with the live WebSocket stream into a single,
@@ -140,5 +160,11 @@ export function useTranscript(meeting: MeetingRead | null): TranscriptState {
     return merged;
   }, [state]);
 
-  return { lines, connection, preparing: isLive && state.preparing };
+  return {
+    lines,
+    connection,
+    preparing: isLive && state.preparing,
+    inactivityPrompt: isLive ? state.inactivityPrompt : null,
+    dismissInactivityPrompt: () => dispatch({ type: "dismissPrompt" }),
+  };
 }

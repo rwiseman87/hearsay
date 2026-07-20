@@ -63,6 +63,20 @@ pub trait LiveEngine: Send + Sync {
         None
     }
 
+    /// Reset the active meeting's inactivity clock — the "Keep recording" action, which tells the
+    /// engine the user is present so a silent-but-attended meeting is not nudged or auto-ended. A
+    /// no-op unless `meeting_id` is the active recording session. Default no-op for engines without
+    /// live capture.
+    fn keep_alive(&self, _meeting_id: Uuid) {}
+
+    /// The active meeting's inactivity-prompt state, so the live WebSocket can snapshot it to a new
+    /// subscriber (a user reopening the window mid-silence). `Some(silent_seconds)` while a prompt is
+    /// active, `None` otherwise or when `meeting_id` is not the active session. Default `None` for
+    /// engines without live capture.
+    fn inactivity_prompt(&self, _meeting_id: Uuid) -> Option<u64> {
+        None
+    }
+
     /// Whether the pre-warmed transcription sidecars for the *next* meeting have finished loading
     /// their models and can transcribe immediately. Lets the UI gate "Start" until a meeting can
     /// actually be used (rather than starting one that shows nothing for ~30 s while models load).

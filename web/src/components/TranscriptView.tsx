@@ -1,6 +1,12 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
-import { useEditSegment, useRediarize, useRevealMeeting, useStopMeeting } from "../api/hooks";
+import {
+  useEditSegment,
+  useKeepRecording,
+  useRediarize,
+  useRevealMeeting,
+  useStopMeeting,
+} from "../api/hooks";
 import { getToken } from "../api/token";
 import type { MeetingRead } from "../api/types";
 import { useTranscript } from "../hooks/useTranscript";
@@ -52,10 +58,12 @@ interface Props {
 
 export function TranscriptView({ meeting, jumpTo }: Props) {
   const stop = useStopMeeting();
+  const keepRecording = useKeepRecording();
   const rediarize = useRediarize(meeting?.id ?? "");
   const reveal = useRevealMeeting();
   const editSegment = useEditSegment(meeting?.id ?? "");
-  const { lines, connection, preparing } = useTranscript(meeting);
+  const { lines, connection, preparing, inactivityPrompt, dismissInactivityPrompt } =
+    useTranscript(meeting);
 
   const audioRef = useRef<HTMLAudioElement>(null);
   const activeRef = useRef<HTMLLIElement>(null);
@@ -306,6 +314,39 @@ export function TranscriptView({ meeting, jumpTo }: Props) {
           )}
         </div>
       </header>
+      {recording && inactivityPrompt ? (
+        <div className="inactivity-banner" role="alert">
+          <span className="inactivity-banner__text">
+            Still recording? No speech detected for about{" "}
+            {Math.max(1, Math.round(inactivityPrompt.silentSeconds / 60))} minute
+            {Math.max(1, Math.round(inactivityPrompt.silentSeconds / 60)) === 1 ? "" : "s"} — this
+            meeting will end automatically if the silence continues.
+          </span>
+          <div className="inactivity-banner__actions">
+            <button
+              type="button"
+              className="inactivity-banner__keep"
+              onClick={() => {
+                keepRecording.mutate(meeting.id);
+                dismissInactivityPrompt();
+              }}
+            >
+              Keep recording
+            </button>
+            <button
+              type="button"
+              className="inactivity-banner__stop"
+              onClick={() => {
+                dismissInactivityPrompt();
+                stop.mutate(meeting.id);
+              }}
+              disabled={stop.isPending}
+            >
+              {stop.isPending ? "Stopping…" : "Stop now"}
+            </button>
+          </div>
+        </div>
+      ) : null}
       {!recording && hasAudio ? (
         <div className="player">
           <audio

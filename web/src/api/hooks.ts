@@ -114,6 +114,15 @@ export function useStopMeeting() {
   });
 }
 
+// "Keep recording" from the inactivity prompt: reset the server-side silence clock so the meeting is
+// not nudged again or auto-ended while the user is present. Fire-and-forget (204, no cache change);
+// 404s harmlessly if the meeting already stopped.
+export function useKeepRecording() {
+  return useMutation({
+    mutationFn: (id: string) => api.post<void>(`/api/meetings/${id}/keep-recording`),
+  });
+}
+
 export function useDeleteMeeting() {
   const qc = useQueryClient();
   return useMutation({

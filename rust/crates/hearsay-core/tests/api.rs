@@ -36,6 +36,9 @@ fn test_settings(output_dir: PathBuf, web_dir: PathBuf) -> Settings {
         auto_refine: false,
         record: true,
         recognition_threshold: 0.6,
+        inactivity_prompt: true,
+        inactivity_prompt_minutes: 5,
+        inactivity_end_minutes: 10,
         notes_enabled: false,
         notes_model: PathBuf::from("no-notes-model"),
         notes_prompt: "Summarize:\n{transcript}".into(),
@@ -860,13 +863,40 @@ async fn permissions_probe_degrades_when_helper_missing() {
 #[tokio::test]
 async fn updates_recording_and_persists_the_override() {
     let (app, _pool, _tmp) = setup().await;
-    let (status, body) = send(&app, put("/api/settings/recording", "{\"record\":false}")).await;
+    // Callers send the whole `recording` section (the server full-replaces it).
+    let (status, body) = send(
+        &app,
+        put(
+            "/api/settings/recording",
+            "{\"record\":false,\"inactivity_prompt_enabled\":true,\
+             \"inactivity_prompt_minutes\":7,\"inactivity_end_minutes\":12}",
+        ),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["record"], false);
+    assert_eq!(body["inactivity_prompt_minutes"], 7);
 
     // The stored override now wins over the config default on the next read.
     let (_status, body) = send(&app, get("/api/settings")).await;
     assert_eq!(body["recording"]["record"], false);
+    assert_eq!(body["recording"]["inactivity_end_minutes"], 12);
+}
+
+#[tokio::test]
+async fn rejects_inactivity_end_not_after_prompt() {
+    let (app, _pool, _tmp) = setup().await;
+    // The auto-end threshold must exceed the prompt threshold; an inverted pair is a 422.
+    let (status, _) = send(
+        &app,
+        put(
+            "/api/settings/recording",
+            "{\"record\":true,\"inactivity_prompt_enabled\":true,\
+             \"inactivity_prompt_minutes\":10,\"inactivity_end_minutes\":10}",
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
 }
 
 #[tokio::test]

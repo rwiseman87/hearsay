@@ -1141,6 +1141,49 @@ pub async fn effective_record(pool: &SqlitePool, default: bool) -> Result<bool, 
         .unwrap_or(default))
 }
 
+/// The parsed `recording` section object (or `None` when unset/corrupt), for the settings route to
+/// resolve each field against its config default — mirrors [`models_section`].
+pub async fn recording_section(
+    pool: &SqlitePool,
+) -> Result<Option<serde_json::Map<String, serde_json::Value>>, sqlx::Error> {
+    section_object(pool, SECTION_RECORDING).await
+}
+
+/// Effective inactivity-watchdog settings (enabled + prompt/end minutes): the stored `recording`
+/// override else the config `default_*`. Each field falls back independently, so a row that predates
+/// these keys (only `record`) still yields usable values. Read at meeting start so a Settings change
+/// takes effect on the next meeting.
+pub async fn effective_inactivity(
+    pool: &SqlitePool,
+    default_enabled: bool,
+    default_prompt_minutes: u64,
+    default_end_minutes: u64,
+) -> Result<(bool, u64, u64), sqlx::Error> {
+    let obj = section_object(pool, SECTION_RECORDING).await?;
+    let enabled = obj
+        .as_ref()
+        .and_then(|o| {
+            o.get("inactivity_prompt_enabled")
+                .and_then(serde_json::Value::as_bool)
+        })
+        .unwrap_or(default_enabled);
+    let prompt_minutes = obj
+        .as_ref()
+        .and_then(|o| {
+            o.get("inactivity_prompt_minutes")
+                .and_then(serde_json::Value::as_u64)
+        })
+        .unwrap_or(default_prompt_minutes);
+    let end_minutes = obj
+        .as_ref()
+        .and_then(|o| {
+            o.get("inactivity_end_minutes")
+                .and_then(serde_json::Value::as_u64)
+        })
+        .unwrap_or(default_end_minutes);
+    Ok((enabled, prompt_minutes, end_minutes))
+}
+
 /// Effective recordings root for a NEW meeting: the stored `storage` override, else `default`. Each
 /// meeting pins its own absolute dir at creation, so changing this never orphans existing meetings.
 pub async fn effective_output_dir(

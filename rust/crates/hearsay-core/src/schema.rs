@@ -319,11 +319,17 @@ pub struct SpeakerRename {
     pub display_name: String,
 }
 
-/// Recording & privacy — the single audio-retention switch (keep one WAV per meeting for playback
-/// + the post-meeting refine). Editable section; a request body and part of [`SettingsRead`].
+/// Recording & privacy — the audio-retention switch (keep one WAV per meeting for playback + the
+/// post-meeting refine) plus the inactivity watchdog: whether to nudge (then auto-end) a meeting left
+/// recording through silence, and the silence thresholds in minutes (the prompt fires at
+/// `inactivity_prompt_minutes`, the auto-end at the larger `inactivity_end_minutes`). Editable
+/// section; a request body and part of [`SettingsRead`].
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct RecordingSettings {
     pub record: bool,
+    pub inactivity_prompt_enabled: bool,
+    pub inactivity_prompt_minutes: u32,
+    pub inactivity_end_minutes: u32,
 }
 
 /// Speaker diarization: re-diarize each meeting at finalize (`auto_refine`) + the cosine at/above
@@ -548,4 +554,22 @@ pub enum ResyncKind {
 pub struct ResyncEvent {
     #[schema(inline)]
     pub kind: ResyncKind,
+}
+
+/// The constant `kind` discriminant marking a [`PromptEvent`] (`"prompt"`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum PromptKind {
+    Prompt,
+}
+
+/// An inactivity nudge (not a transcript line): the meeting has had no detected speech for
+/// `silent_seconds`, so the UI shows a "still recording?" banner (Stop / Keep recording). If silence
+/// continues to the end threshold the meeting auto-ends. Mirrors the orchestrator's `PromptEvent` on
+/// the wire.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ToSchema)]
+pub struct PromptEvent {
+    #[schema(inline)]
+    pub kind: PromptKind,
+    pub silent_seconds: u64,
 }

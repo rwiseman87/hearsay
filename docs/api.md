@@ -105,6 +105,12 @@ Stops capture, flushes the pipeline, rewrites `transcript.md` in timestamp order
 `ended_at`. Returns the updated `MeetingRead` immediately; when a refine or notes step will run,
 the returned status is `refining` and flips to `finalized` when the background work completes.
 
+### `POST /api/meetings/{id}/keep-recording` (dismiss the inactivity prompt)
+
+Resets the active meeting's silence clock — the "Keep recording" action on the inactivity prompt, so
+a present-but-quiet meeting is not nudged again or auto-ended. Returns `204`, or `404` if the
+meeting is not the current recording session (there is no clock to reset).
+
 ### `DELETE /api/meetings/{id}` (delete a meeting)
 
 Stops it if active, removes the database rows (segments, clusters, and notes cascade), and deletes
@@ -253,7 +259,7 @@ Returns every editable section (`recording`, `speakers`, `storage`, `models`) pl
 ```json
 // 200 OK
 {
-  "recording": { "record": true },
+  "recording": { "record": true, "inactivity_prompt_enabled": true, "inactivity_prompt_minutes": 5, "inactivity_end_minutes": 10 },
   "speakers": { "auto_refine": true, "recognition_threshold": 0.6 },
   "storage": { "output_dir": "/Users/you/.../outputs/recordings" },
   "models": { "notes_enabled": false, "notes_model": "", "notes_prompt": "<template with {transcript}>", "refine_model": ".../ggml-large-v3-turbo.bin" },
@@ -266,8 +272,9 @@ Returns every editable section (`recording`, `speakers`, `storage`, `models`) pl
 
 Each takes that section's body and returns it. `storage` validates that `output_dir` is absolute,
 existing, and writable; `speakers` validates `recognition_threshold` in `0..=1`; `models`
-validates the notes model path (must exist and be a GGUF) and the prompt length. All return `422`
-on a bad value.
+validates the notes model path (must exist and be a GGUF) and the prompt length; `recording`, when
+the inactivity prompt is enabled, requires `inactivity_prompt_minutes` >= 1 and strictly less than
+`inactivity_end_minutes` (<= 1440). All return `422` on a bad value.
 
 ### `DELETE /api/settings/models` (reset the models section)
 
@@ -323,12 +330,13 @@ stream's partial with its next final. Me is always `"Me"`; Them partials carry t
 `"Them"`, while finals carry the diarized label (`Speaker N` or a bound name). After a rename,
 re-fetch `/speakers` and `/segments` to pick up new labels.
 
-Two service events share the channel:
+Three service events share the channel:
 
 ```json
 { "kind": "status", "state": "warming" }
 { "kind": "status", "state": "ready" }
 { "kind": "resync" }
+{ "kind": "prompt", "silent_seconds": 300 }
 ```
 
 - `status`: sent on connect when the transcription sidecars are still loading their models (a cold
@@ -337,3 +345,9 @@ Two service events share the channel:
 - `resync`: the subscriber fell behind and the broadcast buffer dropped events. Finals are
   persisted before they are broadcast, so the database is a superset of the stream; on `resync`,
   re-fetch `GET /api/meetings/{id}/segments` and continue.
+- `prompt`: no speech has been detected on either stream for `silent_seconds`, so the UI shows a
+  "still recording?" banner. It is also sent on connect when a prompt is already active (a user
+  reopening the window mid-silence). If the silence continues to the end threshold the meeting
+  auto-ends with a logged transcript marker; the "Keep recording" action
+  (`POST /api/meetings/{id}/keep-recording`) resets the clock. Thresholds are configured in the
+  `recording` settings section.

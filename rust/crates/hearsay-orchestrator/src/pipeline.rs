@@ -11,8 +11,8 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::Arc;
-use std::time::Duration;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use sqlx::SqlitePool;
@@ -53,6 +53,23 @@ const RESYNC_THRESHOLD_S: f64 = 0.2;
 /// `t0_s` too.
 const MAX_SILENCE_PAD_SAMPLES: usize = 5 * 60 * 16_000;
 
+/// How often the inactivity watchdog re-checks the silence clock. Coarse (the thresholds are
+/// minutes), so the tick cost is negligible; fine enough that a prompt/auto-end fires within a few
+/// seconds of crossing its threshold.
+const INACTIVITY_TICK: Duration = Duration::from_secs(15);
+
+/// Resolved inactivity-watchdog thresholds for one meeting (the effective `recording` settings). The
+/// watchdog nudges the UI after `prompt_after` of silence and auto-ends the meeting after `end_after`.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct InactivityConfig {
+    /// Master switch: when `false`, no watchdog is spawned (no prompt, no auto-end).
+    pub enabled: bool,
+    /// Continuous silence before the in-app "still recording?" prompt.
+    pub prompt_after: Duration,
+    /// Continuous silence before the meeting auto-ends (with a logged transcript marker).
+    pub end_after: Duration,
+}
+
 /// How long [`Pipeline::close`] waits for a stream task to wind down before aborting it. Above the
 /// transcriber's own close deadline (drain + reap, 10 s) so a *healthy* sidecar's graceful tail
 /// flush always completes; a *wedged* sidecar (its stream task blocked feeding a full pipe) is
@@ -88,9 +105,26 @@ pub(crate) struct Pipeline {
     /// all are serving. Read by the orchestrator to answer the WebSocket warm-up snapshot so the UI
     /// can show a "preparing" notice instead of a silent gap.
     pub(crate) warming: Arc<AtomicBool>,
+    /// The inactivity watchdog task (silence prompt + auto-end). `None` when the feature is disabled.
+    /// Aborted by [`close`](Self::close): a parked watchdog holding a `broadcast_tx` clone would keep
+    /// the broadcast channel open past the pipeline's life (same reason as `ready_watchers`).
+    inactivity_watchdog: Option<JoinHandle<()>>,
+    /// The silence clock: the [`Instant`] of the last emitted segment on either stream. Set by the
+    /// stream tasks on every segment and reset by [`keep_alive`](Self::keep_alive) (the "Keep
+    /// recording" action). The watchdog measures silence as its elapsed time.
+    last_activity: Arc<Mutex<Instant>>,
+    /// The current inactivity-prompt state for the WebSocket connect-snapshot: `Some(silent_seconds)`
+    /// while a prompt is active, `None` otherwise. Updated by the watchdog.
+    pub(crate) inactivity_prompt: watch::Receiver<Option<u64>>,
 }
 
 impl Pipeline {
+    /// Reset the silence clock to now — the "Keep recording" action. The next watchdog tick then sees
+    /// no silence, clears any active prompt, and re-arms; the auto-end is measured afresh from here.
+    pub(crate) fn keep_alive(&self) {
+        *self.last_activity.lock().unwrap() = Instant::now();
+    }
+
     /// Stop capture, then wait for the tasks to wind down (each transcriber's tail is drained on
     /// close). After this returns, the broadcast channel closes when the pipeline is dropped.
     pub(crate) async fn close(mut self) {
@@ -107,6 +141,12 @@ impl Pipeline {
         // past the pipeline's life.
         for watcher in self.ready_watchers.drain(..) {
             watcher.abort();
+        }
+        // Abort the inactivity watchdog for the same reason (it holds a `broadcast_tx` clone). On an
+        // intentional stop it is simply no longer needed; on the auto-end path it has already fired
+        // and exited, so this is a no-op there.
+        if let Some(watchdog) = self.inactivity_watchdog.take() {
+            watchdog.abort();
         }
         self.source.stop().await;
         // Demux never blocks (it drops-with-log on a full stream queue), so it finishes promptly
@@ -129,16 +169,18 @@ impl Pipeline {
 
 /// Start the source + both transcribers and spawn the routing/handling tasks. `audio_path` is the
 /// `audio.wav` to record (Me=L / Them=R) when recording is enabled, else `None`. Returns the
-/// pipeline plus a receiver that fires once if capture ends **unexpectedly** (helper crash / socket
-/// EOF) rather than via [`Pipeline::close`], so the orchestrator can finalize the meeting instead of
-/// leaving it falsely live.
+/// pipeline plus two one-shot receivers the orchestrator finalizes the meeting on: the first fires if
+/// capture ends **unexpectedly** (helper crash / socket EOF) rather than via [`Pipeline::close`], the
+/// second fires when the inactivity watchdog auto-ends the meeting after sustained silence. Either
+/// path routes through `stop_meeting` so the meeting is never left falsely live.
 pub(crate) async fn spawn(
     instance: BackendInstance,
     pool: SqlitePool,
     meeting_id: Uuid,
     audio_path: Option<PathBuf>,
     ane_gate: Arc<Semaphore>,
-) -> Result<(Pipeline, oneshot::Receiver<()>), OrchestratorError> {
+    inactivity: InactivityConfig,
+) -> Result<(Pipeline, oneshot::Receiver<()>, oneshot::Receiver<()>), OrchestratorError> {
     let BackendInstance {
         mut source,
         mut me,
@@ -218,6 +260,18 @@ pub(crate) async fn spawn(
     let (me_tx, me_rx) = mpsc::channel::<(f64, Vec<f32>)>(PCM_CHANNEL_CAPACITY);
     let (them_tx, them_rx) = mpsc::channel::<(f64, Vec<f32>)>(PCM_CHANNEL_CAPACITY);
 
+    // The silence clock the inactivity watchdog measures. Seeded to now so the warm-up gap (a cold
+    // start emits no segments for ~10 s) counts as silence from meeting start, never as a spurious
+    // long-idle head start. Each stream task stamps it on every emitted segment.
+    let meeting_start = Instant::now();
+    let last_activity = Arc::new(Mutex::new(meeting_start));
+    // The current prompt state for the WS connect-snapshot; the watchdog drives it.
+    let (prompt_tx, prompt_rx) = watch::channel(None::<u64>);
+    // Fires once when the watchdog auto-ends the meeting after sustained silence; the orchestrator
+    // finalizes on it (mirroring `died_rx`). When the feature is disabled, the sender is dropped so
+    // the receiver resolves `Err` and the orchestrator's supervisor no-ops.
+    let (inactive_tx, inactive_rx) = oneshot::channel();
+
     let recorder = audio_path.map(MeetingAudioRecorder::new);
     let intentional_stop = Arc::new(AtomicBool::new(false));
     let (died_tx, died_rx) = oneshot::channel();
@@ -239,17 +293,38 @@ pub(crate) async fn spawn(
         meeting_id,
         broadcast_tx.clone(),
         ane_ready_rx.clone(),
+        last_activity.clone(),
     ));
     let them_task = tokio::spawn(stream_loop(
         StreamRole::Them,
         them,
         them_rx,
         them_emit,
-        pool,
+        pool.clone(),
         meeting_id,
         broadcast_tx.clone(),
         ane_ready_rx,
+        last_activity.clone(),
     ));
+
+    // Spawn the inactivity watchdog only when the feature is enabled; otherwise drop `inactive_tx`
+    // (no auto-end) and leave `prompt_rx` parked at `None`.
+    let inactivity_watchdog = if inactivity.enabled {
+        Some(tokio::spawn(inactivity_watchdog(
+            inactivity,
+            INACTIVITY_TICK,
+            last_activity.clone(),
+            meeting_start,
+            prompt_tx,
+            broadcast_tx.clone(),
+            pool,
+            meeting_id,
+            inactive_tx,
+        )))
+    } else {
+        drop(inactive_tx);
+        None
+    };
 
     Ok((
         Pipeline {
@@ -261,8 +336,12 @@ pub(crate) async fn spawn(
             ane_holder,
             ready_watchers,
             warming,
+            inactivity_watchdog,
+            last_activity,
+            inactivity_prompt: prompt_rx,
         },
         died_rx,
+        inactive_rx,
     ))
 }
 
@@ -356,6 +435,7 @@ async fn stream_loop(
     meeting_id: Uuid,
     broadcast_tx: broadcast::Sender<String>,
     mut ane_ready: watch::Receiver<bool>,
+    last_activity: Arc<Mutex<Instant>>,
 ) {
     // Serialize live inference against the offline refine on the shared ANE permit: wait until this
     // meeting holds it before feeding the sidecar. Recording is unaffected (demux records on its own
@@ -403,6 +483,9 @@ async fn stream_loop(
             },
             seg = emit_rx.recv() => match seg {
                 Some(seg) => {
+                    // Any emitted segment (partial or final, either stream) is VAD-gated speech, so it
+                    // resets the silence clock the inactivity watchdog measures.
+                    *last_activity.lock().unwrap() = Instant::now();
                     handle(
                         role,
                         &seg,
@@ -462,6 +545,136 @@ fn publish_status(broadcast_tx: &broadcast::Sender<String>, state: &str) {
     }) {
         let _ = broadcast_tx.send(line);
     }
+}
+
+/// The escalation stage the inactivity watchdog is in, given the current silence. Pure so the
+/// escalation logic is unit-tested without a running pipeline.
+#[derive(Debug, PartialEq, Eq)]
+enum Stage {
+    /// Below the prompt threshold, or already prompted this silence episode: do nothing.
+    None,
+    /// Crossed the prompt threshold this episode: nudge the UI.
+    Prompt,
+    /// Crossed the end threshold: auto-end the meeting.
+    End,
+}
+
+/// Decide the watchdog's action from the elapsed silence, the thresholds, and whether this silence
+/// episode was already prompted. `end_after` wins over `prompt_after`, so a long-silent meeting ends
+/// even if it was never prompted (e.g. silence that began before the first prompt window elapsed).
+fn silence_stage(silence: Duration, cfg: &InactivityConfig, prompted: bool) -> Stage {
+    if silence >= cfg.end_after {
+        Stage::End
+    } else if silence >= cfg.prompt_after && !prompted {
+        Stage::Prompt
+    } else {
+        Stage::None
+    }
+}
+
+/// A "still recording?" prompt pushed to WebSocket subscribers:
+/// `{"kind":"prompt","silent_seconds":N}`. Field names/order are fixed by the wire contract and
+/// mirrored by `hearsay-core`'s `PromptEvent` schema for the TypeScript codegen.
+#[derive(Serialize)]
+struct PromptEvent<'a> {
+    kind: &'a str,
+    silent_seconds: u64,
+}
+
+fn publish_prompt(broadcast_tx: &broadcast::Sender<String>, silent_seconds: u64) {
+    if let Ok(line) = serde_json::to_string(&PromptEvent {
+        kind: "prompt",
+        silent_seconds,
+    }) {
+        let _ = broadcast_tx.send(line);
+    }
+}
+
+/// The inactivity watchdog: on a coarse tick, measure the silence clock, nudge the UI once per
+/// silence episode at `prompt_after`, and auto-end the meeting at `end_after`. On the end path it
+/// writes a transcript marker (so the finalized meeting records why it stopped) and fires
+/// `inactive_tx` — the orchestrator runs the normal `stop_meeting` from there — then exits. Speech or
+/// a `keep_alive` reset drops the silence back and re-arms the prompt.
+#[allow(clippy::too_many_arguments)]
+async fn inactivity_watchdog(
+    cfg: InactivityConfig,
+    tick: Duration,
+    last_activity: Arc<Mutex<Instant>>,
+    meeting_start: Instant,
+    prompt_tx: watch::Sender<Option<u64>>,
+    broadcast_tx: broadcast::Sender<String>,
+    pool: SqlitePool,
+    meeting_id: Uuid,
+    inactive_tx: oneshot::Sender<()>,
+) {
+    let mut ticker = tokio::time::interval(tick);
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut prompted = false;
+    loop {
+        ticker.tick().await;
+        let silence = last_activity.lock().unwrap().elapsed();
+        match silence_stage(silence, &cfg, prompted) {
+            Stage::None => {
+                // Speech (or a Keep-recording reset) dropped the silence below the prompt threshold:
+                // clear any active prompt and re-arm for the next episode.
+                if prompted && silence < cfg.prompt_after {
+                    prompted = false;
+                    let _ = prompt_tx.send(None);
+                }
+            }
+            Stage::Prompt => {
+                prompted = true;
+                let secs = silence.as_secs();
+                let _ = prompt_tx.send(Some(secs));
+                publish_prompt(&broadcast_tx, secs);
+            }
+            Stage::End => {
+                let t = meeting_start.elapsed().as_secs_f64();
+                write_inactivity_marker(&pool, meeting_id, &broadcast_tx, cfg.end_after, t).await;
+                let _ = inactive_tx.send(());
+                return;
+            }
+        }
+    }
+}
+
+/// Insert + broadcast a synthetic transcript line recording that the meeting auto-ended on silence.
+/// Written on the Me stream with speaker "System" so the Them-only refine at stop preserves it and it
+/// lands in `transcript.md`. Best-effort: a persist failure is logged, never blocks the auto-end.
+async fn write_inactivity_marker(
+    pool: &SqlitePool,
+    meeting_id: Uuid,
+    broadcast_tx: &broadcast::Sender<String>,
+    end_after: Duration,
+    t: f64,
+) {
+    let minutes = end_after.as_secs() / 60;
+    let text = format!("[Recording auto-ended after {minutes} minutes of no speech detected]");
+    if let Err(err) = queries::insert_segment(
+        pool,
+        meeting_id,
+        StreamRole::Me.stream(),
+        "System",
+        &text,
+        t,
+        t,
+        None,
+    )
+    .await
+    {
+        tracing::error!(error = %err, "failed to persist inactivity auto-end marker");
+    }
+    publish(
+        broadcast_tx,
+        &TranscriptEvent {
+            kind: SegmentKind::Final,
+            stream: "me",
+            speaker_label: "System",
+            text: text.as_str(),
+            start_s: t,
+            end_s: t,
+        },
+    );
 }
 
 /// Persist + broadcast one emitted segment, applying the stream's meeting-time `offset`.
@@ -579,5 +792,131 @@ async fn cluster_for(
             tracing::error!(error = %err, ordinal, "failed to create speaker cluster");
             None
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{inactivity_watchdog, silence_stage, InactivityConfig, Stage};
+    use std::sync::{Arc, Mutex};
+    use std::time::{Duration, Instant};
+
+    use chrono::Utc;
+    use hearsay_db::{connect_options, queries, MIGRATOR};
+    use sqlx::sqlite::SqlitePoolOptions;
+    use sqlx::SqlitePool;
+    use tokio::sync::{broadcast, oneshot, watch};
+
+    fn cfg() -> InactivityConfig {
+        InactivityConfig {
+            enabled: true,
+            prompt_after: Duration::from_secs(5 * 60),
+            end_after: Duration::from_secs(10 * 60),
+        }
+    }
+
+    async fn memory_pool() -> SqlitePool {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(connect_options("sqlite::memory:").unwrap())
+            .await
+            .unwrap();
+        MIGRATOR.run(&pool).await.unwrap();
+        pool
+    }
+
+    #[test]
+    fn no_stage_while_speech_is_recent() {
+        // Well under the prompt threshold: nothing fires.
+        assert_eq!(
+            silence_stage(Duration::from_secs(60), &cfg(), false),
+            Stage::None
+        );
+    }
+
+    #[test]
+    fn prompts_once_per_silence_episode() {
+        let c = cfg();
+        // Crossing the prompt threshold un-prompted fires the prompt...
+        assert_eq!(
+            silence_stage(Duration::from_secs(5 * 60), &c, false),
+            Stage::Prompt
+        );
+        // ...but not again while still prompted and below the end threshold (no re-nudge spam).
+        assert_eq!(
+            silence_stage(Duration::from_secs(7 * 60), &c, true),
+            Stage::None
+        );
+    }
+
+    #[test]
+    fn ends_at_the_end_threshold_regardless_of_prompt() {
+        let c = cfg();
+        // The end threshold wins even if the episode was never prompted (e.g. resumed mid-silence).
+        assert_eq!(
+            silence_stage(Duration::from_secs(10 * 60), &c, false),
+            Stage::End
+        );
+        assert_eq!(
+            silence_stage(Duration::from_secs(12 * 60), &c, true),
+            Stage::End
+        );
+    }
+
+    /// Drive the watchdog end-to-end on a fast tick with never-reset silence: it broadcasts a
+    /// `prompt` frame, then auto-ends — writing the transcript marker and firing the inactive signal.
+    #[tokio::test]
+    async fn watchdog_prompts_then_auto_ends_on_silence() {
+        let pool = memory_pool().await;
+        let meeting = queries::create_meeting(&pool, "T", "t", "/tmp/t", Utc::now())
+            .await
+            .unwrap();
+
+        let (broadcast_tx, mut rx) = broadcast::channel::<String>(16);
+        let (prompt_tx, _prompt_rx) = watch::channel(None::<u64>);
+        let (inactive_tx, inactive_rx) = oneshot::channel();
+        let now = Instant::now();
+        let last_activity = Arc::new(Mutex::new(now));
+
+        let watchdog = tokio::spawn(inactivity_watchdog(
+            InactivityConfig {
+                enabled: true,
+                prompt_after: Duration::ZERO,
+                end_after: Duration::from_millis(40),
+            },
+            Duration::from_millis(5),
+            last_activity,
+            now,
+            prompt_tx,
+            broadcast_tx,
+            pool.clone(),
+            meeting.id,
+            inactive_tx,
+        ));
+
+        // A prompt is broadcast before the auto-end.
+        let frame = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+            .await
+            .expect("a prompt frame should arrive")
+            .unwrap();
+        assert!(
+            frame.contains(r#""kind":"prompt""#),
+            "unexpected frame: {frame}"
+        );
+
+        // The auto-end fires, and the transcript gains the System marker.
+        tokio::time::timeout(Duration::from_secs(2), inactive_rx)
+            .await
+            .expect("the inactive signal should fire")
+            .expect("the watchdog should send, not drop, the signal");
+        let _ = watchdog.await;
+
+        let segments = queries::list_segments(&pool, meeting.id).await.unwrap();
+        assert!(
+            segments
+                .iter()
+                .any(|s| s.speaker_label == "System" && s.text.contains("auto-ended")),
+            "expected a System auto-end marker segment, got: {segments:?}"
+        );
     }
 }

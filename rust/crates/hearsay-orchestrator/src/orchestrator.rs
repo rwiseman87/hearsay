@@ -19,7 +19,7 @@ use hearsay_db::queries;
 use hearsay_engine::{LiveEngine, LiveError};
 
 use crate::error::OrchestratorError;
-use crate::pipeline::{self, Pipeline};
+use crate::pipeline::{self, InactivityConfig, Pipeline};
 use crate::traits::{Backend, Refiner, Summarizer};
 
 /// How often the background warm ticker re-checks the sidecar pool while idle. The check is cheap
@@ -47,6 +47,12 @@ pub struct Orchestrator {
     default_record: bool,
     default_auto_refine: bool,
     default_recognition_threshold: f64,
+    /// Config defaults for the inactivity watchdog (the effective values are the stored `recording`
+    /// override else these): master switch + minutes of silence before the prompt and the auto-end.
+    /// Resolved at meeting start so a Settings change takes effect on the next meeting.
+    default_inactivity_enabled: bool,
+    default_inactivity_prompt_minutes: u64,
+    default_inactivity_end_minutes: u64,
     /// Config defaults for the optional local-LLM notes step (the effective values are the stored
     /// `models` override else these): whether to auto-generate at stop, and the fallback GGUF model.
     default_notes_enabled: bool,
@@ -96,6 +102,9 @@ impl Orchestrator {
             default_record: true,
             default_auto_refine: true,
             default_recognition_threshold: 0.6,
+            default_inactivity_enabled: true,
+            default_inactivity_prompt_minutes: 5,
+            default_inactivity_end_minutes: 10,
             default_notes_enabled: false,
             default_notes_model: PathBuf::new(),
             refiner: None,
@@ -112,17 +121,24 @@ impl Orchestrator {
     /// Set the config defaults for the editable settings (the values used when the UI has stored no
     /// override). Typically the resolved `Settings` (env/startup). The UI still overrides these per
     /// meeting via the `preferences` table.
+    #[allow(clippy::too_many_arguments)]
     pub fn with_defaults(
         mut self,
         record: bool,
         auto_refine: bool,
         recognition_threshold: f64,
+        inactivity_enabled: bool,
+        inactivity_prompt_minutes: u64,
+        inactivity_end_minutes: u64,
         notes_enabled: bool,
         notes_model: PathBuf,
     ) -> Self {
         self.default_record = record;
         self.default_auto_refine = auto_refine;
         self.default_recognition_threshold = recognition_threshold;
+        self.default_inactivity_enabled = inactivity_enabled;
+        self.default_inactivity_prompt_minutes = inactivity_prompt_minutes;
+        self.default_inactivity_end_minutes = inactivity_end_minutes;
         self.default_notes_enabled = notes_enabled;
         self.default_notes_model = notes_model;
         self
@@ -208,6 +224,18 @@ impl Orchestrator {
         // recordings root is pinned onto the meeting so it stays locatable if Storage later changes.
         let output_root = queries::effective_output_dir(&self.pool, &self.output_dir).await?;
         let record = queries::effective_record(&self.pool, self.default_record).await?;
+        let (inact_enabled, inact_prompt_min, inact_end_min) = queries::effective_inactivity(
+            &self.pool,
+            self.default_inactivity_enabled,
+            self.default_inactivity_prompt_minutes,
+            self.default_inactivity_end_minutes,
+        )
+        .await?;
+        let inactivity = InactivityConfig {
+            enabled: inact_enabled,
+            prompt_after: Duration::from_secs(inact_prompt_min.saturating_mul(60)),
+            end_after: Duration::from_secs(inact_end_min.saturating_mul(60)),
+        };
         // Folder names have minute resolution, so two same-title meetings within one minute would
         // otherwise resolve to one shared directory that a later delete would wipe. Resolve the first
         // free `<base>`, `<base>-2`, … under the effective root; `start_meeting` is op-lock-serialized
@@ -222,7 +250,10 @@ impl Orchestrator {
         // From here a failure must not strand the row at status=recording (it would render as a live
         // meeting forever). The row has no segments yet, so delete it (and clean up the empty folder)
         // before surfacing the error.
-        match self.launch_pipeline(&meeting, &dir, record).await {
+        match self
+            .launch_pipeline(&meeting, &dir, record, inactivity)
+            .await
+        {
             Ok(()) => Ok(meeting),
             Err(err) => {
                 let _ = queries::delete_meeting(&self.pool, meeting.id).await;
@@ -239,45 +270,52 @@ impl Orchestrator {
         meeting: &Meeting,
         dir: &Path,
         record: bool,
+        inactivity: InactivityConfig,
     ) -> Result<(), OrchestratorError> {
         tokio::fs::create_dir_all(dir).await?;
         let audio_path = record.then(|| dir.join("audio.wav"));
-        let (pipeline, died_rx) = pipeline::spawn(
+        let (pipeline, died_rx, inactive_rx) = pipeline::spawn(
             self.backend.build(),
             self.pool.clone(),
             meeting.id,
             audio_path,
             self.ane_gate.clone(),
+            inactivity,
         )
         .await?;
         *self.active.lock().unwrap() = Some(ActiveSession {
             meeting_id: meeting.id,
             pipeline,
         });
-        self.spawn_capture_supervisor(meeting.id, died_rx);
+        // Two independent auto-finalize signals, each routed through the normal `stop_meeting`:
+        // capture death (helper crash / socket EOF) and the inactivity watchdog's silence auto-end.
+        self.spawn_stop_on_signal(meeting.id, died_rx, "capture died");
+        self.spawn_stop_on_signal(meeting.id, inactive_rx, "inactivity timeout");
         Ok(())
     }
 
-    /// Watch for an unexpected capture death (helper crash / socket EOF): `died_rx` fires only then,
-    /// not on an intentional stop (which drops the sender -> `Err`). On death, finalize the meeting
-    /// through `stop_meeting` so it is not left falsely `recording`/active with a dead pipeline (and
-    /// the closed broadcast channel tells live subscribers). A no-op when the orchestrator was built
-    /// with [`new`](Self::new) alone rather than [`into_arc`](Self::into_arc) (the weak ref is empty),
-    /// as in unit tests that never exercise capture death.
-    fn spawn_capture_supervisor(
+    /// Finalize the meeting through `stop_meeting` when `signal` fires (capture death, or the
+    /// inactivity auto-end). The sender fires only on the real event; it is *dropped* on an
+    /// intentional stop / a disabled watchdog, which resolves the receiver to `Err` — handled as a
+    /// no-op so a normal stop path is never double-finalized. `stop_meeting` is itself idempotent
+    /// (its double-stop guard), so the two supervisors are safe even if both fire. A no-op when the
+    /// orchestrator was built with [`new`](Self::new) alone rather than [`into_arc`](Self::into_arc)
+    /// (the weak ref is empty), as in unit tests that never exercise these signals.
+    fn spawn_stop_on_signal(
         &self,
         meeting_id: Uuid,
-        died_rx: tokio::sync::oneshot::Receiver<()>,
+        signal: tokio::sync::oneshot::Receiver<()>,
+        reason: &'static str,
     ) {
         let weak = self.self_weak.clone();
         tokio::spawn(async move {
-            if died_rx.await.is_err() {
-                return; // intentional stop: nothing to do
+            if signal.await.is_err() {
+                return; // intentional stop / disabled: nothing to do
             }
             if let Some(orch) = weak.upgrade() {
-                tracing::warn!(meeting = %meeting_id, "capture died; finalizing meeting");
+                tracing::warn!(meeting = %meeting_id, reason, "auto-finalizing meeting");
                 if let Err(err) = orch.stop_meeting(meeting_id).await {
-                    tracing::warn!(error = ?err, meeting = %meeting_id, "failed to finalize meeting after capture died");
+                    tracing::warn!(error = ?err, meeting = %meeting_id, reason, "failed to auto-finalize meeting");
                 }
             }
         });
@@ -598,6 +636,23 @@ impl LiveEngine for Orchestrator {
             Some(s) if s.meeting_id == meeting_id => {
                 Some(s.pipeline.warming.load(Ordering::SeqCst))
             }
+            _ => None,
+        }
+    }
+
+    fn keep_alive(&self, meeting_id: Uuid) {
+        let guard = self.active.lock().unwrap();
+        if let Some(s) = guard.as_ref() {
+            if s.meeting_id == meeting_id {
+                s.pipeline.keep_alive();
+            }
+        }
+    }
+
+    fn inactivity_prompt(&self, meeting_id: Uuid) -> Option<u64> {
+        let guard = self.active.lock().unwrap();
+        match guard.as_ref() {
+            Some(s) if s.meeting_id == meeting_id => *s.pipeline.inactivity_prompt.borrow(),
             _ => None,
         }
     }

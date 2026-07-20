@@ -357,8 +357,14 @@ stateDiagram-v2
 ```
 
 Every stop path funnels through the same transition: the API's stop route, a graceful shutdown,
-and the capture-death supervisor all call `stop_meeting`, which stamps the row `refining` when the
-auto-refine will run and `finalized` otherwise.
+the capture-death supervisor, and the inactivity watchdog all call `stop_meeting`, which stamps the
+row `refining` when the auto-refine will run and `finalized` otherwise. The inactivity watchdog runs
+inside the pipeline: it measures the time since the last emitted segment (VAD-gated speech on either
+stream), broadcasts a `prompt` event to the live WebSocket after a configurable silence (default 5
+minutes), and — if the silence continues to the end threshold (default 10 minutes) — writes a
+`System` transcript marker and signals `stop_meeting` to auto-end the meeting. Any speech, or the
+"Keep recording" action, resets the clock; the whole behavior is a toggle in the `recording`
+settings section.
 
 A hard exit (SIGKILL, panic, power loss) can strand a row in `recording` or `refining`. Because
 nothing can be active at startup, the core sweeps every non-terminal row at boot, marks it

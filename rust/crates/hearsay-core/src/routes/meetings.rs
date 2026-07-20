@@ -37,6 +37,7 @@ pub fn router() -> Router<AppState> {
         .route("/meetings/{id}/segments", get(list_segments))
         .route("/meetings/{id}/segments/{segment_id}", patch(edit_segment))
         .route("/meetings/{id}/stop", post(stop_meeting))
+        .route("/meetings/{id}/keep-recording", post(keep_recording))
         .route("/meetings/{id}/folder", put(assign_meeting_folder))
         .route("/meetings/{id}/reveal", post(reveal_meeting))
         .route("/status", get(read_status))
@@ -237,6 +238,26 @@ pub(crate) async fn stop_meeting(
         Err(LiveError::Busy(msg)) => Err(ApiError::Conflict(msg)),
         Err(LiveError::Internal(msg)) => Err(ApiError::Internal(msg)),
     }
+}
+
+/// "Keep recording": reset the active meeting's inactivity clock so a present-but-quiet user is not
+/// nudged again or auto-ended. A no-op for any meeting that is not the current recording session
+/// (404) — there is no clock to reset. Idempotent and cheap; the client calls it when the user
+/// dismisses the "still recording?" prompt.
+#[utoipa::path(
+    post, path = "/api/meetings/{id}/keep-recording", tag = "meetings",
+    params(("id" = Uuid, Path)),
+    responses((status = 204), (status = 404)),
+)]
+pub(crate) async fn keep_recording(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+) -> ApiResult<StatusCode> {
+    if state.engine.active_meeting() != Some(id) {
+        return Err(ApiError::NotFound("meeting is not recording"));
+    }
+    state.engine.keep_alive(id);
+    Ok(StatusCode::NO_CONTENT)
 }
 
 #[utoipa::path(

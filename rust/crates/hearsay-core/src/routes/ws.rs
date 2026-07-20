@@ -63,6 +63,16 @@ async fn stream_transcript(mut socket: WebSocket, state: AppState, meeting_id: U
             return;
         }
     }
+    // Inactivity-prompt snapshot: if the meeting is currently in a silence prompt (a user reopening
+    // the window mid-silence), tell this subscriber up front so it shows the "still recording?" banner
+    // immediately rather than waiting for the next broadcast. Read after subscribing, like the warm-up
+    // snapshot, so a prompt broadcast can never be missed in the gap.
+    if let Some(silent_seconds) = state.engine.inactivity_prompt(meeting_id) {
+        let frame = format!(r#"{{"kind":"prompt","silent_seconds":{silent_seconds}}}"#);
+        if socket.send(Message::Text(frame.into())).await.is_err() {
+            return;
+        }
+    }
     loop {
         match receiver.recv().await {
             Ok(text) => {

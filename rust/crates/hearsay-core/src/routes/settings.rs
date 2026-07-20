@@ -61,13 +61,60 @@ fn about(settings: &Settings) -> AboutInfo {
 }
 
 async fn resolve_recording(state: &AppState) -> ApiResult<RecordingSettings> {
-    match queries::get_preference(&state.pool, SECTION_RECORDING).await? {
-        Some(json) => serde_json::from_str(&json)
-            .map_err(|e| ApiError::Internal(format!("corrupt recording preference: {e}"))),
-        None => Ok(RecordingSettings {
-            record: state.settings.record,
-        }),
+    // Resolve each field against its config default rather than a strict struct parse: a row that
+    // predates the inactivity fields (only `record`) must still resolve, filling the missing fields
+    // from the environment/config default. Mirrors the per-field `resolve_models`.
+    let obj = queries::recording_section(&state.pool).await?;
+    let bool_field = |key: &str, default: bool| {
+        obj.as_ref()
+            .and_then(|o| o.get(key).and_then(serde_json::Value::as_bool))
+            .unwrap_or(default)
+    };
+    let u32_field = |key: &str, default: u32| {
+        obj.as_ref()
+            .and_then(|o| o.get(key).and_then(serde_json::Value::as_u64))
+            .map(|v| v as u32)
+            .unwrap_or(default)
+    };
+    Ok(RecordingSettings {
+        record: bool_field("record", state.settings.record),
+        inactivity_prompt_enabled: bool_field(
+            "inactivity_prompt_enabled",
+            state.settings.inactivity_prompt,
+        ),
+        inactivity_prompt_minutes: u32_field(
+            "inactivity_prompt_minutes",
+            state.settings.inactivity_prompt_minutes as u32,
+        ),
+        inactivity_end_minutes: u32_field(
+            "inactivity_end_minutes",
+            state.settings.inactivity_end_minutes as u32,
+        ),
+    })
+}
+
+/// Bound the inactivity thresholds at the boundary so a bad pair never reaches the watchdog: when
+/// enabled, the prompt must be at least 1 minute and strictly before the auto-end, and the auto-end
+/// within a day. Skipped when disabled (the values are inert).
+fn validate_recording(body: &RecordingSettings) -> ApiResult<()> {
+    if body.inactivity_prompt_enabled {
+        if body.inactivity_prompt_minutes < 1 {
+            return Err(ApiError::Unprocessable(
+                "inactivity_prompt_minutes must be at least 1".into(),
+            ));
+        }
+        if body.inactivity_end_minutes <= body.inactivity_prompt_minutes {
+            return Err(ApiError::Unprocessable(
+                "inactivity_end_minutes must be greater than inactivity_prompt_minutes".into(),
+            ));
+        }
+        if body.inactivity_end_minutes > 1440 {
+            return Err(ApiError::Unprocessable(
+                "inactivity_end_minutes must be at most 1440".into(),
+            ));
+        }
     }
+    Ok(())
 }
 
 async fn resolve_speakers(state: &AppState) -> ApiResult<SpeakerSettings> {
@@ -199,12 +246,14 @@ pub(crate) async fn read_permissions(State(state): State<AppState>) -> Json<Perm
 
 #[utoipa::path(
     put, path = "/api/settings/recording", tag = "settings",
-    request_body = RecordingSettings, responses((status = 200, body = RecordingSettings)),
+    request_body = RecordingSettings,
+    responses((status = 200, body = RecordingSettings), (status = 422)),
 )]
 pub(crate) async fn update_recording(
     State(state): State<AppState>,
     Json(body): Json<RecordingSettings>,
 ) -> ApiResult<Json<RecordingSettings>> {
+    validate_recording(&body)?;
     store_section(&state, SECTION_RECORDING, &body).await?;
     Ok(Json(body))
 }

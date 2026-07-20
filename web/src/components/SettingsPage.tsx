@@ -16,7 +16,7 @@ import {
   useUpdateStorage,
 } from "../api/hooks";
 import { queryKeys } from "../api/queryKeys";
-import type { ModelSettings, SpeakerSettings } from "../api/types";
+import type { ModelSettings, RecordingSettings, SpeakerSettings } from "../api/types";
 
 // The Danger Zone's erase/quit actions are Tauri IPC (desktop shell), not the loopback HTTP API, so
 // they only exist in the packaged app. In a plain browser (dev) the shell isn't there.
@@ -90,30 +90,86 @@ function formatBytes(bytes: number): string {
 function RecordingPanel() {
   const settings = useSettings();
   const update = useUpdateRecording();
-  const record = settings.data?.recording.record ?? true;
+  const recording = settings.data?.recording;
+
+  // Local state for the minute inputs so typing is smooth; commit on blur. The whole section is PUT
+  // each time (the server full-replaces it), so `commit` merges the patch onto the current section.
+  const [promptMin, setPromptMin] = useState(5);
+  const [endMin, setEndMin] = useState(10);
+  const promptMinutes = recording?.inactivity_prompt_minutes;
+  const endMinutes = recording?.inactivity_end_minutes;
+  useEffect(() => {
+    if (promptMinutes !== undefined) setPromptMin(promptMinutes);
+  }, [promptMinutes]);
+  useEffect(() => {
+    if (endMinutes !== undefined) setEndMin(endMinutes);
+  }, [endMinutes]);
+
+  if (settings.isLoading || !recording) return <p className="muted">Loading…</p>;
+
+  const commit = (patch: Partial<RecordingSettings>) => update.mutate({ ...recording, ...patch });
+  const watchdogOn = recording.inactivity_prompt_enabled;
 
   return (
     <div className="settings__panel">
       <h3 className="settings__panel-title">Recording &amp; Privacy</h3>
-      {settings.isLoading ? (
-        <p className="muted">Loading…</p>
-      ) : (
-        <label className="settings__row">
-          <input
-            type="checkbox"
-            checked={record}
-            disabled={update.isPending || settings.isError}
-            onChange={(event) => update.mutate({ record: event.target.checked })}
-          />
-          <span className="settings__row-body">
-            <span className="settings__row-label">Keep meeting audio</span>
-            <span className="settings__row-hint muted">
-              Records one WAV per meeting for playback and the post-meeting refine. Turn off to
-              retain no raw audio. Applies to your next meeting.
-            </span>
+      <label className="settings__row">
+        <input
+          type="checkbox"
+          checked={recording.record}
+          disabled={update.isPending}
+          onChange={(event) => commit({ record: event.target.checked })}
+        />
+        <span className="settings__row-body">
+          <span className="settings__row-label">Keep meeting audio</span>
+          <span className="settings__row-hint muted">
+            Records one WAV per meeting for playback and the post-meeting refine. Turn off to retain
+            no raw audio. Applies to your next meeting.
           </span>
-        </label>
-      )}
+        </span>
+      </label>
+      <label className="settings__row">
+        <input
+          type="checkbox"
+          checked={watchdogOn}
+          disabled={update.isPending}
+          onChange={(event) => commit({ inactivity_prompt_enabled: event.target.checked })}
+        />
+        <span className="settings__row-body">
+          <span className="settings__row-label">Remind me if I leave it recording</span>
+          <span className="settings__row-hint muted">
+            When no one has spoken for a while, show a "still recording?" prompt, then end the meeting
+            automatically if the silence continues. Applies to your next meeting.
+          </span>
+        </span>
+      </label>
+      <div className="settings__field">
+        <span className="settings__row-label">Prompt after (minutes of silence)</span>
+        <input
+          type="number"
+          min={1}
+          max={1440}
+          value={promptMin}
+          disabled={update.isPending || !watchdogOn}
+          aria-label="Prompt after minutes of silence"
+          onChange={(event) => setPromptMin(event.currentTarget.valueAsNumber || 0)}
+          onBlur={() => commit({ inactivity_prompt_minutes: promptMin })}
+        />
+      </div>
+      <div className="settings__field">
+        <span className="settings__row-label">End meeting after (minutes of silence)</span>
+        <input
+          type="number"
+          min={2}
+          max={1440}
+          value={endMin}
+          disabled={update.isPending || !watchdogOn}
+          aria-label="End meeting after minutes of silence"
+          onChange={(event) => setEndMin(event.currentTarget.valueAsNumber || 0)}
+          onBlur={() => commit({ inactivity_end_minutes: endMin })}
+        />
+        <span className="settings__row-hint muted">Must be greater than the prompt time.</span>
+      </div>
       {update.isError ? (
         <p className="settings__error" role="alert">
           {(update.error as Error).message}

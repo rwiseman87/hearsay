@@ -476,6 +476,37 @@ body {
   font-size: 13px;
 }
 
+.inactivity-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin: 8px 16px 0;
+  padding: 10px 14px;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  color: var(--text);
+  font-size: 13px;
+}
+
+.inactivity-banner__text {
+  flex: 1;
+  min-width: 220px;
+}
+
+.inactivity-banner__actions {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.inactivity-banner__stop {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
 .transcript__lines {
   flex: 1;
   min-height: 0;

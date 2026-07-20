@@ -22,8 +22,12 @@ export type StatusEvent = Schemas["StatusEvent"];
 // union — it never becomes a line.
 export type ResyncEvent = Schemas["ResyncEvent"];
 
+// An inactivity nudge (not a transcript line): no speech for `silent_seconds`, so the UI shows a
+// "still recording?" banner. If silence continues the meeting auto-ends server-side.
+export type PromptEvent = Schemas["PromptEvent"];
+
 // Anything the live socket delivers on the transcript path, discriminated by `kind`.
-export type WsMessage = TranscriptEvent | StatusEvent;
+export type WsMessage = TranscriptEvent | StatusEvent | PromptEvent;
 
 // Live-transcript connection state, surfaced to the UI so a dropped socket is visible instead of a
 // silently frozen transcript.

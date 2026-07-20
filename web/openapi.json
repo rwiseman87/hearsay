@@ -476,6 +476,34 @@
         }
       }
     },
+    "/api/meetings/{id}/keep-recording": {
+      "post": {
+        "tags": [
+          "meetings"
+        ],
+        "summary": "\"Keep recording\": reset the active meeting's inactivity clock so a present-but-quiet user is not\nnudged again or auto-ended. A no-op for any meeting that is not the current recording session\n(404) — there is no clock to reset. Idempotent and cheap; the client calls it when the user\ndismisses the \"still recording?\" prompt.",
+        "operationId": "keep_recording",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          }
+        }
+      }
+    },
     "/api/meetings/{id}/notes": {
       "get": {
         "tags": [
@@ -1148,6 +1176,9 @@
                 }
               }
             }
+          },
+          "422": {
+            "description": ""
           }
         }
       }
@@ -2177,13 +2208,51 @@
           }
         }
       },
-      "RecordingSettings": {
+      "PromptEvent": {
         "type": "object",
-        "description": "Recording & privacy — the single audio-retention switch (keep one WAV per meeting for playback\n+ the post-meeting refine). Editable section; a request body and part of [`SettingsRead`].",
+        "description": "An inactivity nudge (not a transcript line): the meeting has had no detected speech for\n`silent_seconds`, so the UI shows a \"still recording?\" banner (Stop / Keep recording). If silence\ncontinues to the end threshold the meeting auto-ends. Mirrors the orchestrator's `PromptEvent` on\nthe wire.",
         "required": [
-          "record"
+          "kind",
+          "silent_seconds"
         ],
         "properties": {
+          "kind": {
+            "type": "string",
+            "description": "The constant `kind` discriminant marking a [`PromptEvent`] (`\"prompt\"`).",
+            "enum": [
+              "prompt"
+            ]
+          },
+          "silent_seconds": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "RecordingSettings": {
+        "type": "object",
+        "description": "Recording & privacy — the audio-retention switch (keep one WAV per meeting for playback + the\npost-meeting refine) plus the inactivity watchdog: whether to nudge (then auto-end) a meeting left\nrecording through silence, and the silence thresholds in minutes (the prompt fires at\n`inactivity_prompt_minutes`, the auto-end at the larger `inactivity_end_minutes`). Editable\nsection; a request body and part of [`SettingsRead`].",
+        "required": [
+          "record",
+          "inactivity_prompt_enabled",
+          "inactivity_prompt_minutes",
+          "inactivity_end_minutes"
+        ],
+        "properties": {
+          "inactivity_end_minutes": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "inactivity_prompt_enabled": {
+            "type": "boolean"
+          },
+          "inactivity_prompt_minutes": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
           "record": {
             "type": "boolean"
           }
