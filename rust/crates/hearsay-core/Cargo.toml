@@ -33,6 +33,7 @@ sha2 = "0.10.9"
 # cross-platform builds; enable one per target (building a backend the host lacks fails).
 [features]
 notes = ["hearsay-backends/notes"]
+aec = ["hearsay-backends/aec"]
 metal = ["hearsay-backends/metal"]
 vulkan = ["hearsay-backends/vulkan"]
 cuda = ["hearsay-backends/cuda"]

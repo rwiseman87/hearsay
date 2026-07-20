@@ -22,6 +22,7 @@
 //! best-effort, so a missing recording or a refine error never fails the stop. See
 //! `docs/architecture.md`.
 
+mod aec;
 mod error;
 mod markdown;
 mod orchestrator;

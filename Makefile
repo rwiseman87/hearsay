@@ -99,7 +99,7 @@ clean: ## Remove build artifacts (Swift, Rust, web bundle + deps, Tauri target, 
 serve rust-serve: ## Serve the Rust core (SYNTHETIC=1 for no-permission plumbing; needs swift-build + web-build for a live run)
 	@mkdir -p outputs/db
 	HEARSAY_SERVER_PORT=$(RUST_PORT) DATABASE_URL="$(RUST_DB)" \
-		cargo run --manifest-path $(RUST)/Cargo.toml -p hearsay-core --features metal,notes $(if $(SYNTHETIC),-- --synthetic)
+		cargo run --manifest-path $(RUST)/Cargo.toml -p hearsay-core --features metal,notes,aec $(if $(SYNTHETIC),-- --synthetic)
 
 # Distribution staging: build RELEASE binaries + web bundle, then copy them where Tauri's
 # `externalBin` expects them (`<name>-<target-triple>`). Shared by `mac-app` and `dmg`.
@@ -180,7 +180,7 @@ stage-release: stage-model stage-fluid-models ## Build release binaries + web bu
 	@for p in $(SIDECARS); do \
 		swift build -c release --package-path $(PKG) --product $$p; \
 	done
-	cargo build --release --manifest-path $(RUST)/Cargo.toml -p hearsay-core --features metal,notes
+	cargo build --release --manifest-path $(RUST)/Cargo.toml -p hearsay-core --features metal,notes,aec
 	@mkdir -p $(STAGE)
 	cp $(RUST)/target/release/hearsay-core $(STAGE)/hearsay-core-aarch64-apple-darwin
 	@for b in $(SIDECARS); do \

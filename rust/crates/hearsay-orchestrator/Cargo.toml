@@ -16,6 +16,15 @@ chrono = "0.4.45"
 tracing = "0.1.44"
 sqlx = { version = "0.9.0", default-features = false, features = ["runtime-tokio", "sqlite", "uuid", "chrono"] }
 hound = "3.5.1"
+# Acoustic echo cancellation (SpeexDSP via aec-rs, MIT; vendored SpeexDSP is BSD-3-Clause). Optional:
+# gated by the `aec` feature so the default `cargo test` build needs no C toolchain. Builds the
+# vendored SpeexDSP with cc + cmake + bindgen. See docs/echo-cancellation.md.
+aec-rs = { version = "1.0.0", optional = true }
+
+[features]
+# Echo-cancel the Me stream against the Them tap in `demux`. Enabled in `make rust-serve` and
+# `make mac-app`/`make dmg`; off by default. The alignment logic is tested without the feature.
+aec = ["dep:aec-rs"]
 
 [dev-dependencies]
 tempfile = "3.27.0"

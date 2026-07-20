@@ -25,6 +25,7 @@ sqlx = { version = "0.9.0", default-features = false, features = ["runtime-tokio
 [features]
 sherpa = ["hearsay-inference/sherpa"]
 notes = ["hearsay-inference/notes"]
+aec = ["hearsay-orchestrator/aec"]
 metal = ["hearsay-inference/metal"]
 vulkan = ["hearsay-inference/vulkan"]
 cuda = ["hearsay-inference/cuda"]

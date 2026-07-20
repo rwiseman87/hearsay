@@ -84,6 +84,11 @@ before that hand-off, so a slow transcriber can only back up its own stream's qu
 the 128-slot capacity are dropped with a log line); it can never stall the recorder or the other
 stream.
 
+When built with the `aec` feature, `demux` echo-cancels the Me stream against the Them tap (the
+far-end reference) before the hand-off, so system audio the mic picks up on speakers is not
+transcribed as the local user. The recording stays raw; only what live transcription sees is
+cancelled. See `docs/echo-cancellation.md`.
+
 ### 2. One clock, meeting-relative seconds
 
 The first chunk seen on either stream sets the epoch. Every chunk's time becomes

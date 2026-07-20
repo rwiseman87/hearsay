@@ -23,6 +23,7 @@ use uuid::Uuid;
 
 use hearsay_db::queries;
 
+use crate::aec::EchoCanceller;
 use crate::error::OrchestratorError;
 use crate::recorder::MeetingAudioRecorder;
 use crate::traits::{AudioSource, BackendInstance, StreamRole, Transcriber};
@@ -225,6 +226,7 @@ pub(crate) async fn spawn(
         me_tx,
         them_tx,
         recorder,
+        EchoCanceller::new(),
         intentional_stop.clone(),
         died_tx,
     ));
@@ -264,15 +266,31 @@ pub(crate) async fn spawn(
     ))
 }
 
+/// Forward one chunk to a stream's transcriber without ever blocking on a slow/wedged one (that
+/// would stall the recorder + the other stream); on a full queue drop-with-log. The dropped span
+/// reappears as a timeline gap that `stream_loop`'s resync pads with silence, so segment times stay
+/// aligned.
+fn forward(sender: &mpsc::Sender<(f64, Vec<f32>)>, t0_s: f64, samples: Vec<f32>, stream: Stream) {
+    match sender.try_send((t0_s, samples)) {
+        Ok(()) => {}
+        Err(TrySendError::Full(_)) => {
+            tracing::debug!(stream = ?stream, "transcriber queue full; dropping chunk")
+        }
+        Err(TrySendError::Closed(_)) => {}
+    }
+}
+
 /// Read capture, anchor the shared epoch on the first chunk, record the stereo `audio.wav` (if
 /// enabled), and forward each chunk to its stream's task as meeting-relative `(t0_s, samples)`. Both
 /// streams anchor to the same epoch so their timelines align (alignment is by timestamp, never
-/// sample index). The recorder is finalized once capture ends.
+/// sample index). Me is echo-cancelled against the Them tap before it reaches transcription; the
+/// recording stays raw. The recorder is finalized once capture ends.
 async fn demux(
     mut capture_rx: mpsc::Receiver<CaptureChunk>,
     me_tx: mpsc::Sender<(f64, Vec<f32>)>,
     them_tx: mpsc::Sender<(f64, Vec<f32>)>,
     mut recorder: Option<MeetingAudioRecorder>,
+    mut canceller: EchoCanceller,
     intentional_stop: Arc<AtomicBool>,
     died_tx: oneshot::Sender<()>,
 ) {
@@ -280,24 +298,31 @@ async fn demux(
     while let Some(cap) = capture_rx.recv().await {
         let epoch = *epoch_ns.get_or_insert(cap.chunk.host_ts);
         let t0_s = cap.chunk.host_ts.saturating_sub(epoch) as f64 / 1e9;
-        // Record first, on this always-drained path, so `audio.wav` captures every chunk even when a
-        // stream's transcriber is wedged/behind.
+        let stream = cap.stream;
+        let samples = cap.chunk.samples;
+        // Record first, on this always-drained path, so `audio.wav` captures every *raw* chunk even
+        // when a stream's transcriber is wedged/behind. AEC applies only to what live transcription
+        // sees — the archive stays raw, and the offline refine reads only the Them channel.
         if let Some(rec) = recorder.as_mut() {
-            rec.write(&cap.chunk.samples, t0_s, cap.stream);
+            rec.write(&samples, t0_s, stream);
         }
-        let sender = match cap.stream {
-            Stream::Me => &me_tx,
-            Stream::Them => &them_tx,
-        };
-        // Never block on a slow/wedged transcriber (that would stall the recorder + the other
-        // stream); on a full queue drop-with-log. The dropped span reappears as a timeline gap that
-        // `stream_loop`'s resync pads with silence, so segment times stay aligned.
-        match sender.try_send((t0_s, cap.chunk.samples)) {
-            Ok(()) => {}
-            Err(TrySendError::Full(_)) => {
-                tracing::debug!(stream = ?cap.stream, "transcriber queue full; dropping chunk")
+        // Me is echo-cancelled against the Them tap; Them forwards unchanged and doubles as the
+        // canceller's far-end reference. A Me chunk may not clean immediately (it briefly awaits the
+        // reference), and a Them chunk can release previously-buffered Me — so both paths can yield
+        // cleaned Me to forward.
+        match stream {
+            Stream::Them => {
+                let ready = canceller.push_far(t0_s, &samples);
+                forward(&them_tx, t0_s, samples, Stream::Them);
+                for (mt0, m) in ready {
+                    forward(&me_tx, mt0, m, Stream::Me);
+                }
             }
-            Err(TrySendError::Closed(_)) => {}
+            Stream::Me => {
+                for (mt0, m) in canceller.process_me(t0_s, &samples) {
+                    forward(&me_tx, mt0, m, Stream::Me);
+                }
+            }
         }
     }
     // Capture ended: write the WAV. Best-effort — a failure never fails the meeting stop. The encode
