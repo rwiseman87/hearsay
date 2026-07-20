@@ -215,11 +215,18 @@ Checkboxes are the tracking state for the port.
 
 ### Phase 4 — Packaging
 
-- [ ] `fetch-sherpa-models` / `stage-sherpa-models` targets + Windows whisper staging.
-- [ ] `tauri.windows.conf.json` (NSIS, reduced `externalBin`).
-- [ ] Shell `cfg(windows)` arms (env wiring, erase, no helper).
-- [ ] `scripts/build-windows.ps1`.
-- [ ] `docs/development.md` Windows prerequisites; `docs/packaging.md` Windows section.
+- [x] `fetch-sherpa-models` / `stage-sherpa-models` Makefile targets (fetch verified against the
+      live sherpa-onnx release URLs; layout matches the backend's conventions). Windows whisper
+      default: `ggml-small.en.bin`, staged by the build script.
+- [x] `tauri.windows.conf.json` (NSIS target; `externalBin` reduced to `hearsay-core`).
+- [x] Shell `cfg(windows)` arms: env wiring without helper/FluidAudio + `HEARSAY_SHERPA_MODELS_DIR`
+      at the bundled resources; `erase_all_data` removes app-data/local-data/cache (no `tccutil`);
+      platform-neutral erase copy. Known limitation (documented in packaging.md): no graceful
+      core stop on Windows yet — a meeting active at quit is finalized by startup reconciliation.
+- [x] `scripts/build-windows.ps1` (prereq checks, model fetch/stage, web build, core build with
+      `-Vulkan`/`-Aec` switches, binary staging, `cargo tauri build --bundles nsis`).
+- [x] `docs/development.md` Windows section + config table; `docs/packaging.md` Windows
+      installer section; `CLAUDE.md` env list.
 
 ### Phase 5 — On-Windows bring-up
 
@@ -252,3 +259,17 @@ Resolved during Phase 5 step 4; recorded here when answered.
 - [ ] Whether the desktop-app microphone privacy toggle also gates loopback capture.
 - [ ] AEC effectiveness with speakers on the reference laptop (echo of Them in Me).
 - [ ] Whisper refine wall-clock per meeting-minute on the 225U, CPU vs `vulkan`, per model size.
+
+## Deferred follow-ups
+
+Known gaps that ship after the floor, tracked here so they are not mistaken for unknowns:
+
+- Graceful core stop on Windows (no SIGTERM analog today): evaluate closing the sidecar's stdin
+  from the shell or an authenticated shutdown route; until then startup reconciliation finalizes
+  a meeting active at quit, and its `audio.wav` may be left unfinalized.
+- Permissions panel copy is macOS-shaped (five rows); on Windows only Microphone and System
+  Audio carry meaning — the panel could hide the rest.
+- A fallback resampler for process loopback, only if bring-up shows the engine rejecting the
+  self-specified 16 kHz mono format.
+- Live-quality upgrade tier: Nemotron cache-aware streaming ASR / Sortformer streaming
+  diarization (model-license policy call + Rust-API verification first).

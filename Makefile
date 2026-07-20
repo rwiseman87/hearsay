@@ -1,4 +1,4 @@
-.PHONY: help swift-build swift-test rust-build rust-test rust-lint tauri-lint rust-fmt test lint fmt codegen codegen-check web-install web-typecheck web-lint web-build web-ci audit licenses version-check ci build package notarize clean serve rust-serve stage-model fetch-fluid-models stage-fluid-models stage-release mac-app dmg
+.PHONY: help swift-build swift-test rust-build rust-test rust-lint tauri-lint rust-fmt test lint fmt codegen codegen-check web-install web-typecheck web-lint web-build web-ci audit licenses version-check ci build package notarize clean serve rust-serve stage-model fetch-fluid-models stage-fluid-models fetch-sherpa-models stage-sherpa-models stage-release mac-app dmg
 
 PKG := helper
 RUST := rust
@@ -120,6 +120,17 @@ FLUID_CACHE := $(HOME)/Library/Application Support/FluidAudio/Models
 FLUID_SRC := outputs/models/fluidaudio/Models
 FLUID_DST := web/src-tauri/models/fluidaudio/Models
 
+# Sherpa live/diarize models for the Windows backend (docs/windows-port.md): the streaming
+# zipformer + pyannote segmentation + TitaNet-small embedder, all from the sherpa-onnx model zoo
+# ("recongition" is the real upstream release-tag spelling). Fetch works from any host with
+# curl+tar; scripts/build-windows.ps1 does the same on the Windows machine.
+SHERPA_RELEASE := https://github.com/k2-fsa/sherpa-onnx/releases/download
+SHERPA_STREAMING := sherpa-onnx-streaming-zipformer-en-20M-2023-02-17
+SHERPA_SEGMENTATION := sherpa-onnx-pyannote-segmentation-3-0
+SHERPA_EMBEDDING := nemo_en_titanet_small.onnx
+SHERPA_SRC := outputs/models/sherpa
+SHERPA_DST := web/src-tauri/models/sherpa
+
 # Stage the ~1.5 GB model, re-copying only when the staged copy is missing or differs from source
 # (byte-compare, not just presence — a truncated/outdated staged model would otherwise ship forever).
 stage-model: ## Stage the refine model into the Tauri bundle, re-copying if it drifts from source
@@ -172,6 +183,44 @@ stage-fluid-models: ## Stage the FluidAudio live models into the Tauri bundle
 			cp -R "$(FLUID_SRC)/$$r" "$(FLUID_DST)/$$r"; \
 		else \
 			echo "FluidAudio model $$r already staged"; \
+		fi; \
+	done
+
+fetch-sherpa-models: ## Download the sherpa live/diarize models (Windows backend) into outputs/
+	@mkdir -p "$(SHERPA_SRC)"
+	@for a in $(SHERPA_STREAMING) $(SHERPA_SEGMENTATION); do \
+		if [ -d "$(SHERPA_SRC)/$$a" ]; then \
+			echo "sherpa model $$a already fetched"; \
+		else \
+			echo "fetching sherpa model $$a..."; \
+			tag=asr-models; \
+			if [ "$$a" = "$(SHERPA_SEGMENTATION)" ]; then tag=speaker-segmentation-models; fi; \
+			curl -fL "$(SHERPA_RELEASE)/$$tag/$$a.tar.bz2" | tar xjf - -C "$(SHERPA_SRC)"; \
+		fi; \
+	done
+	@if [ -f "$(SHERPA_SRC)/$(SHERPA_EMBEDDING)" ]; then \
+		echo "sherpa model $(SHERPA_EMBEDDING) already fetched"; \
+	else \
+		echo "fetching sherpa model $(SHERPA_EMBEDDING)..."; \
+		curl -fL -o "$(SHERPA_SRC)/$(SHERPA_EMBEDDING)" \
+			"$(SHERPA_RELEASE)/speaker-recongition-models/$(SHERPA_EMBEDDING)"; \
+	fi
+
+stage-sherpa-models: ## Stage the sherpa models into the Tauri bundle (Windows packaging)
+	@for m in $(SHERPA_STREAMING) $(SHERPA_SEGMENTATION) $(SHERPA_EMBEDDING); do \
+		if [ ! -e "$(SHERPA_SRC)/$$m" ]; then \
+			echo "ERROR: sherpa model '$$m' not in $(SHERPA_SRC)."; \
+			echo "Run 'make fetch-sherpa-models' first (see docs/windows-port.md)."; \
+			exit 1; \
+		fi; \
+	done
+	@mkdir -p "$(SHERPA_DST)"
+	@for m in $(SHERPA_STREAMING) $(SHERPA_SEGMENTATION) $(SHERPA_EMBEDDING); do \
+		if [ ! -e "$(SHERPA_DST)/$$m" ]; then \
+			echo "staging sherpa model $$m..."; \
+			cp -R "$(SHERPA_SRC)/$$m" "$(SHERPA_DST)/$$m"; \
+		else \
+			echo "sherpa model $$m already staged"; \
 		fi; \
 	done
 

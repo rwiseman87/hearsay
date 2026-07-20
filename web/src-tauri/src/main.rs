@@ -1,8 +1,10 @@
-//! Hearsay desktop shell. Bundles the `hearsay-core` server + the Swift capture/AI sidecars, spawns
-//! the core with bundle-resolved paths and a user-writable data dir, and points the window at the
-//! loopback URL from its readiness handshake. On quit the core is asked to shut down gracefully
-//! (SIGTERM, then a SIGKILL backstop) so the active meeting is finalized and its Swift sidecars don't
-//! leak. If the core dies during boot, the splash is replaced with an error instead of spinning.
+//! Hearsay desktop shell. Bundles the `hearsay-core` server (plus, on macOS, the Swift capture/AI
+//! sidecars), spawns the core with bundle-resolved paths and a user-writable data dir, and points
+//! the window at the loopback URL from its readiness handshake. On quit the core is asked to shut
+//! down gracefully on macOS (SIGTERM, then a SIGKILL backstop) so the active meeting is finalized
+//! and its Swift sidecars don't leak; on Windows there is no graceful signal yet, so quitting
+//! mid-meeting relies on the core's startup reconciliation (see `docs/windows-port.md`). If the
+//! core dies during boot, the splash is replaced with an error instead of spinning.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -80,10 +82,11 @@ struct Handshake {
     token: String,
 }
 
-/// Erase everything Hearsay stored on this Mac and reset its macOS permission grants. Removes the
-/// data dir (db + recordings/transcripts), the downloadable model caches, and the disposable WebView
-/// state; then `tccutil reset`s so a reinstall re-prompts for mic / system-audio / screen access.
-/// Best-effort: a missing path never aborts the wipe. The caller quits via `quit_app` afterward.
+/// Erase everything Hearsay stored on this computer (and on macOS, reset its permission grants).
+/// Removes the data dir (db + recordings/transcripts), the downloadable model caches, and the
+/// disposable WebView state; macOS additionally `tccutil reset`s so a reinstall re-prompts for
+/// mic / system-audio / screen access (Windows has no per-app grants to reset). Best-effort: a
+/// missing path never aborts the wipe. The caller quits via `quit_app` afterward.
 #[tauri::command]
 fn erase_all_data(app: tauri::AppHandle, core: tauri::State<'_, CoreChild>) -> Result<(), String> {
     // Require explicit native confirmation before wiping. Driven from the backend, so a compromised
@@ -91,8 +94,8 @@ fn erase_all_data(app: tauri::AppHandle, core: tauri::State<'_, CoreChild>) -> R
     let confirmed = app
         .dialog()
         .message(
-            "This permanently deletes all Hearsay recordings, transcripts, and settings on this Mac, \
-             and resets its permissions. This cannot be undone.",
+            "This permanently deletes all Hearsay recordings, transcripts, and settings on this \
+             computer. This cannot be undone.",
         )
         .title("Erase all Hearsay data?")
         .buttons(MessageDialogButtons::OkCancelCustom(
@@ -104,23 +107,34 @@ fn erase_all_data(app: tauri::AppHandle, core: tauri::State<'_, CoreChild>) -> R
         return Ok(());
     }
 
-    // Stop the core (and its Swift sidecars) first so the SQLite file handle is released. Graceful
-    // so an in-progress meeting is finalized before the DB file is deleted out from under it.
+    // Stop the core first so the SQLite file handle is released before the DB file is deleted out
+    // from under it (graceful on macOS, so an in-progress meeting is finalized).
     if let Some(child) = core.0.lock().unwrap().take() {
         stop_core_gracefully(child);
     }
 
-    let home = app.path().home_dir().map_err(|e| e.to_string())?;
     // Hearsay's data + every re-creatable cache (models re-download; WebView state is disposable).
+    #[cfg(target_os = "macos")]
+    let targets = {
+        let home = app.path().home_dir().map_err(|e| e.to_string())?;
+        [
+            app.path().app_data_dir().ok(),
+            Some(home.join("Library/Application Support/FluidAudio")),
+            Some(home.join(".cache/fluidaudio")),
+            Some(home.join("Library/Caches/com.hearsay.app")),
+            Some(home.join("Library/WebKit/com.hearsay.app")),
+            Some(home.join("Library/HTTPStorages/com.hearsay.app")),
+            Some(home.join("Library/Saved Application State/com.hearsay.app.savedState")),
+            Some(home.join("Library/Preferences/com.hearsay.app.plist")),
+        ]
+    };
+    // Windows: app-data (Roaming: db + recordings + models), local data (WebView2's EBWebView
+    // state), and the cache dir (the handshake file).
+    #[cfg(windows)]
     let targets = [
         app.path().app_data_dir().ok(),
-        Some(home.join("Library/Application Support/FluidAudio")),
-        Some(home.join(".cache/fluidaudio")),
-        Some(home.join("Library/Caches/com.hearsay.app")),
-        Some(home.join("Library/WebKit/com.hearsay.app")),
-        Some(home.join("Library/HTTPStorages/com.hearsay.app")),
-        Some(home.join("Library/Saved Application State/com.hearsay.app.savedState")),
-        Some(home.join("Library/Preferences/com.hearsay.app.plist")),
+        app.path().app_local_data_dir().ok(),
+        app.path().app_cache_dir().ok(),
     ];
     for path in targets.into_iter().flatten() {
         let result = if path.is_dir() {
@@ -137,6 +151,7 @@ fn erase_all_data(app: tauri::AppHandle, core: tauri::State<'_, CoreChild>) -> R
 
     // Reset TCC grants for both bundles (the app and its embedded capture helper). `reset All`
     // avoids guessing per-service names across macOS versions.
+    #[cfg(target_os = "macos")]
     for bundle_id in ["com.hearsay.app", "com.hearsay.helper"] {
         let _ = std::process::Command::new("tccutil")
             .args(["reset", "All", bundle_id])
@@ -206,22 +221,33 @@ fn main() {
             notify_still_recording
         ])
         .setup(|app| {
-            // Bundle layout: externalBins are siblings of this binary in Contents/MacOS; web/dist
-            // is a bundled resource. The DB + recordings must be user-writable (the .app is not).
+            // Bundle layout: externalBins are siblings of this binary; web/dist is a bundled
+            // resource. The DB + recordings must be user-writable (the install dir is not).
+            #[cfg(target_os = "macos")]
             let exe_dir = std::env::current_exe()?
                 .parent()
                 .expect("executable has a parent directory")
                 .to_path_buf();
+            #[cfg(target_os = "macos")]
             let helper = exe_dir.join("hearsay-helper");
             let resource_dir = app.path().resource_dir()?;
             let web_dir = resource_dir.join("web-dist");
             // Bundled GGML whisper model for the offline refine; the core defaults to a repo-relative
-            // path that doesn't exist in an installed .app, so point it at the resource copy.
+            // path that doesn't exist in an installed app, so point it at the resource copy. The
+            // Windows default is a smaller model — no ANE/Metal on the reference hardware (the
+            // Models panel overrides it per install either way).
+            #[cfg(target_os = "macos")]
             let refine_model = resource_dir.join("models/ggml-large-v3-turbo.bin");
+            #[cfg(windows)]
+            let refine_model = resource_dir.join("models/ggml-small.en.bin");
             // Bundled FluidAudio live models (Parakeet ASR, LS-EEND diarizer, VAD, pyannote refine).
             // The core seeds these into FluidAudio's cache on first launch so the sidecars load them
             // locally instead of downloading from HuggingFace (a self-contained, offline install).
+            #[cfg(target_os = "macos")]
             let fluid_models = resource_dir.join("models/fluidaudio/Models");
+            // Bundled sherpa live/diarize models (the Windows backend reads them in place).
+            #[cfg(windows)]
+            let sherpa_models = resource_dir.join("models/sherpa");
 
             let data_dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(data_dir.join("db"))?;
@@ -241,18 +267,13 @@ fn main() {
             let handshake_path = cache_dir.join("core-handshake.json");
             let _ = std::fs::remove_file(&handshake_path); // clear any stale handshake first
 
-            let (mut rx, child) = app
+            let cmd = app
                 .shell()
                 .sidecar("hearsay-core")?
-                .env("HEARSAY_HELPER_PATH", helper.to_string_lossy().to_string())
                 .env("HEARSAY_WEB_DIR", web_dir.to_string_lossy().to_string())
                 .env(
                     "HEARSAY_REFINE_MODEL",
                     refine_model.to_string_lossy().to_string(),
-                )
-                .env(
-                    "HEARSAY_FLUID_MODELS_DIR",
-                    fluid_models.to_string_lossy().to_string(),
                 )
                 .env(
                     "HEARSAY_OUTPUT_DIR",
@@ -267,8 +288,20 @@ fn main() {
                 .env(
                     "HEARSAY_HANDSHAKE_PATH",
                     handshake_path.to_string_lossy().to_string(),
-                )
-                .spawn()?;
+                );
+            #[cfg(target_os = "macos")]
+            let cmd = cmd
+                .env("HEARSAY_HELPER_PATH", helper.to_string_lossy().to_string())
+                .env(
+                    "HEARSAY_FLUID_MODELS_DIR",
+                    fluid_models.to_string_lossy().to_string(),
+                );
+            #[cfg(windows)]
+            let cmd = cmd.env(
+                "HEARSAY_SHERPA_MODELS_DIR",
+                sherpa_models.to_string_lossy().to_string(),
+            );
+            let (mut rx, child) = cmd.spawn()?;
             app.state::<CoreChild>().0.lock().unwrap().replace(child);
 
             // Whether the boot outcome has been decided — either we navigated to the ready core, or a
