@@ -12,11 +12,12 @@ async-trait = "0.1.89"
 tempfile = "3.27.0"
 tracing = "0.1.44"
 
-# Windows capture (`WasapiSource`): WASAPI shared-mode capture + process/device loopback. Target-
-# gated so macOS never compiles it; still lockfile-resolved everywhere, so `make licenses` /
-# `make audit` vet it from any host.
+# Windows capture (`WasapiSource`): WASAPI shared-mode capture + process/device loopback; plus the
+# ConsentStore registry read behind the permissions probe. Target-gated so macOS never compiles
+# them; still lockfile-resolved everywhere, so `make licenses` / `make audit` vet them from any host.
 [target.'cfg(windows)'.dependencies]
 wasapi = "0.23.0"
+windows-registry = "0.6.1"
 
 [dev-dependencies]
 tokio = { version = "1.52.3", features = ["macros", "rt-multi-thread"] }

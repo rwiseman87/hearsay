@@ -200,8 +200,18 @@ Checkboxes are the tracking state for the port.
 
 ### Phase 3 — Backend
 
-- [ ] `WindowsBackend` + `WindowsRefiner` + Windows `build_engine`.
-- [ ] Windows `probe_permissions` (ConsentStore microphone state).
+- [x] `WindowsBackend` + `WindowsRefiner` + Windows `build_engine`
+      (`hearsay-backends/src/windows.rs`): one shared `StreamingAsr` (no pool), synthetic ->
+      `SyntheticSource`; refine = whisper + `SherpaDiarizer` through `refine_audio_file_with`,
+      diarizer constructed inside the blocking task; a failed streaming-model load degrades to
+      `DisabledEngine` (app serves, meetings 503) instead of failing startup. `LlamaSummarizer`
+      moved to a shared module used by both platforms. Model conventions under
+      `HEARSAY_SHERPA_MODELS_DIR`: `sherpa-onnx-streaming-zipformer-en-20M-2023-02-17/`,
+      `sherpa-onnx-pyannote-segmentation-3-0/model.onnx`, `nemo_en_titanet_small.onnx` (the
+      embedder the cluster-threshold tuning used).
+- [x] Windows `probe_permissions` (`hearsay-capture/src/win_permissions.rs`): ConsentStore
+      microphone state (desktop-app + user-wide toggles; Deny on either = denied),
+      `audio_capture` always granted; `windows-registry` 0.6.1 (MIT OR Apache-2.0).
 
 ### Phase 4 — Packaging
 

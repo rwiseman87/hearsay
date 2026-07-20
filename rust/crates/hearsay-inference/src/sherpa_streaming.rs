@@ -47,7 +47,8 @@ pub struct StreamEvent {
 }
 
 /// A streaming zipformer transducer recognizer (loaded once; drive one [`StreamingSession`] per
-/// stream).
+/// stream). Cheap to clone — clones share the loaded recognizer.
+#[derive(Clone)]
 pub struct StreamingAsr {
     recognizer: Arc<OnlineRecognizer>,
 }

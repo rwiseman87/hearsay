@@ -23,9 +23,17 @@ mod mac;
 pub mod reconcile;
 #[cfg(feature = "sherpa")]
 mod streaming_transcriber;
+#[cfg(feature = "notes")]
+mod summarizer;
+#[cfg(all(target_os = "windows", feature = "sherpa"))]
+mod windows;
 
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
 compile_error!("hearsay-backends supports macOS and Windows only");
+#[cfg(all(target_os = "windows", not(feature = "sherpa")))]
+compile_error!(
+    "the Windows backend needs the sherpa live/diarize path: build with --features sherpa (see docs/windows-port.md)"
+);
 
 pub use hearsay_capture::{probe_permissions, LoopbackMode, PermissionsSnapshot};
 // The default notes prompt lives with the prompt builder in `hearsay-inference`; re-export it so
@@ -35,6 +43,8 @@ pub use hearsay_inference::DEFAULT_NOTES_PROMPT;
 pub use mac::build_engine;
 #[cfg(feature = "sherpa")]
 pub use streaming_transcriber::SherpaTranscriber;
+#[cfg(all(target_os = "windows", feature = "sherpa"))]
+pub use windows::build_engine;
 
 /// Everything a platform `build_engine` needs, resolved by `hearsay-core` from its `Settings` plus
 /// the CLI. One struct on every platform so the composition-root call site never forks; each
