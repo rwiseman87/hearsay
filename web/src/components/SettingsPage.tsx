@@ -144,7 +144,7 @@ function RecordingPanel() {
           </span>
         </span>
       </label>
-      <div className="settings__field">
+      <div className="settings__field settings__field--sub">
         <span className="settings__row-label">Prompt after (minutes of silence)</span>
         <input
           type="number"
@@ -172,7 +172,7 @@ function RecordingPanel() {
           </span>
         </span>
       </label>
-      <div className="settings__field">
+      <div className="settings__field settings__field--sub">
         <span className="settings__row-label">End meeting after (minutes of silence)</span>
         <input
           type="number"
