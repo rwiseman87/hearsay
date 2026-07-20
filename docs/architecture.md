@@ -363,10 +363,11 @@ inside the pipeline: it measures the time since the last emitted segment (VAD-ga
 stream), broadcasts a `prompt` event to the live WebSocket after a configurable silence (default 5
 minutes), and — if the silence continues to the end threshold (default 10 minutes) — writes a
 `System` transcript marker and signals `stop_meeting` to auto-end the meeting. Any speech, or the
-"Keep recording" action, resets the clock; the whole behavior is a toggle in the `recording`
-settings section. When the window is unfocused, the frontend asks the Tauri shell (a granted
-`notify_still_recording` command) to raise a native OS notification, so a user who has switched
-away still sees the nudge.
+"Keep recording" action, resets the clock. The prompt and the auto-end are independently toggleable
+in the `recording` settings section (so a meeting can be nudged without ever being auto-stopped, or
+auto-stopped with no prior nudge). When the window is unfocused, the frontend asks the Tauri shell
+(a granted `notify_still_recording` command) to raise a native OS notification, so a user who has
+switched away still sees the nudge.
 
 A hard exit (SIGKILL, panic, power loss) can strand a row in `recording` or `refining`. Because
 nothing can be active at startup, the core sweeps every non-terminal row at boot, marks it

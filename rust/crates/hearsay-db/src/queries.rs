@@ -1149,39 +1149,35 @@ pub async fn recording_section(
     section_object(pool, SECTION_RECORDING).await
 }
 
-/// Effective inactivity-watchdog settings (enabled + prompt/end minutes): the stored `recording`
-/// override else the config `default_*`. Each field falls back independently, so a row that predates
-/// these keys (only `record`) still yields usable values. Read at meeting start so a Settings change
-/// takes effect on the next meeting.
+/// Effective inactivity-watchdog settings (prompt + auto-end toggles, prompt/end minutes): the stored
+/// `recording` override else the config `default_*`. Each field falls back independently, so a row
+/// that predates these keys (only `record`) still yields usable values. Read at meeting start so a
+/// Settings change takes effect on the next meeting. Returns
+/// `(prompt_enabled, auto_end_enabled, prompt_minutes, end_minutes)`.
 pub async fn effective_inactivity(
     pool: &SqlitePool,
-    default_enabled: bool,
+    default_prompt: bool,
+    default_auto_end: bool,
     default_prompt_minutes: u64,
     default_end_minutes: u64,
-) -> Result<(bool, u64, u64), sqlx::Error> {
+) -> Result<(bool, bool, u64, u64), sqlx::Error> {
     let obj = section_object(pool, SECTION_RECORDING).await?;
-    let enabled = obj
-        .as_ref()
-        .and_then(|o| {
-            o.get("inactivity_prompt_enabled")
-                .and_then(serde_json::Value::as_bool)
-        })
-        .unwrap_or(default_enabled);
-    let prompt_minutes = obj
-        .as_ref()
-        .and_then(|o| {
-            o.get("inactivity_prompt_minutes")
-                .and_then(serde_json::Value::as_u64)
-        })
-        .unwrap_or(default_prompt_minutes);
-    let end_minutes = obj
-        .as_ref()
-        .and_then(|o| {
-            o.get("inactivity_end_minutes")
-                .and_then(serde_json::Value::as_u64)
-        })
-        .unwrap_or(default_end_minutes);
-    Ok((enabled, prompt_minutes, end_minutes))
+    let bool_field = |key: &str, default: bool| {
+        obj.as_ref()
+            .and_then(|o| o.get(key).and_then(serde_json::Value::as_bool))
+            .unwrap_or(default)
+    };
+    let u64_field = |key: &str, default: u64| {
+        obj.as_ref()
+            .and_then(|o| o.get(key).and_then(serde_json::Value::as_u64))
+            .unwrap_or(default)
+    };
+    Ok((
+        bool_field("inactivity_prompt_enabled", default_prompt),
+        bool_field("inactivity_auto_end_enabled", default_auto_end),
+        u64_field("inactivity_prompt_minutes", default_prompt_minutes),
+        u64_field("inactivity_end_minutes", default_end_minutes),
+    ))
 }
 
 /// Effective recordings root for a NEW meeting: the stored `storage` override, else `default`. Each

@@ -59,15 +59,26 @@ const MAX_SILENCE_PAD_SAMPLES: usize = 5 * 60 * 16_000;
 const INACTIVITY_TICK: Duration = Duration::from_secs(15);
 
 /// Resolved inactivity-watchdog thresholds for one meeting (the effective `recording` settings). The
-/// watchdog nudges the UI after `prompt_after` of silence and auto-ends the meeting after `end_after`.
+/// prompt and the auto-end are independently toggleable: the watchdog nudges the UI after
+/// `prompt_after` of silence when `prompt_enabled`, and auto-ends the meeting after `end_after` when
+/// `auto_end_enabled`. With both off, no watchdog is spawned.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct InactivityConfig {
-    /// Master switch: when `false`, no watchdog is spawned (no prompt, no auto-end).
-    pub enabled: bool,
+    /// Whether to nudge the UI with a "still recording?" prompt after `prompt_after` of silence.
+    pub prompt_enabled: bool,
+    /// Whether to auto-end the meeting (with a logged transcript marker) after `end_after` of silence.
+    pub auto_end_enabled: bool,
     /// Continuous silence before the in-app "still recording?" prompt.
     pub prompt_after: Duration,
-    /// Continuous silence before the meeting auto-ends (with a logged transcript marker).
+    /// Continuous silence before the meeting auto-ends.
     pub end_after: Duration,
+}
+
+impl InactivityConfig {
+    /// Whether a watchdog is needed at all (either escalation is enabled).
+    fn active(&self) -> bool {
+        self.prompt_enabled || self.auto_end_enabled
+    }
 }
 
 /// How long [`Pipeline::close`] waits for a stream task to wind down before aborting it. Above the
@@ -307,9 +318,9 @@ pub(crate) async fn spawn(
         last_activity.clone(),
     ));
 
-    // Spawn the inactivity watchdog only when the feature is enabled; otherwise drop `inactive_tx`
-    // (no auto-end) and leave `prompt_rx` parked at `None`.
-    let inactivity_watchdog = if inactivity.enabled {
+    // Spawn the inactivity watchdog only when a prompt or an auto-end is enabled; otherwise drop
+    // `inactive_tx` (no auto-end) and leave `prompt_rx` parked at `None`.
+    let inactivity_watchdog = if inactivity.active() {
         Some(tokio::spawn(inactivity_watchdog(
             inactivity,
             INACTIVITY_TICK,
@@ -560,12 +571,13 @@ enum Stage {
 }
 
 /// Decide the watchdog's action from the elapsed silence, the thresholds, and whether this silence
-/// episode was already prompted. `end_after` wins over `prompt_after`, so a long-silent meeting ends
-/// even if it was never prompted (e.g. silence that began before the first prompt window elapsed).
+/// episode was already prompted. Each stage is gated by its own toggle; the (enabled) `end_after`
+/// wins over `prompt_after`, so a long-silent meeting auto-ends even if it was never prompted (e.g.
+/// the prompt is disabled, or silence began before the first prompt window elapsed).
 fn silence_stage(silence: Duration, cfg: &InactivityConfig, prompted: bool) -> Stage {
-    if silence >= cfg.end_after {
+    if cfg.auto_end_enabled && silence >= cfg.end_after {
         Stage::End
-    } else if silence >= cfg.prompt_after && !prompted {
+    } else if cfg.prompt_enabled && silence >= cfg.prompt_after && !prompted {
         Stage::Prompt
     } else {
         Stage::None
@@ -809,7 +821,8 @@ mod tests {
 
     fn cfg() -> InactivityConfig {
         InactivityConfig {
-            enabled: true,
+            prompt_enabled: true,
+            auto_end_enabled: true,
             prompt_after: Duration::from_secs(5 * 60),
             end_after: Duration::from_secs(10 * 60),
         }
@@ -863,6 +876,41 @@ mod tests {
         );
     }
 
+    #[test]
+    fn auto_end_disabled_never_ends_only_prompts() {
+        // Prompt on, auto-end off: the prompt still fires, but silence past the end threshold never
+        // auto-ends the meeting.
+        let c = InactivityConfig {
+            auto_end_enabled: false,
+            ..cfg()
+        };
+        assert_eq!(
+            silence_stage(Duration::from_secs(5 * 60), &c, false),
+            Stage::Prompt
+        );
+        assert_eq!(
+            silence_stage(Duration::from_secs(30 * 60), &c, true),
+            Stage::None
+        );
+    }
+
+    #[test]
+    fn prompt_disabled_auto_ends_without_prompting() {
+        // Prompt off, auto-end on: no prompt ever, but the meeting still auto-ends at the threshold.
+        let c = InactivityConfig {
+            prompt_enabled: false,
+            ..cfg()
+        };
+        assert_eq!(
+            silence_stage(Duration::from_secs(5 * 60), &c, false),
+            Stage::None
+        );
+        assert_eq!(
+            silence_stage(Duration::from_secs(10 * 60), &c, false),
+            Stage::End
+        );
+    }
+
     /// Drive the watchdog end-to-end on a fast tick with never-reset silence: it broadcasts a
     /// `prompt` frame, then auto-ends — writing the transcript marker and firing the inactive signal.
     #[tokio::test]
@@ -880,7 +928,8 @@ mod tests {
 
         let watchdog = tokio::spawn(inactivity_watchdog(
             InactivityConfig {
-                enabled: true,
+                prompt_enabled: true,
+                auto_end_enabled: true,
                 prompt_after: Duration::ZERO,
                 end_after: Duration::from_millis(40),
             },

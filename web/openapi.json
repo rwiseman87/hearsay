@@ -2232,14 +2232,18 @@
       },
       "RecordingSettings": {
         "type": "object",
-        "description": "Recording & privacy — the audio-retention switch (keep one WAV per meeting for playback + the\npost-meeting refine) plus the inactivity watchdog: whether to nudge (then auto-end) a meeting left\nrecording through silence, and the silence thresholds in minutes (the prompt fires at\n`inactivity_prompt_minutes`, the auto-end at the larger `inactivity_end_minutes`). Editable\nsection; a request body and part of [`SettingsRead`].",
+        "description": "Recording & privacy — the audio-retention switch (keep one WAV per meeting for playback + the\npost-meeting refine) plus the inactivity watchdog: independently toggle the \"still recording?\"\nprompt and the silence auto-end, with the silence thresholds in minutes (the prompt fires at\n`inactivity_prompt_minutes`, the auto-end at `inactivity_end_minutes`, which must be the larger\nwhen both are on). Editable section; a request body and part of [`SettingsRead`].",
         "required": [
           "record",
           "inactivity_prompt_enabled",
+          "inactivity_auto_end_enabled",
           "inactivity_prompt_minutes",
           "inactivity_end_minutes"
         ],
         "properties": {
+          "inactivity_auto_end_enabled": {
+            "type": "boolean"
+          },
           "inactivity_end_minutes": {
             "type": "integer",
             "format": "int32",

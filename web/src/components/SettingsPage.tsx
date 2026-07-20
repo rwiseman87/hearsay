@@ -108,7 +108,8 @@ function RecordingPanel() {
   if (settings.isLoading || !recording) return <p className="muted">Loading…</p>;
 
   const commit = (patch: Partial<RecordingSettings>) => update.mutate({ ...recording, ...patch });
-  const watchdogOn = recording.inactivity_prompt_enabled;
+  const promptOn = recording.inactivity_prompt_enabled;
+  const autoEndOn = recording.inactivity_auto_end_enabled;
 
   return (
     <div className="settings__panel">
@@ -131,15 +132,15 @@ function RecordingPanel() {
       <label className="settings__row">
         <input
           type="checkbox"
-          checked={watchdogOn}
+          checked={promptOn}
           disabled={update.isPending}
           onChange={(event) => commit({ inactivity_prompt_enabled: event.target.checked })}
         />
         <span className="settings__row-body">
           <span className="settings__row-label">Remind me if I leave it recording</span>
           <span className="settings__row-hint muted">
-            When no one has spoken for a while, show a "still recording?" prompt, then end the meeting
-            automatically if the silence continues. Applies to your next meeting.
+            When no one has spoken for a while, show a "still recording?" prompt. Applies to your next
+            meeting.
           </span>
         </span>
       </label>
@@ -150,12 +151,27 @@ function RecordingPanel() {
           min={1}
           max={1440}
           value={promptMin}
-          disabled={update.isPending || !watchdogOn}
+          disabled={update.isPending || !promptOn}
           aria-label="Prompt after minutes of silence"
           onChange={(event) => setPromptMin(event.currentTarget.valueAsNumber || 0)}
           onBlur={() => commit({ inactivity_prompt_minutes: promptMin })}
         />
       </div>
+      <label className="settings__row">
+        <input
+          type="checkbox"
+          checked={autoEndOn}
+          disabled={update.isPending}
+          onChange={(event) => commit({ inactivity_auto_end_enabled: event.target.checked })}
+        />
+        <span className="settings__row-body">
+          <span className="settings__row-label">Automatically stop after prolonged silence</span>
+          <span className="settings__row-hint muted">
+            End the meeting on its own once the silence continues past the limit below, like a meeting
+            bot. Turn off to keep recording until you press Stop. Applies to your next meeting.
+          </span>
+        </span>
+      </label>
       <div className="settings__field">
         <span className="settings__row-label">End meeting after (minutes of silence)</span>
         <input
@@ -163,12 +179,14 @@ function RecordingPanel() {
           min={2}
           max={1440}
           value={endMin}
-          disabled={update.isPending || !watchdogOn}
+          disabled={update.isPending || !autoEndOn}
           aria-label="End meeting after minutes of silence"
           onChange={(event) => setEndMin(event.currentTarget.valueAsNumber || 0)}
           onBlur={() => commit({ inactivity_end_minutes: endMin })}
         />
-        <span className="settings__row-hint muted">Must be greater than the prompt time.</span>
+        <span className="settings__row-hint muted">
+          Must be greater than the prompt time when both are on.
+        </span>
       </div>
       {update.isError ? (
         <p className="settings__error" role="alert">

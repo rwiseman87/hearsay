@@ -259,7 +259,7 @@ Returns every editable section (`recording`, `speakers`, `storage`, `models`) pl
 ```json
 // 200 OK
 {
-  "recording": { "record": true, "inactivity_prompt_enabled": true, "inactivity_prompt_minutes": 5, "inactivity_end_minutes": 10 },
+  "recording": { "record": true, "inactivity_prompt_enabled": true, "inactivity_auto_end_enabled": true, "inactivity_prompt_minutes": 5, "inactivity_end_minutes": 10 },
   "speakers": { "auto_refine": true, "recognition_threshold": 0.6 },
   "storage": { "output_dir": "/Users/you/.../outputs/recordings" },
   "models": { "notes_enabled": false, "notes_model": "", "notes_prompt": "<template with {transcript}>", "refine_model": ".../ggml-large-v3-turbo.bin" },
@@ -272,9 +272,10 @@ Returns every editable section (`recording`, `speakers`, `storage`, `models`) pl
 
 Each takes that section's body and returns it. `storage` validates that `output_dir` is absolute,
 existing, and writable; `speakers` validates `recognition_threshold` in `0..=1`; `models`
-validates the notes model path (must exist and be a GGUF) and the prompt length; `recording`, when
-the inactivity prompt is enabled, requires `inactivity_prompt_minutes` >= 1 and strictly less than
-`inactivity_end_minutes` (<= 1440). All return `422` on a bad value.
+validates the notes model path (must exist and be a GGUF) and the prompt length; `recording`
+independently gates the inactivity prompt and the silence auto-end — each enabled threshold must be
+1..=1440 minutes, and when both are on the auto-end must exceed the prompt. All return `422` on a bad
+value.
 
 ### `DELETE /api/settings/models` (reset the models section)
 

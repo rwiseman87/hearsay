@@ -44,16 +44,19 @@ pub struct Settings {
     /// in a prior meeting (`HEARSAY_RECOGNITION_THRESHOLD`, default 0.6; the `speakers` section
     /// overrides it).
     pub recognition_threshold: f64,
-    /// Default master switch for the inactivity watchdog: nudge (then auto-end) a meeting that runs
-    /// on with no speech (`HEARSAY_INACTIVITY_PROMPT`, default on). The `recording` section overrides
-    /// it per install.
+    /// Default switch for the inactivity "still recording?" prompt (`HEARSAY_INACTIVITY_PROMPT`,
+    /// default on). The `recording` section overrides it per install.
     pub inactivity_prompt: bool,
+    /// Default switch for auto-ending a meeting after prolonged silence
+    /// (`HEARSAY_INACTIVITY_AUTO_END`, default on). Independent of the prompt; the `recording` section
+    /// overrides it per install.
+    pub inactivity_auto_end: bool,
     /// Default minutes of continuous silence (no Me/Them speech) before the in-app "still recording?"
     /// prompt (`HEARSAY_INACTIVITY_PROMPT_MINUTES`, default 5; the `recording` section overrides it).
     pub inactivity_prompt_minutes: u64,
     /// Default minutes of continuous silence before the meeting auto-ends with a logged transcript
-    /// marker (`HEARSAY_INACTIVITY_END_MINUTES`, default 10; must exceed the prompt threshold; the
-    /// `recording` section overrides it).
+    /// marker (`HEARSAY_INACTIVITY_END_MINUTES`, default 10; must exceed the prompt threshold when both
+    /// are enabled; the `recording` section overrides it).
     pub inactivity_end_minutes: u64,
     /// Default for the optional local-LLM notes step: generate a summary + action items at stop
     /// (`HEARSAY_NOTES`, default off — opt-in, and needs a downloaded model). The `models` settings
@@ -197,6 +200,7 @@ impl Settings {
         let record = env_bool("HEARSAY_RECORD", true, &mut problems);
         let recognition_threshold = env_recognition_threshold(0.6, &mut problems);
         let inactivity_prompt = env_bool("HEARSAY_INACTIVITY_PROMPT", true, &mut problems);
+        let inactivity_auto_end = env_bool("HEARSAY_INACTIVITY_AUTO_END", true, &mut problems);
         let inactivity_prompt_minutes =
             env_u64("HEARSAY_INACTIVITY_PROMPT_MINUTES", 5, &mut problems);
         let inactivity_end_minutes = env_u64("HEARSAY_INACTIVITY_END_MINUTES", 10, &mut problems);
@@ -239,6 +243,7 @@ impl Settings {
             record,
             recognition_threshold,
             inactivity_prompt,
+            inactivity_auto_end,
             inactivity_prompt_minutes,
             inactivity_end_minutes,
             notes_enabled,

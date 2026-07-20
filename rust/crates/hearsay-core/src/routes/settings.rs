@@ -82,6 +82,10 @@ async fn resolve_recording(state: &AppState) -> ApiResult<RecordingSettings> {
             "inactivity_prompt_enabled",
             state.settings.inactivity_prompt,
         ),
+        inactivity_auto_end_enabled: bool_field(
+            "inactivity_auto_end_enabled",
+            state.settings.inactivity_auto_end,
+        ),
         inactivity_prompt_minutes: u32_field(
             "inactivity_prompt_minutes",
             state.settings.inactivity_prompt_minutes as u32,
@@ -93,26 +97,28 @@ async fn resolve_recording(state: &AppState) -> ApiResult<RecordingSettings> {
     })
 }
 
-/// Bound the inactivity thresholds at the boundary so a bad pair never reaches the watchdog: when
-/// enabled, the prompt must be at least 1 minute and strictly before the auto-end, and the auto-end
-/// within a day. Skipped when disabled (the values are inert).
+/// Bound the inactivity thresholds at the boundary so a bad value never reaches the watchdog. The
+/// prompt and the auto-end are independently toggleable: each enabled threshold must be 1..=1440
+/// minutes, and when both are on the auto-end must be strictly after the prompt. A disabled
+/// threshold's minutes are inert, so they are not checked.
 fn validate_recording(body: &RecordingSettings) -> ApiResult<()> {
-    if body.inactivity_prompt_enabled {
-        if body.inactivity_prompt_minutes < 1 {
-            return Err(ApiError::Unprocessable(
-                "inactivity_prompt_minutes must be at least 1".into(),
-            ));
-        }
-        if body.inactivity_end_minutes <= body.inactivity_prompt_minutes {
-            return Err(ApiError::Unprocessable(
-                "inactivity_end_minutes must be greater than inactivity_prompt_minutes".into(),
-            ));
-        }
-        if body.inactivity_end_minutes > 1440 {
-            return Err(ApiError::Unprocessable(
-                "inactivity_end_minutes must be at most 1440".into(),
-            ));
-        }
+    if body.inactivity_prompt_enabled && !(1..=1440).contains(&body.inactivity_prompt_minutes) {
+        return Err(ApiError::Unprocessable(
+            "inactivity_prompt_minutes must be between 1 and 1440".into(),
+        ));
+    }
+    if body.inactivity_auto_end_enabled && !(1..=1440).contains(&body.inactivity_end_minutes) {
+        return Err(ApiError::Unprocessable(
+            "inactivity_end_minutes must be between 1 and 1440".into(),
+        ));
+    }
+    if body.inactivity_prompt_enabled
+        && body.inactivity_auto_end_enabled
+        && body.inactivity_end_minutes <= body.inactivity_prompt_minutes
+    {
+        return Err(ApiError::Unprocessable(
+            "inactivity_end_minutes must be greater than inactivity_prompt_minutes".into(),
+        ));
     }
     Ok(())
 }

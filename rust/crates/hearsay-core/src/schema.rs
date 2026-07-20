@@ -320,14 +320,15 @@ pub struct SpeakerRename {
 }
 
 /// Recording & privacy — the audio-retention switch (keep one WAV per meeting for playback + the
-/// post-meeting refine) plus the inactivity watchdog: whether to nudge (then auto-end) a meeting left
-/// recording through silence, and the silence thresholds in minutes (the prompt fires at
-/// `inactivity_prompt_minutes`, the auto-end at the larger `inactivity_end_minutes`). Editable
-/// section; a request body and part of [`SettingsRead`].
+/// post-meeting refine) plus the inactivity watchdog: independently toggle the "still recording?"
+/// prompt and the silence auto-end, with the silence thresholds in minutes (the prompt fires at
+/// `inactivity_prompt_minutes`, the auto-end at `inactivity_end_minutes`, which must be the larger
+/// when both are on). Editable section; a request body and part of [`SettingsRead`].
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct RecordingSettings {
     pub record: bool,
     pub inactivity_prompt_enabled: bool,
+    pub inactivity_auto_end_enabled: bool,
     pub inactivity_prompt_minutes: u32,
     pub inactivity_end_minutes: u32,
 }

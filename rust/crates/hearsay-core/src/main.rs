@@ -66,6 +66,7 @@ async fn main() -> Result<(), BoxError> {
         settings.auto_refine,
         settings.recognition_threshold,
         settings.inactivity_prompt,
+        settings.inactivity_auto_end,
         settings.inactivity_prompt_minutes,
         settings.inactivity_end_minutes,
         settings.notes_enabled,

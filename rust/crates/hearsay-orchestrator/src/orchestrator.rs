@@ -48,9 +48,10 @@ pub struct Orchestrator {
     default_auto_refine: bool,
     default_recognition_threshold: f64,
     /// Config defaults for the inactivity watchdog (the effective values are the stored `recording`
-    /// override else these): master switch + minutes of silence before the prompt and the auto-end.
-    /// Resolved at meeting start so a Settings change takes effect on the next meeting.
-    default_inactivity_enabled: bool,
+    /// override else these): independent prompt + auto-end toggles, plus the minutes of silence before
+    /// each. Resolved at meeting start so a Settings change takes effect on the next meeting.
+    default_inactivity_prompt: bool,
+    default_inactivity_auto_end: bool,
     default_inactivity_prompt_minutes: u64,
     default_inactivity_end_minutes: u64,
     /// Config defaults for the optional local-LLM notes step (the effective values are the stored
@@ -102,7 +103,8 @@ impl Orchestrator {
             default_record: true,
             default_auto_refine: true,
             default_recognition_threshold: 0.6,
-            default_inactivity_enabled: true,
+            default_inactivity_prompt: true,
+            default_inactivity_auto_end: true,
             default_inactivity_prompt_minutes: 5,
             default_inactivity_end_minutes: 10,
             default_notes_enabled: false,
@@ -127,7 +129,8 @@ impl Orchestrator {
         record: bool,
         auto_refine: bool,
         recognition_threshold: f64,
-        inactivity_enabled: bool,
+        inactivity_prompt: bool,
+        inactivity_auto_end: bool,
         inactivity_prompt_minutes: u64,
         inactivity_end_minutes: u64,
         notes_enabled: bool,
@@ -136,7 +139,8 @@ impl Orchestrator {
         self.default_record = record;
         self.default_auto_refine = auto_refine;
         self.default_recognition_threshold = recognition_threshold;
-        self.default_inactivity_enabled = inactivity_enabled;
+        self.default_inactivity_prompt = inactivity_prompt;
+        self.default_inactivity_auto_end = inactivity_auto_end;
         self.default_inactivity_prompt_minutes = inactivity_prompt_minutes;
         self.default_inactivity_end_minutes = inactivity_end_minutes;
         self.default_notes_enabled = notes_enabled;
@@ -224,15 +228,18 @@ impl Orchestrator {
         // recordings root is pinned onto the meeting so it stays locatable if Storage later changes.
         let output_root = queries::effective_output_dir(&self.pool, &self.output_dir).await?;
         let record = queries::effective_record(&self.pool, self.default_record).await?;
-        let (inact_enabled, inact_prompt_min, inact_end_min) = queries::effective_inactivity(
-            &self.pool,
-            self.default_inactivity_enabled,
-            self.default_inactivity_prompt_minutes,
-            self.default_inactivity_end_minutes,
-        )
-        .await?;
+        let (inact_prompt, inact_auto_end, inact_prompt_min, inact_end_min) =
+            queries::effective_inactivity(
+                &self.pool,
+                self.default_inactivity_prompt,
+                self.default_inactivity_auto_end,
+                self.default_inactivity_prompt_minutes,
+                self.default_inactivity_end_minutes,
+            )
+            .await?;
         let inactivity = InactivityConfig {
-            enabled: inact_enabled,
+            prompt_enabled: inact_prompt,
+            auto_end_enabled: inact_auto_end,
             prompt_after: Duration::from_secs(inact_prompt_min.saturating_mul(60)),
             end_after: Duration::from_secs(inact_end_min.saturating_mul(60)),
         };
