@@ -157,7 +157,11 @@ fn quit_app(app: tauri::AppHandle) {
 /// on first request), then shows the notification; any failure is returned as a string the caller
 /// swallows, so a denied/undelivered notification never disrupts the meeting.
 #[tauri::command]
-fn notify_still_recording(app: tauri::AppHandle, title: String, body: String) -> Result<(), String> {
+fn notify_still_recording(
+    app: tauri::AppHandle,
+    title: String,
+    body: String,
+) -> Result<(), String> {
     use tauri_plugin_notification::{NotificationExt, PermissionState};
     let notifier = app.notification();
     if notifier.permission_state().map_err(|e| e.to_string())? != PermissionState::Granted {
