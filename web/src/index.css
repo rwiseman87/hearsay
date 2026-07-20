@@ -945,8 +945,15 @@ button:not(:disabled):hover {
   overflow-y: auto;
 }
 
+/* One consistent vertical rhythm for every panel; children keep margin 0 and rely on the gap. */
+.settings__panel {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
 .settings__panel-title {
-  margin: 0 0 12px;
+  margin: 0;
   font-size: var(--fs-lg);
 }
 
@@ -977,7 +984,7 @@ button:not(:disabled):hover {
 }
 
 .settings__error {
-  margin: 10px 0 0;
+  margin: 0;
   color: var(--danger);
   font-size: var(--fs-sm);
 }
@@ -986,7 +993,17 @@ button:not(:disabled):hover {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  margin-top: 18px;
+}
+
+/* A child setting of the toggle above it (e.g. the silence minutes under their reminder toggle):
+   indented to the toggle's text column and pulled toward its parent so the pair reads as one group. */
+.settings__field--sub {
+  margin-top: -6px;
+  margin-left: 26px;
+}
+
+.settings__field--sub input {
+  width: 90px;
 }
 
 .settings__prompt {
@@ -1037,7 +1054,7 @@ button:not(:disabled):hover {
 
 /* A subsection break within a panel (e.g. the notes controls below the refine model). */
 .settings__field--divided {
-  margin-top: 22px;
+  margin-top: 8px;
   padding-top: 18px;
   border-top: 1px solid var(--border);
 }
@@ -1069,7 +1086,7 @@ button:not(:disabled):hover {
 }
 
 .settings__facts {
-  margin: 20px 0 0;
+  margin: 0;
   display: flex;
   flex-direction: column;
   gap: 12px;
@@ -1100,7 +1117,6 @@ button:not(:disabled):hover {
   align-items: center;
   justify-content: space-between;
   gap: 10px;
-  margin-bottom: 16px;
 }
 
 .settings__perms {
@@ -1160,7 +1176,6 @@ button:not(:disabled):hover {
 
 .settings__reveal-btn {
   align-self: flex-start;
-  margin-top: 4px;
 }
 
 /* Inline link-styled button (e.g. "Reset to default" next to a fact) — no button chrome. */
@@ -1187,7 +1202,7 @@ button:not(:disabled):hover {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  margin-top: 24px;
+  margin-top: 8px;
   padding-top: 20px;
   border-top: 1px solid var(--border);
 }
