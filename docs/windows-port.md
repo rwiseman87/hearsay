@@ -1,0 +1,234 @@
+# Windows port
+
+The plan and tracking state for the Windows build of Hearsay: the same Rust + Tauri app with
+per-OS code only at the edges, delivered as a signed-later, unsigned-first NSIS installer.
+Target: **x86_64 only** (`x86_64-pc-windows-msvc`, no ARM); floor **Windows 10 2004+**;
+reference hardware a 16 GB Core Ultra 225U-class laptop with integrated graphics.
+
+This document is the working tracking state: the phase checkboxes below are updated as work
+lands. Design rationale and the research findings that drove each decision are recorded here so
+they are not re-litigated. The canonical architecture stays in
+[architecture.md](architecture.md); once the port ships, the durable parts of this document
+fold into it.
+
+## Shape of the port
+
+Roughly 90 percent of the codebase is platform-neutral and ships unchanged. The Windows-specific
+surface is capture, backend wiring, and packaging.
+
+| Layer | macOS | Windows |
+|---|---|---|
+| Shell, frontend, core API, DB, orchestrator pipeline, attribution | shared | shared |
+| Capture (`AudioSource`) | Swift helper over Unix sockets | in-process `WasapiSource` (WASAPI) |
+| Live ASR (`Transcriber`) | FluidAudio/ANE sidecars (diarized) | `SherpaTranscriber`, both streams (exists behind the `sherpa` feature) |
+| Live speakers | diarized live | "Speaker 1" live; real speakers at refine (the Windows floor) |
+| Refine (`Refiner`) | whisper + `hearsay-diarize` sidecar | whisper + `SherpaDiarizer` (exists behind `sherpa`) |
+| Notes (`Summarizer`) | llama.cpp (`notes` feature) | same, unchanged |
+| Refine/notes GPU | `metal` feature | CPU first; `vulkan` feature on the Arc iGPU |
+| AEC | shared (`aec` feature, SpeexDSP) | same code; needs an MSVC build check |
+| Packaging | `.app`/`.dmg`, 5 bundled binaries | NSIS, 1 bundled binary (`hearsay-core`) + models |
+
+There is no helper process on Windows: WASAPI needs no TCC-style privilege isolation, so capture
+implements the `AudioSource` trait in-process and the socket IPC contract stays macOS-only. The
+orchestrator only ever sees the `mpsc::Receiver<CaptureChunk>`.
+
+## Capture design
+
+Two capture threads inside `hearsay-core` (each COM-initialized), both using the
+[`wasapi`](https://crates.io/crates/wasapi) crate (0.23.0, MIT, actively maintained):
+
+- **Me**: the default capture endpoint, shared mode, requesting 16 kHz mono f32 directly via
+  `AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM | SRC_DEFAULT_QUALITY` (the engine inserts the channel
+  matrixer and sample-rate converter).
+- **Them**: system audio, with two selectable paths behind one setting
+  (`HEARSAY_WIN_LOOPBACK`, values `device` | `process`, default `device`):
+
+```mermaid
+flowchart TD
+    them["Them stream"] --> mode{"HEARSAY_WIN_LOOPBACK"}
+    mode -->|"device (default)"| classic["Classic device loopback<br/>AUDCLNT_STREAMFLAGS_LOOPBACK on the render endpoint<br/>mix format or AUTOCONVERTPCM"]
+    mode -->|process| exclude["Process loopback, exclude-self<br/>ActivateAudioInterfaceAsync + PROCESS_LOOPBACK<br/>EXCLUDE_TARGET_PROCESS_TREE on own PID"]
+    classic --> route["IMMNotificationClient: reopen on<br/>default-device change; gap-fill by timestamp"]
+    exclude --> fmt["Self-specified format (GetMixFormat is E_NOTIMPL);<br/>fallback resample if 16 kHz mono is rejected"]
+    route --> clock["QPC timestamps -> host_ts"]
+    fmt --> clock
+```
+
+Why classic loopback is the default even though process-loopback-exclude is the exact
+global-except-self analog of the macOS tap: there is an open, corroborated bug where process
+loopback (both include and exclude modes) captures pure silence from new Teams desktop meetings,
+while classic device loopback captures Teams fine
+([microsoft/Windows-classic-samples#414](https://github.com/microsoft/Windows-classic-samples/issues/414),
+[OBS forum report](https://obsproject.com/forum/threads/application-audio-capture-beta-doesnt-work-in-new-teams-app.171446/)).
+A meeting transcriber cannot ship with Teams silent. The cost of classic loopback — no
+self-exclusion — is negligible because Hearsay renders almost no audio of its own (only meeting
+playback, unlikely during a recording). The process path stays implemented and selectable so it
+can become the default when the bug is fixed.
+
+Capture facts the implementation is built on (verified against Microsoft Learn and the crate
+source, July 2026):
+
+- `PROCESS_LOOPBACK_MODE_EXCLUDE_TARGET_PROCESS_TREE` with our own PID captures everything
+  except our process tree; `wasapi`'s `AudioClient::new_application_loopback_client(pid, false)`
+  passes EXCLUDE (its doc comment says otherwise; the code is correct — worth an upstream PR).
+- Process loopback officially requires build 20348 but works on updated Windows 10 2004+ (OBS
+  ships on it); many `IAudioClient` methods are broken on such clients (`GetMixFormat`,
+  `IsFormatSupported`, `GetDevicePeriod`, `GetCurrentPadding`), so the format is self-specified.
+- Both streams are stamped from one monotonic clock: `IAudioCaptureClient::GetBuffer`'s
+  `pu64QPCPosition` (100 ns units) × 100 is the pipeline's `host_ts` in nanoseconds. The device
+  position is unusable on process loopback (reported always 0). `TIMESTAMP_ERROR` and
+  `DATA_DISCONTINUITY` packet flags are surfaced to the log.
+- WASAPI clients get no automatic stream routing: an `IMMNotificationClient` watches for
+  default-device changes and the affected client is rebuilt — the analog of the macOS
+  tap-rebuild watchdog. Idle render (nothing playing) produces no packets; the pipeline's
+  existing silence-padding resync absorbs the gaps.
+- Microphone consent for Win32 apps is the global "Let desktop apps access your microphone"
+  toggle (ConsentStore registry); there is no per-app prompt and no documented gate on loopback.
+  NSIS installs are Win32, not MSIX — no capability manifest exists or is needed.
+
+A portable `SyntheticSource` (tone generator) backs `SYNTHETIC=1` on Windows, filling the role
+the helper's tone source plays on macOS, so pipeline bring-up is separable from capture
+bring-up.
+
+## Inference design
+
+The live and refine stacks reuse the `sherpa` feature modules that already exist and are
+end-to-end proven by the ignored `hearsay-backends/tests/streaming_pipeline.rs` test:
+
+- **Live**: `SherpaTranscriber` (streaming zipformer transducer,
+  `sherpa-onnx-streaming-zipformer-en-20M-2023-02-17` int8, Apache-2.0) on both streams.
+  Segments are speaker-less live; the refine assigns speakers.
+- **Refine**: whisper (whisper-rs, model from the Settings > Models panel as on macOS) plus
+  `SherpaDiarizer` (pyannote segmentation-3.0, MIT, + TitaNet embedding, CC-BY-4.0) through the
+  portable `refine_them_with` seam. Known-degraded versus FluidAudio (tends to over-split
+  speakers); accepted as the cross-platform tier.
+- **Voiceprints**: TitaNet embeddings are a different space than FluidAudio's, so voiceprints
+  are per-platform. Each install's database is local, so nothing breaks; the recognition
+  threshold default may need Windows-specific tuning (an on-device item).
+- The crates.io `sherpa-onnx` crate is the official k2-fsa binding (the older `sherpa-rs` is
+  archived in its favor); its `-sys` crate downloads a prebuilt native library per platform, so
+  no onnxruntime build from source is expected on Windows.
+- Windows default whisper model: smaller than the macOS default (no ANE/Metal; e.g. `small.en`
+  as the staged default, measured on the reference hardware before being fixed).
+
+Deliberately out of scope for this milestone: NVIDIA Nemotron cache-aware streaming ASR and
+Sortformer live diarization (better quality, but non-MIT/BSD/Apache model licenses and
+unconfirmed Rust-API exposure). They are the candidate upgrade tier once the floor ships.
+
+## Backend wiring
+
+- `hearsay-backends` splits into `#[cfg(target_os = "macos")] mod mac` and
+  `#[cfg(all(target_os = "windows", feature = "sherpa"))] mod windows`, each exporting
+  `build_engine`; a `compile_error!` on Windows without `sherpa` names the required feature.
+- `build_engine`'s positional arguments collapse into one `EngineConfig` struct on both
+  platforms, so Windows-only fields (sherpa models dir, loopback mode) do not fork the
+  signature and `hearsay-core` stays platform-unconditional.
+- `WindowsBackend` holds the loaded `StreamingAsr` (loaded once at startup; `sidecars_ready()`
+  is true from then on — no warm pool, since there are no subprocesses to warm).
+- `WindowsRefiner` mirrors `MacRefiner` (same effective-model query, same NoSpeech-to-empty
+  mapping) with `SherpaDiarizer` in place of the Swift sidecar.
+- The Windows `probe_permissions` fills `PermissionsSnapshot.microphone` from the ConsentStore
+  registry and reports `audio_capture` granted (no OS gate); the macOS-only fields stay `None`.
+
+## Packaging design
+
+- Live models ship in the installer (mirroring the FluidAudio staging pattern): the streaming
+  zipformer, pyannote segmentation-3.0, and the TitaNet embedding under a
+  `HEARSAY_SHERPA_MODELS_DIR` the shell points into the bundle resources; a Windows-sized
+  whisper GGML is staged like `stage-model`.
+- `tauri.windows.conf.json` overrides the bundle for Windows: targets `["nsis"]`, `externalBin`
+  reduced to `hearsay-core` only (the platform config replaces the array, dropping the four
+  Swift binaries).
+- Shell `cfg(windows)` arms: env wiring without `HEARSAY_HELPER_PATH`, Windows app-data paths in
+  `erase_all_data` (no `tccutil`), reveal via `explorer /select,`. Graceful stop is already
+  portable (the core exits on stdin EOF; the shell's kill is the backstop).
+- Windows has no `make`: `scripts/build-windows.ps1` mirrors `stage-release` + `cargo tauri
+  build` for the Windows machine. Build features arrive in order: `sherpa,notes` (CPU, fewest
+  prerequisites), then `vulkan`, then `aec` — each has a graceful fallback (CPU inference; AEC
+  no-op passthrough).
+
+## Windows build prerequisites
+
+On the Windows x86_64 machine:
+
+- Visual Studio 2022 Build Tools with the "Desktop development with C++" workload (MSVC +
+  Windows SDK).
+- Rust via rustup (defaults to `x86_64-pc-windows-msvc`).
+- CMake (whisper-rs / llama-cpp-2 build).
+- Node 22 (web UI).
+- Only for the `aec` feature: LLVM (libclang, for bindgen).
+- Only for the `vulkan` feature: the Vulkan SDK.
+
+## Phases
+
+Checkboxes are the tracking state for the port.
+
+### Phase 0 — Tracking document
+
+- [x] `docs/windows-port.md` (this document); linked from the architecture roadmap.
+
+### Phase 1 — Cross-platform scaffolding (verifiable on macOS)
+
+- [ ] `hearsay-capture`: macOS helper source behind `cfg(target_os = "macos")`; shared types
+      (`PermissionsSnapshot`) platform-neutral; Windows module stub.
+- [ ] `hearsay-backends`: `mod mac` / `mod windows` cfg split + `compile_error!` guard.
+- [ ] `hearsay-inference`: portable diarizer-injected refine function (mac wrapper keeps
+      `SwiftDiarizer`).
+- [ ] `build_engine` takes `EngineConfig` (backends + `hearsay-core/main.rs` call site).
+- [ ] Settings: `sherpa_models_dir`, `win_loopback_mode` (env-backed, defaulted).
+- [ ] `routes/settings.rs`: Windows reveal arm (`explorer /select,`).
+- [ ] Cargo: `[target.'cfg(windows)'.dependencies]` (`wasapi`, registry access); `sherpa`
+      feature passthrough on `hearsay-core`.
+- [ ] Gate: `make ci` green on macOS.
+
+### Phase 2 — Capture
+
+- [ ] `WasapiSource`: mic + classic device loopback + process-loopback-exclude, QPC
+      timestamps, autoconvert to 16 kHz mono, device-change rebuild, format-rejection
+      fallback resample.
+- [ ] `SyntheticSource` behind `SYNTHETIC=1` (portable tone source, no helper).
+
+### Phase 3 — Backend
+
+- [ ] `WindowsBackend` + `WindowsRefiner` + Windows `build_engine`.
+- [ ] Windows `probe_permissions` (ConsentStore microphone state).
+
+### Phase 4 — Packaging
+
+- [ ] `fetch-sherpa-models` / `stage-sherpa-models` targets + Windows whisper staging.
+- [ ] `tauri.windows.conf.json` (NSIS, reduced `externalBin`).
+- [ ] Shell `cfg(windows)` arms (env wiring, erase, no helper).
+- [ ] `scripts/build-windows.ps1`.
+- [ ] `docs/development.md` Windows prerequisites; `docs/packaging.md` Windows section.
+
+### Phase 5 — On-Windows bring-up
+
+Run on the Windows machine, in order; each step isolates one class of failure. Findings feed
+fixes back into the phases above.
+
+- [ ] 1. Toolchain + `cargo build --manifest-path rust/Cargo.toml --features sherpa,notes`
+      (surfaces any blind-written compile errors).
+- [ ] 2. `cargo test --manifest-path rust/Cargo.toml`, then the ignored sherpa tests with
+      fetched models (`cargo test -p hearsay-inference --features sherpa -- --ignored`).
+- [ ] 3. Headless serve + browser UI with `SYNTHETIC=1` (pipeline without real capture).
+- [ ] 4. Real capture smoke test: a live meeting with a playing video call; Me and Them both
+      transcribe. Verify the on-device unknowns (below) and confirm the default loopback mode.
+- [ ] 5. Stop → refine produces speakers + voiceprints; notes step runs; whisper model size
+      measured on the 225U; recognition-threshold sanity check.
+- [ ] 6. `vulkan` build, then `aec` build.
+- [ ] 7. `scripts/build-windows.ps1` → NSIS installer installs, launches, records a meeting,
+      uninstalls clean.
+
+## On-device unknowns
+
+Resolved during Phase 5 step 4; recorded here when answered.
+
+- [ ] Process-loopback-exclude behavior in a new Teams meeting (expected: silence, per the open
+      bug — confirms `device` as the default).
+- [ ] Whether a process-loopback client accepts a self-specified 16 kHz mono format (else the
+      fallback resample path engages).
+- [ ] QPC timestamp validity/stability on both paths (drift between Me and Them under load).
+- [ ] Idle-gap behavior: packet cadence when nothing is playing, on both loopback paths.
+- [ ] Whether the desktop-app microphone privacy toggle also gates loopback capture.
+- [ ] AEC effectiveness with speakers on the reference laptop (echo of Them in Me).
+- [ ] Whisper refine wall-clock per meeting-minute on the 225U, CPU vs `vulkan`, per model size.
