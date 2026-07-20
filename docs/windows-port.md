@@ -188,10 +188,15 @@ Checkboxes are the tracking state for the port.
 
 ### Phase 2 — Capture
 
-- [ ] `WasapiSource`: mic + classic device loopback + process-loopback-exclude, QPC
-      timestamps, autoconvert to 16 kHz mono, device-change rebuild, format-rejection
-      fallback resample.
-- [ ] `SyntheticSource` behind `SYNTHETIC=1` (portable tone source, no helper).
+- [x] `WasapiSource` (`hearsay-capture/src/wasapi_source.rs`, `cfg(windows)`): one capture
+      thread per stream; mic + classic device loopback + process-loopback-exclude; QPC packet
+      timestamps × 100 → `host_ts` ns; 16 kHz mono f32 requested directly (autoconvert for
+      mic/device paths, self-specified for process loopback); default-device polling + rebuild
+      on change or read error (give-up cap → capture-death path); SILENT packets forwarded as
+      zeros. Compiles only on Windows — first compile happens in bring-up step 1. A fallback
+      resample stays out until bring-up shows a format rejection.
+- [x] `SyntheticSource` (portable, unit-tested on macOS): alternating 440/660 Hz bursts, one
+      monotonic clock, real-time cadence — backs `SYNTHETIC=1` where there is no helper.
 
 ### Phase 3 — Backend
 

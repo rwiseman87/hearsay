@@ -13,9 +13,15 @@
 
 #[cfg(target_os = "macos")]
 mod swift_helper;
+mod synthetic;
+#[cfg(windows)]
+mod wasapi_source;
 
 #[cfg(target_os = "macos")]
 pub use swift_helper::{probe_permissions, SwiftHelperSource};
+pub use synthetic::SyntheticSource;
+#[cfg(windows)]
+pub use wasapi_source::WasapiSource;
 
 /// Which WASAPI path captures the Them (system audio) stream on Windows
 /// (`HEARSAY_WIN_LOOPBACK`). Unused on macOS, where the Core Audio tap is always
