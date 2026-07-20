@@ -2,6 +2,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useReducer, useState } from "react";
 
 import { useSegments } from "../api/hooks";
+import { notifyStillRecordingIfAway } from "../api/notify";
 import { queryKeys } from "../api/queryKeys";
 import { getToken } from "../api/token";
 import type { MeetingRead, SegmentRead } from "../api/types";
@@ -142,7 +143,14 @@ export function useTranscript(meeting: MeetingRead | null): TranscriptState {
     return openTranscriptSocket(
       meetingId,
       getToken(),
-      (event) => dispatch({ type: "event", event }),
+      (event) => {
+        dispatch({ type: "event", event });
+        // A silence prompt for a user who has switched away from the window: also fire a native OS
+        // notification so the nudge reaches them (desktop-only, unfocused-only; a no-op otherwise).
+        if (event.kind === "prompt") {
+          notifyStillRecordingIfAway(Math.round(event.silent_seconds / 60));
+        }
+      },
       setConnection,
       // On a reconnect or a server resync signal, persisted state may be ahead of the stream;
       // refetch segments so the reducer merges any missed finals (seed replace=false while live).

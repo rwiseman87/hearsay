@@ -69,7 +69,7 @@ flowchart TB
 
 | Process | Role | Why a separate process |
 |---|---|---|
-| Tauri shell (`hearsay-app`) | Owns the OS window, spawns exactly one child (`hearsay-core`), stops it gracefully on quit, and hosts the three native commands the UI can invoke (erase-all-data with a native confirm dialog, quit, model file picker). | The desktop entry point; it never touches the Swift processes. |
+| Tauri shell (`hearsay-app`) | Owns the OS window, spawns exactly one child (`hearsay-core`), stops it gracefully on quit, and hosts the native commands the UI can invoke (erase-all-data with a native confirm dialog, quit, model file picker, and the inactivity OS notification). | The desktop entry point; it never touches the Swift processes. |
 | `hearsay-core` | The single backend: loopback HTTP + WebSocket API, SQLite persistence, meeting orchestration, speaker attribution, the offline whisper refine, and the optional llama.cpp notes step. Spawns and supervises the helper and sidecars. | The composition root; the only ML it runs in-process is offline (refine, notes), never live. |
 | `hearsay-helper` | The only process that touches TCC-guarded native APIs: the Core Audio process tap (system audio, configured global-except-self) and the microphone. Resamples both to 16 kHz mono and stamps both with one monotonic clock. | Confines the permission surface, and keeps the capture binary free of CoreML so a model problem can never take down capture. |
 | `hearsay-live` / `hearsay-me` | The live audio AI (FluidAudio on the Apple Neural Engine): streaming diarization plus Parakeet ASR for Them, streaming VAD plus Parakeet for Me. One process per stream, one meeting per process. | Each model owns its address space; a crash is contained and the warm pool replaces the pair. |
@@ -364,7 +364,9 @@ stream), broadcasts a `prompt` event to the live WebSocket after a configurable 
 minutes), and — if the silence continues to the end threshold (default 10 minutes) — writes a
 `System` transcript marker and signals `stop_meeting` to auto-end the meeting. Any speech, or the
 "Keep recording" action, resets the clock; the whole behavior is a toggle in the `recording`
-settings section.
+settings section. When the window is unfocused, the frontend asks the Tauri shell (a granted
+`notify_still_recording` command) to raise a native OS notification, so a user who has switched
+away still sees the nudge.
 
 A hard exit (SIGKILL, panic, power loss) can strand a row in `recording` or `refining`. Because
 nothing can be active at startup, the core sweeps every non-terminal row at boot, marks it

@@ -151,6 +151,28 @@ fn quit_app(app: tauri::AppHandle) {
     app.exit(0);
 }
 
+/// Post a native OS notification — the "still recording?" nudge for a user who has switched away from
+/// the window (the in-app banner alone would go unseen). Called from the webview only when the window
+/// is unfocused. Best-effort: it requests notification permission if not yet granted (macOS prompts
+/// on first request), then shows the notification; any failure is returned as a string the caller
+/// swallows, so a denied/undelivered notification never disrupts the meeting.
+#[tauri::command]
+fn notify_still_recording(app: tauri::AppHandle, title: String, body: String) -> Result<(), String> {
+    use tauri_plugin_notification::{NotificationExt, PermissionState};
+    let notifier = app.notification();
+    if notifier.permission_state().map_err(|e| e.to_string())? != PermissionState::Granted {
+        // Best-effort: request once. If the user is away (the case this feature targets), they cannot
+        // grant it now, so this first notification may not show — a later one will once granted.
+        let _ = notifier.request_permission();
+    }
+    notifier
+        .builder()
+        .title(title)
+        .body(body)
+        .show()
+        .map_err(|e| e.to_string())
+}
+
 /// Open a native file picker for the offline-refine whisper model and return the chosen absolute
 /// path (or `None` if the user cancels). Filtered to GGML `.bin` models. Async so it runs off the
 /// main thread — the blocking picker dispatches the panel to the main run loop and waits, which
@@ -171,11 +193,13 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_notification::init())
         .manage(CoreChild(Mutex::new(None)))
         .invoke_handler(tauri::generate_handler![
             erase_all_data,
             quit_app,
-            pick_refine_model
+            pick_refine_model,
+            notify_still_recording
         ])
         .setup(|app| {
             // Bundle layout: externalBins are siblings of this binary in Contents/MacOS; web/dist

@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Core capabilities for the main window. The window is navigated to the Rust core's loopback URL (http://127.0.0.1:<os-assigned-port>), so the app commands (erase_all_data / quit_app / pick_refine_model) must be granted to that remote origin as well as the local bundle. Only 127.0.0.1 is granted; the shell never navigates to localhost. (Reveal folder is not here — it goes through the core's HTTP API, not Tauri IPC.)",
+  "description": "Core capabilities for the main window. The window is navigated to the Rust core's loopback URL (http://127.0.0.1:<os-assigned-port>), so the app commands (erase_all_data / quit_app / pick_refine_model / notify_still_recording) must be granted to that remote origin as well as the local bundle. Only 127.0.0.1 is granted; the shell never navigates to localhost. (Reveal folder is not here — it goes through the core's HTTP API, not Tauri IPC.)",
   "windows": ["main"],
   "local": true,
   "remote": {
@@ -11,6 +11,7 @@
     "core:default",
     "allow-erase-all-data",
     "allow-quit-app",
-    "allow-pick-refine-model"
+    "allow-pick-refine-model",
+    "allow-notify-still-recording"
   ]
 }

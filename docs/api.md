@@ -347,7 +347,8 @@ Three service events share the channel:
   re-fetch `GET /api/meetings/{id}/segments` and continue.
 - `prompt`: no speech has been detected on either stream for `silent_seconds`, so the UI shows a
   "still recording?" banner. It is also sent on connect when a prompt is already active (a user
-  reopening the window mid-silence). If the silence continues to the end threshold the meeting
-  auto-ends with a logged transcript marker; the "Keep recording" action
-  (`POST /api/meetings/{id}/keep-recording`) resets the clock. Thresholds are configured in the
-  `recording` settings section.
+  reopening the window mid-silence). When the window is unfocused, the desktop shell additionally
+  raises a native OS notification so a user who switched away still sees the nudge. If the silence
+  continues to the end threshold the meeting auto-ends with a logged transcript marker; the "Keep
+  recording" action (`POST /api/meetings/{id}/keep-recording`) resets the clock. Thresholds are
+  configured in the `recording` settings section.
