@@ -33,7 +33,8 @@ pub use notes::summarize;
 pub use notes::MeetingNotes;
 pub use notes::DEFAULT_NOTES_PROMPT;
 pub use refine::{
-    refine_audio_file, refine_them, refine_them_with, RefineOutput, RefinedSegment, SwiftDiarizer,
+    refine_audio_file, refine_audio_file_with, refine_them, refine_them_with, RefineOutput,
+    RefinedSegment, SwiftDiarizer,
 };
 #[cfg(feature = "sherpa")]
 pub use sherpa_diarize::{DiarizeTuning, SherpaDiarizer};

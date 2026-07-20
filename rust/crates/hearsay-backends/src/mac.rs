@@ -16,6 +16,8 @@ use hearsay_orchestrator::{
     RefinedThemSegment, Refiner,
 };
 
+use crate::EngineConfig;
+
 /// Keeps one `hearsay-me` + `hearsay-live` pair pre-spawned so its FluidAudio/CoreML models load
 /// (and the ANE warms) *before* the user hits start, off the meeting-start path. The pool holds the
 /// spawned pair the moment it is spawned — while the models are still loading in the background —
@@ -276,27 +278,31 @@ impl hearsay_orchestrator::Summarizer for LlamaSummarizer {
 /// and the whisper offline refine ([`MacRefiner`]) inside an [`Orchestrator`], returned as the neutral
 /// [`LiveEngine`] the HTTP crate consumes. Prewarms the first sidecar pair and installs the
 /// orchestrator's weak self-reference (so a capture death finalizes the meeting) before returning.
-/// Takes primitive settings rather than `hearsay_core::Settings` so this crate does not depend on the
-/// web crate. Call from within the Tokio runtime (prewarm spawns sidecar children).
-#[allow(clippy::too_many_arguments)]
-pub fn build_engine(
-    pool: SqlitePool,
-    output_dir: PathBuf,
-    helper_path: PathBuf,
-    synthetic: bool,
-    refine_model: PathBuf,
-    refine_timeout: Duration,
-    record: bool,
-    auto_refine: bool,
-    recognition_threshold: f64,
-    inactivity_prompt: bool,
-    inactivity_auto_end: bool,
-    inactivity_prompt_minutes: u64,
-    inactivity_end_minutes: u64,
-    notes_enabled: bool,
-    notes_model: PathBuf,
-    notes_prompt: String,
-) -> Arc<dyn LiveEngine> {
+/// Takes the platform-neutral [`EngineConfig`] rather than `hearsay_core::Settings` so this crate
+/// does not depend on the web crate. Call from within the Tokio runtime (prewarm spawns sidecar
+/// children).
+pub fn build_engine(config: EngineConfig) -> Arc<dyn LiveEngine> {
+    let EngineConfig {
+        pool,
+        output_dir,
+        helper_path,
+        synthetic,
+        refine_model,
+        refine_timeout,
+        record,
+        auto_refine,
+        recognition_threshold,
+        inactivity_prompt,
+        inactivity_auto_end,
+        inactivity_prompt_minutes,
+        inactivity_end_minutes,
+        notes_enabled,
+        notes_model,
+        notes_prompt,
+        // Windows-only fields; the mac backend has no use for them.
+        sherpa_models_dir: _,
+        win_loopback_mode: _,
+    } = config;
     let backend = Arc::new(MacBackend::new(helper_path.clone(), synthetic));
     // Spawn the first sidecar pair now so its models start loading before the first meeting instead
     // of on the start path (subsequent pairs spawn in the background after each meeting adopts one).

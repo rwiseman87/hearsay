@@ -47,6 +47,8 @@ fn test_settings(output_dir: PathBuf, web_dir: PathBuf) -> Settings {
         handshake_path: None,
         fluid_models_dir: None,
         home_dir: None,
+        sherpa_models_dir: PathBuf::from("no-sherpa-models"),
+        win_loopback_mode: Default::default(),
     }
 }
 

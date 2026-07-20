@@ -9,7 +9,7 @@ use tokio::net::TcpListener;
 use utoipa::OpenApi as _;
 use uuid::Uuid;
 
-use hearsay_backends::build_engine;
+use hearsay_backends::{build_engine, EngineConfig};
 use hearsay_core::{create_app, ApiDoc, AppState, Settings};
 
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
@@ -47,32 +47,36 @@ async fn main() -> Result<(), BoxError> {
     // Seed FluidAudio's model cache from the bundled copy before spawning any sidecar, so the live
     // models load locally instead of downloading from HuggingFace on the first meeting. One-time
     // (copies only what's missing), so it's a fast no-op after the first launch.
+    #[cfg(target_os = "macos")]
     seed_fluid_models(
         settings.fluid_models_dir.as_deref(),
         settings.home_dir.as_deref(),
     );
-    // Assemble the platform backend (capture helper + live sidecars + offline whisper refine) behind
-    // the neutral LiveEngine seam. `build_engine` prewarms the first sidecar pair and installs the
-    // orchestrator's self-reference (so a capture death finalizes the meeting); the binary holds only
-    // the trait object. Config defaults seed it; the editable Settings panels override per meeting.
-    let engine = build_engine(
-        pool.clone(),
-        settings.output_dir.clone(),
-        settings.helper_path.clone(),
+    // Assemble the platform backend behind the neutral LiveEngine seam (macOS: capture helper +
+    // live sidecars + whisper refine; Windows: WASAPI capture + the sherpa path). `build_engine`
+    // installs the orchestrator's self-reference (so a capture death finalizes the meeting); the
+    // binary holds only the trait object. Config defaults seed it; the editable Settings panels
+    // override per meeting.
+    let engine = build_engine(EngineConfig {
+        pool: pool.clone(),
+        output_dir: settings.output_dir.clone(),
+        helper_path: settings.helper_path.clone(),
         synthetic,
-        settings.refine_model.clone(),
-        settings.refine_timeout,
-        settings.record,
-        settings.auto_refine,
-        settings.recognition_threshold,
-        settings.inactivity_prompt,
-        settings.inactivity_auto_end,
-        settings.inactivity_prompt_minutes,
-        settings.inactivity_end_minutes,
-        settings.notes_enabled,
-        settings.notes_model.clone(),
-        settings.notes_prompt.clone(),
-    );
+        refine_model: settings.refine_model.clone(),
+        refine_timeout: settings.refine_timeout,
+        record: settings.record,
+        auto_refine: settings.auto_refine,
+        recognition_threshold: settings.recognition_threshold,
+        inactivity_prompt: settings.inactivity_prompt,
+        inactivity_auto_end: settings.inactivity_auto_end,
+        inactivity_prompt_minutes: settings.inactivity_prompt_minutes,
+        inactivity_end_minutes: settings.inactivity_end_minutes,
+        notes_enabled: settings.notes_enabled,
+        notes_model: settings.notes_model.clone(),
+        notes_prompt: settings.notes_prompt.clone(),
+        sherpa_models_dir: settings.sherpa_models_dir.clone(),
+        win_loopback_mode: settings.win_loopback_mode,
+    });
     // A prior hard exit (SIGKILL / panic / power loss) can strand a meeting row `recording` or
     // `refining` forever, with no session to finalize it. Nothing is active at startup, so sweep and
     // finalize every such row (writing its transcript from the persisted segments) before we serve.
@@ -150,6 +154,7 @@ fn write_handshake(port: u16, token: &str, handshake_path: Option<&Path>) -> std
 /// Each repo is copied into a hidden `.partial` dir and then atomically renamed into place, so an
 /// interrupted copy never leaves a half-tree the sidecar would try to load. Best-effort: a failure is
 /// logged, not fatal — the sidecar then downloads that repo.
+#[cfg(target_os = "macos")]
 fn seed_fluid_models(models_dir: Option<&Path>, home_dir: Option<&Path>) {
     let Some(src) = models_dir else {
         return; // headless dev: FluidAudio downloads to its own cache as before
@@ -170,8 +175,10 @@ fn seed_fluid_models(models_dir: Option<&Path>, home_dir: Option<&Path>) {
 /// only does work on the first launch / after an erase). Each repo is copied into a hidden `.partial`
 /// dir and then atomically renamed into place, so an interrupted copy never leaves a half-tree the
 /// sidecar would try to load. Best-effort: a failure is logged, not fatal — the sidecar then
-/// downloads that repo. Split from [`seed_fluid_models`] (which resolves the paths from the env) so
-/// the copy logic is unit-testable against temp dirs.
+/// downloads that repo. Split from `seed_fluid_models` (which resolves the paths from the env) so
+/// the copy logic is unit-testable against temp dirs (the tests run on every platform; the caller
+/// is macOS-only).
+#[cfg(any(target_os = "macos", test))]
 fn seed_models_into(src: &Path, dest: &Path) {
     let entries = match std::fs::read_dir(src) {
         Ok(entries) => entries,
@@ -207,7 +214,8 @@ fn seed_models_into(src: &Path, dest: &Path) {
 }
 
 /// Recursively copy the directory `src` into `dst` (creating `dst`). A small std-only helper for
-/// [`seed_fluid_models`]; the model repos contain only files and subdirectories (no symlinks).
+/// `seed_fluid_models`; the model repos contain only files and subdirectories (no symlinks).
+#[cfg(any(target_os = "macos", test))]
 fn copy_dir_all(src: &Path, dst: &Path) -> std::io::Result<()> {
     std::fs::create_dir_all(dst)?;
     for entry in std::fs::read_dir(src)? {

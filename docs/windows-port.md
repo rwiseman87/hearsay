@@ -169,17 +169,22 @@ Checkboxes are the tracking state for the port.
 
 ### Phase 1 — Cross-platform scaffolding (verifiable on macOS)
 
-- [ ] `hearsay-capture`: macOS helper source behind `cfg(target_os = "macos")`; shared types
-      (`PermissionsSnapshot`) platform-neutral; Windows module stub.
-- [ ] `hearsay-backends`: `mod mac` / `mod windows` cfg split + `compile_error!` guard.
-- [ ] `hearsay-inference`: portable diarizer-injected refine function (mac wrapper keeps
-      `SwiftDiarizer`).
-- [ ] `build_engine` takes `EngineConfig` (backends + `hearsay-core/main.rs` call site).
-- [ ] Settings: `sherpa_models_dir`, `win_loopback_mode` (env-backed, defaulted).
-- [ ] `routes/settings.rs`: Windows reveal arm (`explorer /select,`).
-- [ ] Cargo: `[target.'cfg(windows)'.dependencies]` (`wasapi`, registry access); `sherpa`
-      feature passthrough on `hearsay-core`.
-- [ ] Gate: `make ci` green on macOS.
+- [x] `hearsay-capture`: macOS helper source moved behind `cfg(target_os = "macos")`
+      (`swift_helper.rs`); `PermissionsSnapshot` + `LoopbackMode` platform-neutral in `lib.rs`
+      with a non-macOS probe placeholder.
+- [x] `hearsay-backends`: `mod mac` gated `cfg(target_os = "macos")`; `compile_error!` on
+      unsupported targets (the `windows` module lands with the backend).
+- [x] `hearsay-inference`: portable `refine_audio_file_with(audio, &dyn Diarizer, model)`;
+      `refine_audio_file` is now the mac `SwiftDiarizer` wrapper.
+- [x] `build_engine` takes `EngineConfig` (backends + `hearsay-core/main.rs` call site);
+      FluidAudio seeding gated to macOS.
+- [x] Settings: `sherpa_models_dir`, `win_loopback_mode` (env-backed, defaulted, validated).
+- [x] `routes/settings.rs`: Windows reveal arm (`explorer`).
+- [x] Cargo: `wasapi` under `[target.'cfg(windows)'.dependencies]` (license/CVE gates vetted it
+      from macOS); `sherpa` feature passthrough on `hearsay-core`. Registry access lands with
+      the permissions probe.
+- [x] Gate: `make ci` green on macOS (also fixed two pre-existing gate breaks: Tauri shell
+      rustfmt, `brace-expansion` npm advisory).
 
 ### Phase 2 — Capture
 
