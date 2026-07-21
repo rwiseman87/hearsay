@@ -107,8 +107,31 @@ end-to-end proven by the ignored `hearsay-backends/tests/streaming_pipeline.rs` 
   lowercases first. A missing punctuation model degrades to raw uppercase, never to no captions.
 - **Refine**: whisper (whisper-rs, model from the Settings > Models panel as on macOS) plus
   `SherpaDiarizer` (pyannote segmentation-3.0, MIT, + TitaNet embedding, CC-BY-4.0) through the
-  portable `refine_them_with` seam. Known-degraded versus FluidAudio (tends to over-split
-  speakers); accepted as the cross-platform tier.
+  portable `refine_them_with` seam. Accepted as the cross-platform tier.
+  sherpa's own clustering over-splits badly — a 371 s known-2-speaker recording came back as 6
+  clusters — because it clusters short per-window embeddings.
+  `hearsay-attribution::consolidate_speakers` runs after it on the whole-speaker centroids
+  `SherpaDiarizer` already computes, where the same speaker's fragments sit at cosine 0.72-0.91 and
+  distinct speakers at 0.19-0.56. Two rules:
+  - **Merge** on similarity, against a bar that scales with each centroid's evidence
+    (`0.65 * sqrt(t/(t+3))` per side). A centroid averaged over 2 s is a noisier estimate of the
+    same voice than one over 2 min, so holding both to one cosine is the wrong test. `k = 3 s` is
+    pinned between the two measured constraints: a 2.2 s fragment of a real speaker scores 0.52
+    against them and must merge (`k >= 1.2`); the two closest genuinely different speakers score
+    0.564 across 13 s and 109 s and must not (`k <= 4.4`).
+  - **Drop** clusters whose cosine to *every* other cluster is `<= 0` — non-speech (a chime, room
+    noise) that the ASR puts words on. Real speakers share the speech subspace and land positive.
+    Their turns are deleted, not relabelled, so the overlap attribution rehomes the text: word
+    count is identical before and after.
+
+  There is deliberately **no minimum-duration rule**. It reads as a tidy denoiser and is really a
+  cliff that silently deletes a participant who spoke for slightly less than the cutoff. Duration
+  enters only as evidence — how far to trust a centroid — never as a right to exist.
+
+  Measured on that recording, end-to-end through the refine: 6 speakers raw -> 4 with a flat bar
+  -> 2 with both rules, 1082 words throughout. Every sherpa threshold from 0.70 to 0.95 also lands
+  on 2, so the speaker count no longer hangs off sherpa's tuning
+  (`hearsay-inference/tests/refine_gate_probe.rs`, `sherpa_diarize.rs`; both ignored by default).
 - **Voiceprints**: TitaNet embeddings are a different space than FluidAudio's, so voiceprints
   are per-platform. Each install's database is local, so nothing breaks; the recognition
   threshold default may need Windows-specific tuning (an on-device item).
@@ -242,8 +265,8 @@ Run on the Windows machine, in order; each step isolates one class of failure. F
 fixes back into the phases above.
 
 The shared inference path is already verified from macOS with the exact bundled model set
-(`make fetch-sherpa-models` layout): the streaming JFK tests pass, the diarizer reproduces the
-documented 3-speakers-on-a-known-2 operating point with 192-dim TitaNet voiceprints, and the
+(`make fetch-sherpa-models` layout): the streaming JFK tests pass, the diarizer lands on 2 speakers
+on a known-2 recording (post-consolidation) with 192-dim TitaNet voiceprints, and the
 ignored `streaming_pipeline` test (WAV -> two `SherpaTranscriber`s -> `Orchestrator` -> SQLite ->
 `transcript.md`) passes end-to-end. What remains untested is Windows-only: the WASAPI source, the
 Windows build chain, the shell arms, and the installer.

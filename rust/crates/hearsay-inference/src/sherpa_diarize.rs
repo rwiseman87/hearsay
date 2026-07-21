@@ -10,7 +10,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use hearsay_attribution::{order_speakers, SpeakerTurn};
+use hearsay_attribution::{consolidate_speakers, order_speakers, ConsolidateConfig, SpeakerTurn};
 use sherpa_onnx::{
     FastClusteringConfig, OfflineSpeakerDiarization, OfflineSpeakerDiarizationConfig,
     OfflineSpeakerSegmentationModelConfig, OfflineSpeakerSegmentationPyannoteModelConfig,
@@ -41,7 +41,12 @@ const MAX_EMBED_SAMPLES: usize = 30 * SAMPLE_RATE as usize;
 /// this pipeline plateaus at ~3 speakers on a known-2 clip (0.90/0.95/0.97 all give 3; below ~0.85
 /// it over-clusters badly) vs FluidAudio's clean 2. TitaNet beats CAM++ as the embedder. So on
 /// macOS the Swift/FluidAudio `hearsay-diarize` stays the accuracy tier; this is the cross-platform
-/// (Windows) fallback, degraded-but-usable. Higher merges more (fewer speakers).
+/// (Windows) fallback. Higher merges more (fewer speakers).
+///
+/// This value is deliberately no longer pushed to the over-merging end: the residual over-split is
+/// cleaned up afterwards by [`consolidate_speakers`], on whole-speaker centroids that separate far
+/// better than sherpa's per-window ones. Raising it further only risks merging real speakers inside
+/// sherpa, where nothing downstream can undo it.
 const DEFAULT_CLUSTER_THRESHOLD: f32 = 0.9;
 
 /// Clustering + segmentation-gating knobs for [`SherpaDiarizer`] (the DER-tuning surface).
@@ -53,6 +58,8 @@ pub struct DiarizeTuning {
     pub min_duration_on: f32,
     /// Bridge silence gaps shorter than this (seconds) within a speaker.
     pub min_duration_off: f32,
+    /// Thresholds for the post-clustering consolidation pass (see [`consolidate_speakers`]).
+    pub consolidate: ConsolidateConfig,
 }
 
 impl Default for DiarizeTuning {
@@ -61,6 +68,7 @@ impl Default for DiarizeTuning {
             cluster_threshold: DEFAULT_CLUSTER_THRESHOLD,
             min_duration_on: 0.3,
             min_duration_off: 0.5,
+            consolidate: ConsolidateConfig::default(),
         }
     }
 }
@@ -69,6 +77,7 @@ impl Default for DiarizeTuning {
 pub struct SherpaDiarizer {
     diarizer: OfflineSpeakerDiarization,
     embedder: SpeakerEmbeddingExtractor,
+    consolidate: ConsolidateConfig,
 }
 
 impl SherpaDiarizer {
@@ -120,7 +129,11 @@ impl SherpaDiarizer {
                 embedding_model.display()
             ))
         })?;
-        Ok(Self { diarizer, embedder })
+        Ok(Self {
+            diarizer,
+            embedder,
+            consolidate: tuning.consolidate,
+        })
     }
 
     /// Embed one mono 16 kHz slice of at most [`MAX_EMBED_SAMPLES`] (`None` if too short to embed).
@@ -185,6 +198,10 @@ impl SherpaDiarizer {
 impl Diarizer for SherpaDiarizer {
     /// Diarize a 16 kHz mono track: speaker turns (1-based ordinal by first appearance) + a
     /// per-speaker mean voiceprint.
+    ///
+    /// sherpa's clusters are then run through [`consolidate_speakers`], which folds the ones this
+    /// pipeline over-splits back together on their whole-speaker centroids and drops the ones that
+    /// are not a voice at all, and the survivors are renumbered 1..N by first appearance.
     fn diarize(&self, them_samples: &[f32]) -> Result<Diarization, InferenceError> {
         let result = self
             .diarizer
@@ -206,6 +223,7 @@ impl Diarizer for SherpaDiarizer {
 
         let mut turns = Vec::with_capacity(segments.len());
         let mut speaker_audio: HashMap<i64, Vec<f32>> = HashMap::new();
+        let mut speech_s: HashMap<i64, f64> = HashMap::new();
         for seg in &segments {
             let ord = i64::from(ordinals[&seg.speaker.to_string()]);
             turns.push(DiarTurn {
@@ -213,6 +231,7 @@ impl Diarizer for SherpaDiarizer {
                 start_s: seg.start as f64,
                 end_s: seg.end as f64,
             });
+            *speech_s.entry(ord).or_default() += (seg.end - seg.start).max(0.0) as f64;
             let start = ((seg.start as f64) * SAMPLE_RATE as f64).max(0.0) as usize;
             let end = ((seg.end as f64) * SAMPLE_RATE as f64) as usize;
             let end = end.min(them_samples.len());
@@ -231,6 +250,42 @@ impl Diarizer for SherpaDiarizer {
             }
         }
 
-        Ok(Diarization { turns, embeddings })
+        let merged = consolidate_speakers(&embeddings, &speech_s, self.consolidate);
+        // A dropped cluster is non-speech, so its turns go away entirely rather than being
+        // relabelled: with no turn there, the refine's overlap attribution hands any text over that
+        // span to whoever was really speaking around it.
+        turns.retain(|turn| !merged.dropped.contains(&turn.speaker));
+        for turn in &mut turns {
+            if let Some(target) = merged.remap.get(&turn.speaker) {
+                turn.speaker = *target;
+            }
+        }
+
+        // Consolidation leaves gaps in the ordinals (and can merge two clusters whose first
+        // appearances straddle a third), so renumber the survivors 1..N by first appearance.
+        let renumber = order_speakers(
+            &turns
+                .iter()
+                .map(|t| SpeakerTurn {
+                    speaker: t.speaker.to_string(),
+                    start_s: t.start_s,
+                    end_s: t.end_s,
+                })
+                .collect::<Vec<_>>(),
+        );
+        let mut final_embeddings = HashMap::new();
+        for (ordinal, centroid) in merged.centroids {
+            if let Some(final_ordinal) = renumber.get(&ordinal.to_string()) {
+                final_embeddings.insert(i64::from(*final_ordinal), centroid);
+            }
+        }
+        for turn in &mut turns {
+            turn.speaker = i64::from(renumber[&turn.speaker.to_string()]);
+        }
+
+        Ok(Diarization {
+            turns,
+            embeddings: final_embeddings,
+        })
     }
 }
