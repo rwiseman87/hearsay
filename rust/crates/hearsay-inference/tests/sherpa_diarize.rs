@@ -1,6 +1,7 @@
 #![cfg(feature = "sherpa")]
 //! Opt-in sherpa-onnx offline diarization check on a real 2-speaker recording. Ignored by default
-//! (needs the recording + the pyannote segmentation + wespeaker embedding ONNX models). Run:
+//! (needs the recording + the pyannote segmentation + TitaNet-small embedding ONNX models —
+//! `make fetch-sherpa-models`). Run:
 //!   cargo test --manifest-path rust/Cargo.toml -p hearsay-inference --features sherpa sherpa -- --ignored --nocapture
 
 use std::collections::BTreeSet;
@@ -15,11 +16,11 @@ fn repo(rel: &str) -> PathBuf {
 }
 
 fn seg_model() -> PathBuf {
-    repo("outputs/models/sherpa-onnx-pyannote-segmentation-3-0/model.onnx")
+    repo("outputs/models/sherpa/sherpa-onnx-pyannote-segmentation-3-0/model.onnx")
 }
 
 fn emb_model() -> PathBuf {
-    repo("outputs/models/wespeaker_en_voxceleb_CAM++_LM.onnx")
+    repo("outputs/models/sherpa/nemo_en_titanet_small.onnx")
 }
 
 /// Sweep the clustering threshold on the known 2-speaker clip to tune `DEFAULT_CLUSTER_THRESHOLD`.
@@ -31,7 +32,7 @@ fn sweep_cluster_threshold() {
     ))
     .expect("read Them channel");
     eprintln!("ground truth: 2 speakers (TitaNet embedder)");
-    let titanet = repo("outputs/models/nemo_en_titanet_small.onnx");
+    let titanet = repo("outputs/models/sherpa/nemo_en_titanet_small.onnx");
     for min_on in [0.3_f32, 0.5, 1.0, 2.0] {
         for threshold in [0.80_f32, 0.90, 0.95, 0.97] {
             let tuning = DiarizeTuning {
@@ -54,7 +55,7 @@ fn sweep_cluster_threshold() {
 }
 
 #[test]
-#[ignore = "needs a recording + pyannote segmentation + wespeaker embedding ONNX models"]
+#[ignore = "needs a recording + pyannote segmentation + TitaNet-small embedding ONNX models"]
 fn diarizes_real_two_speaker_meeting() {
     let audio = repo("outputs/recordings/2026-07-01_1833_miguel-kristina-test2/audio.wav");
     let them = read_them_channel(&audio).expect("read Them channel");

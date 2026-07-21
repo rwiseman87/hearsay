@@ -68,7 +68,7 @@ async fn wav_through_sherpa_streaming_persists_transcript() {
 
     let backend = Arc::new(SherpaFileBackend {
         wav: repo("outputs/recordings/2026-07-01_1833_miguel-kristina-test2/audio.wav"),
-        model_dir: repo("outputs/models/sherpa-onnx-streaming-zipformer-en-20M-2023-02-17"),
+        model_dir: repo("outputs/models/sherpa/sherpa-onnx-streaming-zipformer-en-20M-2023-02-17"),
     });
     let orch = Orchestrator::new(pool.clone(), tmp.path().to_path_buf(), backend);
 
@@ -76,9 +76,11 @@ async fn wav_through_sherpa_streaming_persists_transcript() {
         .start_meeting(Some("streaming e2e".into()))
         .await
         .unwrap();
-    // stop drains capture -> both live sessions flush -> persistence + transcript.md before returning.
+    // stop drains capture -> both live sessions flush -> segments persist. The transcript write
+    // runs as a tracked background task after stop returns; shutdown awaits it.
     let stopped = orch.stop_meeting(meeting.id).await.unwrap().unwrap();
     assert!(stopped.ended_at.is_some());
+    orch.shutdown().await;
 
     let segments = queries::list_segments(&pool, meeting.id).await.unwrap();
     eprintln!("persisted {} finalized segments", segments.len());
@@ -101,8 +103,8 @@ async fn wav_through_sherpa_streaming_persists_transcript() {
         "expected non-empty Them transcript text"
     );
 
-    // The folder story: transcript.md + meeting.json.
-    let folder = tmp.path().join(&meeting.folder);
+    // The folder story: transcript.md + meeting.json, in the meeting's pinned dir.
+    let folder = stopped.dir_path(tmp.path());
     let transcript = std::fs::read_to_string(folder.join("transcript.md")).unwrap();
     assert!(transcript.starts_with("# streaming e2e\n"));
     let meta = std::fs::read_to_string(folder.join("meeting.json")).unwrap();

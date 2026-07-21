@@ -233,18 +233,35 @@ Checkboxes are the tracking state for the port.
 Run on the Windows machine, in order; each step isolates one class of failure. Findings feed
 fixes back into the phases above.
 
-- [ ] 1. Toolchain + `cargo build --manifest-path rust/Cargo.toml --features sherpa,notes`
-      (surfaces any blind-written compile errors).
-- [ ] 2. `cargo test --manifest-path rust/Cargo.toml`, then the ignored sherpa tests with
-      fetched models (`cargo test -p hearsay-inference --features sherpa -- --ignored`).
-- [ ] 3. Headless serve + browser UI with `SYNTHETIC=1` (pipeline without real capture).
-- [ ] 4. Real capture smoke test: a live meeting with a playing video call; Me and Them both
-      transcribe. Verify the on-device unknowns (below) and confirm the default loopback mode.
-- [ ] 5. Stop → refine produces speakers + voiceprints; notes step runs; whisper model size
-      measured on the 225U; recognition-threshold sanity check.
-- [ ] 6. `vulkan` build, then `aec` build.
-- [ ] 7. `scripts/build-windows.ps1` → NSIS installer installs, launches, records a meeting,
-      uninstalls clean.
+The shared inference path is already verified from macOS with the exact bundled model set
+(`make fetch-sherpa-models` layout): the streaming JFK tests pass, the diarizer reproduces the
+documented 3-speakers-on-a-known-2 operating point with 192-dim TitaNet voiceprints, and the
+ignored `streaming_pipeline` test (WAV -> two `SherpaTranscriber`s -> `Orchestrator` -> SQLite ->
+`transcript.md`) passes end-to-end. What remains untested is Windows-only: the WASAPI source, the
+Windows build chain, the shell arms, and the installer.
+
+All commands run from the repo root in PowerShell. Fetch models once (step 0) so the dev-run
+defaults (`outputs\models\sherpa`) resolve:
+
+- [ ] 0. `powershell -ExecutionPolicy Bypass -File scripts\build-windows.ps1` once, or at least
+      its model-fetch stage; a full run doubles as steps 1 + 7's build.
+- [ ] 1. `cargo build --manifest-path rust\Cargo.toml --features sherpa,notes`
+      (surfaces any blind-written compile errors — expected in `wasapi_source.rs` /
+      `win_permissions.rs` / the shell arms; report them back verbatim).
+- [ ] 2. `cargo test --manifest-path rust\Cargo.toml --features sherpa,notes`.
+- [ ] 3. Pipeline without real capture:
+      `cargo run --manifest-path rust\Cargo.toml -p hearsay-core --features sherpa,notes -- --synthetic`,
+      open the printed `?token=` URL in a browser, start a meeting — tone bursts alternate and
+      both streams emit segments.
+- [ ] 4. Real capture smoke test: same command without `--synthetic`; start a meeting with a
+      video call (or any audio) playing; Me and Them both transcribe live. Re-run with
+      `$env:HEARSAY_WIN_LOOPBACK="process"` for the alternate path. Verify the on-device
+      unknowns (below) and confirm the default loopback mode.
+- [ ] 5. Stop → refine produces speakers + voiceprints; notes step runs (needs a downloaded
+      GGUF); whisper model size measured on the 225U; recognition-threshold sanity check.
+- [ ] 6. `-Vulkan` build, then `-Aec` build (each needs its extra prerequisite).
+- [ ] 7. `scripts\build-windows.ps1` → NSIS installer installs, launches, records a meeting,
+      erases + uninstalls clean.
 
 ## On-device unknowns
 
