@@ -56,8 +56,14 @@ impl Backend for SherpaFileBackend {
             source: Box::new(WavFileSource::new(self.wav.clone())),
             // `None`: this exercises the ASR + pipeline wiring, so it asserts on the raw
             // recognizer output rather than the punctuation-restored text.
-            me: Box::new(SherpaTranscriber::new(load_streaming(&self.model_dir), None)),
-            them: Box::new(SherpaTranscriber::new(load_streaming(&self.model_dir), None)),
+            me: Box::new(SherpaTranscriber::new(
+                load_streaming(&self.model_dir),
+                None,
+            )),
+            them: Box::new(SherpaTranscriber::new(
+                load_streaming(&self.model_dir),
+                None,
+            )),
         }
     }
 }
