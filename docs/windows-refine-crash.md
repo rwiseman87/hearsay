@@ -5,7 +5,11 @@ observed on the reference machine (Ryzen + RTX 5070 Ti + AMD integrated GPU, Win
 says otherwise. Claims are marked **proven** (observed directly) or **inferred** (reasoned from
 evidence, not measured) — do not treat the inferred ones as settled.
 
-## 1. The crash (open, highest priority)
+## 1. The crash — FIXED
+
+**Fixed** by bounding the embedder's input (see "The fix" below). The 370.8 s recording that crashed
+every run now refines in 33.7 s / 33 segments. The rest of this section is kept because the failure
+mode is a live hazard for any future onnx call, not because the bug is still open.
 
 **Symptom.** Stop a meeting, press "Refine speakers", and the UI reports `failed to fetch`. Then
 everything else breaks too — Show Files does nothing, the meeting list stops loading. That is one
@@ -45,31 +49,53 @@ intercept step 3. It must be prevented at the input, or contained in another pro
 | synthetic TTS speech, 126 s mono | passes |
 | synthetic TTS speech, 2 s mono | passes |
 
-**Decoding the shapes (inferred).** At 160 samples per frame: `12288` frames ≈ **122.9 s** and
-`14794` frames ≈ **147.9 s**. So a fixed ~123 s cap is being overflowed by a ~148 s input.
+**The cap (proven, measured).** Both earlier inferences were right, and the cap is exact. Feeding
+the embedder alone — no diarizer in the process — ascending slices of real audio
+(`tests/embed_cap_probe.rs`, in its original probe form) gave:
 
-**What that input is (inferred, and the key open question).** It is probably **all of one speaker's
-audio concatenated** for their embedding, not a single turn: `min_duration_off` is 0.5 s, so any
-half-second pause splits a turn, and a 148 s turn with no half-second pause is not plausible speech.
+| input | result |
+|---|---|
+| 10 / 30 / 60 / 90 / 110 / 118 / 120 / 121 / 122 / 122.5 / **122.8 s** | ok, dim 192 |
+| **123.0 s** | crash — `12288 by 12298` |
 
-**If that inference is right, the severity is high**: any meeting where one person speaks more than
-~123 s *in total* crashes the app on refine — most real meetings. The 240 s cut passed because its
-dominant speaker fell under the cap.
+TitaNet-small has a hard positional limit of **12288 encoder frames = 1_966_080 samples = 122.88 s**
+at 160 samples/frame. 123.0 s is 12298 frames, over by 10.
 
-**Verify this first** (cheap, and it decides the fix): diarize the 240 s cut, sum speech seconds per
-speaker, and check the dominant speaker lands just under ~123 s. If instead it is per-turn, a much
-smaller fix may do.
+**The crash site was our code, not sherpa's.** The probe above never calls `process()`, so the
+offending tensor came from `SherpaDiarizer::diarize`, which concatenated **all** of a speaker's turns
+into one buffer and embedded it in a single call for their voiceprint. sherpa's own internal
+embedding is per-segment and stayed well under the cap — the full 370.8 s file diarizes fine.
+
+Severity was as feared: any meeting where one person spoke more than ~123 s *in total* crashed the
+app on refine. The 240 s cut passed because its dominant speaker fell under the cap.
+
+### The fix (shipped)
+
+`SherpaDiarizer::embed` now chunks at **30 s** (`MAX_EMBED_SAMPLES`, a wide margin under 122.88 s and
+ample context for a speaker embedding) and averages the chunk vectors — each L2-normalized to
+direction-only and weighted by its duration, so the result is the speaker's centroid rather than
+whichever chunk was loudest. Only cosine similarity is ever applied to a voiceprint, so it is
+deliberately left unnormalized.
+
+Regression tests in `rust/crates/hearsay-inference/tests/embed_cap_probe.rs` (`--ignored`, they need
+the ONNX models): one diarizes 300 s of tone — 2.4x the cap — and one checks the averaged voiceprint
+still discriminates (same-source 1.000 vs cross-source 0.403), guarding the averaging from decaying
+into mush. Neither can be a `should_panic`: the failure aborts the process, so the assertion is the
+absence of death.
 
 ### Reproduce
 
 `rust/crates/hearsay-inference/tests/refine_probe.rs` runs the exact Windows refine (sherpa
-diarizer + whisper) outside the app, where the assert is visible:
+diarizer + whisper) outside the app, where the assert is visible. It now passes; before the fix it
+aborted on any recording with a >123 s speaker:
 
 ```powershell
 $env:LIBCLANG_PATH="C:\Program Files\LLVM\bin"
+$env:VULKAN_SDK="C:\VulkanSDK\1.4.350.0"   # the build script panics without it
+$env:CARGO_TARGET_DIR="$env:USERPROFILE\.hs"
 $env:HEARSAY_BENCH_WAV="$env:APPDATA\com.hearsay.app\recordings\<meeting>\audio.wav"
 cargo test --release --manifest-path rust\Cargo.toml -p hearsay-inference `
-  --features sherpa --test refine_probe -- --ignored --nocapture
+  --features sherpa,vulkan --test refine_probe -- --ignored --nocapture
 ```
 
 Exit code `-1073740791` is the abort. The recording used for the repro is a YouTube video, not
@@ -106,20 +132,22 @@ macOS runs diarization in the **`hearsay-diarize` process**. The Windows backend
 of model **in-process**, so an onnx throw takes down recording, refine and the HTTP API together.
 The port dropped an isolation property the architecture calls for.
 
-### Proposed fix
+### Remaining hardening (not blocking)
 
-Two parts; the second is the one that makes refine work.
+The earlier plan here proposed windowed diarization stitched by cross-meeting voiceprint matching.
+That is **not needed** — it assumed the long tensor was reaching sherpa's `process()`, which the
+probe disproved. `process()` handles the full 370.8 s file; only our own concatenated embed
+overflowed, so chunking that is the whole fix.
 
-1. **Contain it — run the Windows diarizer out-of-process**, mirroring macOS. A crash then fails one
-   refine with an error instead of killing the app, and it covers every future onnx throw rather
-   than just this input. Necessary but *not sufficient*: refine would still fail on most meetings.
-2. **Bound the input — diarize in windows** (3–4 min) and stitch speakers across windows using the
-   **cross-meeting voiceprint matching that already exists** in `hearsay-attribution`. This keeps
-   per-speaker audio under the cap and reuses machinery the project already has. The stitching is
-   the real design work: speaker identities from independent `process()` calls are arbitrary and
-   must be merged by embedding similarity.
+Still worth doing, in priority order:
 
-Also worth doing: report the TitaNet shape bug upstream to k2-fsa/sherpa-onnx with the shapes above.
+1. **Run the Windows diarizer out-of-process**, mirroring macOS. Still a real architectural gap (see
+   "Why macOS is immune" above), but now hardening against *future* onnx throws rather than a known
+   crash. Any uncaught onnx exception anywhere in the in-process backend still takes down recording,
+   refine and the HTTP API together.
+2. **Report the TitaNet shape bug upstream** to k2-fsa/sherpa-onnx with the shapes above. sherpa's C
+   API not trapping C++ exceptions is the more general defect: it makes any sherpa call a potential
+   process kill for a Rust caller, since Rust cannot catch a foreign exception.
 
 ## 2. Build environment (Windows)
 
@@ -167,6 +195,7 @@ Committed on `feat/windows-port` (newest first):
 
 | commit | what |
 |---|---|
+| _this_ | **refine crash fixed** — chunk the speaker embed under TitaNet's 12288-frame cap |
 | `a80f5ca` | core log file + mid-session exit surfaced; `refine_probe`; unstick `streaming_pipeline` |
 | `3a51011` | GUI subsystem (no stray terminal) |
 | `e4b86d4` | case+punctuation restoration; aec on by default; DLL copy build script |

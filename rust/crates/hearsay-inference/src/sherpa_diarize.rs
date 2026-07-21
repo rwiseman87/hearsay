@@ -23,6 +23,17 @@ use crate::error::InferenceError;
 /// Contract-fixed track sample rate (Hz).
 const SAMPLE_RATE: i32 = 16_000;
 
+/// Longest audio (samples) handed to the embedder in one call.
+///
+/// TitaNet-small has a hard positional limit of 12288 encoder frames — 1_966_080 samples at 160
+/// samples/frame, i.e. 122.88 s. One sample over it and onnxruntime throws a C++ broadcast error
+/// out of the `Where` node in `mconv.3`; sherpa's C API does not trap it, so the exception crosses
+/// FFI and Rust aborts the *process* (`Rust cannot catch foreign exceptions`) — it cannot be caught
+/// here, only avoided. A speaker's turns are concatenated for their voiceprint, so any speaker with
+/// more than ~2 minutes of total speech would trip it. 30 s keeps a wide margin and is ample
+/// context for a speaker embedding; [`SherpaDiarizer::embed`] averages the per-chunk vectors.
+const MAX_EMBED_SAMPLES: usize = 30 * SAMPLE_RATE as usize;
+
 /// Default agglomerative-clustering cosine threshold — the best-achievable operating point, not a
 /// competitive one. DER-tuning was exhausted under the MIT/BSD/Apache license gate (see the
 /// `sweep_cluster_threshold` opt-in test): with pyannote-segmentation-3.0 (the only permissive
@@ -112,8 +123,9 @@ impl SherpaDiarizer {
         Ok(Self { diarizer, embedder })
     }
 
-    /// Embed a mono 16 kHz slice into a single speaker vector (`None` if too short to embed).
-    fn embed(&self, samples: &[f32]) -> Result<Option<Vec<f32>>, InferenceError> {
+    /// Embed one mono 16 kHz slice of at most [`MAX_EMBED_SAMPLES`] (`None` if too short to embed).
+    fn embed_chunk(&self, samples: &[f32]) -> Result<Option<Vec<f32>>, InferenceError> {
+        debug_assert!(samples.len() <= MAX_EMBED_SAMPLES);
         let stream = self
             .embedder
             .create_stream()
@@ -124,6 +136,49 @@ impl SherpaDiarizer {
             return Ok(None);
         }
         Ok(self.embedder.compute(&stream))
+    }
+
+    /// Embed a mono 16 kHz slice of any length into a single speaker vector (`None` if too short to
+    /// embed). Chunked at [`MAX_EMBED_SAMPLES`] to stay under the model's positional limit; the
+    /// chunk vectors are averaged, each direction-only (L2-normalized) and weighted by its
+    /// duration, so the result is the speaker's centroid rather than whichever chunk was loudest.
+    /// Only cosine similarity is ever applied to it, so the result is deliberately left unnormalized.
+    fn embed(&self, samples: &[f32]) -> Result<Option<Vec<f32>>, InferenceError> {
+        let mut sum: Vec<f64> = Vec::new();
+        let mut total_weight = 0.0_f64;
+        for chunk in samples.chunks(MAX_EMBED_SAMPLES) {
+            let Some(vector) = self.embed_chunk(chunk)? else {
+                continue;
+            };
+            let norm = vector
+                .iter()
+                .map(|v| f64::from(*v) * f64::from(*v))
+                .sum::<f64>()
+                .sqrt();
+            if norm == 0.0 {
+                continue;
+            }
+            if sum.is_empty() {
+                sum = vec![0.0; vector.len()];
+            } else if sum.len() != vector.len() {
+                return Err(InferenceError::Diarize(format!(
+                    "embedding dimension changed mid-speaker: {} then {}",
+                    sum.len(),
+                    vector.len()
+                )));
+            }
+            let weight = chunk.len() as f64;
+            for (acc, v) in sum.iter_mut().zip(&vector) {
+                *acc += f64::from(*v) / norm * weight;
+            }
+            total_weight += weight;
+        }
+        if total_weight == 0.0 {
+            return Ok(None);
+        }
+        Ok(Some(
+            sum.into_iter().map(|v| (v / total_weight) as f32).collect(),
+        ))
     }
 }
 
