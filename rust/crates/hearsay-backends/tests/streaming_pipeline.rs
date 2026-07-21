@@ -54,8 +54,10 @@ impl Backend for SherpaFileBackend {
     fn build(&self) -> BackendInstance {
         BackendInstance {
             source: Box::new(WavFileSource::new(self.wav.clone())),
-            me: Box::new(SherpaTranscriber::new(load_streaming(&self.model_dir))),
-            them: Box::new(SherpaTranscriber::new(load_streaming(&self.model_dir))),
+            // `None`: this exercises the ASR + pipeline wiring, so it asserts on the raw
+            // recognizer output rather than the punctuation-restored text.
+            me: Box::new(SherpaTranscriber::new(load_streaming(&self.model_dir), None)),
+            them: Box::new(SherpaTranscriber::new(load_streaming(&self.model_dir), None)),
         }
     }
 }

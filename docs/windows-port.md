@@ -101,6 +101,10 @@ end-to-end proven by the ignored `hearsay-backends/tests/streaming_pipeline.rs` 
   model; it replaced the 20M one, which dropped whole leading clauses even on clean read speech.
   `hearsay-inference/tests/streaming_bench.rs` measures candidates against the real-time budget —
   70M runs at RTF 0.031, while parakeet-unified 0.6B needs a GPU (RTF 1.28 on an x86 CPU).
+  The zipformer emits bare uppercase text, so `Punctuator` (sherpa online punctuation,
+  `sherpa-onnx-online-punct-en-2024-08-06`, ~3.4 ms per utterance) restores the case + punctuation
+  macOS gets natively from Parakeet. The model only fires on lowercase input, so `restore`
+  lowercases first. A missing punctuation model degrades to raw uppercase, never to no captions.
 - **Refine**: whisper (whisper-rs, model from the Settings > Models panel as on macOS) plus
   `SherpaDiarizer` (pyannote segmentation-3.0, MIT, + TitaNet embedding, CC-BY-4.0) through the
   portable `refine_them_with` seam. Known-degraded versus FluidAudio (tends to over-split

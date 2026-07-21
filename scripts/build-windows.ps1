@@ -4,7 +4,7 @@
 #   powershell -ExecutionPolicy Bypass -File scripts\build-windows.ps1 [-NoVulkan] [-Aec] [-SkipModels]
 #
 #   -NoVulkan    drop the vulkan feature (CPU-only whisper/llama; no Vulkan SDK needed to build)
-#   -Aec         add the aec echo-cancellation feature
+#   -NoAec       drop the aec echo-cancellation feature
 #   -SkipModels  skip model download/staging (reuse what is already staged)
 #
 # Vulkan is on by default: it covers the ggml half of the stack (the whisper refine and the notes
@@ -15,7 +15,7 @@
 
 param(
     [switch]$NoVulkan,
-    [switch]$Aec,
+    [switch]$NoAec,
     [switch]$SkipModels
 )
 
@@ -96,7 +96,10 @@ $sherpaRelease = "https://github.com/k2-fsa/sherpa-onnx/releases/download"
 $streaming = "sherpa-onnx-streaming-zipformer-en-2023-06-21"
 $archives = @(
     @{ Name = $streaming; Tag = "asr-models" },
-    @{ Name = "sherpa-onnx-pyannote-segmentation-3-0"; Tag = "speaker-segmentation-models" }
+    @{ Name = "sherpa-onnx-pyannote-segmentation-3-0"; Tag = "speaker-segmentation-models" },
+    # Restores case + punctuation on the streaming zipformer's bare uppercase output, which macOS
+    # gets natively from Parakeet.
+    @{ Name = "sherpa-onnx-online-punct-en-2024-08-06"; Tag = "punctuation-models" }
 )
 $embedding = "nemo_en_titanet_small.onnx"
 # "recongition" is the real upstream release-tag spelling.
@@ -161,7 +164,10 @@ Pop-Location
 # --- Core binary --------------------------------------------------------------------------------
 $features = "sherpa,notes"
 if (-not $NoVulkan) { $features += ",vulkan" }
-if ($Aec) { $features += ",aec" }
+# macOS ships aec (Makefile: `metal,notes,aec`), so Windows does too -- without it the mic picks up
+# the meeting audio whenever the user is on speakers. Its bindgen needs libclang, which is already a
+# hard prerequisite above for the always-on `notes` feature.
+if (-not $NoAec) { $features += ",aec" }
 Write-Host "building hearsay-core (features: $features)..."
 # Everything here builds against the default dynamic CRT: sherpa-onnx is linked as a DLL (see
 # hearsay-inference/Cargo.toml) precisely so no crt-static juggling is needed.

@@ -127,6 +127,8 @@ FLUID_DST := web/src-tauri/models/fluidaudio/Models
 SHERPA_RELEASE := https://github.com/k2-fsa/sherpa-onnx/releases/download
 SHERPA_STREAMING := sherpa-onnx-streaming-zipformer-en-2023-06-21
 SHERPA_SEGMENTATION := sherpa-onnx-pyannote-segmentation-3-0
+# Restores case + punctuation on the streaming zipformer's bare uppercase output.
+SHERPA_PUNCT := sherpa-onnx-online-punct-en-2024-08-06
 SHERPA_EMBEDDING := nemo_en_titanet_small.onnx
 SHERPA_SRC := outputs/models/sherpa
 SHERPA_DST := web/src-tauri/models/sherpa
@@ -188,13 +190,14 @@ stage-fluid-models: ## Stage the FluidAudio live models into the Tauri bundle
 
 fetch-sherpa-models: ## Download the sherpa live/diarize models (Windows backend) into outputs/
 	@mkdir -p "$(SHERPA_SRC)"
-	@for a in $(SHERPA_STREAMING) $(SHERPA_SEGMENTATION); do \
+	@for a in $(SHERPA_STREAMING) $(SHERPA_SEGMENTATION) $(SHERPA_PUNCT); do \
 		if [ -d "$(SHERPA_SRC)/$$a" ]; then \
 			echo "sherpa model $$a already fetched"; \
 		else \
 			echo "fetching sherpa model $$a..."; \
 			tag=asr-models; \
 			if [ "$$a" = "$(SHERPA_SEGMENTATION)" ]; then tag=speaker-segmentation-models; fi; \
+			if [ "$$a" = "$(SHERPA_PUNCT)" ]; then tag=punctuation-models; fi; \
 			curl -fL "$(SHERPA_RELEASE)/$$tag/$$a.tar.bz2" | tar xjf - -C "$(SHERPA_SRC)"; \
 		fi; \
 	done
@@ -207,7 +210,7 @@ fetch-sherpa-models: ## Download the sherpa live/diarize models (Windows backend
 	fi
 
 stage-sherpa-models: ## Stage the sherpa models into the Tauri bundle (Windows packaging)
-	@for m in $(SHERPA_STREAMING) $(SHERPA_SEGMENTATION) $(SHERPA_EMBEDDING); do \
+	@for m in $(SHERPA_STREAMING) $(SHERPA_SEGMENTATION) $(SHERPA_PUNCT) $(SHERPA_EMBEDDING); do \
 		if [ ! -e "$(SHERPA_SRC)/$$m" ]; then \
 			echo "ERROR: sherpa model '$$m' not in $(SHERPA_SRC)."; \
 			echo "Run 'make fetch-sherpa-models' first (see docs/windows-port.md)."; \
@@ -215,7 +218,7 @@ stage-sherpa-models: ## Stage the sherpa models into the Tauri bundle (Windows p
 		fi; \
 	done
 	@mkdir -p "$(SHERPA_DST)"
-	@for m in $(SHERPA_STREAMING) $(SHERPA_SEGMENTATION) $(SHERPA_EMBEDDING); do \
+	@for m in $(SHERPA_STREAMING) $(SHERPA_SEGMENTATION) $(SHERPA_PUNCT) $(SHERPA_EMBEDDING); do \
 		if [ -e "$(SHERPA_DST)/$$m" ]; then \
 			echo "sherpa model $$m already staged"; \
 		elif [ "$$m" = "$(SHERPA_STREAMING)" ]; then \

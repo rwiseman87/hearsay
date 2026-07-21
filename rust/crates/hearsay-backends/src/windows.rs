@@ -19,7 +19,9 @@ use sqlx::SqlitePool;
 
 use hearsay_capture::{LoopbackMode, SyntheticSource, WasapiSource};
 use hearsay_engine::{DisabledEngine, LiveEngine};
-use hearsay_inference::{SherpaDiarizer, StreamingAsr, StreamingModel};
+use hearsay_inference::{
+    PunctuationModel, Punctuator, SherpaDiarizer, StreamingAsr, StreamingModel,
+};
 use hearsay_orchestrator::{
     Backend, BackendInstance, Orchestrator, OrchestratorError, RefineResult, RefinedThemSegment,
     Refiner,
@@ -35,6 +37,9 @@ use crate::{EngineConfig, SherpaTranscriber};
 /// measures this one at RTF 0.031 — 20 ms of compute per 560 ms of audio, so both streams still
 /// run live with room to spare.
 const STREAMING_DIR: &str = "sherpa-onnx-streaming-zipformer-en-2023-06-21";
+/// The online punctuation model directory under `sherpa_models_dir`. The streaming zipformer emits
+/// bare uppercase text; this restores the case + punctuation macOS gets natively from Parakeet.
+const PUNCT_DIR: &str = "sherpa-onnx-online-punct-en-2024-08-06";
 /// The pyannote segmentation model under `sherpa_models_dir`.
 const SEGMENTATION_MODEL: &str = "sherpa-onnx-pyannote-segmentation-3-0/model.onnx";
 /// The speaker-embedding model under `sherpa_models_dir` — TitaNet small, the embedder the
@@ -45,6 +50,9 @@ const EMBEDDING_MODEL: &str = "nemo_en_titanet_small.onnx";
 /// [`SherpaTranscriber`] per stream. No processes to pool; `sidecars_ready` is true from load.
 struct WindowsBackend {
     asr: StreamingAsr,
+    /// Restores case + punctuation on the zipformer's uppercase output; `None` when the model is
+    /// absent (older bundle), which keeps live captions working in raw uppercase.
+    punct: Option<Punctuator>,
     synthetic: bool,
     loopback_mode: LoopbackMode,
 }
@@ -58,8 +66,8 @@ impl Backend for WindowsBackend {
         };
         BackendInstance {
             source,
-            me: Box::new(SherpaTranscriber::new(self.asr.clone())),
-            them: Box::new(SherpaTranscriber::new(self.asr.clone())),
+            me: Box::new(SherpaTranscriber::new(self.asr.clone(), self.punct.clone())),
+            them: Box::new(SherpaTranscriber::new(self.asr.clone(), self.punct.clone())),
         }
     }
 }
@@ -151,6 +159,32 @@ fn load_streaming_asr(models_dir: &Path) -> Result<StreamingAsr, String> {
     .map_err(|e| format!("load streaming ASR: {e}"))
 }
 
+/// Load the online punctuation model from its conventional directory under `sherpa_models_dir`.
+/// `None` when it is not bundled: live captions then read as raw uppercase, which is worse but not
+/// broken, so a missing punctuation model must never take live transcription down with it.
+fn load_punctuator(models_dir: &Path) -> Option<Punctuator> {
+    let dir = models_dir.join(PUNCT_DIR);
+    let model = dir.join("model.int8.onnx");
+    let vocab = dir.join("bpe.vocab");
+    if !model.is_file() || !vocab.is_file() {
+        tracing::warn!(
+            dir = %dir.display(),
+            "punctuation model not found; live captions will be uppercase without punctuation"
+        );
+        return None;
+    }
+    match Punctuator::load(PunctuationModel {
+        model: &model,
+        vocab: &vocab,
+    }) {
+        Ok(punct) => Some(punct),
+        Err(err) => {
+            tracing::warn!(error = %err, "punctuation model failed to load; live captions will be uppercase");
+            None
+        }
+    }
+}
+
 /// Assemble the Windows live engine: WASAPI capture + sherpa live captions ([`WindowsBackend`])
 /// and the whisper + sherpa-diarize offline refine ([`WindowsRefiner`]) inside an
 /// [`Orchestrator`], returned as the neutral [`LiveEngine`] the HTTP crate consumes. A failed
@@ -193,6 +227,7 @@ pub fn build_engine(config: EngineConfig) -> Arc<dyn LiveEngine> {
 
     let backend = Arc::new(WindowsBackend {
         asr,
+        punct: load_punctuator(&sherpa_models_dir),
         synthetic,
         loopback_mode: win_loopback_mode,
     });
