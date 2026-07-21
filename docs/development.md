@@ -172,8 +172,16 @@ Prerequisites on the Windows machine:
 - A Rust toolchain ([rustup](https://rustup.rs/); the default host triple is the MSVC one).
 - [CMake](https://cmake.org) (the whisper-rs / llama-cpp-2 native builds).
 - Node 22.
-- Only for the `aec` feature: LLVM (libclang, for bindgen).
-- Only for the `vulkan` feature: the Vulkan SDK.
+- LLVM (`winget install -e --id LLVM.LLVM`) — llama-cpp-2 (the `notes` feature) and `aec` run
+  bindgen, which loads `libclang.dll` at build time.
+- The [Vulkan SDK](https://vulkan.lunarg.com/sdk/home#windows) **and** Windows long-path support —
+  the installer build enables the `vulkan` feature by default (GPU whisper refine + notes on any
+  vendor's GPU; the live sherpa ASR is unaffected, as onnxruntime has no Vulkan provider). ggml
+  builds its Vulkan shader generator as a nested cmake sub-project, and MSBuild's `.tlog` paths
+  under it exceed `MAX_PATH` (`error MSB3491`) regardless of how short `CARGO_TARGET_DIR` is, so
+  long paths are required. Enable them from an elevated PowerShell, then reboot:
+  `Set-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem' -Name LongPathsEnabled -Value 1 -Type DWord`
+  Pass `-NoVulkan` to `scripts\build-windows.ps1` to build CPU-only without either prerequisite.
 
 Build and run from source (PowerShell; `scripts\build-windows.ps1` fetches the models on first
 run, or fetch them from any host with `make fetch-sherpa-models`):
@@ -183,6 +191,14 @@ cargo build --manifest-path rust\Cargo.toml --features sherpa,notes
 cargo run --manifest-path rust\Cargo.toml -p hearsay-core --features sherpa,notes
 cargo run --manifest-path rust\Cargo.toml -p hearsay-core --features sherpa,notes -- --synthetic
 ```
+
+Everything links against the default dynamic CRT. `hearsay-inference` takes sherpa-onnx's `shared`
+feature so onnxruntime + sherpa arrive as DLLs: the crate's default `static` libs are prebuilt
+against the *static* CRT, which would force `-C target-feature=+crt-static` on the whole binary,
+and whisper.cpp pins CMP0091 OLD so its cmake appends `/MD` after cmake-rs's `/MT` — a mismatch no
+toolchain file can fix, because the platform defaults are set after a toolchain file runs.
+`sherpa-onnx-sys` copies `sherpa-onnx-c-api.dll` + `onnxruntime.dll` next to the built binary; the
+installer stages them alongside the sidecar.
 
 `--synthetic` uses the built-in tone source, so the whole pipeline runs without a microphone or
 system audio. The installer build is `scripts\build-windows.ps1` (see
