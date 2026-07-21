@@ -77,13 +77,15 @@ Or pass -NoVulkan to build CPU-only.
 
     # Even under Ninja, cl.exe is not long-path aware, and the sub-build's compiler-probe objects sit
     # ~230 characters below the target dir. Build into a short path so they stay under MAX_PATH.
-    if (-not $env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR = "$env:USERPROFILE\.hs" }
-    if ($env:CARGO_TARGET_DIR.Length -gt 24) {
-        throw "CARGO_TARGET_DIR '$env:CARGO_TARGET_DIR' is too long for the ggml Vulkan sub-build; use a path of 24 characters or fewer (or pass -NoVulkan)."
+    # Applied to the core build only (below), never exported: the Tauri build must keep writing to
+    # web\src-tauri\target, which is where the bundle is collected from.
+    $coreTarget = if ($env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR } else { "$env:USERPROFILE\.hs" }
+    if ($coreTarget.Length -gt 24) {
+        throw "CARGO_TARGET_DIR '$coreTarget' is too long for the ggml Vulkan sub-build; use a path of 24 characters or fewer (or pass -NoVulkan)."
     }
 }
-# Where cargo actually wrote the binaries (the Vulkan path redirects it above).
-$target = if ($env:CARGO_TARGET_DIR) { "$env:CARGO_TARGET_DIR\release" } else { "rust\target\release" }
+# Where cargo writes the core binaries (the Vulkan path redirects it; see above).
+$target = if ($coreTarget) { "$coreTarget\release" } else { "rust\target\release" }
 
 # --- Models -------------------------------------------------------------------------------------
 # Same artifacts and layout as `make fetch-sherpa-models` / `stage-sherpa-models` / `stage-model`.
@@ -163,7 +165,13 @@ if ($Aec) { $features += ",aec" }
 Write-Host "building hearsay-core (features: $features)..."
 # Everything here builds against the default dynamic CRT: sherpa-onnx is linked as a DLL (see
 # hearsay-inference/Cargo.toml) precisely so no crt-static juggling is needed.
-cargo build --release --manifest-path rust\Cargo.toml -p hearsay-core --features $features
+$prevTargetDir = $env:CARGO_TARGET_DIR
+if ($coreTarget) { $env:CARGO_TARGET_DIR = $coreTarget }
+try {
+    cargo build --release --manifest-path rust\Cargo.toml -p hearsay-core --features $features
+} finally {
+    $env:CARGO_TARGET_DIR = $prevTargetDir
+}
 if ($LASTEXITCODE -ne 0) { throw "cargo build failed" }
 
 New-Item -ItemType Directory -Force -Path "web\src-tauri\binaries" | Out-Null
