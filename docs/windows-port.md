@@ -96,8 +96,11 @@ The live and refine stacks reuse the `sherpa` feature modules that already exist
 end-to-end proven by the ignored `hearsay-backends/tests/streaming_pipeline.rs` test:
 
 - **Live**: `SherpaTranscriber` (streaming zipformer transducer,
-  `sherpa-onnx-streaming-zipformer-en-20M-2023-02-17` int8, Apache-2.0) on both streams.
-  Segments are speaker-less live; the refine assigns speakers.
+  `sherpa-onnx-streaming-zipformer-en-2023-06-21` int8, Apache-2.0) on both streams.
+  Segments are speaker-less live; the refine assigns speakers. This is the 70M LibriSpeech+GigaSpeech
+  model; it replaced the 20M one, which dropped whole leading clauses even on clean read speech.
+  `hearsay-inference/tests/streaming_bench.rs` measures candidates against the real-time budget —
+  70M runs at RTF 0.031, while parakeet-unified 0.6B needs a GPU (RTF 1.28 on an x86 CPU).
 - **Refine**: whisper (whisper-rs, model from the Settings > Models panel as on macOS) plus
   `SherpaDiarizer` (pyannote segmentation-3.0, MIT, + TitaNet embedding, CC-BY-4.0) through the
   portable `refine_them_with` seam. Known-degraded versus FluidAudio (tends to over-split
@@ -156,7 +159,8 @@ On the Windows x86_64 machine:
 - Rust via rustup (defaults to `x86_64-pc-windows-msvc`).
 - CMake (whisper-rs / llama-cpp-2 build).
 - Node 22 (web UI).
-- Only for the `aec` feature: LLVM (libclang, for bindgen).
+- LLVM (`winget install -e --id LLVM.LLVM`) — llama-cpp-2 (`notes`) and `aec` run bindgen, which
+  loads `libclang.dll` at build time.
 - Only for the `vulkan` feature: the Vulkan SDK.
 
 ## Phases
@@ -206,7 +210,7 @@ Checkboxes are the tracking state for the port.
       diarizer constructed inside the blocking task; a failed streaming-model load degrades to
       `DisabledEngine` (app serves, meetings 503) instead of failing startup. `LlamaSummarizer`
       moved to a shared module used by both platforms. Model conventions under
-      `HEARSAY_SHERPA_MODELS_DIR`: `sherpa-onnx-streaming-zipformer-en-20M-2023-02-17/`,
+      `HEARSAY_SHERPA_MODELS_DIR`: `sherpa-onnx-streaming-zipformer-en-2023-06-21/`,
       `sherpa-onnx-pyannote-segmentation-3-0/model.onnx`, `nemo_en_titanet_small.onnx` (the
       embedder the cluster-threshold tuning used).
 - [x] Windows `probe_permissions` (`hearsay-capture/src/win_permissions.rs`): ConsentStore

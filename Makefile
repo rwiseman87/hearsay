@@ -125,7 +125,7 @@ FLUID_DST := web/src-tauri/models/fluidaudio/Models
 # ("recongition" is the real upstream release-tag spelling). Fetch works from any host with
 # curl+tar; scripts/build-windows.ps1 does the same on the Windows machine.
 SHERPA_RELEASE := https://github.com/k2-fsa/sherpa-onnx/releases/download
-SHERPA_STREAMING := sherpa-onnx-streaming-zipformer-en-20M-2023-02-17
+SHERPA_STREAMING := sherpa-onnx-streaming-zipformer-en-2023-06-21
 SHERPA_SEGMENTATION := sherpa-onnx-pyannote-segmentation-3-0
 SHERPA_EMBEDDING := nemo_en_titanet_small.onnx
 SHERPA_SRC := outputs/models/sherpa
@@ -216,11 +216,15 @@ stage-sherpa-models: ## Stage the sherpa models into the Tauri bundle (Windows p
 	done
 	@mkdir -p "$(SHERPA_DST)"
 	@for m in $(SHERPA_STREAMING) $(SHERPA_SEGMENTATION) $(SHERPA_EMBEDDING); do \
-		if [ ! -e "$(SHERPA_DST)/$$m" ]; then \
+		if [ -e "$(SHERPA_DST)/$$m" ]; then \
+			echo "sherpa model $$m already staged"; \
+		elif [ "$$m" = "$(SHERPA_STREAMING)" ]; then \
+			echo "staging sherpa model $$m (int8 only)..."; \
+			mkdir -p "$(SHERPA_DST)/$$m"; \
+			cp "$(SHERPA_SRC)/$$m"/*.int8.onnx "$(SHERPA_SRC)/$$m"/tokens.txt "$(SHERPA_DST)/$$m/"; \
+		else \
 			echo "staging sherpa model $$m..."; \
 			cp -R "$(SHERPA_SRC)/$$m" "$(SHERPA_DST)/$$m"; \
-		else \
-			echo "sherpa model $$m already staged"; \
 		fi; \
 	done
 

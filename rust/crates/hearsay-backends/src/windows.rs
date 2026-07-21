@@ -30,8 +30,11 @@ use crate::summarizer::LlamaSummarizer;
 use crate::{EngineConfig, SherpaTranscriber};
 
 /// The streaming-ASR model directory under `sherpa_models_dir` (the model validated by
-/// `hearsay-inference/tests/sherpa_streaming.rs`).
-const STREAMING_DIR: &str = "sherpa-onnx-streaming-zipformer-en-20M-2023-02-17";
+/// `hearsay-inference/tests/sherpa_streaming.rs`). The 70M LibriSpeech+GigaSpeech zipformer: the
+/// 20M it replaced dropped whole leading clauses on clean speech, and `tests/streaming_bench.rs`
+/// measures this one at RTF 0.031 — 20 ms of compute per 560 ms of audio, so both streams still
+/// run live with room to spare.
+const STREAMING_DIR: &str = "sherpa-onnx-streaming-zipformer-en-2023-06-21";
 /// The pyannote segmentation model under `sherpa_models_dir`.
 const SEGMENTATION_MODEL: &str = "sherpa-onnx-pyannote-segmentation-3-0/model.onnx";
 /// The speaker-embedding model under `sherpa_models_dir` — TitaNet small, the embedder the

@@ -14,7 +14,7 @@ fn repo(rel: &str) -> PathBuf {
 }
 
 fn load_asr() -> StreamingAsr {
-    let dir = repo("outputs/models/sherpa/sherpa-onnx-streaming-zipformer-en-20M-2023-02-17");
+    let dir = repo("outputs/models/sherpa/sherpa-onnx-streaming-zipformer-en-2023-06-21");
     StreamingAsr::load(StreamingModel {
         encoder: &dir.join("encoder-epoch-99-avg-1.int8.onnx"),
         decoder: &dir.join("decoder-epoch-99-avg-1.int8.onnx"),
