@@ -26,8 +26,12 @@ export type ResyncEvent = Schemas["ResyncEvent"];
 // "still recording?" banner. If silence continues the meeting auto-ends server-side.
 export type PromptEvent = Schemas["PromptEvent"];
 
+// A capture-health notice (not a transcript line): the mic is delivering digital silence, so the UI
+// warns instead of showing the confident nonsense ASR produces from a dead signal.
+export type CaptureHealthEvent = Schemas["CaptureHealthEvent"];
+
 // Anything the live socket delivers on the transcript path, discriminated by `kind`.
-export type WsMessage = TranscriptEvent | StatusEvent | PromptEvent;
+export type WsMessage = TranscriptEvent | StatusEvent | PromptEvent | CaptureHealthEvent;
 
 // Live-transcript connection state, surfaced to the UI so a dropped socket is visible instead of a
 // silently frozen transcript.

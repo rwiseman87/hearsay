@@ -541,6 +541,35 @@ pub struct StatusEvent {
     pub state: WarmState,
 }
 
+/// The constant `kind` discriminant marking a [`CaptureHealthEvent`] (`"capture_health"`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum CaptureHealthKind {
+    CaptureHealth,
+}
+
+/// Whether a capture stream is delivering audio (`ok`) or nothing at all (`silent`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum CaptureState {
+    Ok,
+    Silent,
+}
+
+/// A capture-health frame (not a transcript line): the named stream is delivering digital silence —
+/// exactly-zero samples, which a working microphone never produces — so the UI warns that the mic is
+/// muted or dead. Without this the failure is invisible, because ASR does not return nothing for
+/// silence, it hallucinates text. Mirrors the orchestrator's `CaptureHealthEvent` on the wire.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ToSchema)]
+pub struct CaptureHealthEvent {
+    #[schema(inline)]
+    pub kind: CaptureHealthKind,
+    /// The affected stream; only `me` (the mic) is monitored.
+    pub stream: &'static str,
+    #[schema(inline)]
+    pub state: CaptureState,
+}
+
 /// The constant `kind` discriminant marking a [`ResyncEvent`] (`"resync"`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ToSchema)]
 #[serde(rename_all = "lowercase")]

@@ -32,6 +32,12 @@ interface State {
   // banner); carries how long it has been silent. Cleared when speech resumes (any transcript line),
   // on reset, or by the user acting on the banner. Driven by the WS `prompt` frames.
   inactivityPrompt: { silentSeconds: number } | null;
+  // True while the mic is delivering digital silence (muted or dead). Distinct from
+  // `inactivityPrompt`, which means "no speech detected" on a working mic: here the signal path
+  // itself is dead, and the transcript that keeps appearing is ASR hallucinating on zeros. Driven by
+  // the WS `capture_health` frames, and only the server clears it (a Them line proves nothing about
+  // the mic).
+  micSilent: boolean;
 }
 
 type Action =
@@ -46,7 +52,13 @@ const lineKey = (line: { stream: string; start_s: number }): string =>
 function reducer(state: State, action: Action): State {
   switch (action.type) {
     case "reset":
-      return { finals: new Map(), partials: new Map(), preparing: false, inactivityPrompt: null };
+      return {
+        finals: new Map(),
+        partials: new Map(),
+        preparing: false,
+        inactivityPrompt: null,
+        micSilent: false,
+      };
     case "seed": {
       // While recording, merge the DB snapshot with the live WS finals (a stale fetch may lag
       // behind the socket). Once finalized, the DB is authoritative -- and the auto-refine has
@@ -61,6 +73,7 @@ function reducer(state: State, action: Action): State {
         partials: action.replace ? new Map() : state.partials,
         preparing: state.preparing,
         inactivityPrompt: state.inactivityPrompt,
+        micSilent: state.micSilent,
       };
     }
     case "event": {
@@ -73,6 +86,10 @@ function reducer(state: State, action: Action): State {
       if (message.kind === "prompt") {
         return { ...state, inactivityPrompt: { silentSeconds: message.silent_seconds } };
       }
+      // Capture health (not a transcript line): the mic is dead, or has come back.
+      if (message.kind === "capture_health") {
+        return { ...state, micSilent: message.state === "silent" };
+      }
       const event = message;
       // A transcript arriving proves the sidecars are serving (clear the "preparing" notice) and is
       // speech, so it clears any active inactivity prompt.
@@ -82,11 +99,23 @@ function reducer(state: State, action: Action): State {
         // A final supersedes the stream's in-flight partial.
         const partials = new Map(state.partials);
         partials.delete(event.stream);
-        return { finals, partials, preparing: false, inactivityPrompt: null };
+        return {
+          finals,
+          partials,
+          preparing: false,
+          inactivityPrompt: null,
+          micSilent: state.micSilent,
+        };
       }
       const partials = new Map(state.partials);
       partials.set(event.stream, event);
-      return { finals: state.finals, partials, preparing: false, inactivityPrompt: null };
+      return {
+        finals: state.finals,
+        partials,
+        preparing: false,
+        inactivityPrompt: null,
+        micSilent: state.micSilent,
+      };
     }
     case "dismissPrompt":
       return { ...state, inactivityPrompt: null };
@@ -94,7 +123,13 @@ function reducer(state: State, action: Action): State {
 }
 
 function init(): State {
-  return { finals: new Map(), partials: new Map(), preparing: false, inactivityPrompt: null };
+  return {
+    finals: new Map(),
+    partials: new Map(),
+    preparing: false,
+    inactivityPrompt: null,
+    micSilent: false,
+  };
 }
 
 export interface TranscriptState {
@@ -107,6 +142,9 @@ export interface TranscriptState {
   // Set while the server is nudging that no speech has been detected for a while (the "still
   // recording?" banner); carries the silent duration. `null` when there is no active nudge.
   inactivityPrompt: { silentSeconds: number } | null;
+  // True while the live mic is delivering digital silence, so the UI can warn that nothing is being
+  // heard. Any transcript still arriving on Me while this is set is ASR hallucinating on zeros.
+  micSilent: boolean;
   // Locally dismiss the inactivity banner (the "Keep recording" / "Stop" actions hide it until the
   // next server nudge). Does not reset the server clock — the caller pairs it with the keep-recording
   // mutation for that.
@@ -173,6 +211,7 @@ export function useTranscript(meeting: MeetingRead | null): TranscriptState {
     connection,
     preparing: isLive && state.preparing,
     inactivityPrompt: isLive ? state.inactivityPrompt : null,
+    micSilent: isLive && state.micSilent,
     dismissInactivityPrompt: () => dispatch({ type: "dismissPrompt" }),
   };
 }

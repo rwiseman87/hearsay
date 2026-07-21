@@ -43,6 +43,10 @@ const DEVICE_CHECK_INTERVAL: Duration = Duration::from_secs(1);
 /// Consecutive failed rebuilds before a stream thread gives up (ending capture — the orchestrator
 /// then finalizes the meeting through the normal capture-death path).
 const MAX_REBUILD_FAILURES: u32 = 30;
+/// Continuous all-zero mic frames before the client is rebuilt once on suspicion of a stale
+/// endpoint. 10 s at 16 kHz, matching the orchestrator's `DEAD_MIC_AFTER_SAMPLES` so the rebuild
+/// attempt and the user-facing notice describe the same condition.
+const SILENT_REBUILD_AFTER_FRAMES: u64 = 10 * SAMPLE_RATE as u64;
 /// Pause between failed rebuild attempts.
 const REBUILD_DELAY: Duration = Duration::from_secs(1);
 /// How long `start()` waits for both capture threads to report their first client built.
@@ -247,6 +251,9 @@ fn run_capture(
     let mut buf = vec![0u8; READ_BUF_BYTES];
     let mut last_device_check = Instant::now();
     let mut rebuild_failures = 0u32;
+    let mut zero_frames = 0u64;
+    let mut rebuilt_for_silence = false;
+    let mut reported_silent = false;
 
     while !stop.load(Ordering::Relaxed) {
         // A timeout is routine (idle loopback delivers nothing); use the tick to notice a
@@ -310,6 +317,17 @@ fn run_capture(
                     .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
                     .collect()
             };
+            // Digital silence on the mic means a dead signal path: a working microphone always has
+            // a noise floor, and WASAPI does not flag this as SILENT — it reports healthy frames of
+            // nothing. Only the mic is tracked; the loopback stream is legitimately all-zero
+            // whenever no audio is playing.
+            if loopback.is_none() {
+                if samples.iter().any(|s| *s != 0.0) {
+                    zero_frames = 0;
+                } else {
+                    zero_frames += frames as u64;
+                }
+            }
             let chunk = CaptureChunk {
                 stream,
                 chunk: AudioChunk {
@@ -321,6 +339,29 @@ fn run_capture(
             };
             if tx.blocking_send(chunk).is_err() {
                 return; // the orchestrator dropped the receiver
+            }
+            // Rebuild once, in case the endpoint went stale the way a default-device change does.
+            // A muted or dead device survives the rebuild, so never churn past the first attempt —
+            // the orchestrator's `DeadMicMonitor` is what tells the user about the silence.
+            if zero_frames >= SILENT_REBUILD_AFTER_FRAMES {
+                zero_frames = 0;
+                if rebuilt_for_silence {
+                    if !reported_silent {
+                        reported_silent = true;
+                        tracing::warn!(
+                            stream = ?stream,
+                            "mic still delivering digital silence after a rebuild; leaving the client alone (muted device?)"
+                        );
+                    }
+                } else {
+                    rebuilt_for_silence = true;
+                    tracing::warn!(stream = ?stream, "mic delivering digital silence; rebuilding capture client once");
+                    match rebuild(loopback, session, stop, &mut rebuild_failures) {
+                        Some(next) => session = next,
+                        None => return,
+                    }
+                    break;
+                }
             }
         }
     }

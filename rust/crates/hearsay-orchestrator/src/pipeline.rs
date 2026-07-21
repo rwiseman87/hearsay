@@ -53,6 +53,11 @@ const RESYNC_THRESHOLD_S: f64 = 0.2;
 /// `t0_s` too.
 const MAX_SILENCE_PAD_SAMPLES: usize = 5 * 60 * 16_000;
 
+/// Continuous all-zero mic samples before [`DeadMicMonitor`] reports the signal path dead. 10 s at
+/// 16 kHz: long enough that a legitimately digital-silent stretch (a resync pad, a codec dropout)
+/// never trips it, short enough to catch a muted mic early in a meeting rather than at the end.
+const DEAD_MIC_AFTER_SAMPLES: u64 = 10 * 16_000;
+
 /// How often the inactivity watchdog re-checks the silence clock. Coarse (the thresholds are
 /// minutes), so the tick cost is negligible; fine enough that a prompt/auto-end fires within a few
 /// seconds of crossing its threshold.
@@ -459,6 +464,7 @@ async fn stream_loop(
     let mut offset: Option<f64> = None;
     let mut clusters: HashMap<i64, Uuid> = HashMap::new();
     let mut feeding = true;
+    let mut dead_mic = DeadMicMonitor::default();
     // Samples fed to the sidecar so far (including any silence padding), so its sample-count
     // timeline can be kept aligned to meeting time.
     let mut fed_samples: u64 = 0;
@@ -483,6 +489,7 @@ async fn stream_loop(
                         transcriber.feed(vec![0.0; pad]).await;
                     }
                     fed_samples += samples.len() as u64;
+                    dead_mic.observe(role, &samples, &broadcast_tx);
                     transcriber.feed(samples).await;
                 }
                 // Capture ended: stop feeding and flush the sidecar's finalized tail. The emit
@@ -591,6 +598,73 @@ fn silence_stage(silence: Duration, cfg: &InactivityConfig, prompted: bool) -> S
 struct PromptEvent<'a> {
     kind: &'a str,
     silent_seconds: u64,
+}
+
+/// A capture-health notice pushed to WebSocket subscribers:
+/// `{"kind":"capture_health","stream":"me","state":"silent"}`. The Windows counterpart of the
+/// macOS helper's `tap_health` event.
+#[derive(Serialize)]
+struct CaptureHealthEvent<'a> {
+    kind: &'a str,
+    stream: &'a str,
+    state: &'a str,
+}
+
+fn publish_capture_health(broadcast_tx: &broadcast::Sender<String>, state: &str) {
+    if let Ok(line) = serde_json::to_string(&CaptureHealthEvent {
+        kind: "capture_health",
+        stream: "me",
+        state,
+    }) {
+        let _ = broadcast_tx.send(line);
+    }
+}
+
+/// Watches the mic stream for *digital* silence — samples that are exactly zero, which a working
+/// microphone never produces because even a quiet room has a noise floor. Sustained exact zeros mean
+/// the signal path is dead (hardware mute, a stale endpoint, a driver that reports healthy frames of
+/// nothing), and the danger is that this is invisible downstream: ASR does not return "nothing" for
+/// silence, it hallucinates fluent text. Surfacing it is what turns confident nonsense into a
+/// diagnosable "your mic is muted".
+///
+/// Only the mic is watched. The Them stream is loopback, where exact zeros are the *normal* state
+/// whenever no audio is playing, so the same check there would fire constantly.
+#[derive(Default)]
+struct DeadMicMonitor {
+    consecutive_zero_samples: u64,
+    flagged: bool,
+}
+
+impl DeadMicMonitor {
+    /// Fold in one chunk, emitting a notice on the transition into or out of digital silence.
+    fn observe(
+        &mut self,
+        role: StreamRole,
+        samples: &[f32],
+        broadcast_tx: &broadcast::Sender<String>,
+    ) {
+        if role != StreamRole::Me {
+            return;
+        }
+        if samples.iter().any(|s| *s != 0.0) {
+            self.consecutive_zero_samples = 0;
+            if self.flagged {
+                self.flagged = false;
+                tracing::info!("mic signal returned");
+                publish_capture_health(broadcast_tx, "ok");
+            }
+            return;
+        }
+        self.consecutive_zero_samples += samples.len() as u64;
+        if !self.flagged && self.consecutive_zero_samples >= DEAD_MIC_AFTER_SAMPLES {
+            self.flagged = true;
+            tracing::warn!(
+                seconds = self.consecutive_zero_samples as f64 / SAMPLE_RATE,
+                "mic is delivering digital silence — muted, or the endpoint is dead"
+            );
+            publish_capture_health(broadcast_tx, "silent");
+        }
+    }
 }
 
 fn publish_prompt(broadcast_tx: &broadcast::Sender<String>, silent_seconds: u64) {
@@ -809,9 +883,67 @@ async fn cluster_for(
 
 #[cfg(test)]
 mod tests {
-    use super::{inactivity_watchdog, silence_stage, InactivityConfig, Stage};
+    use super::{
+        inactivity_watchdog, silence_stage, DeadMicMonitor, InactivityConfig, Stage, StreamRole,
+        DEAD_MIC_AFTER_SAMPLES,
+    };
     use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
+
+    /// Drain whatever the monitor published, as `(state)` strings.
+    fn drain(rx: &mut tokio::sync::broadcast::Receiver<String>) -> Vec<String> {
+        let mut out = Vec::new();
+        while let Ok(line) = rx.try_recv() {
+            let v: serde_json::Value = serde_json::from_str(&line).unwrap();
+            assert_eq!(v["kind"], "capture_health");
+            assert_eq!(v["stream"], "me");
+            out.push(v["state"].as_str().unwrap().to_string());
+        }
+        out
+    }
+
+    #[test]
+    fn dead_mic_flags_only_after_sustained_digital_silence() {
+        let (tx, mut rx) = tokio::sync::broadcast::channel(16);
+        let mut monitor = DeadMicMonitor::default();
+
+        // One second short of the threshold: still quiet, not yet a verdict.
+        let almost = (DEAD_MIC_AFTER_SAMPLES - 16_000) as usize;
+        monitor.observe(StreamRole::Me, &vec![0.0; almost], &tx);
+        assert!(drain(&mut rx).is_empty());
+
+        // Crossing it reports once, and staying silent does not repeat the notice.
+        monitor.observe(StreamRole::Me, &vec![0.0; 16_000], &tx);
+        assert_eq!(drain(&mut rx), vec!["silent"]);
+        monitor.observe(StreamRole::Me, &vec![0.0; 160_000], &tx);
+        assert!(drain(&mut rx).is_empty());
+
+        // A single non-zero sample is signal returning — clears, and re-arms for the next episode.
+        let mut recovered = vec![0.0; 1_000];
+        recovered[500] = 0.01;
+        monitor.observe(StreamRole::Me, &recovered, &tx);
+        assert_eq!(drain(&mut rx), vec!["ok"]);
+        monitor.observe(
+            StreamRole::Me,
+            &vec![0.0; DEAD_MIC_AFTER_SAMPLES as usize],
+            &tx,
+        );
+        assert_eq!(drain(&mut rx), vec!["silent"]);
+    }
+
+    #[test]
+    fn dead_mic_ignores_the_loopback_stream() {
+        // Them is loopback: all-zero is the normal state whenever nothing is playing, so silence
+        // there must never be reported as a fault.
+        let (tx, mut rx) = tokio::sync::broadcast::channel(16);
+        let mut monitor = DeadMicMonitor::default();
+        monitor.observe(
+            StreamRole::Them,
+            &vec![0.0; DEAD_MIC_AFTER_SAMPLES as usize * 3],
+            &tx,
+        );
+        assert!(rx.try_recv().is_err());
+    }
 
     use chrono::Utc;
     use hearsay_db::{connect_options, queries, MIGRATOR};

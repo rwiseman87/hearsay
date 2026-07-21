@@ -62,7 +62,7 @@ export function TranscriptView({ meeting, jumpTo }: Props) {
   const rediarize = useRediarize(meeting?.id ?? "");
   const reveal = useRevealMeeting();
   const editSegment = useEditSegment(meeting?.id ?? "");
-  const { lines, connection, preparing, inactivityPrompt, dismissInactivityPrompt } =
+  const { lines, connection, preparing, inactivityPrompt, micSilent, dismissInactivityPrompt } =
     useTranscript(meeting);
 
   const audioRef = useRef<HTMLAudioElement>(null);
@@ -314,6 +314,15 @@ export function TranscriptView({ meeting, jumpTo }: Props) {
           )}
         </div>
       </header>
+      {recording && micSilent ? (
+        <div className="inactivity-banner" role="alert">
+          <span className="inactivity-banner__text">
+            Your microphone is not being heard — it is sending silence. Check that it is not muted
+            and that the right input device is selected. Anything transcribed as "Me" until this
+            clears is unreliable.
+          </span>
+        </div>
+      ) : null}
       {recording && inactivityPrompt ? (
         <div className="inactivity-banner" role="alert">
           <span className="inactivity-banner__text">
