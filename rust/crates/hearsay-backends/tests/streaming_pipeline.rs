@@ -69,8 +69,13 @@ async fn wav_through_sherpa_streaming_persists_transcript() {
     let tmp = tempfile::tempdir().unwrap();
 
     let backend = Arc::new(SherpaFileBackend {
-        wav: repo("outputs/recordings/2026-07-01_1833_miguel-kristina-test2/audio.wav"),
-        model_dir: repo("outputs/models/sherpa/sherpa-onnx-streaming-zipformer-en-20M-2023-02-17"),
+        // Any 16 kHz recording; override with HEARSAY_BENCH_WAV to drive it from a clip you have.
+        wav: std::env::var("HEARSAY_BENCH_WAV")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| {
+                repo("outputs/recordings/2026-07-01_1833_miguel-kristina-test2/audio.wav")
+            }),
+        model_dir: repo("outputs/models/sherpa/sherpa-onnx-streaming-zipformer-en-2023-06-21"),
     });
     let orch = Orchestrator::new(pool.clone(), tmp.path().to_path_buf(), backend);
 

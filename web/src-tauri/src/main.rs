@@ -306,6 +306,10 @@ fn main() {
                 "HEARSAY_SHERPA_MODELS_DIR",
                 sherpa_models.to_string_lossy().to_string(),
             );
+            // Where the core's stdout/stderr is mirrored (see the drain task below).
+            let core_log_path = data_dir.join("logs").join("core.log");
+            let _ = std::fs::create_dir_all(data_dir.join("logs"));
+
             let (mut rx, child) = cmd.spawn()?;
             app.state::<CoreChild>().0.lock().unwrap().replace(child);
 
@@ -319,19 +323,50 @@ fn main() {
             // show why instead of leaving the splash spinning forever.
             let drain_handle = app.handle().clone();
             let drain_settled = boot_settled.clone();
+            // Mirror the core's output into a log file. The Windows shell is a GUI binary with no
+            // console, so `eprint!` alone goes nowhere: a panic in the core would leave no trace and
+            // present only as every request failing. Appended, so a crash survives the relaunch that
+            // follows it.
+            let log_path = core_log_path.clone();
             tauri::async_runtime::spawn(async move {
+                let mut log = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&log_path)
+                    .ok();
+                if let Some(file) = log.as_mut() {
+                    use std::io::Write;
+                    let _ = writeln!(file, "--- core started ---");
+                }
                 while let Some(event) = rx.recv().await {
                     match event {
                         CommandEvent::Stdout(bytes) | CommandEvent::Stderr(bytes) => {
-                            eprint!("{}", String::from_utf8_lossy(&bytes));
+                            let text = String::from_utf8_lossy(&bytes);
+                            eprint!("{text}");
+                            if let Some(file) = log.as_mut() {
+                                use std::io::Write;
+                                let _ = write!(file, "{text}");
+                            }
                         }
                         CommandEvent::Terminated(payload) => {
+                            let detail = format!(
+                                "hearsay-core exited (code {:?}, signal {:?}).",
+                                payload.code, payload.signal
+                            );
+                            if let Some(file) = log.as_mut() {
+                                use std::io::Write;
+                                let _ = writeln!(file, "--- {detail} ---");
+                            }
+                            // Surface it whether it died during boot or mid-session: without the
+                            // core every request fails, so silently leaving the UI up makes the app
+                            // look broken in a dozen unrelated ways instead of one obvious one.
                             if !drain_settled.swap(true, Ordering::SeqCst) {
-                                let detail = format!(
-                                    "hearsay-core exited during startup (code {:?}, signal {:?}).",
-                                    payload.code, payload.signal
+                                show_boot_error(&drain_handle, &format!("{detail} During startup."));
+                            } else {
+                                show_boot_error(
+                                    &drain_handle,
+                                    &format!("{detail} See {}", log_path.display()),
                                 );
-                                show_boot_error(&drain_handle, &detail);
                             }
                             break;
                         }
