@@ -1,3 +1,8 @@
+// Ship a GUI binary on Windows: without this the shell is linked for the console subsystem, so
+// Windows allocates a terminal alongside the app window for the whole session. Debug builds keep
+// the console, where the core's stdout/stderr is worth having. No effect on macOS. (The core
+// sidecar itself never shows one -- tauri-plugin-shell spawns it with CREATE_NO_WINDOW.)
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 //! Hearsay desktop shell. Bundles the `hearsay-core` server (plus, on macOS, the Swift capture/AI
 //! sidecars), spawns the core with bundle-resolved paths and a user-writable data dir, and points
 //! the window at the loopback URL from its readiness handshake. On quit the core is asked to shut
