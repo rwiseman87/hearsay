@@ -95,7 +95,10 @@ pub fn write_user_notes_md(
     body: &str,
 ) -> Result<(), OrchestratorError> {
     std::fs::create_dir_all(dir)?;
-    write_atomic(&dir.join("my-notes.md"), &render_user_notes(&meeting.title, body))?;
+    write_atomic(
+        &dir.join("my-notes.md"),
+        &render_user_notes(&meeting.title, body),
+    )?;
     Ok(())
 }
 

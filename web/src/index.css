@@ -1771,38 +1771,16 @@ mark.find-hit {
   height: 26px;
 }
 
+/* Bar height tracks the live input level: the component sets scaleY per bar from the RMS, and the
+   transition smooths the ~10 Hz steps into a moving meter. */
 .live-wave__bar {
   width: 3px;
   height: 22px;
   border-radius: 2px;
   background: var(--accent);
   transform-origin: center bottom;
-  animation: live-eqbar 1.1s ease-in-out infinite;
-}
-
-.live-wave__bar:nth-child(2) {
-  animation-duration: 0.8s;
-  animation-delay: 0.2s;
-}
-.live-wave__bar:nth-child(3) {
-  animation-duration: 1.3s;
-  animation-delay: 0.1s;
-}
-.live-wave__bar:nth-child(4) {
-  animation-duration: 0.9s;
-  animation-delay: 0.35s;
-}
-.live-wave__bar:nth-child(5) {
-  animation-duration: 1.15s;
-  animation-delay: 0.05s;
-}
-.live-wave__bar:nth-child(6) {
-  animation-duration: 0.75s;
-  animation-delay: 0.25s;
-}
-.live-wave__bar:nth-child(7) {
-  animation-duration: 1.2s;
-  animation-delay: 0.15s;
+  transform: scaleY(0.16);
+  transition: transform 0.09s linear;
 }
 
 .live__ghost {
@@ -2059,16 +2037,6 @@ mark.find-hit {
   50% {
     opacity: 0.4;
     transform: scale(0.8);
-  }
-}
-
-@keyframes live-eqbar {
-  0%,
-  100% {
-    transform: scaleY(0.28);
-  }
-  50% {
-    transform: scaleY(1);
   }
 }
 

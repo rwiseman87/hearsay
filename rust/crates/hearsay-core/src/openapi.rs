@@ -5,12 +5,12 @@ use utoipa::OpenApi;
 
 use crate::schema::{
     AboutInfo, CaptureHealthEvent, CatalogEntry, DownloadRequest, DownloadState, DownloadStatus,
-    FolderCreate, FolderRead, FolderReparent, FolderUpdate, IdentityRead, MeetingCreate,
-    MeetingFolderAssign, MeetingNotesRead, MeetingRead, MeetingStatus, MeetingUpdate, ModelCatalog,
-    ModelSettings, ModelsInfo, NotesEdit, PermissionsInfo, PromptEvent, RecordingSettings,
-    ResyncEvent, SearchHit, SegmentEdit, SegmentRead, SettingsRead, SpeakerRead, SpeakerRename,
-    SpeakerSettings, StatusEvent, StatusInfo, StorageInfo, StorageSettings, Stream,
-    TranscriptEvent, UserNotesRead, UserNotesWrite,
+    FolderCreate, FolderRead, FolderReparent, FolderUpdate, IdentityRead, LevelEvent,
+    MeetingCreate, MeetingFolderAssign, MeetingNotesRead, MeetingRead, MeetingStatus,
+    MeetingUpdate, ModelCatalog, ModelSettings, ModelsInfo, NotesEdit, PermissionsInfo,
+    PromptEvent, RecordingSettings, ResyncEvent, SearchHit, SegmentEdit, SegmentRead, SettingsRead,
+    SpeakerRead, SpeakerRename, SpeakerSettings, StatusEvent, StatusInfo, StorageInfo,
+    StorageSettings, Stream, TranscriptEvent, UserNotesRead, UserNotesWrite,
 };
 
 #[derive(OpenApi)]
@@ -97,6 +97,7 @@ use crate::schema::{
         ResyncEvent,
         PromptEvent,
         CaptureHealthEvent,
+        LevelEvent,
     )),
     tags(
         (name = "meetings", description = "Meeting lifecycle + transcript segments"),

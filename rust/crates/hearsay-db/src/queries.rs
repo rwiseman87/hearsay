@@ -742,7 +742,9 @@ pub async fn upsert_user_notes(
     .execute(pool)
     .await?;
     // The row always exists after the upsert.
-    Ok(get_user_notes(pool, meeting_id).await?.expect("user_notes row present after upsert"))
+    Ok(get_user_notes(pool, meeting_id)
+        .await?
+        .expect("user_notes row present after upsert"))
 }
 
 /// Insert or replace a meeting's generated notes (one row per meeting; regenerating overwrites).

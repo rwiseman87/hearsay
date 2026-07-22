@@ -30,8 +30,17 @@ export type PromptEvent = Schemas["PromptEvent"];
 // warns instead of showing the confident nonsense ASR produces from a dead signal.
 export type CaptureHealthEvent = Schemas["CaptureHealthEvent"];
 
-// Anything the live socket delivers on the transcript path, discriminated by `kind`.
+// An audio-level frame (not a transcript line): the recent RMS amplitude of a stream, a few times a
+// second, driving the live input waveform. Ephemeral — handled outside the transcript reducer so it
+// never re-renders the transcript list.
+export type LevelEvent = Schemas["LevelEvent"];
+
+// The reducer-facing frames: everything that becomes (or clears) transcript state.
 export type WsMessage = TranscriptEvent | StatusEvent | PromptEvent | CaptureHealthEvent;
+
+// Everything the socket delivers (the reducer frames plus the ephemeral level frame), discriminated
+// by `kind`. The caller routes `level` off the transcript path.
+export type WsFrame = WsMessage | LevelEvent;
 
 // Live-transcript connection state, surfaced to the UI so a dropped socket is visible instead of a
 // silently frozen transcript.
@@ -46,7 +55,7 @@ const MAX_BACKOFF_MS = 15_000;
 export function openTranscriptSocket(
   meetingId: string,
   token: string,
-  onEvent: (message: WsMessage) => void,
+  onEvent: (message: WsFrame) => void,
   onStatus?: (status: ConnectionStatus) => void,
   onResync?: () => void,
 ): () => void {
@@ -73,9 +82,9 @@ export function openTranscriptSocket(
       if (reconnected) onResync?.();
     };
     socket.onmessage = (event) => {
-      let parsed: WsMessage | ResyncEvent;
+      let parsed: WsFrame | ResyncEvent;
       try {
-        parsed = JSON.parse(event.data as string) as WsMessage | ResyncEvent;
+        parsed = JSON.parse(event.data as string) as WsFrame | ResyncEvent;
       } catch {
         // A malformed frame must not throw out of onmessage (which would kill the handler); drop it.
         return;

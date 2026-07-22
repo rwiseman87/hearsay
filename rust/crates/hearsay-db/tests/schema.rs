@@ -795,7 +795,10 @@ async fn user_notes_upsert_get_overwrite_and_cascade() {
         .await
         .unwrap();
     assert_eq!(second.body, "renewals are manual\nask budget");
-    assert_eq!(second.created_at, created, "created_at preserved on autosave");
+    assert_eq!(
+        second.created_at, created,
+        "created_at preserved on autosave"
+    );
 
     let stored = queries::get_user_notes(&pool, meeting.id)
         .await

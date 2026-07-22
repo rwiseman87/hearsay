@@ -14,12 +14,14 @@ recorded inline so it is not re-litigated. Canonical architecture stays in
 
 ## Current state
 
-Phases 0-2 done. The 1a shell is live, and "My notes" is a real persisted feature: `user_notes`
-table, `GET`/`PUT /api/meetings/{id}/user-notes`, debounced autosave with a flush-on-blur, and a
-`my-notes.md` export written on each save via a targeted engine seam (`export_user_notes`) that never
-touches the in-progress transcript. Verified end to end (autosave PUT 200, persistence across reload,
-`my-notes.md` on disk) with a DB-seeded recording meeting + Playwright. **Next:** Phase 3 — the real
-amplitude waveform (forward the helper's `level`/`rms` over the WS).
+Phases 0-3 done. On top of the 1a shell + "My notes", the topbar waveform is now real: the
+orchestrator pipeline computes each stream's RMS from the PCM it already processes and broadcasts a
+throttled (~10 Hz) `level` WS frame; the web waveform subscribes via `useSyncExternalStore` so it
+updates without re-rendering the transcript. Producer unit-tested (`LevelMeter`), wire codegen'd,
+consumer renders at baseline. Note: "bars visibly move with live audio" needs a real capture session
+(Swift sidecars + mic), which this dev checkout lacks — verified deterministically instead (RMS math
++ throttle in the unit test, baseline render + no-crash in the browser). **Next:** Phase 4 —
+pause/resume (design the timeline semantics first).
 
 ## Scope
 
@@ -91,12 +93,17 @@ Each phase is independently shippable; land them as separate commits/PRs onto `f
       "live-notes" placeholder name in the original plan).
 
 ### Phase 3 — Real waveform (amplitude over the WS)
-- [ ] Surface the helper `level` event out of `drain_control` to the orchestrator (extend the
-      `AudioSource` / control-event seam — verify the exact channel; today it dead-ends at the log)
-- [ ] Orchestrator emits `LevelEvent { kind: "level", stream, rms }` on the meeting's existing
-      `broadcast::Sender<String>`
-- [ ] Register `LevelEvent` in the OpenAPI components; `make codegen`; add to the `ws.ts` `WsMessage`
-      union; track latest `rms` per stream; `Waveform.tsx` renders live bars, frozen on pause
+- [x] Compute RMS in the orchestrator pipeline (`LevelMeter` in `stream_loop`, from the PCM it
+      already feeds) instead of forwarding the helper's dropped `level` event — no capture/helper
+      change. `+` unit test for the RMS + throttle.
+- [x] Broadcast a throttled (~10 Hz) `LevelEvent { kind: "level", stream, rms }` on the meeting's
+      existing `broadcast::Sender<String>`
+- [x] `LevelEvent` schema registered in the OpenAPI components; `make codegen`; added to a `WsFrame`
+      union in `ws.ts`; routed off the transcript reducer into a `LevelStore`
+- [x] `Waveform` subscribes via `useSyncExternalStore` and sets each bar's `scaleY` from the RMS, so
+      ~10 Hz updates re-render only the waveform
+- Note: chose the pipeline-RMS path over the helper-`level` forwarding in the original plan (the
+      pipeline already has the PCM; avoids touching the Swift helper and the capture control seam).
 
 ### Phase 4 — Pause / Resume (highest risk — design the timeline first)
 - [ ] Decide timeline semantics against `recorder.rs` (recommended: pause both capture-feeding and the

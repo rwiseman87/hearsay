@@ -594,6 +594,26 @@ pub struct CaptureHealthEvent {
     pub state: CaptureState,
 }
 
+/// The constant `kind` discriminant marking a [`LevelEvent`] (`"level"`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum LevelKind {
+    Level,
+}
+
+/// An audio-level frame (not a transcript line): the recent RMS amplitude of a capture stream,
+/// broadcast a few times a second so the UI can drive a live input waveform. Ephemeral — never
+/// persisted or replayed to a new subscriber. Mirrors the orchestrator's `LevelEvent` on the wire.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, ToSchema)]
+pub struct LevelEvent {
+    #[schema(inline)]
+    pub kind: LevelKind,
+    /// The stream this level is for (`me` or `them`).
+    pub stream: &'static str,
+    /// Root-mean-square amplitude of the recent audio, normalized f32 samples (`0.0..~1.0`).
+    pub rms: f32,
+}
+
 /// The constant `kind` discriminant marking a [`ResyncEvent`] (`"resync"`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ToSchema)]
 #[serde(rename_all = "lowercase")]

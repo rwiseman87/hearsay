@@ -1626,6 +1626,33 @@
           }
         }
       },
+      "LevelEvent": {
+        "type": "object",
+        "description": "An audio-level frame (not a transcript line): the recent RMS amplitude of a capture stream,\nbroadcast a few times a second so the UI can drive a live input waveform. Ephemeral — never\npersisted or replayed to a new subscriber. Mirrors the orchestrator's `LevelEvent` on the wire.",
+        "required": [
+          "kind",
+          "stream",
+          "rms"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "description": "The constant `kind` discriminant marking a [`LevelEvent`] (`\"level\"`).",
+            "enum": [
+              "level"
+            ]
+          },
+          "rms": {
+            "type": "number",
+            "format": "float",
+            "description": "Root-mean-square amplitude of the recent audio, normalized f32 samples (`0.0..~1.0`)."
+          },
+          "stream": {
+            "type": "string",
+            "description": "The stream this level is for (`me` or `them`)."
+          }
+        }
+      },
       "MeetingCreate": {
         "type": "object",
         "description": "Start a meeting. `title` defaults to a timestamp-derived name when omitted.",

@@ -1,22 +1,34 @@
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useSyncExternalStore } from "react";
 
 import { useKeepRecording, useStopMeeting } from "../api/hooks";
 import type { MeetingRead } from "../api/types";
 import { formatClock, useElapsed } from "../hooks/useElapsed";
-import { useTranscript, type TranscriptLine } from "../hooks/useTranscript";
+import { useTranscript, type LevelStore, type TranscriptLine } from "../hooks/useTranscript";
 import { MyNotesPanel } from "./MyNotesPanel";
 import { SpeakerLine } from "./SpeakerLine";
 
 const lineKey = (line: TranscriptLine): string =>
   `${line.stream}:${line.start_s}:${line.kind}`;
 
-// Seven decorative equalizer bars in the topbar. A real amplitude waveform replaces this in Phase 3
-// (the helper already emits per-stream RMS; it is not yet forwarded to the browser).
-function Waveform() {
+// Per-bar shape multipliers so the seven topbar bars form a waveform silhouette rather than a flat
+// block; scaled by the live input amplitude. RMS is small for speech, so multiply into a visible range.
+const WAVE_WEIGHTS = [0.55, 0.85, 1, 0.7, 0.95, 0.6, 0.8];
+const WAVE_GAIN = 6;
+
+// Seven topbar bars whose heights track the live input level (RMS over the WS `level` frames).
+// Subscribes to the level store directly, so it re-renders on level updates without touching the
+// transcript. Flat and low until audio flows.
+function Waveform({ levels }: { levels: LevelStore }) {
+  const rms = useSyncExternalStore(levels.subscribe, levels.getSnapshot, levels.getSnapshot);
+  const amp = Math.min(1, rms * WAVE_GAIN);
   return (
     <div className="live-wave" aria-hidden="true">
-      {Array.from({ length: 7 }, (_, i) => (
-        <span key={i} className="live-wave__bar" />
+      {WAVE_WEIGHTS.map((weight, i) => (
+        <span
+          key={i}
+          className="live-wave__bar"
+          style={{ transform: `scaleY(${Math.max(0.16, amp * weight)})` }}
+        />
       ))}
     </div>
   );
@@ -32,7 +44,7 @@ interface Props {
 export function LiveRecording({ meeting }: Props) {
   const stop = useStopMeeting();
   const keepRecording = useKeepRecording();
-  const { lines, connection, preparing, inactivityPrompt, micSilent, dismissInactivityPrompt } =
+  const { lines, connection, preparing, inactivityPrompt, micSilent, dismissInactivityPrompt, levels } =
     useTranscript(meeting);
   const elapsed = useElapsed(meeting.started_at);
 
@@ -73,7 +85,7 @@ export function LiveRecording({ meeting }: Props) {
             </div>
             <div className="live__title-meta">{meta}</div>
           </div>
-          <Waveform />
+          <Waveform levels={levels} />
           <button
             type="button"
             className="live__ghost"

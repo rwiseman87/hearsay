@@ -1,5 +1,5 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { useEffect, useMemo, useReducer, useState } from "react";
+import { useEffect, useMemo, useReducer, useRef, useState } from "react";
 
 import { useSegments } from "../api/hooks";
 import { notifyStillRecordingIfAway } from "../api/notify";
@@ -8,6 +8,14 @@ import { getToken } from "../api/token";
 import type { MeetingRead, SegmentRead } from "../api/types";
 import { openTranscriptSocket } from "../api/ws";
 import type { ConnectionStatus, TranscriptEvent, WsMessage } from "../api/ws";
+
+// A tiny external store for the live input level (RMS 0..~1), read by the waveform via
+// useSyncExternalStore. Kept out of React state so ~10 Hz level frames re-render only the waveform,
+// never the transcript list.
+export interface LevelStore {
+  subscribe: (callback: () => void) => () => void;
+  getSnapshot: () => number;
+}
 
 export interface TranscriptLine {
   kind: "partial" | "final";
@@ -149,6 +157,9 @@ export interface TranscriptState {
   // next server nudge). Does not reset the server clock — the caller pairs it with the keep-recording
   // mutation for that.
   dismissInactivityPrompt: () => void;
+  // The live input level (max of the me/them RMS), for the waveform to subscribe to without
+  // re-rendering the transcript. Always 0 when not recording.
+  levels: LevelStore;
 }
 
 // Merges DB-persisted finals with the live WebSocket stream into a single,
@@ -163,8 +174,36 @@ export function useTranscript(meeting: MeetingRead | null): TranscriptState {
   const [state, dispatch] = useReducer(reducer, undefined, init);
   const [connection, setConnection] = useState<ConnectionStatus | null>(null);
 
+  // Live input-level store (see LevelStore). Refs so updating it never re-renders this hook; only
+  // the waveform, subscribed via useSyncExternalStore, re-renders on a level frame.
+  const perStream = useRef({ me: 0, them: 0 });
+  const levelValue = useRef(0);
+  const levelListeners = useRef(new Set<() => void>());
+  const levels = useMemo<LevelStore>(
+    () => ({
+      subscribe: (callback) => {
+        levelListeners.current.add(callback);
+        return () => levelListeners.current.delete(callback);
+      },
+      getSnapshot: () => levelValue.current,
+    }),
+    [],
+  );
+  const setLevel = (stream: string, rms: number) => {
+    if (stream === "me" || stream === "them") {
+      perStream.current[stream] = rms;
+    }
+    const next = Math.max(perStream.current.me, perStream.current.them);
+    if (next !== levelValue.current) {
+      levelValue.current = next;
+      levelListeners.current.forEach((listener) => listener());
+    }
+  };
+
   useEffect(() => {
     dispatch({ type: "reset" });
+    setLevel("me", 0);
+    setLevel("them", 0);
   }, [meetingId]);
 
   useEffect(() => {
@@ -182,6 +221,12 @@ export function useTranscript(meeting: MeetingRead | null): TranscriptState {
       meetingId,
       getToken(),
       (event) => {
+        // Level frames drive the waveform only — route them off the transcript reducer so they never
+        // re-render the transcript list.
+        if (event.kind === "level") {
+          setLevel(event.stream, event.rms);
+          return;
+        }
         dispatch({ type: "event", event });
         // A silence prompt for a user who has switched away from the window: also fire a native OS
         // notification so the nudge reaches them (desktop-only, unfocused-only; a no-op otherwise).
@@ -213,5 +258,6 @@ export function useTranscript(meeting: MeetingRead | null): TranscriptState {
     inactivityPrompt: isLive ? state.inactivityPrompt : null,
     micSilent: isLive && state.micSilent,
     dismissInactivityPrompt: () => dispatch({ type: "dismissPrompt" }),
+    levels,
   };
 }

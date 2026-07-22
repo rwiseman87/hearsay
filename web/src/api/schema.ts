@@ -585,6 +585,25 @@ export interface components {
             /** Format: uuid */
             id: string;
         };
+        /**
+         * @description An audio-level frame (not a transcript line): the recent RMS amplitude of a capture stream,
+         *     broadcast a few times a second so the UI can drive a live input waveform. Ephemeral — never
+         *     persisted or replayed to a new subscriber. Mirrors the orchestrator's `LevelEvent` on the wire.
+         */
+        LevelEvent: {
+            /**
+             * @description The constant `kind` discriminant marking a [`LevelEvent`] (`"level"`).
+             * @enum {string}
+             */
+            kind: "level";
+            /**
+             * Format: float
+             * @description Root-mean-square amplitude of the recent audio, normalized f32 samples (`0.0..~1.0`).
+             */
+            rms: number;
+            /** @description The stream this level is for (`me` or `them`). */
+            stream: string;
+        };
         /** @description Start a meeting. `title` defaults to a timestamp-derived name when omitted. */
         MeetingCreate: {
             title?: string | null;

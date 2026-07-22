@@ -58,6 +58,11 @@ const MAX_SILENCE_PAD_SAMPLES: usize = 5 * 60 * 16_000;
 /// never trips it, short enough to catch a muted mic early in a meeting rather than at the end.
 const DEAD_MIC_AFTER_SAMPLES: u64 = 10 * 16_000;
 
+/// How often each stream broadcasts its recent RMS amplitude as a `level` frame (drives the live
+/// input waveform). ~10 Hz: smooth enough for a VU meter, sparse enough that it never crowds the
+/// bounded broadcast buffer the transcript shares.
+const LEVEL_INTERVAL: Duration = Duration::from_millis(100);
+
 /// How often the inactivity watchdog re-checks the silence clock. Coarse (the thresholds are
 /// minutes), so the tick cost is negligible; fine enough that a prompt/auto-end fires within a few
 /// seconds of crossing its threshold.
@@ -465,6 +470,7 @@ async fn stream_loop(
     let mut clusters: HashMap<i64, Uuid> = HashMap::new();
     let mut feeding = true;
     let mut dead_mic = DeadMicMonitor::default();
+    let mut level_meter = LevelMeter::new();
     // Samples fed to the sidecar so far (including any silence padding), so its sample-count
     // timeline can be kept aligned to meeting time.
     let mut fed_samples: u64 = 0;
@@ -490,6 +496,7 @@ async fn stream_loop(
                     }
                     fed_samples += samples.len() as u64;
                     dead_mic.observe(role, &samples, &broadcast_tx);
+                    level_meter.observe(role, &samples, &broadcast_tx);
                     transcriber.feed(samples).await;
                 }
                 // Capture ended: stop feeding and flush the sidecar's finalized tail. The emit
@@ -617,6 +624,71 @@ fn publish_capture_health(broadcast_tx: &broadcast::Sender<String>, state: &str)
         state,
     }) {
         let _ = broadcast_tx.send(line);
+    }
+}
+
+/// An audio-level notice pushed to WebSocket subscribers: `{"kind":"level","stream":"me","rms":0.1}`.
+/// Ephemeral (never persisted or replayed) — it only drives the live input waveform.
+#[derive(Serialize)]
+struct LevelEvent<'a> {
+    kind: &'a str,
+    stream: &'a str,
+    rms: f32,
+}
+
+fn publish_level(broadcast_tx: &broadcast::Sender<String>, role: StreamRole, rms: f32) {
+    let stream = match role {
+        StreamRole::Me => "me",
+        StreamRole::Them => "them",
+    };
+    if let Ok(line) = serde_json::to_string(&LevelEvent {
+        kind: "level",
+        stream,
+        rms,
+    }) {
+        let _ = broadcast_tx.send(line);
+    }
+}
+
+/// Accumulates a stream's samples between `level` broadcasts, emitting the interval's RMS amplitude at
+/// most every [`LEVEL_INTERVAL`]. Reset (drained) on each emit so the value tracks recent audio.
+struct LevelMeter {
+    sum_sq: f64,
+    count: u64,
+    last_emit: Instant,
+}
+
+impl LevelMeter {
+    fn new() -> Self {
+        LevelMeter {
+            sum_sq: 0.0,
+            count: 0,
+            last_emit: Instant::now(),
+        }
+    }
+
+    /// Fold in one chunk; broadcast the accumulated RMS once the interval elapses.
+    fn observe(
+        &mut self,
+        role: StreamRole,
+        samples: &[f32],
+        broadcast_tx: &broadcast::Sender<String>,
+    ) {
+        for &s in samples {
+            self.sum_sq += (s as f64) * (s as f64);
+        }
+        self.count += samples.len() as u64;
+        if self.last_emit.elapsed() >= LEVEL_INTERVAL {
+            let rms = if self.count > 0 {
+                (self.sum_sq / self.count as f64).sqrt() as f32
+            } else {
+                0.0
+            };
+            publish_level(broadcast_tx, role, rms);
+            self.sum_sq = 0.0;
+            self.count = 0;
+            self.last_emit = Instant::now();
+        }
     }
 }
 
@@ -884,8 +956,8 @@ async fn cluster_for(
 #[cfg(test)]
 mod tests {
     use super::{
-        inactivity_watchdog, silence_stage, DeadMicMonitor, InactivityConfig, Stage, StreamRole,
-        DEAD_MIC_AFTER_SAMPLES,
+        inactivity_watchdog, silence_stage, DeadMicMonitor, InactivityConfig, LevelMeter, Stage,
+        StreamRole, DEAD_MIC_AFTER_SAMPLES, LEVEL_INTERVAL,
     };
     use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
@@ -929,6 +1001,36 @@ mod tests {
             &tx,
         );
         assert_eq!(drain(&mut rx), vec!["silent"]);
+    }
+
+    #[test]
+    fn level_meter_throttles_then_emits_rms() {
+        let (tx, mut rx) = tokio::sync::broadcast::channel(16);
+        let mut meter = LevelMeter::new();
+
+        // Below the interval: accumulate but stay quiet.
+        meter.observe(StreamRole::Me, &[0.5, 0.5, 0.5, 0.5], &tx);
+        assert!(
+            rx.try_recv().is_err(),
+            "no level frame before the interval elapses"
+        );
+
+        // Once the interval has passed, the next chunk flushes the accumulated RMS as a `level` frame.
+        meter.last_emit = Instant::now() - LEVEL_INTERVAL - Duration::from_millis(1);
+        meter.observe(StreamRole::Me, &[1.0, 1.0], &tx);
+        let v: serde_json::Value =
+            serde_json::from_str(&rx.try_recv().expect("a level frame")).unwrap();
+        assert_eq!(v["kind"], "level");
+        assert_eq!(v["stream"], "me");
+        // sqrt((4*0.25 + 2*1.0) / 6) = sqrt(0.5).
+        assert!((v["rms"].as_f64().unwrap() - 0.5_f64.sqrt()).abs() < 1e-3);
+
+        // Emitting resets the accumulators, so an immediate next chunk (interval not elapsed) is quiet.
+        meter.observe(StreamRole::Me, &[0.9], &tx);
+        assert!(
+            rx.try_recv().is_err(),
+            "accumulators reset and re-throttled after an emit"
+        );
     }
 
     #[test]
