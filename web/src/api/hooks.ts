@@ -124,6 +124,21 @@ export function useKeepRecording() {
   });
 }
 
+// Pause / resume the live meeting's capture (the "Pause" control). Fire-and-forget (204, no cache
+// change) — the paused state reaches the UI over the transcript WebSocket (a `capture_state` frame),
+// which is authoritative and also snapshots on reconnect. 404s harmlessly if the meeting is not live.
+export function usePauseMeeting() {
+  return useMutation({
+    mutationFn: (id: string) => api.post<void>(`/api/meetings/${id}/pause`),
+  });
+}
+
+export function useResumeMeeting() {
+  return useMutation({
+    mutationFn: (id: string) => api.post<void>(`/api/meetings/${id}/resume`),
+  });
+}
+
 export function useDeleteMeeting() {
   const qc = useQueryClient();
   return useMutation({

@@ -594,6 +594,33 @@ pub struct CaptureHealthEvent {
     pub state: CaptureState,
 }
 
+/// The constant `kind` discriminant marking a [`CaptureStateEvent`] (`"capture_state"`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum CaptureStateKind {
+    CaptureState,
+}
+
+/// Whether live capture is paused or actively running.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum CaptureRunState {
+    Paused,
+    Active,
+}
+
+/// A capture-state frame (not a transcript line): the meeting was paused or resumed (the "Pause"
+/// control). Lets a live view freeze the timer/waveform on pause and resume them; also snapshotted on
+/// WebSocket connect so a window reopened mid-pause reflects it. Mirrors the orchestrator's
+/// `CaptureStateEvent` on the wire.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ToSchema)]
+pub struct CaptureStateEvent {
+    #[schema(inline)]
+    pub kind: CaptureStateKind,
+    #[schema(inline)]
+    pub state: CaptureRunState,
+}
+
 /// The constant `kind` discriminant marking a [`LevelEvent`] (`"level"`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ToSchema)]
 #[serde(rename_all = "lowercase")]

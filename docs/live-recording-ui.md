@@ -14,14 +14,16 @@ recorded inline so it is not re-litigated. Canonical architecture stays in
 
 ## Current state
 
-Phases 0-3 done. On top of the 1a shell + "My notes", the topbar waveform is now real: the
-orchestrator pipeline computes each stream's RMS from the PCM it already processes and broadcasts a
-throttled (~10 Hz) `level` WS frame; the web waveform subscribes via `useSyncExternalStore` so it
-updates without re-rendering the transcript. Producer unit-tested (`LevelMeter`), wire codegen'd,
-consumer renders at baseline. Note: "bars visibly move with live audio" needs a real capture session
-(Swift sidecars + mic), which this dev checkout lacks — verified deterministically instead (RMS math
-+ throttle in the unit test, baseline render + no-crash in the browser). **Next:** Phase 4 —
-pause/resume (design the timeline semantics first).
+Phases 0-4 done. Pause/resume is in: the demux freezes both capture and the recorded timeline while
+paused (drops chunks + subtracts the paused span from `t0_s`), so `audio.wav` + segment times stay
+contiguous — no gap (the confirmed timeline choice). The watchdog holds the silence clock while
+paused; a `capture_state` WS frame (+ connect snapshot) drives the UI, which freezes the timer and
+waveform, mutes the REC pill (static dot, "PAUSED"), and swaps Pause -> Resume. Pause is a transient
+live-session state (no new `MeetingStatus` — avoids the enum ripple); the meeting stays `recording`.
+Verified: demux unit test (contiguous 0.0/0.1/[elided]/0.2), and the paused UI via a Playwright WS
+mock. Note: real `audio.wav` continuity across a live pause needs a capture session this checkout
+lacks — covered by the demux test + the recorder's `t0_s`-based placement. **Next:** Phase 5 — the 1d
+"Command" layers (speaker legend + insights-rail/command-bar placeholders).
 
 ## Scope
 
@@ -105,17 +107,18 @@ Each phase is independently shippable; land them as separate commits/PRs onto `f
 - Note: chose the pipeline-RMS path over the helper-`level` forwarding in the original plan (the
       pipeline already has the PCM; avoids touching the Swift helper and the capture control seam).
 
-### Phase 4 — Pause / Resume (highest risk — design the timeline first)
-- [ ] Decide timeline semantics against `recorder.rs` (recommended: pause both capture-feeding and the
-      recorded timeline so `audio.wav` + segment `start_s` stay contiguous; the timer holds by tracking
-      accumulated paused time)
-- [ ] `LiveEngine::pause_meeting` / `resume_meeting` (`hearsay-engine`), default `Err(Unavailable)`;
-      `Orchestrator` impl via a `paused` flag on `ActiveSession` gating the per-stream feed loop
-      (`pipeline.rs`) and the recorder
-- [ ] `MeetingStatus::Paused` (`hearsay-db/src/models.rs` + migration if the status CHECK enumerates
-      values)
-- [ ] `POST /meetings/{id}/pause` + `/resume`; `usePauseMeeting` / `useResumeMeeting`; wire the topbar
-      toggle (REC dot stops pulsing, waveform freezes, timer holds)
+### Phase 4 — Pause / Resume
+- [x] Timeline semantics = freeze both (no gap): `demux` drops chunks while paused and subtracts the
+      paused span from `t0_s`, so `audio.wav` + segment `start_s` stay contiguous. `+` demux unit test.
+- [x] `LiveEngine::pause_meeting` / `resume_meeting` / `paused` (default no-op/`None`); `Orchestrator`
+      impl sets an `Arc<AtomicBool>` on the active `Pipeline`, which `demux` + the watchdog read. The
+      watchdog holds the silence clock while paused (a pause is never mistaken for inactivity).
+- [x] No new `MeetingStatus` — pause is a transient live-session state (avoids the enum ripple across
+      badges/reconcile/markdown); the meeting stays `recording`. Signalled via a `capture_state` WS
+      frame + a WS connect-snapshot (`engine.paused`), so a reopened window reflects a mid-pause.
+- [x] `POST /meetings/{id}/pause` + `/resume`; `usePauseMeeting` / `useResumeMeeting`; topbar toggle —
+      dot stops pulsing + "PAUSED", waveform flattens, timer freezes (paused-span offset keeps it
+      contiguous on resume). Verified via a Playwright WS mock.
 
 ### Phase 5 — 1d "Command" layers (frontend)
 - [ ] Speaker legend + "currently speaking" — distinct `speaker_label`s from `lines`, deterministic

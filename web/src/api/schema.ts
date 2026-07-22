@@ -154,6 +154,27 @@ export interface paths {
         patch: operations["edit_notes"];
         trace?: never;
     };
+    "/api/meetings/{id}/pause": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Pause the live meeting's capture (the "Pause" control): recording + transcription stop and the
+         *     timeline freezes with no gap until resumed. A 404 for any meeting that is not the current
+         *     recording session. Idempotent (pausing an already-paused meeting is a no-op 204).
+         */
+        post: operations["pause_meeting"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/meetings/{id}/rediarize": {
         parameters: {
             query?: never;
@@ -164,6 +185,26 @@ export interface paths {
         get?: never;
         put?: never;
         post: operations["rediarize"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/meetings/{id}/resume": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Resume a paused meeting's capture. A 404 for any meeting that is not the current recording
+         *     session. Idempotent (resuming a non-paused meeting is a no-op 204).
+         */
+        post: operations["resume_meeting"];
         delete?: never;
         options?: never;
         head?: never;
@@ -506,6 +547,24 @@ export interface components {
             state: "ok" | "silent";
             /** @description The affected stream; only `me` (the mic) is monitored. */
             stream: string;
+        };
+        /**
+         * @description A capture-state frame (not a transcript line): the meeting was paused or resumed (the "Pause"
+         *     control). Lets a live view freeze the timer/waveform on pause and resume them; also snapshotted on
+         *     WebSocket connect so a window reopened mid-pause reflects it. Mirrors the orchestrator's
+         *     `CaptureStateEvent` on the wire.
+         */
+        CaptureStateEvent: {
+            /**
+             * @description The constant `kind` discriminant marking a [`CaptureStateEvent`] (`"capture_state"`).
+             * @enum {string}
+             */
+            kind: "capture_state";
+            /**
+             * @description Whether live capture is paused or actively running.
+             * @enum {string}
+             */
+            state: "paused" | "active";
         };
         /** @description One downloadable notes model in the in-app catalog (the internal repo/file/sha are not exposed). */
         CatalogEntry: {
@@ -1608,6 +1667,31 @@ export interface operations {
             };
         };
     };
+    pause_meeting: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     rediarize: {
         parameters: {
             query?: never;
@@ -1640,6 +1724,31 @@ export interface operations {
                 content?: never;
             };
             503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    resume_meeting: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };

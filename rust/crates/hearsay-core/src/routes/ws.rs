@@ -73,6 +73,14 @@ async fn stream_transcript(mut socket: WebSocket, state: AppState, meeting_id: U
             return;
         }
     }
+    // Pause snapshot: if the meeting is currently paused (a user reopening the window mid-pause), tell
+    // this subscriber so it shows the paused state (frozen timer/waveform, "Resume") immediately.
+    if state.engine.paused(meeting_id) == Some(true) {
+        let frame = r#"{"kind":"capture_state","state":"paused"}"#;
+        if socket.send(Message::Text(frame.into())).await.is_err() {
+            return;
+        }
+    }
     loop {
         match receiver.recv().await {
             Ok(text) => {

@@ -30,13 +30,22 @@ export type PromptEvent = Schemas["PromptEvent"];
 // warns instead of showing the confident nonsense ASR produces from a dead signal.
 export type CaptureHealthEvent = Schemas["CaptureHealthEvent"];
 
+// A capture-state notice (not a transcript line): the meeting was paused or resumed (the "Pause"
+// control), so the UI freezes/resumes the timer + waveform. Also snapshotted on connect.
+export type CaptureStateEvent = Schemas["CaptureStateEvent"];
+
 // An audio-level frame (not a transcript line): the recent RMS amplitude of a stream, a few times a
 // second, driving the live input waveform. Ephemeral — handled outside the transcript reducer so it
 // never re-renders the transcript list.
 export type LevelEvent = Schemas["LevelEvent"];
 
-// The reducer-facing frames: everything that becomes (or clears) transcript state.
-export type WsMessage = TranscriptEvent | StatusEvent | PromptEvent | CaptureHealthEvent;
+// The reducer-facing frames: everything that becomes (or clears) transcript/session state.
+export type WsMessage =
+  | TranscriptEvent
+  | StatusEvent
+  | PromptEvent
+  | CaptureHealthEvent
+  | CaptureStateEvent;
 
 // Everything the socket delivers (the reducer frames plus the ephemeral level frame), discriminated
 // by `kind`. The caller routes `level` off the transcript path.

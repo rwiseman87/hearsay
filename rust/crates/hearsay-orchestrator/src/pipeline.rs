@@ -137,6 +137,10 @@ pub(crate) struct Pipeline {
     /// The current inactivity-prompt state for the WebSocket connect-snapshot: `Some(silent_seconds)`
     /// while a prompt is active, `None` otherwise. Updated by the watchdog.
     pub(crate) inactivity_prompt: watch::Receiver<Option<u64>>,
+    /// The pause gate (the "Pause" control). While set, demux drops chunks and elides the paused span
+    /// from the timeline (so `audio.wav` + segment times stay contiguous), and the watchdog holds the
+    /// silence clock. Read for the WebSocket connect-snapshot.
+    pub(crate) paused: Arc<AtomicBool>,
 }
 
 impl Pipeline {
@@ -144,6 +148,28 @@ impl Pipeline {
     /// no silence, clears any active prompt, and re-arms; the auto-end is measured afresh from here.
     pub(crate) fn keep_alive(&self) {
         *self.last_activity.lock().unwrap() = Instant::now();
+    }
+
+    /// Pause capture: demux stops recording/forwarding and the timeline freezes. Idempotent.
+    /// Broadcasts a `capture_state` frame so live subscribers freeze the timer/waveform.
+    pub(crate) fn pause(&self) {
+        if !self.paused.swap(true, Ordering::SeqCst) {
+            publish_capture_state(&self.broadcast_tx, "paused");
+        }
+    }
+
+    /// Resume capture after a pause. Resets the silence clock so the just-elapsed paused span is not
+    /// counted as inactivity, and broadcasts a `capture_state` frame. Idempotent.
+    pub(crate) fn resume(&self) {
+        if self.paused.swap(false, Ordering::SeqCst) {
+            *self.last_activity.lock().unwrap() = Instant::now();
+            publish_capture_state(&self.broadcast_tx, "active");
+        }
+    }
+
+    /// Whether capture is currently paused (for the WebSocket connect-snapshot).
+    pub(crate) fn is_paused(&self) -> bool {
+        self.paused.load(Ordering::SeqCst)
     }
 
     /// Stop capture, then wait for the tasks to wind down (each transcriber's tail is drained on
@@ -295,6 +321,9 @@ pub(crate) async fn spawn(
 
     let recorder = audio_path.map(MeetingAudioRecorder::new);
     let intentional_stop = Arc::new(AtomicBool::new(false));
+    // Pause gate (the "Pause" control): while set, demux drops chunks and elides the span so the
+    // timeline stays contiguous, and the watchdog holds the silence clock. Shared with those tasks.
+    let paused = Arc::new(AtomicBool::new(false));
     let (died_tx, died_rx) = oneshot::channel();
     let demux = tokio::spawn(demux(
         capture_rx,
@@ -303,6 +332,7 @@ pub(crate) async fn spawn(
         recorder,
         EchoCanceller::new(),
         intentional_stop.clone(),
+        paused.clone(),
         died_tx,
     ));
     let me_task = tokio::spawn(stream_loop(
@@ -341,6 +371,7 @@ pub(crate) async fn spawn(
             pool,
             meeting_id,
             inactive_tx,
+            paused.clone(),
         )))
     } else {
         drop(inactive_tx);
@@ -360,6 +391,7 @@ pub(crate) async fn spawn(
             inactivity_watchdog,
             last_activity,
             inactivity_prompt: prompt_rx,
+            paused,
         },
         died_rx,
         inactive_rx,
@@ -385,6 +417,7 @@ fn forward(sender: &mpsc::Sender<(f64, Vec<f32>)>, t0_s: f64, samples: Vec<f32>,
 /// streams anchor to the same epoch so their timelines align (alignment is by timestamp, never
 /// sample index). Me is echo-cancelled against the Them tap before it reaches transcription; the
 /// recording stays raw. The recorder is finalized once capture ends.
+#[allow(clippy::too_many_arguments)]
 async fn demux(
     mut capture_rx: mpsc::Receiver<CaptureChunk>,
     me_tx: mpsc::Sender<(f64, Vec<f32>)>,
@@ -392,12 +425,33 @@ async fn demux(
     mut recorder: Option<MeetingAudioRecorder>,
     mut canceller: EchoCanceller,
     intentional_stop: Arc<AtomicBool>,
+    paused: Arc<AtomicBool>,
     died_tx: oneshot::Sender<()>,
 ) {
     let mut epoch_ns: Option<u64> = None;
+    // Total nanoseconds elided by pauses, subtracted from every chunk's meeting time so the timeline
+    // (and `audio.wav`) stays contiguous across a pause — no silent gap. `pause_started_at` holds the
+    // `host_ts` of the first chunk dropped in the current pause, so the whole span can be subtracted
+    // on resume.
+    let mut paused_ns: u64 = 0;
+    let mut pause_started_at: Option<u64> = None;
     while let Some(cap) = capture_rx.recv().await {
+        if paused.load(Ordering::SeqCst) {
+            // Freeze the timeline: drop the chunk (neither recorded nor transcribed) and remember
+            // when the pause began so its full span can be elided when capture resumes.
+            pause_started_at.get_or_insert(cap.chunk.host_ts);
+            continue;
+        }
+        if let Some(started) = pause_started_at.take() {
+            paused_ns += cap.chunk.host_ts.saturating_sub(started);
+        }
         let epoch = *epoch_ns.get_or_insert(cap.chunk.host_ts);
-        let t0_s = cap.chunk.host_ts.saturating_sub(epoch) as f64 / 1e9;
+        let t0_s = cap
+            .chunk
+            .host_ts
+            .saturating_sub(epoch)
+            .saturating_sub(paused_ns) as f64
+            / 1e9;
         let stream = cap.stream;
         let samples = cap.chunk.samples;
         // Record first, on this always-drained path, so `audio.wav` captures every *raw* chunk even
@@ -627,6 +681,24 @@ fn publish_capture_health(broadcast_tx: &broadcast::Sender<String>, state: &str)
     }
 }
 
+/// A capture-state notice pushed to WebSocket subscribers: `{"kind":"capture_state","state":"paused"}`
+/// (or `"active"`). Lets a live view freeze the timer/waveform on pause and resume them; also snapshot
+/// on connect so a reopened window reflects a mid-meeting pause.
+#[derive(Serialize)]
+struct CaptureStateEvent<'a> {
+    kind: &'a str,
+    state: &'a str,
+}
+
+fn publish_capture_state(broadcast_tx: &broadcast::Sender<String>, state: &str) {
+    if let Ok(line) = serde_json::to_string(&CaptureStateEvent {
+        kind: "capture_state",
+        state,
+    }) {
+        let _ = broadcast_tx.send(line);
+    }
+}
+
 /// An audio-level notice pushed to WebSocket subscribers: `{"kind":"level","stream":"me","rms":0.1}`.
 /// Ephemeral (never persisted or replayed) — it only drives the live input waveform.
 #[derive(Serialize)]
@@ -764,12 +836,23 @@ async fn inactivity_watchdog(
     pool: SqlitePool,
     meeting_id: Uuid,
     inactive_tx: oneshot::Sender<()>,
+    paused: Arc<AtomicBool>,
 ) {
     let mut ticker = tokio::time::interval(tick);
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let mut prompted = false;
     loop {
         ticker.tick().await;
+        // A paused meeting is not idle — the user stepped away deliberately. Hold the silence clock at
+        // now and clear any active prompt so a pause is never mistaken for inactivity and auto-ended.
+        if paused.load(Ordering::SeqCst) {
+            *last_activity.lock().unwrap() = Instant::now();
+            if prompted {
+                prompted = false;
+                let _ = prompt_tx.send(None);
+            }
+            continue;
+        }
         let silence = last_activity.lock().unwrap().elapsed();
         match silence_stage(silence, &cfg, prompted) {
             Stage::None => {
@@ -956,9 +1039,11 @@ async fn cluster_for(
 #[cfg(test)]
 mod tests {
     use super::{
-        inactivity_watchdog, silence_stage, DeadMicMonitor, InactivityConfig, LevelMeter, Stage,
-        StreamRole, DEAD_MIC_AFTER_SAMPLES, LEVEL_INTERVAL,
+        demux, inactivity_watchdog, silence_stage, DeadMicMonitor, EchoCanceller, InactivityConfig,
+        LevelMeter, Stage, StreamRole, DEAD_MIC_AFTER_SAMPLES, LEVEL_INTERVAL,
     };
+    use crate::types::{AudioChunk, CaptureChunk, Stream};
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
 
@@ -1001,6 +1086,67 @@ mod tests {
             &tx,
         );
         assert_eq!(drain(&mut rx), vec!["silent"]);
+    }
+
+    #[tokio::test]
+    async fn demux_pause_elides_the_span_and_keeps_the_timeline_contiguous() {
+        // Them chunks forward unchanged (no echo-canceller delay), so their forwarded t0_s is exactly
+        // the meeting time demux computed — the cleanest way to observe the pause elision.
+        let (cap_tx, cap_rx) = tokio::sync::mpsc::channel::<CaptureChunk>(64);
+        let (me_tx, _me_rx) = tokio::sync::mpsc::channel::<(f64, Vec<f32>)>(64);
+        let (them_tx, mut them_rx) = tokio::sync::mpsc::channel::<(f64, Vec<f32>)>(64);
+        let paused = Arc::new(AtomicBool::new(false));
+        let (died_tx, _died_rx) = tokio::sync::oneshot::channel();
+        let handle = tokio::spawn(demux(
+            cap_rx,
+            me_tx,
+            them_tx,
+            None,
+            EchoCanceller::new(),
+            Arc::new(AtomicBool::new(true)), // intentional_stop: suppress the death report on close
+            paused.clone(),
+            died_tx,
+        ));
+
+        let them = |host_ms: u64| CaptureChunk {
+            stream: Stream::Them,
+            chunk: AudioChunk {
+                host_ts: host_ms * 1_000_000,
+                samples: vec![0.1_f32; 1600],
+            },
+        };
+
+        // Two active chunks anchor the epoch and run the timeline to 0.0 then 0.1. Awaiting each
+        // forwarded chunk proves demux has processed it before we pause.
+        cap_tx.send(them(0)).await.unwrap();
+        assert!((them_rx.recv().await.unwrap().0 - 0.0).abs() < 1e-9);
+        cap_tx.send(them(100)).await.unwrap();
+        assert!((them_rx.recv().await.unwrap().0 - 0.1).abs() < 1e-9);
+
+        // Pause, then feed chunks spanning 800 ms of wall time — all must be dropped (nothing
+        // forwarded). paused is set before the sends, so demux always sees it when it reads them.
+        paused.store(true, Ordering::SeqCst);
+        cap_tx.send(them(200)).await.unwrap();
+        cap_tx.send(them(300)).await.unwrap();
+        // Let demux drain (and drop) the paused chunks before resuming, so the pause span is recorded.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(
+            them_rx.try_recv().is_err(),
+            "paused chunks must not be forwarded"
+        );
+
+        // Resume: the next chunk continues the timeline right after 0.1 (the 200 ms -> 1000 ms pause
+        // span is elided), so its t0_s is 0.2 — contiguous, no gap.
+        paused.store(false, Ordering::SeqCst);
+        cap_tx.send(them(1000)).await.unwrap();
+        let (t0, _) = them_rx.recv().await.unwrap();
+        assert!(
+            (t0 - 0.2).abs() < 1e-9,
+            "resumed timeline should be contiguous (0.2), got {t0}"
+        );
+
+        drop(cap_tx);
+        let _ = handle.await;
     }
 
     #[test]
@@ -1175,6 +1321,7 @@ mod tests {
             pool.clone(),
             meeting.id,
             inactive_tx,
+            Arc::new(AtomicBool::new(false)),
         ));
 
         // A prompt is broadcast before the auto-end.

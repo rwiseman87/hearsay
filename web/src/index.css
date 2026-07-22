@@ -1746,6 +1746,26 @@ mark.find-hit {
   font-variant-numeric: tabular-nums;
 }
 
+/* Paused: the dot stops pulsing and the pill goes muted (no longer "live red"). */
+.live__rec--paused {
+  background: var(--surface-2);
+  border-color: var(--border);
+}
+
+.live__rec--paused .live__rec-dot {
+  animation: none;
+  background: var(--muted);
+}
+
+.live__rec--paused .live__rec-label,
+.live__rec--paused .live__rec-time {
+  color: var(--muted);
+}
+
+.live-wave--paused {
+  opacity: 0.45;
+}
+
 .live__title {
   min-width: 0;
 }

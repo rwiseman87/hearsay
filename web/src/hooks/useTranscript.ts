@@ -46,6 +46,9 @@ interface State {
   // the WS `capture_health` frames, and only the server clears it (a Them line proves nothing about
   // the mic).
   micSilent: boolean;
+  // True while the meeting is paused (the "Pause" control). Driven by the WS `capture_state` frames
+  // (+ a connect snapshot). While paused the timeline is frozen server-side (no gap).
+  paused: boolean;
 }
 
 type Action =
@@ -66,6 +69,7 @@ function reducer(state: State, action: Action): State {
         preparing: false,
         inactivityPrompt: null,
         micSilent: false,
+        paused: false,
       };
     case "seed": {
       // While recording, merge the DB snapshot with the live WS finals (a stale fetch may lag
@@ -82,6 +86,7 @@ function reducer(state: State, action: Action): State {
         preparing: state.preparing,
         inactivityPrompt: state.inactivityPrompt,
         micSilent: state.micSilent,
+        paused: state.paused,
       };
     }
     case "event": {
@@ -98,6 +103,10 @@ function reducer(state: State, action: Action): State {
       if (message.kind === "capture_health") {
         return { ...state, micSilent: message.state === "silent" };
       }
+      // Capture state (not a transcript line): the meeting was paused or resumed.
+      if (message.kind === "capture_state") {
+        return { ...state, paused: message.state === "paused" };
+      }
       const event = message;
       // A transcript arriving proves the sidecars are serving (clear the "preparing" notice) and is
       // speech, so it clears any active inactivity prompt.
@@ -113,6 +122,7 @@ function reducer(state: State, action: Action): State {
           preparing: false,
           inactivityPrompt: null,
           micSilent: state.micSilent,
+          paused: state.paused,
         };
       }
       const partials = new Map(state.partials);
@@ -123,6 +133,7 @@ function reducer(state: State, action: Action): State {
         preparing: false,
         inactivityPrompt: null,
         micSilent: state.micSilent,
+        paused: state.paused,
       };
     }
     case "dismissPrompt":
@@ -137,6 +148,7 @@ function init(): State {
     preparing: false,
     inactivityPrompt: null,
     micSilent: false,
+    paused: false,
   };
 }
 
@@ -160,6 +172,13 @@ export interface TranscriptState {
   // The live input level (max of the me/them RMS), for the waveform to subscribe to without
   // re-rendering the transcript. Always 0 when not recording.
   levels: LevelStore;
+  // True while the meeting is paused (the "Pause" control) — the UI freezes the timer + waveform.
+  paused: boolean;
+  // Total ms elided by pauses so far, and (while paused) the epoch-ms the current pause began. The
+  // timer subtracts `pausedMs` from wall time and freezes at `pausedSince` while paused, so it stays
+  // in step with the server's gap-free timeline.
+  pausedMs: number;
+  pausedSince: number | null;
 }
 
 // Merges DB-persisted finals with the live WebSocket stream into a single,
@@ -200,10 +219,18 @@ export function useTranscript(meeting: MeetingRead | null): TranscriptState {
     }
   };
 
+  // Pause-timing for the timer: total ms elided by pauses, and the epoch-ms the current pause began
+  // (null when running). Refs so a `capture_state` frame updates them without a wasted render (the
+  // reducer's `paused` flag drives the re-render).
+  const pausedMs = useRef(0);
+  const pausedSince = useRef<number | null>(null);
+
   useEffect(() => {
     dispatch({ type: "reset" });
     setLevel("me", 0);
     setLevel("them", 0);
+    pausedMs.current = 0;
+    pausedSince.current = null;
   }, [meetingId]);
 
   useEffect(() => {
@@ -226,6 +253,15 @@ export function useTranscript(meeting: MeetingRead | null): TranscriptState {
         if (event.kind === "level") {
           setLevel(event.stream, event.rms);
           return;
+        }
+        // Track the paused span for the timer: start the clock on pause, accumulate on resume.
+        if (event.kind === "capture_state") {
+          if (event.state === "paused") {
+            if (pausedSince.current === null) pausedSince.current = Date.now();
+          } else if (pausedSince.current !== null) {
+            pausedMs.current += Date.now() - pausedSince.current;
+            pausedSince.current = null;
+          }
         }
         dispatch({ type: "event", event });
         // A silence prompt for a user who has switched away from the window: also fire a native OS
@@ -259,5 +295,8 @@ export function useTranscript(meeting: MeetingRead | null): TranscriptState {
     micSilent: isLive && state.micSilent,
     dismissInactivityPrompt: () => dispatch({ type: "dismissPrompt" }),
     levels,
+    paused: isLive && state.paused,
+    pausedMs: pausedMs.current,
+    pausedSince: pausedSince.current,
   };
 }

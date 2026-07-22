@@ -627,6 +627,34 @@
         }
       }
     },
+    "/api/meetings/{id}/pause": {
+      "post": {
+        "tags": [
+          "meetings"
+        ],
+        "summary": "Pause the live meeting's capture (the \"Pause\" control): recording + transcription stop and the\ntimeline freezes with no gap until resumed. A 404 for any meeting that is not the current\nrecording session. Idempotent (pausing an already-paused meeting is a no-op 204).",
+        "operationId": "pause_meeting",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          }
+        }
+      }
+    },
     "/api/meetings/{id}/rediarize": {
       "post": {
         "tags": [
@@ -662,6 +690,34 @@
             "description": ""
           },
           "503": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/api/meetings/{id}/resume": {
+      "post": {
+        "tags": [
+          "meetings"
+        ],
+        "summary": "Resume a paused meeting's capture. A 404 for any meeting that is not the current recording\nsession. Idempotent (resuming a non-paused meeting is a no-op 204).",
+        "operationId": "resume_meeting",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": ""
+          },
+          "404": {
             "description": ""
           }
         }
@@ -1421,6 +1477,31 @@
           "stream": {
             "type": "string",
             "description": "The affected stream; only `me` (the mic) is monitored."
+          }
+        }
+      },
+      "CaptureStateEvent": {
+        "type": "object",
+        "description": "A capture-state frame (not a transcript line): the meeting was paused or resumed (the \"Pause\"\ncontrol). Lets a live view freeze the timer/waveform on pause and resume them; also snapshotted on\nWebSocket connect so a window reopened mid-pause reflects it. Mirrors the orchestrator's\n`CaptureStateEvent` on the wire.",
+        "required": [
+          "kind",
+          "state"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "description": "The constant `kind` discriminant marking a [`CaptureStateEvent`] (`\"capture_state\"`).",
+            "enum": [
+              "capture_state"
+            ]
+          },
+          "state": {
+            "type": "string",
+            "description": "Whether live capture is paused or actively running.",
+            "enum": [
+              "paused",
+              "active"
+            ]
           }
         }
       },

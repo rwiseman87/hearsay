@@ -4,9 +4,9 @@
 use utoipa::OpenApi;
 
 use crate::schema::{
-    AboutInfo, CaptureHealthEvent, CatalogEntry, DownloadRequest, DownloadState, DownloadStatus,
-    FolderCreate, FolderRead, FolderReparent, FolderUpdate, IdentityRead, LevelEvent,
-    MeetingCreate, MeetingFolderAssign, MeetingNotesRead, MeetingRead, MeetingStatus,
+    AboutInfo, CaptureHealthEvent, CaptureStateEvent, CatalogEntry, DownloadRequest, DownloadState,
+    DownloadStatus, FolderCreate, FolderRead, FolderReparent, FolderUpdate, IdentityRead,
+    LevelEvent, MeetingCreate, MeetingFolderAssign, MeetingNotesRead, MeetingRead, MeetingStatus,
     MeetingUpdate, ModelCatalog, ModelSettings, ModelsInfo, NotesEdit, PermissionsInfo,
     PromptEvent, RecordingSettings, ResyncEvent, SearchHit, SegmentEdit, SegmentRead, SettingsRead,
     SpeakerRead, SpeakerRename, SpeakerSettings, StatusEvent, StatusInfo, StorageInfo,
@@ -25,6 +25,8 @@ use crate::schema::{
         crate::routes::meetings::edit_segment,
         crate::routes::meetings::stop_meeting,
         crate::routes::meetings::keep_recording,
+        crate::routes::meetings::pause_meeting,
+        crate::routes::meetings::resume_meeting,
         crate::routes::meetings::assign_meeting_folder,
         crate::routes::meetings::delete_meeting,
         crate::routes::meetings::reveal_meeting,
@@ -98,6 +100,7 @@ use crate::schema::{
         PromptEvent,
         CaptureHealthEvent,
         LevelEvent,
+        CaptureStateEvent,
     )),
     tags(
         (name = "meetings", description = "Meeting lifecycle + transcript segments"),

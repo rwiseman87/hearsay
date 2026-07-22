@@ -681,6 +681,36 @@ impl LiveEngine for Orchestrator {
         }
     }
 
+    fn pause_meeting(&self, meeting_id: Uuid) -> bool {
+        let guard = self.active.lock().unwrap();
+        match guard.as_ref() {
+            Some(s) if s.meeting_id == meeting_id => {
+                s.pipeline.pause();
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn resume_meeting(&self, meeting_id: Uuid) -> bool {
+        let guard = self.active.lock().unwrap();
+        match guard.as_ref() {
+            Some(s) if s.meeting_id == meeting_id => {
+                s.pipeline.resume();
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn paused(&self, meeting_id: Uuid) -> Option<bool> {
+        let guard = self.active.lock().unwrap();
+        match guard.as_ref() {
+            Some(s) if s.meeting_id == meeting_id => Some(s.pipeline.is_paused()),
+            _ => None,
+        }
+    }
+
     fn sidecars_ready(&self) -> bool {
         // A pure read (P3): whether the pre-warmed pair for the next meeting has finished loading its
         // models. Warm *recovery* is handled off this path by the background warm ticker

@@ -1,8 +1,8 @@
-import { useEffect, useMemo, useRef, useSyncExternalStore } from "react";
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 
-import { useKeepRecording, useStopMeeting } from "../api/hooks";
+import { useKeepRecording, usePauseMeeting, useResumeMeeting, useStopMeeting } from "../api/hooks";
 import type { MeetingRead } from "../api/types";
-import { formatClock, useElapsed } from "../hooks/useElapsed";
+import { formatClock } from "../hooks/useElapsed";
 import { useTranscript, type LevelStore, type TranscriptLine } from "../hooks/useTranscript";
 import { MyNotesPanel } from "./MyNotesPanel";
 import { SpeakerLine } from "./SpeakerLine";
@@ -17,12 +17,12 @@ const WAVE_GAIN = 6;
 
 // Seven topbar bars whose heights track the live input level (RMS over the WS `level` frames).
 // Subscribes to the level store directly, so it re-renders on level updates without touching the
-// transcript. Flat and low until audio flows.
-function Waveform({ levels }: { levels: LevelStore }) {
+// transcript. Flat and low until audio flows, and flattened while paused.
+function Waveform({ levels, paused }: { levels: LevelStore; paused: boolean }) {
   const rms = useSyncExternalStore(levels.subscribe, levels.getSnapshot, levels.getSnapshot);
-  const amp = Math.min(1, rms * WAVE_GAIN);
+  const amp = paused ? 0 : Math.min(1, rms * WAVE_GAIN);
   return (
-    <div className="live-wave" aria-hidden="true">
+    <div className={"live-wave" + (paused ? " live-wave--paused" : "")} aria-hidden="true">
       {WAVE_WEIGHTS.map((weight, i) => (
         <span
           key={i}
@@ -44,9 +44,31 @@ interface Props {
 export function LiveRecording({ meeting }: Props) {
   const stop = useStopMeeting();
   const keepRecording = useKeepRecording();
-  const { lines, connection, preparing, inactivityPrompt, micSilent, dismissInactivityPrompt, levels } =
-    useTranscript(meeting);
-  const elapsed = useElapsed(meeting.started_at);
+  const pause = usePauseMeeting();
+  const resume = useResumeMeeting();
+  const {
+    lines,
+    connection,
+    preparing,
+    inactivityPrompt,
+    micSilent,
+    dismissInactivityPrompt,
+    levels,
+    paused,
+    pausedMs,
+    pausedSince,
+  } = useTranscript(meeting);
+
+  // Live timer that stays in step with the server's gap-free timeline: it ticks each second, subtracts
+  // the total paused span, and freezes at the moment the current pause began.
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = setInterval(() => setNowMs(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, []);
+  const startedMs = useMemo(() => new Date(meeting.started_at).getTime(), [meeting.started_at]);
+  const clockMs = paused && pausedSince !== null ? pausedSince : nowMs;
+  const elapsed = Math.max(0, Math.floor((clockMs - startedMs - pausedMs) / 1000));
 
   const linesRef = useRef<HTMLOListElement>(null);
   // Follow the newest line unless the user has scrolled up to read history (cleared by onScroll).
@@ -74,9 +96,9 @@ export function LiveRecording({ meeting }: Props) {
     <section className="live">
       <div className="live__main">
         <header className="live__topbar">
-          <div className="live__rec">
+          <div className={"live__rec" + (paused ? " live__rec--paused" : "")}>
             <span className="live__rec-dot" aria-hidden="true" />
-            <span className="live__rec-label">REC</span>
+            <span className="live__rec-label">{paused ? "PAUSED" : "REC"}</span>
             <span className="live__rec-time">{formatClock(elapsed)}</span>
           </div>
           <div className="live__title">
@@ -85,14 +107,15 @@ export function LiveRecording({ meeting }: Props) {
             </div>
             <div className="live__title-meta">{meta}</div>
           </div>
-          <Waveform levels={levels} />
+          <Waveform levels={levels} paused={paused} />
           <button
             type="button"
             className="live__ghost"
-            disabled
-            title="Pause is coming in a later update"
+            onClick={() => (paused ? resume.mutate(meeting.id) : pause.mutate(meeting.id))}
+            disabled={pause.isPending || resume.isPending}
+            title={paused ? "Resume recording" : "Pause recording"}
           >
-            Pause
+            {paused ? "Resume" : "Pause"}
           </button>
           <button
             type="button"

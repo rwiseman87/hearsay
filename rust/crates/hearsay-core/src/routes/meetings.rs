@@ -38,6 +38,8 @@ pub fn router() -> Router<AppState> {
         .route("/meetings/{id}/segments/{segment_id}", patch(edit_segment))
         .route("/meetings/{id}/stop", post(stop_meeting))
         .route("/meetings/{id}/keep-recording", post(keep_recording))
+        .route("/meetings/{id}/pause", post(pause_meeting))
+        .route("/meetings/{id}/resume", post(resume_meeting))
         .route("/meetings/{id}/folder", put(assign_meeting_folder))
         .route("/meetings/{id}/reveal", post(reveal_meeting))
         .route("/status", get(read_status))
@@ -257,6 +259,41 @@ pub(crate) async fn keep_recording(
         return Err(ApiError::NotFound("meeting is not recording"));
     }
     state.engine.keep_alive(id);
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Pause the live meeting's capture (the "Pause" control): recording + transcription stop and the
+/// timeline freezes with no gap until resumed. A 404 for any meeting that is not the current
+/// recording session. Idempotent (pausing an already-paused meeting is a no-op 204).
+#[utoipa::path(
+    post, path = "/api/meetings/{id}/pause", tag = "meetings",
+    params(("id" = Uuid, Path)),
+    responses((status = 204), (status = 404)),
+)]
+pub(crate) async fn pause_meeting(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+) -> ApiResult<StatusCode> {
+    if !state.engine.pause_meeting(id) {
+        return Err(ApiError::NotFound("meeting is not recording"));
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Resume a paused meeting's capture. A 404 for any meeting that is not the current recording
+/// session. Idempotent (resuming a non-paused meeting is a no-op 204).
+#[utoipa::path(
+    post, path = "/api/meetings/{id}/resume", tag = "meetings",
+    params(("id" = Uuid, Path)),
+    responses((status = 204), (status = 404)),
+)]
+pub(crate) async fn resume_meeting(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+) -> ApiResult<StatusCode> {
+    if !state.engine.resume_meeting(id) {
+        return Err(ApiError::NotFound("meeting is not recording"));
+    }
     Ok(StatusCode::NO_CONTENT)
 }
 
