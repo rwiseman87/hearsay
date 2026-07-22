@@ -14,14 +14,20 @@ recorded inline so it is not re-litigated. Canonical architecture stays in
 
 ## Current state
 
-All phases (0-5) done. On top of the 1a shell + real My-notes + waveform + pause/resume, the 1d
-"Command" density is a persisted topbar toggle that reveals a left speaker-legend rail (real: roster
-derived from the transcript, colored to match the avatars, with a pulse on whoever spoke most
-recently) plus a bottom command-bar placeholder; the dictionary + command palette are honest
-"planned" placeholders (no fabricated data), and post-meeting insights stay in the AI footer strip.
-Verified via Playwright (roster + one currently-speaking dot + command bar, no errors). The
-live-recording UI plan is complete; remaining follow-ups are the genuinely new backends this scope
-excluded (live AI insights, custom-vocabulary dictionary, command palette / slash commands).
+Phases 0-4 shipped (1a shell + real My-notes + waveform + pause/resume). Post-feedback pass:
+- The nav-rail logo is the real Hearsay mark (`/hearsay-icon-small.svg`), not a text "H".
+- **The 1d "Command" layer was descoped** at the user's request — the Command toggle, command bar,
+  speaker-legend rail, and dictionary placeholder were removed (they were mostly non-functional
+  chrome). `SpeakerRail.tsx` deleted; `SpeakerLine` color/initials helpers reverted to internal.
+- **Post-meeting now surfaces the recording's outputs**: the finalized detail view shows a "My notes"
+  panel (the user_notes taken during recording, autosaved + editable via the shared
+  `useUserNotesEditor` hook) above the AI "Notes" (summary + action items) section, so the notes the
+  live view captures no longer vanish after the meeting. The live AI footer copy is now accurate
+  ("A summary and action items can be generated after the meeting ends"; auto-generation is off by
+  default). Verified via Playwright (real icon + no command chrome live; My-notes body shown finalized).
+
+Follow-ups (genuinely new backends this scope excluded): live AI insights, auto-generate notes at
+stop by default, custom-vocabulary dictionary, command palette / slash commands.
 
 ## Scope
 
@@ -118,16 +124,18 @@ Each phase is independently shippable; land them as separate commits/PRs onto `f
       dot stops pulsing + "PAUSED", waveform flattens, timer freezes (paused-span offset keeps it
       contiguous on resume). Verified via a Playwright WS mock.
 
-### Phase 5 — 1d "Command" layers (frontend)
-- [x] A persisted "Command" topbar toggle (`useCommandMode`) reveals the 1d density on the same view
-      (`SpeakerRail` + command bar), off by default (1a stays the calm baseline).
-- [x] Speaker legend + "currently speaking" — distinct `speaker_label`s from `lines` (skipping the
-      pre-diarization "Them"), deterministic colors shared with `SpeakerLine` (`speakerColorVar`), a
-      pulse on the most-recent line's speaker. Read-only live; rename stays the post-meeting flow.
-- [x] Insights — kept the 1a AI footer strip ("appear after the meeting ends") rather than a separate
-      rail, to avoid fabricating a live-insights feed that has no backend.
-- [x] Dictionary "+ add" chip + command bar (⌘K + slash-command hint) — honest, clearly non-functional
-      placeholders labelled "planned" (no fake confidence/latency numbers).
+### Phase 5 — 1d "Command" layers (frontend) — cut
+
+Built then removed at the user's request (mostly non-functional chrome). The speaker legend, command
+bar, dictionary, and the Command toggle are gone; 1a is the only live layout.
+
+### Post-feedback pass
+
+- [x] Nav-rail logo uses the real Hearsay mark (`/hearsay-icon-small.svg`).
+- [x] Removed the 1d Command layer (toggle + command bar + `SpeakerRail` + dictionary).
+- [x] Post-meeting detail view shows a "My notes" panel (`UserNotesSection`) — the user_notes from the
+      meeting, autosaved/editable via the shared `useUserNotesEditor` hook — above the AI Notes section.
+- [x] Live AI footer copy corrected to match reality (notes are generated on demand, not automatic).
 
 ## Verification
 

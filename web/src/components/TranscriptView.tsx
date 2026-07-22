@@ -12,6 +12,7 @@ import type { MeetingRead } from "../api/types";
 import { useTranscript } from "../hooks/useTranscript";
 import { NotesPanel } from "./NotesPanel";
 import { SpeakerPanel } from "./SpeakerPanel";
+import { UserNotesSection } from "./UserNotesSection";
 
 function formatTime(seconds: number): string {
   const whole = Math.max(0, Math.floor(seconds));
@@ -446,6 +447,7 @@ export function TranscriptView({ meeting, jumpTo }: Props) {
         </p>
       ) : null}
       <SpeakerPanel meetingId={meeting.id} />
+      {!recording ? <UserNotesSection key={meeting.id} meetingId={meeting.id} /> : null}
       <NotesPanel meetingId={meeting.id} recording={recording} />
       <div className="transcript__toolbar">
         <span className="transcript__toolbar-title">

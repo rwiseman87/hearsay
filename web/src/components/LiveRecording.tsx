@@ -6,22 +6,9 @@ import { formatClock } from "../hooks/useElapsed";
 import { useTranscript, type LevelStore, type TranscriptLine } from "../hooks/useTranscript";
 import { MyNotesPanel } from "./MyNotesPanel";
 import { SpeakerLine } from "./SpeakerLine";
-import { SpeakerRail } from "./SpeakerRail";
 
 const lineKey = (line: TranscriptLine): string =>
   `${line.stream}:${line.start_s}:${line.kind}`;
-
-const COMMAND_MODE_KEY = "hearsay.commandMode";
-
-// The 1d "Command" density toggle: reveals the speaker legend rail + command bar. Persisted so the
-// power-user layout sticks across sessions. Off by default (1a "Signal" is the calm baseline).
-function useCommandMode() {
-  const [on, setOn] = useState(() => localStorage.getItem(COMMAND_MODE_KEY) === "1");
-  useEffect(() => {
-    localStorage.setItem(COMMAND_MODE_KEY, on ? "1" : "0");
-  }, [on]);
-  return [on, setOn] as const;
-}
 
 // Per-bar shape multipliers so the seven topbar bars form a waveform silhouette rather than a flat
 // block; scaled by the live input amplitude. RMS is small for speech, so multiply into a visible range.
@@ -59,7 +46,6 @@ export function LiveRecording({ meeting }: Props) {
   const keepRecording = useKeepRecording();
   const pause = usePauseMeeting();
   const resume = useResumeMeeting();
-  const [commandMode, setCommandMode] = useCommandMode();
   const {
     lines,
     connection,
@@ -107,10 +93,8 @@ export function LiveRecording({ meeting }: Props) {
     speakerCount > 0 ? `${speakerCount} speaker${speakerCount === 1 ? "" : "s"} · recording` : "Recording";
 
   return (
-    <div className="live-shell">
-      <section className="live">
-        {commandMode ? <SpeakerRail lines={lines} /> : null}
-        <div className="live__main">
+    <section className="live">
+      <div className="live__main">
         <header className="live__topbar">
           <div className={"live__rec" + (paused ? " live__rec--paused" : "")}>
             <span className="live__rec-dot" aria-hidden="true" />
@@ -124,15 +108,6 @@ export function LiveRecording({ meeting }: Props) {
             <div className="live__title-meta">{meta}</div>
           </div>
           <Waveform levels={levels} paused={paused} />
-          <button
-            type="button"
-            className={"live__ghost live__command-toggle" + (commandMode ? " is-active" : "")}
-            aria-pressed={commandMode}
-            onClick={() => setCommandMode((on) => !on)}
-            title={commandMode ? "Switch to the calm view" : "Switch to the Command view"}
-          >
-            Command
-          </button>
           <button
             type="button"
             className="live__ghost"
@@ -227,7 +202,7 @@ export function LiveRecording({ meeting }: Props) {
         <div className="live__ai">
           <span className="live__ai-label">AI</span>
           <span className="live__ai-hint">
-            Highlights and action items appear after the meeting ends.
+            A summary and action items can be generated after the meeting ends.
           </span>
         </div>
         {stop.isError ? (
@@ -237,16 +212,7 @@ export function LiveRecording({ meeting }: Props) {
         ) : null}
       </div>
 
-        <MyNotesPanel key={meeting.id} meetingId={meeting.id} />
-      </section>
-      {commandMode ? (
-        <div className="live__cmdbar">
-          <span className="live__cmdbar-key">⌘K</span>
-          <span className="live__cmdbar-hint">
-            Command palette and slash commands (/bookmark · /clip · /action) are planned.
-          </span>
-        </div>
-      ) : null}
-    </div>
+      <MyNotesPanel key={meeting.id} meetingId={meeting.id} />
+    </section>
   );
 }

@@ -12,21 +12,15 @@ function hash(text: string): number {
   return acc;
 }
 
-// The CSS variable name for a speaker's color. Me is fixed; each Them speaker rotates
-// deterministically by a hash of its label, so it keeps one color for the whole meeting. Shared with
-// the speaker legend so the rail dots match the transcript avatars.
-export function speakerColorVar(stream: string, label: string): string {
-  if (stream === "me") return "--me";
-  return SPEAKER_COLORS[hash(label) % SPEAKER_COLORS.length];
-}
-
-// The CSS variable name for a line's speaker color.
+// The CSS variable name for a line's speaker color. Me is fixed; each Them speaker rotates
+// deterministically by a hash of its label, so it keeps one color for the whole meeting.
 function colorVar(line: TranscriptLine): string {
-  return speakerColorVar(line.stream, line.speaker_label);
+  if (line.stream === "me") return "--me";
+  return SPEAKER_COLORS[hash(line.speaker_label) % SPEAKER_COLORS.length];
 }
 
 // Up to two initials from a speaker label ("Dana Reyes" -> "DR", "Speaker 1" -> "S1", "Me" -> "M").
-export function initials(label: string): string {
+function initials(label: string): string {
   const parts = label.trim().split(/\s+/).filter(Boolean);
   if (parts.length === 0) return "?";
   const first = parts[0][0] ?? "";

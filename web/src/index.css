@@ -1648,16 +1648,9 @@ mark.find-hit {
 }
 
 .rail__logo {
-  display: flex;
-  align-items: center;
-  justify-content: center;
   width: 30px;
   height: 30px;
   border-radius: 9px;
-  background: linear-gradient(140deg, var(--accent), #2f6fb0);
-  color: #06121f;
-  font-weight: 800;
-  font-size: 14px;
 }
 
 .rail__btn {
@@ -1688,135 +1681,10 @@ mark.find-hit {
   margin-top: auto;
 }
 
-/* The live screen fills its grid cell as a column: the rails row, then the optional command bar. */
-.live-shell {
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-  min-height: 0;
-}
-
 .live {
-  flex: 1;
   display: flex;
   min-width: 0;
   min-height: 0;
-}
-
-/* 1d "Command" speaker legend rail. */
-.spk-rail {
-  flex: none;
-  width: 172px;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  padding: 16px 14px;
-  border-right: 1px solid var(--border);
-  background: var(--surface);
-  overflow-y: auto;
-}
-
-.spk-rail__label {
-  color: var(--muted);
-  font-size: var(--fs-xs);
-  font-weight: 600;
-  letter-spacing: 0.14em;
-}
-
-.spk-rail__label--sub {
-  margin-top: 8px;
-}
-
-.spk-rail__list {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-.spk-rail__row {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-}
-
-.spk-rail__dot {
-  flex: none;
-  width: 9px;
-  height: 9px;
-  border-radius: 50%;
-  background: var(--spk);
-}
-
-.spk-rail__name {
-  overflow: hidden;
-  font-size: var(--fs-md);
-  font-weight: 600;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.spk-rail__tag {
-  color: var(--muted);
-  font-size: var(--fs-xs);
-}
-
-/* Pulsing dot at the row end marking whoever spoke most recently. */
-.spk-rail__speaking {
-  flex: none;
-  width: 6px;
-  height: 6px;
-  margin-left: auto;
-  border-radius: 50%;
-  background: var(--accent);
-  animation: live-recpulse 1.2s ease-in-out infinite;
-}
-
-.spk-rail__empty {
-  padding: 0;
-  font-size: var(--fs-sm);
-}
-
-.spk-rail__dict {
-  align-self: flex-start;
-  padding: 3px 8px;
-  border-radius: 6px;
-  background: var(--surface-2);
-  color: var(--muted);
-  font-size: var(--fs-sm);
-}
-
-/* 1d "Command" bottom bar (command-palette placeholder). */
-.live__cmdbar {
-  flex: none;
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  height: 46px;
-  padding: 0 20px;
-  border-top: 1px solid var(--border);
-  background: var(--bg);
-}
-
-.live__cmdbar-key {
-  padding: 4px 9px;
-  border-radius: 6px;
-  background: var(--surface-2);
-  color: var(--accent);
-  font-size: var(--fs-sm);
-  font-weight: 600;
-}
-
-.live__cmdbar-hint {
-  color: var(--muted);
-  font-size: var(--fs-sm);
-}
-
-.live__command-toggle.is-active {
-  border-color: var(--accent);
-  color: var(--accent);
 }
 
 .live__main {
@@ -2194,4 +2062,58 @@ mark.find-hit {
   100% {
     opacity: 0;
   }
+}
+
+/* Post-meeting "My notes" panel in the finalized detail view (the notes taken during recording). */
+.user-notes {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.user-notes__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.user-notes__title {
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.user-notes__status {
+  color: var(--muted);
+  font-size: var(--fs-xs);
+}
+
+.user-notes__editor {
+  width: 100%;
+  min-height: 5em;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  color: var(--text);
+  font: inherit;
+  font-size: var(--fs-md);
+  line-height: 1.6;
+  resize: vertical;
+}
+
+.user-notes__editor:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.user-notes__editor::placeholder {
+  color: var(--muted);
 }

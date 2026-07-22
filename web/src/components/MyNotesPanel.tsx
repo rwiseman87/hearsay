@@ -1,63 +1,14 @@
-import { useEffect, useRef, useState } from "react";
-
-import { useSaveUserNotes, useUserNotes } from "../api/hooks";
-
-const AUTOSAVE_DELAY_MS = 800;
+import { useUserNotesEditor } from "../hooks/useUserNotesEditor";
 
 interface Props {
   meetingId: string;
 }
 
 // The right-hand "My notes" panel: a free-form editor the user types in during the meeting, autosaved
-// to the server (debounced) and exported to my-notes.md. Distinct from the post-meeting LLM notes.
-// Mount this keyed by meetingId so its draft resets when the meeting changes.
+// to the server and exported to my-notes.md. Distinct from the post-meeting LLM notes. Mount this
+// keyed by meetingId so its draft resets when the meeting changes.
 export function MyNotesPanel({ meetingId }: Props) {
-  const notes = useUserNotes(meetingId);
-  const save = useSaveUserNotes(meetingId);
-  // `null` until the initial load resolves (a 404 for "no notes yet" resolves to an empty body).
-  const [draft, setDraft] = useState<string | null>(null);
-  const [lastSaved, setLastSaved] = useState("");
-  // useMutation returns a fresh object each render; a ref keeps the autosave effect from re-timing on
-  // every render while still calling the latest mutation.
-  const saveRef = useRef(save);
-  saveRef.current = save;
-
-  // Seed the draft once the read settles (loading done). 404 -> empty editor.
-  useEffect(() => {
-    if (draft === null && !notes.isLoading) {
-      const body = notes.data?.body ?? "";
-      setDraft(body);
-      setLastSaved(body);
-    }
-  }, [draft, notes.isLoading, notes.data]);
-
-  // Debounced autosave: persist once typing pauses and the draft differs from what was last saved.
-  useEffect(() => {
-    if (draft === null || draft === lastSaved) return;
-    const timer = setTimeout(() => {
-      saveRef.current.mutate(draft, { onSuccess: () => setLastSaved(draft) });
-    }, AUTOSAVE_DELAY_MS);
-    return () => clearTimeout(timer);
-  }, [draft, lastSaved]);
-
-  // Flush immediately when focus leaves the editor (e.g. the user clicks End), so the last edits are
-  // not lost inside the debounce window.
-  const flush = () => {
-    if (draft !== null && draft !== lastSaved && !save.isPending) {
-      saveRef.current.mutate(draft, { onSuccess: () => setLastSaved(draft) });
-    }
-  };
-
-  const dirty = draft !== null && draft !== lastSaved;
-  const status = save.isPending
-    ? "saving…"
-    : save.isError
-      ? "save failed"
-      : dirty
-        ? "unsaved"
-        : draft
-          ? "autosaved"
-          : "";
+  const { draft, setDraft, flush, status } = useUserNotesEditor(meetingId);
 
   return (
     <aside className="live__notes">

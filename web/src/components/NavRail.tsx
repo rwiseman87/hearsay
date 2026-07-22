@@ -11,9 +11,7 @@ interface Props {
 export function NavRail({ meetingsOpen, onToggleMeetings, onOpenSettings }: Props) {
   return (
     <nav className="rail" aria-label="Primary">
-      <div className="rail__logo" aria-hidden="true">
-        H
-      </div>
+      <img className="rail__logo" src="/hearsay-icon-small.svg" alt="Hearsay" width={30} height={30} />
       <button
         type="button"
         className={"rail__btn" + (meetingsOpen ? " is-active" : "")}
