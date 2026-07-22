@@ -14,16 +14,14 @@ recorded inline so it is not re-litigated. Canonical architecture stays in
 
 ## Current state
 
-Phases 0-4 done. Pause/resume is in: the demux freezes both capture and the recorded timeline while
-paused (drops chunks + subtracts the paused span from `t0_s`), so `audio.wav` + segment times stay
-contiguous — no gap (the confirmed timeline choice). The watchdog holds the silence clock while
-paused; a `capture_state` WS frame (+ connect snapshot) drives the UI, which freezes the timer and
-waveform, mutes the REC pill (static dot, "PAUSED"), and swaps Pause -> Resume. Pause is a transient
-live-session state (no new `MeetingStatus` — avoids the enum ripple); the meeting stays `recording`.
-Verified: demux unit test (contiguous 0.0/0.1/[elided]/0.2), and the paused UI via a Playwright WS
-mock. Note: real `audio.wav` continuity across a live pause needs a capture session this checkout
-lacks — covered by the demux test + the recorder's `t0_s`-based placement. **Next:** Phase 5 — the 1d
-"Command" layers (speaker legend + insights-rail/command-bar placeholders).
+All phases (0-5) done. On top of the 1a shell + real My-notes + waveform + pause/resume, the 1d
+"Command" density is a persisted topbar toggle that reveals a left speaker-legend rail (real: roster
+derived from the transcript, colored to match the avatars, with a pulse on whoever spoke most
+recently) plus a bottom command-bar placeholder; the dictionary + command palette are honest
+"planned" placeholders (no fabricated data), and post-meeting insights stay in the AI footer strip.
+Verified via Playwright (roster + one currently-speaking dot + command bar, no errors). The
+live-recording UI plan is complete; remaining follow-ups are the genuinely new backends this scope
+excluded (live AI insights, custom-vocabulary dictionary, command palette / slash commands).
 
 ## Scope
 
@@ -121,10 +119,15 @@ Each phase is independently shippable; land them as separate commits/PRs onto `f
       contiguous on resume). Verified via a Playwright WS mock.
 
 ### Phase 5 — 1d "Command" layers (frontend)
-- [ ] Speaker legend + "currently speaking" — distinct `speaker_label`s from `lines`, deterministic
-      colors, pulse the speaker of the latest partial; inline rename via `useRenameSpeaker`
-- [ ] Live-insights rail — placeholder ("listening for action items…"), no fabricated data
-- [ ] Dictionary chips / command bar / ⌘K / slash commands — deferred visual placeholders (no backend)
+- [x] A persisted "Command" topbar toggle (`useCommandMode`) reveals the 1d density on the same view
+      (`SpeakerRail` + command bar), off by default (1a stays the calm baseline).
+- [x] Speaker legend + "currently speaking" — distinct `speaker_label`s from `lines` (skipping the
+      pre-diarization "Them"), deterministic colors shared with `SpeakerLine` (`speakerColorVar`), a
+      pulse on the most-recent line's speaker. Read-only live; rename stays the post-meeting flow.
+- [x] Insights — kept the 1a AI footer strip ("appear after the meeting ends") rather than a separate
+      rail, to avoid fabricating a live-insights feed that has no backend.
+- [x] Dictionary "+ add" chip + command bar (⌘K + slash-command hint) — honest, clearly non-functional
+      placeholders labelled "planned" (no fake confidence/latency numbers).
 
 ## Verification
 
