@@ -16,6 +16,8 @@ members = [
     "crates/hearsay-core",
     "crates/hearsay-inference",
     "crates/hearsay-backends",
+    "crates/hearsay-notes-prompt",
+    "crates/hearsay-notes",
 ]
 
 [workspace.package]

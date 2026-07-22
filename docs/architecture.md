@@ -118,7 +118,7 @@ flowchart BT
 | `hearsay-engine` | The neutral `LiveEngine` trait and the `DisabledEngine` placeholder the API test suite runs against. Exists so the core and the orchestrator can share the seam without a dependency cycle. |
 | `hearsay-orchestrator` | Implements `LiveEngine`: creates the meeting row and folder, drives an `AudioSource`, routes each stream's PCM to its `Transcriber`, records the stereo `audio.wav`, persists and broadcasts segments, and runs the refine and notes steps after stop. Ships scripted test fakes. |
 | `hearsay-capture` | `AudioSource` implementations. On macOS, `SwiftHelperSource` spawns `hearsay-helper` and pumps its socket traffic; also hosts the TCC permissions probe. |
-| `hearsay-inference` | In-process ML, all offline: the whisper refine (GGML; CPU, or Metal/Vulkan/CUDA by feature), the optional llama.cpp notes summarizer (`notes` feature), and the feature-gated sherpa-onnx modules for the future Windows path (`sherpa` feature). |
+| `hearsay-inference` | In-process ML, all offline: the whisper refine (GGML; CPU, or Metal/Vulkan/CUDA by feature) and the feature-gated sherpa-onnx modules for the future Windows path (`sherpa` feature). The llama.cpp notes summarizer runs out-of-process in the `hearsay-notes` sidecar (its `ggml` must not co-link with whisper's), reusing the pure prompt/parse logic from `hearsay-notes-prompt`. |
 | `hearsay-backends` | Platform backend wiring behind the engine seam: `MacBackend` (warm sidecar pool), `MacRefiner`, the notes summarizer, startup reconciliation, and `build_engine`, the one place a future `WindowsBackend` plugs in. |
 | `hearsay-core` | The application binary: the axum HTTP + WebSocket API, security middleware, the served UI, OpenAPI generation, and the composition root that calls `build_engine`. Depends only on the seam, never on the concrete backend crates directly. |
 
@@ -208,8 +208,8 @@ classDiagram
     class MacRefiner {
         <<hearsay-backends>>
     }
-    class LlamaSummarizer {
-        <<hearsay-backends, notes feature>>
+    class SubprocessSummarizer {
+        <<hearsay-backends, spawns hearsay-notes>>
     }
     class SwiftHelperSource {
         <<hearsay-capture>>
@@ -223,7 +223,7 @@ classDiagram
     Backend <|.. MacBackend
     MacBackend *-- SidecarPool
     Refiner <|.. MacRefiner
-    Summarizer <|.. LlamaSummarizer
+    Summarizer <|.. SubprocessSummarizer
     AudioSource <|.. SwiftHelperSource
     Transcriber <|.. ProcessTranscriber
     Transcriber <|.. SherpaTranscriber

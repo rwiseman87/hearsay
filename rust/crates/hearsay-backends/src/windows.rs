@@ -27,8 +27,7 @@ use hearsay_orchestrator::{
     Refiner,
 };
 
-#[cfg(feature = "notes")]
-use crate::summarizer::LlamaSummarizer;
+use crate::summarizer::SubprocessSummarizer;
 use crate::{EngineConfig, SherpaTranscriber};
 
 /// The streaming-ASR model directory under `sherpa_models_dir` (the model validated by
@@ -208,6 +207,7 @@ pub fn build_engine(config: EngineConfig) -> Arc<dyn LiveEngine> {
         notes_enabled,
         notes_model,
         notes_prompt,
+        notes_binary,
         sherpa_models_dir,
         win_loopback_mode,
     } = config;
@@ -232,12 +232,8 @@ pub fn build_engine(config: EngineConfig) -> Arc<dyn LiveEngine> {
         loopback_mode: win_loopback_mode,
     });
 
-    #[cfg(feature = "notes")]
     let notes_pool = pool.clone();
-    #[cfg(feature = "notes")]
     let notes_default_model = notes_model.clone();
-    #[cfg(not(feature = "notes"))]
-    let _ = notes_prompt;
 
     let orchestrator = Orchestrator::new(pool.clone(), output_dir, backend)
         .with_defaults(
@@ -257,9 +253,9 @@ pub fn build_engine(config: EngineConfig) -> Arc<dyn LiveEngine> {
             segmentation_model: sherpa_models_dir.join(SEGMENTATION_MODEL),
             embedding_model: sherpa_models_dir.join(EMBEDDING_MODEL),
         }));
-    #[cfg(feature = "notes")]
-    let orchestrator = orchestrator.with_summarizer(Arc::new(LlamaSummarizer {
+    let orchestrator = orchestrator.with_summarizer(Arc::new(SubprocessSummarizer {
         pool: notes_pool,
+        notes_binary,
         default_model: notes_default_model,
         default_prompt: notes_prompt,
     }));

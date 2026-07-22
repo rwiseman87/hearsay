@@ -16,8 +16,7 @@ use hearsay_orchestrator::{
     RefinedThemSegment, Refiner,
 };
 
-#[cfg(feature = "notes")]
-use crate::summarizer::LlamaSummarizer;
+use crate::summarizer::SubprocessSummarizer;
 use crate::EngineConfig;
 
 /// Keeps one `hearsay-me` + `hearsay-live` pair pre-spawned so its FluidAudio/CoreML models load
@@ -249,6 +248,7 @@ pub fn build_engine(config: EngineConfig) -> Arc<dyn LiveEngine> {
         notes_enabled,
         notes_model,
         notes_prompt,
+        notes_binary,
         // Windows-only fields; the mac backend has no use for them.
         sherpa_models_dir: _,
         win_loopback_mode: _,
@@ -264,15 +264,9 @@ pub fn build_engine(config: EngineConfig) -> Arc<dyn LiveEngine> {
     // `into_arc` wraps the orchestrator and wires its weak self-reference in one step (via
     // `Arc::new_cyclic`), so a capture death (helper crash) can finalize the meeting instead of
     // leaving it falsely live — with no separate init call to forget.
-    // Clone what the (feature-gated) summarizer needs before `pool` / `notes_model` are moved below.
-    #[cfg(feature = "notes")]
+    // Clone what the summarizer needs before `pool` / `notes_model` are moved below.
     let notes_pool = pool.clone();
-    #[cfg(feature = "notes")]
     let notes_default_model = notes_model.clone();
-    // The prompt template is consumed only by the feature-gated summarizer below; discard it without
-    // the feature so the parameter is not flagged unused under `-D warnings`.
-    #[cfg(not(feature = "notes"))]
-    let _ = notes_prompt;
 
     let orchestrator = Orchestrator::new(pool.clone(), output_dir, backend)
         .with_defaults(
@@ -292,11 +286,13 @@ pub fn build_engine(config: EngineConfig) -> Arc<dyn LiveEngine> {
             default_model: refine_model,
             timeout: refine_timeout,
         }));
-    // Wire the notes summarizer only when the feature is compiled in; without it, notes routes report
-    // unavailable and auto-notes is skipped (the summarizer stays `None`).
-    #[cfg(feature = "notes")]
-    let orchestrator = orchestrator.with_summarizer(Arc::new(LlamaSummarizer {
+    // Always wire the notes summarizer: it runs the local LLM out-of-process in the `hearsay-notes`
+    // sidecar, so nothing links llama.cpp into this binary. Notes are available whenever the sidecar
+    // binary + a notes model are present; otherwise the routes report unavailable and auto-notes is
+    // skipped at runtime.
+    let orchestrator = orchestrator.with_summarizer(Arc::new(SubprocessSummarizer {
         pool: notes_pool,
+        notes_binary,
         default_model: notes_default_model,
         default_prompt: notes_prompt,
     }));

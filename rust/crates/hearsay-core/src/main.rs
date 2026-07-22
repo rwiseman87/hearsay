@@ -74,6 +74,7 @@ async fn main() -> Result<(), BoxError> {
         notes_enabled: settings.notes_enabled,
         notes_model: settings.notes_model.clone(),
         notes_prompt: settings.notes_prompt.clone(),
+        notes_binary: settings.notes_binary.clone(),
         sherpa_models_dir: settings.sherpa_models_dir.clone(),
         win_loopback_mode: settings.win_loopback_mode,
     });

@@ -62,9 +62,10 @@ pub trait Refiner: Send + Sync {
 }
 
 /// The post-meeting local-LLM summarization of the finalized transcript into a summary + action
-/// items. Behind a trait for the same reason as [`Refiner`]: the orchestrator stays off
-/// `hearsay-inference` (llama.cpp / cmake) and testable with fakes; the production impl (in
-/// `hearsay-backends`) wraps `hearsay_inference::summarize`.
+/// items. Behind a trait for the same reason as [`Refiner`]: the orchestrator stays off the ML crates
+/// and testable with fakes; the production impl (in `hearsay-backends`) spawns the out-of-process
+/// `hearsay-notes` sidecar (which owns llama.cpp, kept out of the core to avoid a `ggml` collision
+/// with the whisper refine).
 #[async_trait]
 pub trait Summarizer: Send + Sync {
     /// Summarize the rendered speaker-attributed `transcript` into a short summary + a flat list of

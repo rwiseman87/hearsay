@@ -73,6 +73,11 @@ pub struct Settings {
     /// filled with the finalized transcript. The `models` section overrides it per install; read
     /// fresh at each generate so a Models-panel edit applies with no restart.
     pub notes_prompt: String,
+    /// Path to the `hearsay-notes` sidecar that runs the local-LLM notes step out-of-process
+    /// (`HEARSAY_NOTES_PATH`, default a `hearsay-notes` sibling of this executable). Out-of-process so
+    /// llama.cpp never links into the core alongside whisper (a `ggml` collision that slows the
+    /// refine ~5x).
+    pub notes_binary: PathBuf,
     /// Root the download manager writes models into and references them from
     /// (`HEARSAY_MODELS_DIR`, default `outputs/models`; the desktop shell points it at a persistent
     /// app-data dir so downloaded models survive reinstall).
@@ -103,6 +108,19 @@ fn env_or(key: &str, default: impl Into<String>) -> String {
 /// handshake file, the bundled FluidAudio models) and the process's `HOME`.
 fn env_path(key: &str) -> Option<PathBuf> {
     env::var_os(key).map(PathBuf::from)
+}
+
+/// The `hearsay-notes` sidecar path: `HEARSAY_NOTES_PATH` if set, else a `hearsay-notes` sibling of
+/// this executable (where the bundler stages it, and where `cargo`'s target dir puts it in dev). A
+/// bare `hearsay-notes` is the last resort when the exe path is unreadable (relies on `PATH`).
+fn default_notes_binary() -> PathBuf {
+    if let Some(path) = env::var_os("HEARSAY_NOTES_PATH") {
+        return PathBuf::from(path);
+    }
+    env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|dir| dir.join("hearsay-notes")))
+        .unwrap_or_else(|| PathBuf::from("hearsay-notes"))
 }
 
 /// Parse a boolean env var (`1`/`true`/`yes`/`on` -> true, `0`/`false`/`no`/`off` -> false,
@@ -278,6 +296,7 @@ impl Settings {
                 "HEARSAY_NOTES_PROMPT",
                 hearsay_backends::DEFAULT_NOTES_PROMPT,
             ),
+            notes_binary: default_notes_binary(),
             models_dir: PathBuf::from(env_or("HEARSAY_MODELS_DIR", "outputs/models")),
             handshake_path: env_path("HEARSAY_HANDSHAKE_PATH"),
             fluid_models_dir: env_path("HEARSAY_FLUID_MODELS_DIR"),

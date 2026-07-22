@@ -1,11 +1,11 @@
-//! Optional local-LLM summarization: turn a finalized transcript into a short summary + action
-//! items with a small GGUF instruct model via llama.cpp (`llama-cpp-2`) — the in-process sibling of
-//! the whisper refine. The prompt construction + reply parsing are pure and always compiled (so they
-//! are unit-tested without a model); the llama.cpp call lives behind the `notes` Cargo feature so a
-//! build without it never links llama.cpp.
+//! Prompt construction + reply parsing for the local-LLM notes step — the pure, ML-free half of
+//! summarization, always compiled and unit-tested here. The actual llama.cpp generation lives in the
+//! standalone `hearsay-notes` binary (which reuses [`build_prompt`] + [`parse_notes`]); it is a
+//! separate process so llama.cpp's vendored `ggml` never links into the core alongside whisper.cpp's,
+//! whose co-linked `ggml` degrades the whisper refine ~5x.
 
-/// Generated notes: a short summary + a flat list of action items. The `notes` feature's
-/// [`summarize`] produces it; the pure builders/parsers below shape it.
+/// Generated notes: a short summary + a flat list of action items. The `hearsay-notes` sidecar
+/// produces it; the pure builders/parsers below shape it.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct MeetingNotes {
     pub summary: String,
@@ -40,7 +40,7 @@ pub const DEFAULT_NOTES_PROMPT: &str = "You are a meeting assistant. Read the tr
 /// (truncated) `transcript`, then wrap the result in the ChatML user/assistant turns (the default
 /// Qwen3 template). A template with no `{transcript}` placeholder gets the transcript appended so it
 /// is never dropped. An over-budget transcript is truncated at a char boundary with a marker.
-fn build_prompt(template: &str, transcript: &str) -> String {
+pub fn build_prompt(template: &str, transcript: &str) -> String {
     let transcript = sanitize_transcript(&truncate_on_char_boundary(
         transcript.trim(),
         TRANSCRIPT_CHAR_BUDGET,
@@ -79,7 +79,7 @@ fn truncate_on_char_boundary(s: &str, max_bytes: usize) -> String {
 /// `SUMMARY:` / `ACTION ITEMS:` markers case-insensitively; without them the whole reply is the
 /// summary. Action items are the `-`/`*`/numbered lines under the marker; a lone "none" yields an
 /// empty list.
-fn parse_notes(reply: &str) -> MeetingNotes {
+pub fn parse_notes(reply: &str) -> MeetingNotes {
     let reply = strip_chat_markers(reply);
     let lower = reply.to_lowercase();
 
@@ -164,159 +164,6 @@ fn strip_numbered(line: &str) -> Option<&str> {
     }
     let rest = &line[digits.len()..];
     rest.strip_prefix(". ").or_else(|| rest.strip_prefix(") "))
-}
-
-#[cfg(feature = "notes")]
-pub use llama::summarize;
-
-#[cfg(feature = "notes")]
-mod llama {
-    use std::num::NonZeroU32;
-    use std::path::Path;
-    use std::sync::OnceLock;
-
-    use llama_cpp_2::context::params::LlamaContextParams;
-    use llama_cpp_2::llama_backend::LlamaBackend;
-    use llama_cpp_2::llama_batch::LlamaBatch;
-    use llama_cpp_2::model::params::LlamaModelParams;
-    use llama_cpp_2::model::{AddBos, LlamaModel};
-    use llama_cpp_2::sampling::LlamaSampler;
-
-    use super::{build_prompt, parse_notes, MeetingNotes};
-    use crate::error::InferenceError;
-
-    /// Upper bound on the generation context (tokens). KV memory scales with `n_ctx`, so the context
-    /// is sized to the actual prompt + generation up to this cap (≈2.4 GB KV for a 4B model at the
-    /// cap); a transcript beyond it is truncated in [`build_prompt`].
-    const N_CTX_CAP: u32 = 16_384;
-    /// Cap on generated tokens (a summary + action items is well under this).
-    const MAX_TOKENS: usize = 1024;
-    /// Physical decode batch (and prompt-prefill chunk) size.
-    const N_BATCH: usize = 512;
-    /// Headroom (tokens) reserved for the prompt's instruction scaffold + ChatML turns when fitting
-    /// the transcript to the context.
-    const PROMPT_OVERHEAD_TOKENS: usize = 512;
-
-    fn err(context: &str, e: impl std::fmt::Display) -> InferenceError {
-        InferenceError::Summarize(format!("{context}: {e}"))
-    }
-
-    /// The process-global llama backend (`llama_backend_init` may run only once per process, and both
-    /// [`LlamaBackend`] and [`LlamaModel`] are `Send + Sync`).
-    fn backend() -> Result<&'static LlamaBackend, InferenceError> {
-        static BACKEND: OnceLock<LlamaBackend> = OnceLock::new();
-        if let Some(b) = BACKEND.get() {
-            return Ok(b);
-        }
-        let b = LlamaBackend::init().map_err(|e| err("llama backend init", e))?;
-        let _ = BACKEND.set(b);
-        Ok(BACKEND.get().expect("backend just set"))
-    }
-
-    /// Truncate `transcript` so it tokenizes to at most `max_tokens`, detokenizing the kept prefix
-    /// back to text (a `[transcript truncated]` marker is appended when it actually cut). Returns the
-    /// transcript unchanged when it already fits. A char budget over-counts for CJK/dense scripts, so
-    /// this token-level fit is what keeps the whole prompt inside `N_CTX_CAP`.
-    fn fit_transcript_to_tokens(
-        llama: &LlamaModel,
-        transcript: &str,
-        max_tokens: usize,
-    ) -> Result<String, InferenceError> {
-        let toks = llama
-            .str_to_token(transcript, AddBos::Never)
-            .map_err(|e| err("tokenize transcript", e))?;
-        if toks.len() <= max_tokens {
-            return Ok(transcript.to_string());
-        }
-        let mut out = String::new();
-        let mut decoder = encoding_rs::UTF_8.new_decoder();
-        for &tok in &toks[..max_tokens] {
-            if let Ok(piece) = llama.token_to_piece(tok, &mut decoder, false, None) {
-                out.push_str(&piece);
-            }
-        }
-        out.push_str("\n[transcript truncated]");
-        Ok(out)
-    }
-
-    /// Summarize `transcript` into [`MeetingNotes`] with the GGUF model at `model`, using the
-    /// user-editable `template` (its `{transcript}` placeholder is filled with the transcript): load
-    /// the model, run one instruct prompt (greedy), and parse the reply. Loads the model per call and
-    /// drops it on return so the ~GBs are resident only during generation. Blocking (llama.cpp) —
-    /// call via `spawn_blocking`.
-    pub fn summarize(
-        model: &Path,
-        template: &str,
-        transcript: &str,
-    ) -> Result<MeetingNotes, InferenceError> {
-        let backend = backend()?;
-        let llama = LlamaModel::load_from_file(backend, model, &LlamaModelParams::default())
-            .map_err(|e| err("load notes model", e))?;
-
-        // Fit the transcript to the context by TOKENS before building the prompt: a char budget
-        // over-counts for CJK/dense scripts (~1 char/token), so a long non-Latin transcript would
-        // tokenize past N_CTX_CAP and overflow the KV cache mid-prefill.
-        let transcript = fit_transcript_to_tokens(
-            &llama,
-            transcript.trim(),
-            (N_CTX_CAP as usize).saturating_sub(MAX_TOKENS + PROMPT_OVERHEAD_TOKENS),
-        )?;
-        let prompt = build_prompt(template, &transcript);
-        let tokens = llama
-            .str_to_token(&prompt, AddBos::Always)
-            .map_err(|e| err("tokenize prompt", e))?;
-
-        // Size the context to the actual need (prompt + generation), capped, so KV memory is
-        // proportional to the meeting rather than a fixed worst case.
-        let want = tokens.len().saturating_add(MAX_TOKENS).saturating_add(64);
-        let n_ctx = (want as u32).min(N_CTX_CAP).max(N_BATCH as u32);
-        let ctx_params = LlamaContextParams::default().with_n_ctx(NonZeroU32::new(n_ctx));
-        let mut ctx = llama
-            .new_context(backend, ctx_params)
-            .map_err(|e| err("create llama context", e))?;
-
-        // Prefill the prompt in N_BATCH-sized chunks (a long prompt exceeds one physical batch),
-        // requesting logits only for the very last prompt token.
-        let mut batch = LlamaBatch::new(N_BATCH, 1);
-        let last = tokens.len().saturating_sub(1);
-        let mut pos: i32 = 0;
-        for chunk in tokens.chunks(N_BATCH) {
-            batch.clear();
-            for (i, &tok) in chunk.iter().enumerate() {
-                let global = pos as usize + i;
-                batch
-                    .add(tok, pos + i as i32, &[0], global == last)
-                    .map_err(|e| err("prefill batch", e))?;
-            }
-            ctx.decode(&mut batch)
-                .map_err(|e| err("prefill decode", e))?;
-            pos += chunk.len() as i32;
-        }
-
-        // Greedy generation from the last prompt logits until EOS or the token cap.
-        let mut out = String::new();
-        let mut decoder = encoding_rs::UTF_8.new_decoder();
-        let mut sampler = LlamaSampler::greedy();
-        for _ in 0..MAX_TOKENS {
-            let token = sampler.sample(&ctx, batch.n_tokens() - 1);
-            sampler.accept(token);
-            if token == llama.token_eos() {
-                break;
-            }
-            match llama.token_to_piece(token, &mut decoder, false, None) {
-                Ok(piece) => out.push_str(&piece),
-                Err(e) => return Err(err("detokenize", e)),
-            }
-            batch.clear();
-            batch
-                .add(token, pos, &[0], true)
-                .map_err(|e| err("gen batch", e))?;
-            pos += 1;
-            ctx.decode(&mut batch).map_err(|e| err("gen decode", e))?;
-        }
-
-        Ok(parse_notes(&out))
-    }
 }
 
 #[cfg(test)]

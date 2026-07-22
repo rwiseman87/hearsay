@@ -175,7 +175,7 @@ transcript.
 
 ### 8. Notes (optional)
 
-When the `notes` feature is built in and enabled in Settings, stopping a meeting also generates a
+When notes are enabled in Settings (and the `hearsay-notes` sidecar is bundled), stopping a meeting also generates a
 summary and action items from the finalized transcript with a local GGUF model (llama.cpp), through
 the same background task that runs the refine. Notes are best-effort: a missing model or a
 generation error is logged and never fails the meeting. The manual "Generate notes" route drives

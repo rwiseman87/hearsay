@@ -38,7 +38,7 @@ The `Makefile` is the task runner.
 | `make version-check` | Fail if the app version drifts across the workspace, Tauri config, and package.json. |
 | `make ci` | The full gate: lint, tests, codegen drift, version check, audit, licenses, web CI. Must stay green. |
 | `make web-ci` | The web gate: `npm ci`, `tsc`, ESLint, `vite build`. |
-| `make rust-serve` (alias `serve`) | Run the core with the `metal` and `notes` features. |
+| `make rust-serve` (alias `serve`) | Build the `hearsay-notes` sidecar (`metal`) and run the core (`metal,aec`); the core spawns the sidecar for notes. |
 | `make dmg` | Build the unsigned, ad-hoc-signed `.dmg` (see [packaging.md](packaging.md)). |
 
 ## Running
@@ -96,10 +96,11 @@ needs a GGML model. Download `ggml-large-v3-turbo.bin` into `outputs/models/` (t
 report the model as unavailable rather than failing the meeting. Packaging bundles this model into
 the `.app` (see [packaging.md](packaging.md)).
 
-**Notes (optional local LLM).** When the `notes` feature is built in (`make rust-serve` and
-`make dmg` both build it) and enabled (`HEARSAY_NOTES`, default off), stopping a meeting generates
-a summary and action items from the finalized transcript with a local GGUF instruct model
-(llama.cpp via `llama-cpp-2`). Choose the model in Settings > Models, which lists a small catalog
+**Notes (optional local LLM).** When enabled (`HEARSAY_NOTES`, default off), stopping a meeting
+generates a summary and action items from the finalized transcript with a local GGUF instruct model
+(llama.cpp) run out-of-process in the `hearsay-notes` sidecar — a separate binary so llama.cpp's
+`ggml` never co-links with the whisper refine's (a collision that slows the refine ~5x). `make
+rust-serve` and `make dmg` build + bundle the sidecar. Choose the model in Settings > Models, which lists a small catalog
 and downloads the pick into `HEARSAY_MODELS_DIR` with a SHA-256 check. `HEARSAY_NOTES_MODEL` sets
 the active model path and `HEARSAY_NOTES_PROMPT` the template (its `{transcript}` placeholder is
 filled at generation). Notes are best-effort: a missing model or a generation error never fails
@@ -172,7 +173,7 @@ Prerequisites on the Windows machine:
 - A Rust toolchain ([rustup](https://rustup.rs/); the default host triple is the MSVC one).
 - [CMake](https://cmake.org) (the whisper-rs / llama-cpp-2 native builds).
 - Node 22.
-- LLVM (`winget install -e --id LLVM.LLVM`) — llama-cpp-2 (the `notes` feature) and `aec` run
+- LLVM (`winget install -e --id LLVM.LLVM`) — llama-cpp-2 (the `hearsay-notes` sidecar) and `aec` run
   bindgen, which loads `libclang.dll` at build time.
 - The [Vulkan SDK](https://vulkan.lunarg.com/sdk/home#windows) **and** Windows long-path support —
   the installer build enables the `vulkan` feature by default (GPU whisper refine + notes on any
