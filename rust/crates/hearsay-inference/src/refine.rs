@@ -180,9 +180,19 @@ pub fn refine_them_with(
 
 /// Attribute each whole-track ASR segment to the diarizer turn it most overlaps (falling back to the
 /// nearest turn in time when a segment overlaps none, so no transcribed text is dropped), then merge
-/// consecutive same-speaker segments into one `RefinedSegment`. Empty `turns` yields no segments —
-/// there is no speaker to attribute to, which the refine's callers treat as a no-op. Pure — no ML or
-/// I/O, so it is unit-tested without whisper or the diarizer sidecar.
+/// consecutive segments attributed to the *same turn* into one `RefinedSegment`.
+///
+/// Merging is bounded by the turn, not the speaker: same-speaker runs can span many turns (one
+/// remote speaker holding the floor for minutes — or a diarizer collapsing several people into one
+/// cluster), and merging across them produced a single blob spanning most of a meeting. The final
+/// transcript interleaves Me segments by `start_s`, so a blob starting at 0:00 pushed every Me
+/// utterance spoken *during* it after it. Turn-bounded segments keep meeting-time granularity (turns
+/// end at real speech pauses), and the transcript writer already regroups consecutive same-speaker
+/// segments under one header, so an uninterrupted run still renders as one block.
+///
+/// Empty `turns` yields no segments — there is no speaker to attribute to, which the refine's
+/// callers treat as a no-op. Pure — no ML or I/O, so it is unit-tested without whisper or the
+/// diarizer sidecar.
 fn assemble_refined_segments(
     asr_segments: &[AsrSegment],
     turns: &[DiarTurn],
@@ -202,6 +212,7 @@ fn assemble_refined_segments(
         .collect();
 
     let mut segments: Vec<RefinedSegment> = Vec::new();
+    let mut last_turn: Option<usize> = None;
     for seg in asr_segments {
         let text = seg.text.trim();
         if text.is_empty() {
@@ -209,20 +220,20 @@ fn assemble_refined_segments(
         }
         let idx = max_overlap_turn(seg.start_s, seg.end_s, &overlap_turns, 0.0)
             .unwrap_or_else(|| nearest_turn(seg.start_s, seg.end_s, turns));
-        let ordinal = turns[idx].speaker;
         match segments.last_mut() {
-            Some(last) if last.ordinal == ordinal => {
+            Some(last) if last_turn == Some(idx) => {
                 last.text.push(' ');
                 last.text.push_str(text);
                 last.end_s = seg.end_s;
             }
             _ => segments.push(RefinedSegment {
-                ordinal,
+                ordinal: turns[idx].speaker,
                 text: text.to_string(),
                 start_s: seg.start_s,
                 end_s: seg.end_s,
             }),
         }
+        last_turn = Some(idx);
     }
     segments
 }
@@ -510,7 +521,7 @@ mod tests {
     }
 
     #[test]
-    fn assemble_merges_consecutive_same_speaker_segments() {
+    fn assemble_merges_consecutive_segments_of_the_same_turn() {
         let turns = vec![diar(1, 0.0, 10.0)];
         let segs = vec![asr("hello", 0.0, 2.0), asr("there", 2.0, 4.0)];
         let out = assemble_refined_segments(&segs, &turns);
@@ -519,6 +530,23 @@ mod tests {
         assert_eq!(out[0].text, "hello there");
         // The merged segment spans the first start to the last end.
         assert_eq!((out[0].start_s, out[0].end_s), (0.0, 4.0));
+    }
+
+    #[test]
+    fn assemble_does_not_merge_across_turns_of_the_same_speaker() {
+        // One speaker, two turns (a real speech pause between them): the segments stay separate so
+        // the final transcript can interleave Me utterances spoken during the pause. A single blob
+        // here is the failure mode that pushed a whole meeting's Me lines after one giant segment.
+        let turns = vec![diar(1, 0.0, 4.0), diar(1, 6.0, 10.0)];
+        let segs = vec![asr("before the pause", 0.0, 4.0), asr("after it", 6.0, 9.0)];
+        let out = assemble_refined_segments(&segs, &turns);
+        assert_eq!(out.len(), 2);
+        assert_eq!(
+            (out[0].ordinal, out[0].text.as_str()),
+            (1, "before the pause")
+        );
+        assert_eq!((out[1].ordinal, out[1].text.as_str()), (1, "after it"));
+        assert_eq!((out[1].start_s, out[1].end_s), (6.0, 9.0));
     }
 
     #[test]

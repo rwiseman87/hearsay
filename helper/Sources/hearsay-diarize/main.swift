@@ -68,7 +68,19 @@ do {
     let fileRate = file.fileFormat.sampleRate
     let durationS = fileRate > 0 ? Double(file.length) / fileRate : 0
 
-    let manager = OfflineDiarizerManager()
+    var config = OfflineDiarizerConfig.default
+    // Clustering threshold (Euclidean distance on unit embeddings). FluidAudio's 0.6 default
+    // under-separates compressed meeting audio: a many-voice Teams roundtable collapsed to 2
+    // speakers (146:1 turns). Swept 0.45-0.9 across four real recordings: 0.7 recovers a third
+    // roundtable speaker (126:21:1), is plateau-stable through 0.85, and leaves the 2- and
+    // 3-speaker reference recordings unchanged; 0.9 starts merging a real 3-speaker meeting to 2.
+    config.clustering.threshold = 0.7
+    // Sweep override for offline tuning runs; not part of the core's contract.
+    if let raw = ProcessInfo.processInfo.environment["HEARSAY_DIARIZE_CLUSTER_THRESHOLD"],
+        let value = Double(raw) {
+        config.clustering.threshold = value
+    }
+    let manager = OfflineDiarizerManager(config: config)
     let result = try await manager.process(url)
 
     let turns = result.segments.map {
