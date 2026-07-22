@@ -273,7 +273,7 @@ testable without hardware or ML:
 - `AudioSource` → `SwiftHelperSource` (macOS capture)
 - `Transcriber` ×2 → `ProcessTranscriber` (drives one Swift sidecar each)
 - `Refiner` → `MacRefiner` (whisper refine)
-- `Summarizer` → `LlamaSummarizer` (notes)
+- `Summarizer` → `SubprocessSummarizer` (spawns the `hearsay-notes` sidecar)
 
 `build_engine` (`hearsay-backends/src/mac.rs:282`) is the composition root; shipped and dev builds use
 `--features metal,notes,aec`.
@@ -777,7 +777,7 @@ a re-diarize (refused while the meeting is live).
 
 ## 9. Summarizing: local-LLM notes
 
-Notes are optional: built behind the `notes` Cargo feature, off by default, and requiring a downloaded
+Notes are optional: off by default, running in the bundled `hearsay-notes` sidecar and requiring a downloaded
 GGUF model. When enabled, stopping a meeting (or the manual "Generate notes" route) runs one local-LLM
 pass over the finalized transcript through `llama-cpp-2` (llama.cpp), the in-process sibling of the
 whisper embed.
@@ -831,7 +831,7 @@ DB preferences at each run, so a Settings change applies without a restart.
 | `HEARSAY_REFINE_MODEL` | `outputs/models/ggml-large-v3-turbo.bin` | GGML whisper model for the refine. |
 | `HEARSAY_REFINE_TIMEOUT_SECS` | `1800` | Deadline for the `hearsay-diarize` subprocess. |
 | `HEARSAY_RECOGNITION_THRESHOLD` | `0.6` | Cosine threshold to bind a speaker to a prior voiceprint. |
-| `HEARSAY_NOTES` | `false` | Enable the notes step (needs the `notes` build feature + a model). |
+| `HEARSAY_NOTES` | `false` | Enable the notes step (needs the bundled `hearsay-notes` sidecar + a model). |
 | `HEARSAY_NOTES_MODEL` | empty | GGUF instruct model for notes. |
 | `HEARSAY_NOTES_PROMPT` | built-in template | Notes prompt (`{transcript}` placeholder). |
 | `HEARSAY_MODELS_DIR` | `outputs/models` | Where the download manager writes notes models. |
@@ -847,7 +847,7 @@ DB preferences at each run, so a Settings change applies without a restart.
 | AEC (SpeexDSP via `aec-rs`) | Wired under the `aec` feature (in `rust-serve` / `dmg`); passthrough without. |
 | Stereo WAV recorder | Wired, gated by the `record` setting. |
 | whisper offline refine + `hearsay-diarize` | Wired, macOS. |
-| Notes (llama.cpp via `llama-cpp-2`) | Wired when built with the `notes` feature. |
+| Notes (llama.cpp via `llama-cpp-2`) | Runs out-of-process in the `hearsay-notes` sidecar. |
 | `sherpa_diarize.rs` / `sherpa_streaming.rs` / `SherpaTranscriber` (sherpa-onnx) | Experimental cross-platform / Windows path, behind the `sherpa` feature — **not compiled into the macOS build**. |
 | OCR / calendar-roster / active-speaker hint fusion | **Planned** — protocol fixtures exist, no consumer. |
 

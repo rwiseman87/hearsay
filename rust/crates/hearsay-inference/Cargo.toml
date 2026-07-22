@@ -19,23 +19,17 @@ sherpa-onnx = { version = "1.13.3", optional = true, default-features = false, f
 ] }
 tempfile = "3.27.0"
 whisper-rs = "0.16.0"
-# The optional `notes` local-LLM summarization path (llama.cpp via llama-cpp-2, the sibling of the
-# whisper-rs embed). Off by default so a build without notes never compiles or links llama.cpp;
-# `encoding_rs` is only needed for its streaming token decoder.
-llama-cpp-2 = { version = "0.1.151", default-features = false, optional = true }
-encoding_rs = { version = "0.8.35", optional = true }
 
 # `sherpa` enables the cross-platform (Windows) sherpa-onnx diarize + streaming path; it is off by
 # default so the macOS bundle never compiles or links onnxruntime (macOS uses the Swift sidecars).
 #
 # Per-OS GPU acceleration for the whisper refine is opt-in (default = portable CPU). The
 # installer/build selects the backend for the target: `--features metal` on macOS, `vulkan` on the
-# Intel Arc iGPU, `cuda` on discrete NVIDIA. Same code, per-OS accel (see docs/architecture.md).
+# Intel Arc iGPU, `cuda` on discrete NVIDIA. Same code, per-OS accel (see docs/architecture.md). The
+# notes LLM's matching GPU accel lives on the standalone `hearsay-notes` crate (separate process, so
+# llama.cpp's ggml never co-links with whisper.cpp's).
 [features]
 sherpa = ["dep:sherpa-onnx"]
-notes = ["dep:llama-cpp-2", "dep:encoding_rs"]
-# GPU accel forwards to whisper-rs and, when `notes` is on, to llama-cpp-2 too (weak-dep `?/`), so a
-# single `--features metal,notes` build accelerates both on the same backend.
-metal = ["whisper-rs/metal", "llama-cpp-2?/metal"]
-vulkan = ["whisper-rs/vulkan", "llama-cpp-2?/vulkan"]
-cuda = ["whisper-rs/cuda", "llama-cpp-2?/cuda"]
+metal = ["whisper-rs/metal"]
+vulkan = ["whisper-rs/vulkan"]
+cuda = ["whisper-rs/cuda"]

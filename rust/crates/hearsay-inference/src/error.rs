@@ -13,8 +13,6 @@ pub enum InferenceError {
     Audio(String),
     /// The offline diarizer found no speech in the Them track — nothing to refine (benign).
     NoSpeech,
-    /// A llama.cpp notes-summarization failure (model load / context / decode).
-    Summarize(String),
     /// An underlying I/O error.
     Io(std::io::Error),
 }
@@ -27,7 +25,6 @@ impl std::fmt::Display for InferenceError {
             InferenceError::Streaming(m) => write!(f, "streaming asr error: {m}"),
             InferenceError::Audio(m) => write!(f, "audio error: {m}"),
             InferenceError::NoSpeech => write!(f, "no speech detected in the Them track"),
-            InferenceError::Summarize(m) => write!(f, "summarize error: {m}"),
             InferenceError::Io(e) => write!(f, "io error: {e}"),
         }
     }

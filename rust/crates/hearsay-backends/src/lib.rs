@@ -23,7 +23,6 @@ mod mac;
 pub mod reconcile;
 #[cfg(feature = "sherpa")]
 mod streaming_transcriber;
-#[cfg(feature = "notes")]
 mod summarizer;
 #[cfg(all(target_os = "windows", feature = "sherpa"))]
 mod windows;
@@ -36,9 +35,9 @@ compile_error!(
 );
 
 pub use hearsay_capture::{probe_permissions, LoopbackMode, PermissionsSnapshot};
-// The default notes prompt lives with the prompt builder in `hearsay-inference`; re-export it so
-// `hearsay-core` (which reaches inference only through this crate) can seed the config default.
-pub use hearsay_inference::DEFAULT_NOTES_PROMPT;
+// The default notes prompt lives in the dependency-free `hearsay-notes-prompt` crate (shared with the
+// notes sidecar); re-export it so `hearsay-core` can seed the config default without a direct dep.
+pub use hearsay_notes_prompt::DEFAULT_NOTES_PROMPT;
 #[cfg(target_os = "macos")]
 pub use mac::build_engine;
 #[cfg(feature = "sherpa")]
@@ -74,6 +73,9 @@ pub struct EngineConfig {
     pub notes_model: PathBuf,
     /// Config-default notes prompt template (the Models panel overrides it).
     pub notes_prompt: String,
+    /// The `hearsay-notes` sidecar binary (a sibling of the core) that runs the local-LLM notes step
+    /// out-of-process, so llama.cpp never links into the core alongside whisper.
+    pub notes_binary: PathBuf,
     /// Windows: directory holding the sherpa live/diarize models (streaming zipformer + pyannote
     /// segmentation + speaker embedding). Unused on macOS (FluidAudio models seed separately).
     pub sherpa_models_dir: PathBuf,

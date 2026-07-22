@@ -23,7 +23,7 @@ surface is capture, backend wiring, and packaging.
 | Live ASR (`Transcriber`) | FluidAudio/ANE sidecars (diarized) | `SherpaTranscriber`, both streams (exists behind the `sherpa` feature) |
 | Live speakers | diarized live | "Speaker 1" live; real speakers at refine (the Windows floor) |
 | Refine (`Refiner`) | whisper + `hearsay-diarize` sidecar | whisper + `SherpaDiarizer` (exists behind `sherpa`) |
-| Notes (`Summarizer`) | llama.cpp (`notes` feature) | same, unchanged |
+| Notes (`Summarizer`) | `hearsay-notes` sidecar (llama.cpp) | same, unchanged |
 | Refine/notes GPU | `metal` feature | CPU first; `vulkan` feature on the Arc iGPU |
 | AEC | shared (`aec` feature, SpeexDSP) | same code; needs an MSVC build check |
 | Packaging | `.app`/`.dmg`, 5 bundled binaries | NSIS, 1 bundled binary (`hearsay-core`) + models |
@@ -186,7 +186,7 @@ On the Windows x86_64 machine:
 - Rust via rustup (defaults to `x86_64-pc-windows-msvc`).
 - CMake (whisper-rs / llama-cpp-2 build).
 - Node 22 (web UI).
-- LLVM (`winget install -e --id LLVM.LLVM`) — llama-cpp-2 (`notes`) and `aec` run bindgen, which
+- LLVM (`winget install -e --id LLVM.LLVM`) — llama-cpp-2 (the `hearsay-notes` sidecar) and `aec` run bindgen, which
   loads `libclang.dll` at build time.
 - Only for the `vulkan` feature: the Vulkan SDK.
 
@@ -235,8 +235,8 @@ Checkboxes are the tracking state for the port.
       (`hearsay-backends/src/windows.rs`): one shared `StreamingAsr` (no pool), synthetic ->
       `SyntheticSource`; refine = whisper + `SherpaDiarizer` through `refine_audio_file_with`,
       diarizer constructed inside the blocking task; a failed streaming-model load degrades to
-      `DisabledEngine` (app serves, meetings 503) instead of failing startup. `LlamaSummarizer`
-      moved to a shared module used by both platforms. Model conventions under
+      `DisabledEngine` (app serves, meetings 503) instead of failing startup. The notes
+      `SubprocessSummarizer` (shared by both platforms) spawns the `hearsay-notes` sidecar. Model conventions under
       `HEARSAY_SHERPA_MODELS_DIR`: `sherpa-onnx-streaming-zipformer-en-2023-06-21/`,
       `sherpa-onnx-pyannote-segmentation-3-0/model.onnx`, `nemo_en_titanet_small.onnx` (the
       embedder the cluster-threshold tuning used).

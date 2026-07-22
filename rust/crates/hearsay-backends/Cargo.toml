@@ -9,10 +9,13 @@ hearsay-engine = { path = "../hearsay-engine" }
 hearsay-orchestrator = { path = "../hearsay-orchestrator" }
 hearsay-capture = { path = "../hearsay-capture" }
 hearsay-inference = { path = "../hearsay-inference" }
+hearsay-notes-prompt = { path = "../hearsay-notes-prompt" }
 hearsay-db = { path = "../hearsay-db" }
 tokio = { version = "1.52.3", features = ["rt", "sync"] }
 async-trait = "0.1.89"
 tracing = "0.1.44"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.150"
 sqlx = { version = "0.9.0", default-features = false, features = ["runtime-tokio", "sqlite", "uuid", "chrono"] }
 
 # `sherpa` forwards to `hearsay-inference/sherpa` to build the cross-platform (Windows) sherpa-onnx
@@ -21,10 +24,10 @@ sqlx = { version = "0.9.0", default-features = false, features = ["runtime-tokio
 #
 # GPU backends for the offline whisper refine, forwarded from `hearsay-core` through to
 # `hearsay-inference`'s whisper-rs so `make dmg`'s `--features metal` still reaches whisper. Off by
-# default (CPU); enable one per target.
+# default (CPU); enable one per target. The notes LLM is out-of-process (`hearsay-notes`), so its GPU
+# accel is a feature of that crate, not forwarded here.
 [features]
 sherpa = ["hearsay-inference/sherpa"]
-notes = ["hearsay-inference/notes"]
 aec = ["hearsay-orchestrator/aec"]
 metal = ["hearsay-inference/metal"]
 vulkan = ["hearsay-inference/vulkan"]

@@ -43,6 +43,7 @@ fn test_settings(output_dir: PathBuf, web_dir: PathBuf) -> Settings {
         notes_enabled: false,
         notes_model: PathBuf::from("no-notes-model"),
         notes_prompt: "Summarize:\n{transcript}".into(),
+        notes_binary: PathBuf::from("no-notes-sidecar"),
         models_dir: PathBuf::from("no-models-dir"),
         handshake_path: None,
         fluid_models_dir: None,

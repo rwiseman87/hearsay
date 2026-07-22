@@ -36,8 +36,8 @@ if (-not (cargo tauri --version 2>$null)) {
     throw "tauri-cli not found. Run: cargo install tauri-cli --locked"
 }
 
-# llama-cpp-2 (the always-on notes feature) and the aec feature generate bindings with bindgen,
-# which loads libclang.dll at build time.
+# llama-cpp-2 (the hearsay-notes sidecar) and the aec feature generate bindings with bindgen, which
+# loads libclang.dll at build time.
 if (-not $env:LIBCLANG_PATH) {
     $candidates = @("C:\Program Files\LLVM\bin") + (
         Get-ChildItem "C:\Program Files*\Microsoft Visual Studio\*\*\VC\Tools\Llvm\x64\bin" `
@@ -162,27 +162,40 @@ if ($LASTEXITCODE -ne 0) { throw "web build failed" }
 Pop-Location
 
 # --- Core binary --------------------------------------------------------------------------------
-$features = "sherpa,notes"
+# The core is built WITHOUT notes: the local-LLM notes step ships as its own `hearsay-notes` sidecar
+# (below) so llama.cpp never co-links with the core's whisper -- both vendor `ggml`, and co-linking
+# degrades the whisper refine ~5x (a symbol collision).
+$features = "sherpa"
 if (-not $NoVulkan) { $features += ",vulkan" }
-# macOS ships aec (Makefile: `metal,notes,aec`), so Windows does too -- without it the mic picks up
-# the meeting audio whenever the user is on speakers. Its bindgen needs libclang, which is already a
-# hard prerequisite above for the always-on `notes` feature.
+# macOS ships aec, so Windows does too -- without it the mic picks up the meeting audio whenever the
+# user is on speakers. Its bindgen needs libclang, a hard prerequisite above (also needed by the
+# hearsay-notes / llama-cpp-2 build).
 if (-not $NoAec) { $features += ",aec" }
-Write-Host "building hearsay-core (features: $features)..."
+# The notes sidecar takes the same GPU accel as the core (Vulkan when enabled), on llama-cpp-2.
+$notesFeatures = if (-not $NoVulkan) { "vulkan" } else { "" }
+Write-Host "building hearsay-core (features: $features) + hearsay-notes (features: $notesFeatures)..."
 # Everything here builds against the default dynamic CRT: sherpa-onnx is linked as a DLL (see
 # hearsay-inference/Cargo.toml) precisely so no crt-static juggling is needed.
 $prevTargetDir = $env:CARGO_TARGET_DIR
 if ($coreTarget) { $env:CARGO_TARGET_DIR = $coreTarget }
 try {
     cargo build --release --manifest-path rust\Cargo.toml -p hearsay-core --features $features
+    if ($LASTEXITCODE -ne 0) { throw "cargo build (core) failed" }
+    if ($notesFeatures) {
+        cargo build --release --manifest-path rust\Cargo.toml -p hearsay-notes --features $notesFeatures
+    } else {
+        cargo build --release --manifest-path rust\Cargo.toml -p hearsay-notes
+    }
+    if ($LASTEXITCODE -ne 0) { throw "cargo build (hearsay-notes) failed" }
 } finally {
     $env:CARGO_TARGET_DIR = $prevTargetDir
 }
-if ($LASTEXITCODE -ne 0) { throw "cargo build failed" }
 
 New-Item -ItemType Directory -Force -Path "web\src-tauri\binaries" | Out-Null
 Copy-Item -Force "$target\hearsay-core.exe" `
     "web\src-tauri\binaries\hearsay-core-x86_64-pc-windows-msvc.exe"
+Copy-Item -Force "$target\hearsay-notes.exe" `
+    "web\src-tauri\binaries\hearsay-notes-x86_64-pc-windows-msvc.exe"
 
 # sherpa-onnx is linked as DLLs, so they have to sit next to the sidecar at runtime (Windows
 # resolves a DLL from the loading binary's directory). sherpa-onnx-sys drops them beside the build

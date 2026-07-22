@@ -224,9 +224,9 @@ curl "http://127.0.0.1:8137/api/search?q=budget&page=1&page_size=50" -H "Authori
 
 ## Notes (optional local-LLM summary)
 
-Available when the core is built with the `notes` feature; generation also requires a downloaded
-notes model (see Models). Produces a summary and action items from the finalized transcript.
-Best-effort: a notes failure never blocks or fails a meeting.
+Generation runs in the bundled `hearsay-notes` sidecar (llama.cpp, out-of-process) and requires a
+downloaded notes model (see Models). Produces a summary and action items from the finalized
+transcript. Best-effort: a notes failure never blocks or fails a meeting.
 
 - `GET /api/meetings/{id}/notes` reads the stored notes (`404` if none yet).
 - `POST /api/meetings/{id}/notes` generates or regenerates; `409` while recording, `503` if no
@@ -236,9 +236,9 @@ Best-effort: a notes failure never blocks or fails a meeting.
 
 ## Models (notes-model download manager)
 
-Present regardless of the `notes` build feature, so the API surface is identical across builds. A
-small fixed catalog of GGUF instruct models is downloaded on demand into `HEARSAY_MODELS_DIR` and
-verified by SHA-256.
+The download manager is always compiled, independent of whether the notes sidecar is bundled, so the
+API surface is identical across builds. A small fixed catalog of GGUF instruct models is downloaded
+on demand into `HEARSAY_MODELS_DIR` and verified by SHA-256.
 
 - `GET /api/models/catalog` returns the catalog, each entry's installed state, and the models
   directory.

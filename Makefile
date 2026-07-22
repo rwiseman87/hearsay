@@ -98,8 +98,12 @@ clean: ## Remove build artifacts (Swift, Rust, web bundle + deps, Tauri target, 
 
 serve rust-serve: ## Serve the Rust core (SYNTHETIC=1 for no-permission plumbing; needs swift-build + web-build for a live run)
 	@mkdir -p outputs/db
+	# Build the notes sidecar so the core (which spawns it as a `hearsay-notes` sibling) resolves it in
+	# dev. Separate binary + separate build so llama.cpp never co-links with whisper (a ggml collision
+	# that slows the refine ~5x); the core is built WITHOUT a notes feature.
+	cargo build --manifest-path $(RUST)/Cargo.toml -p hearsay-notes --features metal
 	HEARSAY_SERVER_PORT=$(RUST_PORT) DATABASE_URL="$(RUST_DB)" \
-		cargo run --manifest-path $(RUST)/Cargo.toml -p hearsay-core --features metal,notes,aec $(if $(SYNTHETIC),-- --synthetic)
+		cargo run --manifest-path $(RUST)/Cargo.toml -p hearsay-core --features metal,aec $(if $(SYNTHETIC),-- --synthetic)
 
 # Distribution staging: build RELEASE binaries + web bundle, then copy them where Tauri's
 # `externalBin` expects them (`<name>-<target-triple>`). Shared by `mac-app` and `dmg`.
@@ -236,9 +240,14 @@ stage-release: stage-model stage-fluid-models ## Build release binaries + web bu
 	@for p in $(SIDECARS); do \
 		swift build -c release --package-path $(PKG) --product $$p; \
 	done
-	cargo build --release --manifest-path $(RUST)/Cargo.toml -p hearsay-core --features metal,notes,aec
+	# The core is built WITHOUT notes; the notes LLM ships as its own `hearsay-notes` sidecar so
+	# llama.cpp never co-links with whisper (a ggml collision that slows the refine ~5x). Both get the
+	# same `metal` accel.
+	cargo build --release --manifest-path $(RUST)/Cargo.toml -p hearsay-core --features metal,aec
+	cargo build --release --manifest-path $(RUST)/Cargo.toml -p hearsay-notes --features metal
 	@mkdir -p $(STAGE)
 	cp $(RUST)/target/release/hearsay-core $(STAGE)/hearsay-core-aarch64-apple-darwin
+	cp $(RUST)/target/release/hearsay-notes $(STAGE)/hearsay-notes-aarch64-apple-darwin
 	@for b in $(SIDECARS); do \
 		cp $(PKG)/.build/arm64-apple-macosx/release/$$b $(STAGE)/$$b-aarch64-apple-darwin; \
 	done

@@ -33,9 +33,10 @@ sha2 = "0.10.9"
 # cross-platform builds; enable one per target (building a backend the host lacks fails).
 [features]
 # The cross-platform (Windows) sherpa-onnx live/diarize path; required by the Windows backend
-# (`--features sherpa,notes` there), off by default so the macOS bundle never links onnxruntime.
+# (`--features sherpa` there), off by default so the macOS bundle never links onnxruntime. The local
+# notes LLM is no longer a feature of the core: it runs out-of-process in the `hearsay-notes` sidecar
+# (built separately with its own `metal`/`vulkan` accel), so llama.cpp never links here with whisper.
 sherpa = ["hearsay-backends/sherpa"]
-notes = ["hearsay-backends/notes"]
 aec = ["hearsay-backends/aec"]
 metal = ["hearsay-backends/metal"]
 vulkan = ["hearsay-backends/vulkan"]
