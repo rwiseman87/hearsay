@@ -26,7 +26,7 @@ surface is capture, backend wiring, and packaging.
 | Notes (`Summarizer`) | `hearsay-notes` sidecar (llama.cpp) | same, unchanged |
 | Refine/notes GPU | `metal` feature | CPU first; `vulkan` feature on the Arc iGPU |
 | AEC | shared (`aec` feature, SpeexDSP) | same code; needs an MSVC build check |
-| Packaging | `.app`/`.dmg`, 5 bundled binaries | NSIS, 1 bundled binary (`hearsay-core`) + models |
+| Packaging | `.app`/`.dmg`, 6 bundled binaries | NSIS, 2 bundled binaries (`hearsay-core` + `hearsay-notes`) + models |
 
 There is no helper process on Windows: WASAPI needs no TCC-style privilege isolation, so capture
 implements the `AudioSource` trait in-process and the socket IPC contract stays macOS-only. The
@@ -167,8 +167,8 @@ unconfirmed Rust-API exposure). They are the candidate upgrade tier once the flo
   `HEARSAY_SHERPA_MODELS_DIR` the shell points into the bundle resources; a Windows-sized
   whisper GGML is staged like `stage-model`.
 - `tauri.windows.conf.json` overrides the bundle for Windows: targets `["nsis"]`, `externalBin`
-  reduced to `hearsay-core` only (the platform config replaces the array, dropping the four
-  Swift binaries).
+  reduced to `hearsay-core` + `hearsay-notes` (the platform config replaces the array, dropping the
+  four Swift binaries).
 - Shell `cfg(windows)` arms: env wiring without `HEARSAY_HELPER_PATH`, Windows app-data paths in
   `erase_all_data` (no `tccutil`), reveal via `explorer /select,`. Graceful stop is already
   portable (the core exits on stdin EOF; the shell's kill is the backstop).
@@ -249,7 +249,7 @@ Checkboxes are the tracking state for the port.
 - [x] `fetch-sherpa-models` / `stage-sherpa-models` Makefile targets (fetch verified against the
       live sherpa-onnx release URLs; layout matches the backend's conventions). Windows whisper
       default: `ggml-small.en.bin`, staged by the build script.
-- [x] `tauri.windows.conf.json` (NSIS target; `externalBin` reduced to `hearsay-core`).
+- [x] `tauri.windows.conf.json` (NSIS target; `externalBin` = `hearsay-core` + `hearsay-notes`).
 - [x] Shell `cfg(windows)` arms: env wiring without helper/FluidAudio + `HEARSAY_SHERPA_MODELS_DIR`
       at the bundled resources; `erase_all_data` removes app-data/local-data/cache (no `tccutil`);
       platform-neutral erase copy. Known limitation (documented in packaging.md): no graceful

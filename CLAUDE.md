@@ -21,10 +21,16 @@ Multi-process, local-only (Apple Silicon, macOS 14.4+; Windows is the remaining 
   refine). The core spawns + feeds each over stdio.
 - **Rust core** (`rust/crates/`) — orchestration (spawns the helper + sidecars, routes PCM), speaker
   attribution (clusters + cross-meeting voiceprints + manual labels), the offline refine (whisper),
-  optional local-LLM notes (llama.cpp, off by default), Markdown, persistence, and a loopback axum HTTP +
-  WebSocket API. The whisper refine and the optional notes LLM are the only ML it runs in-process.
+  optional local-LLM notes (spawned as the `hearsay-notes` sidecar, off by default), Markdown,
+  persistence, and a loopback axum HTTP + WebSocket API. The whisper refine is the only ML it runs
+  in-process; the notes LLM (llama.cpp) runs out-of-process because llama's and whisper's vendored
+  `ggml` collide when co-linked (a ~5x refine slowdown).
+- **Rust notes sidecar** (`hearsay-notes`) — the local-LLM notes step (llama.cpp), a standalone binary
+  the core spawns over stdio. Separate process so llama's `ggml` never links with whisper's; the pure
+  prompt/parse logic is shared via the dependency-free `hearsay-notes-prompt` crate.
 - **Web UI** (`web/`) — typed React frontend served by the core, shown in a Tauri WKWebView window. The
-  **Tauri shell** (`web/src-tauri/`) bundles + spawns the core and the Swift sidecars.
+  **Tauri shell** (`web/src-tauri/`) bundles + spawns the core, and bundles the Swift sidecars + the
+  `hearsay-notes` sidecar.
 
 The core spawns and supervises the helper; they talk over two Unix sockets (binary PCM + NDJSON
 control). Capture is device-local by design and cannot be centralized.
@@ -37,9 +43,11 @@ rust/crates/
   hearsay-db/           SQLite via SQLx: models, queries, migrations/ (forward-only .sql)
   hearsay-orchestrator/ capture routing + Transcriber/AudioSource seams + pipeline + markdown/recorder + notes seam (implements LiveEngine)
   hearsay-engine/       LiveEngine trait seam + DisabledEngine placeholder (no dependency cycle)
-  hearsay-backends/     per-OS backend wiring: MacBackend/MacRefiner + build_engine (rediarize + notes)
+  hearsay-backends/     per-OS backend wiring: MacBackend/MacRefiner + SubprocessSummarizer + build_engine (rediarize + notes)
   hearsay-capture/      AudioSource trait + SwiftHelperSource (spawns hearsay-helper) + the TCC permissions probe
-  hearsay-inference/    whisper offline ASR + the refine + optional local-LLM notes (llama-cpp-2)
+  hearsay-inference/    whisper offline ASR + the refine (whisper-rs; no llama — see hearsay-notes)
+  hearsay-notes/        the local-LLM notes sidecar (llama-cpp-2); spawned by the core, kept out of its binary
+  hearsay-notes-prompt/ dependency-free prompt build + reply parse, shared by the core default + the notes sidecar
   hearsay-attribution/  speaker clustering / voiceprint match / segment-speaker assignment (pure logic)
   hearsay-ipc/          binary frame codec + NDJSON control codec (source of truth for the IPC contract) + gen_fixtures bin
 helper/                 SwiftPM: hearsay-{helper,live,me,diarize} executables + HearsayIPC + SidecarIO libraries

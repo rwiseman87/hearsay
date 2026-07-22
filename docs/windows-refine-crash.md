@@ -154,7 +154,7 @@ Still worth doing, in priority order:
 Prerequisites beyond the obvious (all now enforced up front by `scripts\build-windows.ps1`, which
 throws with the remedy rather than failing deep in a build):
 
-- **LLVM/libclang** — `llama-cpp-sys-2`'s bindgen needs it for the always-on `notes` feature.
+- **LLVM/libclang** — `llama-cpp-sys-2`'s bindgen needs it to build the `hearsay-notes` sidecar.
 - **Vulkan SDK** — the build enables `vulkan` by default.
 - **Windows long paths** — `LongPathsEnabled=1` (elevated, see the script's message). ggml builds its
   Vulkan shader generator as a nested cmake sub-project whose paths exceed `MAX_PATH`.
