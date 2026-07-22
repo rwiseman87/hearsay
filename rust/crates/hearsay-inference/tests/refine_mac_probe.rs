@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use hearsay_inference::{read_them_channel, Diarizer, SwiftDiarizer, WhisperAsr};
+use hearsay_inference::{read_them_channel, refine_them_with, Diarizer, SwiftDiarizer, WhisperAsr};
 
 #[test]
 #[ignore = "probe"]
@@ -112,4 +112,27 @@ fn refine_mac_probe() {
             &seg.text[..seg.text.len().min(70)]
         );
     }
+
+    // 4. The assembled refine output — what replace_them_segments would store.
+    let refined = refine_them_with(
+        &asr,
+        &SwiftDiarizer::new(&diarize, Duration::from_secs(300)),
+        &them,
+    )
+    .expect("refine");
+    let mut per_ordinal: HashMap<i64, usize> = HashMap::new();
+    for seg in &refined.segments {
+        *per_ordinal.entry(seg.ordinal).or_insert(0) += 1;
+    }
+    let longest = refined
+        .segments
+        .iter()
+        .map(|s| s.end_s - s.start_s)
+        .fold(0.0f64, f64::max);
+    eprintln!(
+        "assembled: {} segments, per-ordinal {:?}, longest {:.1}s",
+        refined.segments.len(),
+        per_ordinal,
+        longest
+    );
 }
