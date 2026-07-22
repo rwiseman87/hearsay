@@ -13,6 +13,19 @@ use crate::error::InferenceError;
 /// overrides it via [`WhisperAsr::with_language`] (the offline refine keeps this default).
 pub const DEFAULT_LANGUAGE: &str = "en";
 
+/// Anti-loop entropy threshold (whisper.cpp `entropy_thold`; its default is 2.4).
+///
+/// Long conversational audio can drop the greedy decoder into a self-sustaining repetition loop —
+/// one confident phrase emitted over and over in 1-second segments, filling every remaining 30-s
+/// window to the end of the track (a 17-minute meeting came back as one phrase repeated 473
+/// times). The fallback gate that should catch this compares the entropy of the window's last 32
+/// tokens against the threshold, and the loops clear the stock 2.4: measured on a real meeting, a
+/// single-phrase loop scored 2.45 and a two-phrase ping-pong loop 2.83, while genuine speech
+/// windows scored 3.06-3.38. 3.0 sits in that gap — every observed loop now fails the gate, which
+/// retries the window at a higher temperature and breaks the attractor, and real windows pass
+/// untouched. Verified loop-free on the failing meeting and regression-free on a known-good one.
+pub const DEFAULT_ENTROPY_THOLD: f32 = 3.0;
+
 /// One transcribed segment. Times are seconds from the start of the given audio.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AsrSegment {
@@ -26,6 +39,7 @@ pub struct AsrSegment {
 pub struct WhisperAsr {
     ctx: WhisperContext,
     language: String,
+    entropy_thold: f32,
 }
 
 impl WhisperAsr {
@@ -41,7 +55,15 @@ impl WhisperAsr {
         Ok(WhisperAsr {
             ctx,
             language: DEFAULT_LANGUAGE.to_string(),
+            entropy_thold: DEFAULT_ENTROPY_THOLD,
         })
+    }
+
+    /// Override the anti-loop entropy threshold ([`DEFAULT_ENTROPY_THOLD`]); the probe harness
+    /// uses this to measure candidate thresholds against recorded meetings.
+    pub fn with_entropy_thold(mut self, thold: f32) -> Self {
+        self.entropy_thold = thold;
+        self
     }
 
     /// Set the transcription language (a whisper language code, e.g. `"de"`, or `"auto"` to detect);
@@ -61,6 +83,7 @@ impl WhisperAsr {
             .map_err(|e| InferenceError::Whisper(format!("create state: {e}")))?;
 
         let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
+        params.set_entropy_thold(self.entropy_thold);
         params.set_language(Some(self.language.as_str()));
         params.set_print_special(false);
         params.set_print_progress(false);
