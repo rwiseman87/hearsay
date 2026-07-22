@@ -14,9 +14,11 @@ recorded inline so it is not re-litigated. Canonical architecture stays in
 
 ## Current state
 
-Phase 0 done (branch `feat/live-recording-ui`, this doc). **Next:** Phase 1 — the 1a shell
-(collapsible nav rail + `LiveRecording` view wired to the live transcript stream, End, and a live
-timer; waveform decorative for now).
+Phases 0-1 done. The 1a shell is live: collapsible nav rail, `LiveRecording` view (REC pill + live
+timer + decorative waveform + End), `SpeakerLine` with colored avatars + newest-line caret, the AI
+footer-strip placeholder, and a My-notes panel placeholder. Verified with a DB-seeded recording
+meeting + Playwright screenshots (expanded + collapsed rail). **Next:** Phase 2 — the My-notes
+backend (DB table + endpoints + autosave) replacing the placeholder panel.
 
 ## Scope
 
@@ -61,17 +63,19 @@ Each phase is independently shippable; land them as separate commits/PRs onto `f
 - [x] This tracking doc
 
 ### Phase 1 — Shell + 1a "Signal" (frontend only, real data)
-- [ ] `App.tsx` routes to a new `LiveRecording` view when `status === "recording"`; `TranscriptView`
+- [x] `App.tsx` routes to a new `LiveRecording` view when `status === "recording"`; `TranscriptView`
       keeps `finalized` / `refining`
-- [ ] `NavRail.tsx` — collapsed 62px icon strip; toggle expands to reveal `MeetingList` at the
-      resizable width; collapsed + width persisted in localStorage
-- [ ] `LiveRecording.tsx` topbar — REC pill, `useElapsed(started_at)` timer, title + meta, decorative
+- [x] `NavRail.tsx` — 62px icon strip (logo + meetings toggle + settings); toggle reveals/collapses
+      `MeetingList` at the resizable width; open state + width persisted in localStorage
+- [x] `LiveRecording.tsx` topbar — REC pill, `useElapsed(started_at)` timer, title + meta, decorative
       waveform, Pause (disabled placeholder), End (`useStopMeeting`)
-- [ ] `SpeakerLine.tsx` — avatar/dot + name + `YOU` tag + mono timestamp + body; newest line brighter
-      + blinking caret; bottom fade; auto-scroll via the lifted pin-to-bottom logic
-- [ ] Keep the inactivity + mic-silent banners
-- [ ] AI footer strip — static placeholder ("Highlights appear after the meeting")
-- [ ] `index.css` `.live-*` classes reusing existing tokens; `--spk-1..4` speaker-color set
+- [x] `SpeakerLine.tsx` — avatar + name + `YOU` tag + timestamp + body; newest line brighter +
+      blinking caret; bottom fade; auto-scroll via the lifted pin-to-bottom logic
+- [x] Keep the inactivity + mic-silent banners
+- [x] AI footer strip — static placeholder ("Highlights appear after the meeting")
+- [x] `index.css` `.live-*` classes reusing existing tokens; `--spk-1..4` speaker-color set
+- Note: the right-hand My-notes panel is a Phase-1 placeholder ("No notes yet." + chips); Phase 2
+      wires its real backend. Settings moved from the header button into the nav rail.
 
 ### Phase 2 — "My notes" backend + panel
 - [ ] `hearsay-db/migrations/0009_live_notes.sql` — one row per meeting (`meeting_id` PK/FK,

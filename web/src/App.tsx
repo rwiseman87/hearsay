@@ -11,7 +11,9 @@ import {
 
 import { useMeetings } from "./api/hooks";
 import type { MeetingRead } from "./api/types";
+import { LiveRecording } from "./components/LiveRecording";
 import { MeetingList } from "./components/MeetingList";
+import { NavRail } from "./components/NavRail";
 import { SearchBox } from "./components/SearchBox";
 import { TranscriptView } from "./components/TranscriptView";
 
@@ -22,6 +24,7 @@ const SIDEBAR_MIN = 180;
 const SIDEBAR_MAX = 560;
 const SIDEBAR_DEFAULT = 280;
 const SIDEBAR_KEY = "hearsay.sidebarWidth";
+const MEETINGS_OPEN_KEY = "hearsay.meetingsOpen";
 
 const clampSidebar = (value: number) =>
   Math.min(Math.max(value, SIDEBAR_MIN), SIDEBAR_MAX);
@@ -38,10 +41,21 @@ function useSidebarWidth() {
   return [width, setWidth] as const;
 }
 
+// Whether the meeting-list panel is revealed beside the nav rail (default open), persisted so the
+// collapsed/expanded choice sticks across sessions.
+function useMeetingsOpen() {
+  const [open, setOpen] = useState(() => localStorage.getItem(MEETINGS_OPEN_KEY) !== "0");
+  useEffect(() => {
+    localStorage.setItem(MEETINGS_OPEN_KEY, open ? "1" : "0");
+  }, [open]);
+  return [open, setOpen] as const;
+}
+
 export function App() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [showSettings, setShowSettings] = useState(false);
   const [sidebarWidth, setSidebarWidth] = useSidebarWidth();
+  const [meetingsOpen, setMeetingsOpen] = useMeetingsOpen();
   const drag = useRef<{ startX: number; startWidth: number } | null>(null);
   const meetings = useMeetings();
   const items = meetings.data?.items ?? [];
@@ -76,44 +90,62 @@ export function App() {
     else if (event.key === "ArrowRight") setSidebarWidth((w) => clampSidebar(w + 16));
   };
 
+  // Grid columns: the fixed nav rail, then the resizable meeting-list panel + its drag handle only
+  // while the list is revealed, then the flexible content pane.
+  const gridTemplateColumns = meetingsOpen
+    ? "var(--rail-width) min(var(--sidebar-width, 280px), 45vw) 6px 1fr"
+    : "var(--rail-width) 1fr";
+
   return (
     <div className="app">
       <header className="app__bar">
         <h1 className="app__title">Hearsay - It's what happened, probably</h1>
         <SearchBox onJump={onJump} />
-        <button type="button" className="app__settings" onClick={() => setShowSettings(true)}>
-          Settings
-        </button>
       </header>
       <main
         className="app__main"
-        style={{ "--sidebar-width": `${sidebarWidth}px` } as CSSProperties}
+        style={{ "--sidebar-width": `${sidebarWidth}px`, gridTemplateColumns } as CSSProperties}
       >
-        <MeetingList
-          meetings={items}
-          isLoading={meetings.isLoading}
-          error={meetings.error}
-          selectedId={selectedId}
-          onSelect={setSelectedId}
+        <NavRail
+          meetingsOpen={meetingsOpen}
+          onToggleMeetings={() => setMeetingsOpen((open) => !open)}
+          onOpenSettings={() => setShowSettings(true)}
         />
-        <div
-          className="app__resizer"
-          role="separator"
-          aria-orientation="vertical"
-          aria-label="Resize sidebar"
-          aria-valuenow={sidebarWidth}
-          aria-valuemin={SIDEBAR_MIN}
-          aria-valuemax={SIDEBAR_MAX}
-          tabIndex={0}
-          onPointerDown={onResizeStart}
-          onPointerMove={onResizeMove}
-          onPointerUp={onResizeEnd}
-          onKeyDown={onResizeKey}
-        />
-        <TranscriptView
-          meeting={selected}
-          jumpTo={jump && jump.meetingId === selectedId ? { startS: jump.startS, nonce: jump.nonce } : null}
-        />
+        {meetingsOpen ? (
+          <>
+            <MeetingList
+              meetings={items}
+              isLoading={meetings.isLoading}
+              error={meetings.error}
+              selectedId={selectedId}
+              onSelect={setSelectedId}
+            />
+            <div
+              className="app__resizer"
+              role="separator"
+              aria-orientation="vertical"
+              aria-label="Resize sidebar"
+              aria-valuenow={sidebarWidth}
+              aria-valuemin={SIDEBAR_MIN}
+              aria-valuemax={SIDEBAR_MAX}
+              tabIndex={0}
+              onPointerDown={onResizeStart}
+              onPointerMove={onResizeMove}
+              onPointerUp={onResizeEnd}
+              onKeyDown={onResizeKey}
+            />
+          </>
+        ) : null}
+        {selected && selected.status === "recording" ? (
+          <LiveRecording meeting={selected} />
+        ) : (
+          <TranscriptView
+            meeting={selected}
+            jumpTo={
+              jump && jump.meetingId === selectedId ? { startS: jump.startS, nonce: jump.nonce } : null
+            }
+          />
+        )}
       </main>
       {showSettings ? (
         <Suspense fallback={null}>
