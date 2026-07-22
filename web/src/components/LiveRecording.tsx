@@ -4,6 +4,7 @@ import { useKeepRecording, useStopMeeting } from "../api/hooks";
 import type { MeetingRead } from "../api/types";
 import { formatClock, useElapsed } from "../hooks/useElapsed";
 import { useTranscript, type TranscriptLine } from "../hooks/useTranscript";
+import { MyNotesPanel } from "./MyNotesPanel";
 import { SpeakerLine } from "./SpeakerLine";
 
 const lineKey = (line: TranscriptLine): string =>
@@ -176,20 +177,7 @@ export function LiveRecording({ meeting }: Props) {
         ) : null}
       </div>
 
-      <aside className="live__notes">
-        <div className="live__notes-head">
-          <span className="live__notes-title">My notes</span>
-        </div>
-        <div className="live__notes-empty muted">No notes yet.</div>
-        <div className="live__notes-foot">
-          <span className="live__chip" aria-disabled="true">
-            + Bookmark
-          </span>
-          <span className="live__chip" aria-disabled="true">
-            @ Mention
-          </span>
-        </div>
-      </aside>
+      <MyNotesPanel key={meeting.id} meetingId={meeting.id} />
     </section>
   );
 }

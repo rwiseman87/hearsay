@@ -8,6 +8,7 @@ export const queryKeys = {
     segments: (id: string) => ["meetings", "segments", id] as const,
     speakers: (id: string) => ["meetings", "speakers", id] as const,
     notes: (id: string) => ["meetings", "notes", id] as const,
+    userNotes: (id: string) => ["meetings", "userNotes", id] as const,
   },
   // Organizational folder tree for the sidebar. One prefix so a folder mutation invalidates the
   // whole set (the tree is rebuilt client-side from the flat list).

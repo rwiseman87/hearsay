@@ -273,6 +273,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/meetings/{id}/user-notes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["read_user_notes"];
+        put: operations["save_user_notes"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/models/catalog": {
         parameters: {
             query?: never;
@@ -1041,6 +1057,22 @@ export interface components {
             stream: components["schemas"]["Stream"];
             text: string;
         };
+        /**
+         * @description A meeting's user-authored "My notes" body (free-form text typed during the meeting). `body` is
+         *     empty when the user has typed none yet; `updated_at` drives the "autosaved" indicator.
+         */
+        UserNotesRead: {
+            body: string;
+            /** Format: date-time */
+            updated_at: string;
+        };
+        /**
+         * @description An autosave of the user's "My notes" body. Length-bounded at the boundary (reject over-large
+         *     payloads as 422 rather than letting them reach the DB / the on-disk export).
+         */
+        UserNotesWrite: {
+            body: string;
+        };
     };
     responses: never;
     parameters: never;
@@ -1780,6 +1812,70 @@ export interface operations {
                 content?: never;
             };
             503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    read_user_notes: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UserNotesRead"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    save_user_notes: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UserNotesWrite"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UserNotesRead"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };

@@ -18,7 +18,7 @@ const KNOWN_VOICEPRINTS_SQL: &str = "SELECT i.display_name, c.centroid FROM clus
      WHERE c.locked = 1 AND c.centroid IS NOT NULL AND c.meeting_id != ?";
 
 use crate::models::{
-    Cluster, Folder, Identity, Meeting, MeetingNotes, MeetingStatus, Segment, Stream,
+    Cluster, Folder, Identity, Meeting, MeetingNotes, MeetingStatus, Segment, Stream, UserNotes,
 };
 
 /// A speaker cluster joined to its bound identity's name (for the speakers list). `display_name`
@@ -708,6 +708,41 @@ pub struct RefineResult {
 pub struct NotesResult {
     pub summary: String,
     pub action_items: Vec<String>,
+}
+
+/// A meeting's user-authored notes row, or `None` when the user has typed none yet.
+pub async fn get_user_notes(
+    pool: &SqlitePool,
+    meeting_id: Uuid,
+) -> Result<Option<UserNotes>, sqlx::Error> {
+    sqlx::query_as::<_, UserNotes>("SELECT * FROM user_notes WHERE meeting_id = ?")
+        .bind(meeting_id)
+        .fetch_optional(pool)
+        .await
+}
+
+/// Insert or replace a meeting's user-authored notes (one row per meeting; each autosave overwrites
+/// the body). `created_at` is preserved across saves via the existing-row coalesce so the row keeps
+/// its first-typed timestamp while `updated_at` advances. Returns the stored row.
+pub async fn upsert_user_notes(
+    pool: &SqlitePool,
+    meeting_id: Uuid,
+    body: &str,
+) -> Result<UserNotes, sqlx::Error> {
+    let now = Utc::now();
+    sqlx::query(
+        "INSERT INTO user_notes (meeting_id, body, created_at, updated_at) \
+         VALUES (?, ?, ?, ?) \
+         ON CONFLICT(meeting_id) DO UPDATE SET body = excluded.body, updated_at = excluded.updated_at",
+    )
+    .bind(meeting_id)
+    .bind(body)
+    .bind(now)
+    .bind(now)
+    .execute(pool)
+    .await?;
+    // The row always exists after the upsert.
+    Ok(get_user_notes(pool, meeting_id).await?.expect("user_notes row present after upsert"))
 }
 
 /// Insert or replace a meeting's generated notes (one row per meeting; regenerating overwrites).

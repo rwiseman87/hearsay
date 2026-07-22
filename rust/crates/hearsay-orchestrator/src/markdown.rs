@@ -81,6 +81,24 @@ pub fn write_notes_md(
     Ok(())
 }
 
+/// Render the user-authored "My notes" body as `my-notes.md` (a heading + the raw body).
+fn render_user_notes(title: &str, body: &str) -> String {
+    format!("# {title} — My notes\n\n{}\n", body.trim_end())
+}
+
+/// Write `my-notes.md` (the user-authored notes body) into `dir` atomically, mirroring
+/// [`write_notes_md`]. Separate from the transcript/notes export so it can be written while the
+/// meeting is still recording without touching the in-progress `transcript.md`.
+pub fn write_user_notes_md(
+    dir: &Path,
+    meeting: &Meeting,
+    body: &str,
+) -> Result<(), OrchestratorError> {
+    std::fs::create_dir_all(dir)?;
+    write_atomic(&dir.join("my-notes.md"), &render_user_notes(&meeting.title, body))?;
+    Ok(())
+}
+
 fn status_str(status: MeetingStatus) -> &'static str {
     match status {
         MeetingStatus::Recording => "recording",

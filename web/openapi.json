@@ -932,6 +932,85 @@
         }
       }
     },
+    "/api/meetings/{id}/user-notes": {
+      "get": {
+        "tags": [
+          "notes"
+        ],
+        "operationId": "read_user_notes",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserNotesRead"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": ""
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "notes"
+        ],
+        "operationId": "save_user_notes",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UserNotesWrite"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserNotesRead"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": ""
+          },
+          "422": {
+            "description": ""
+          }
+        }
+      }
+    },
     "/api/models/catalog": {
       "get": {
         "tags": [
@@ -2633,6 +2712,35 @@
             "$ref": "#/components/schemas/Stream"
           },
           "text": {
+            "type": "string"
+          }
+        }
+      },
+      "UserNotesRead": {
+        "type": "object",
+        "description": "A meeting's user-authored \"My notes\" body (free-form text typed during the meeting). `body` is\nempty when the user has typed none yet; `updated_at` drives the \"autosaved\" indicator.",
+        "required": [
+          "body",
+          "updated_at"
+        ],
+        "properties": {
+          "body": {
+            "type": "string"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "UserNotesWrite": {
+        "type": "object",
+        "description": "An autosave of the user's \"My notes\" body. Length-bounded at the boundary (reject over-large\npayloads as 422 rather than letting them reach the DB / the on-disk export).",
+        "required": [
+          "body"
+        ],
+        "properties": {
+          "body": {
             "type": "string"
           }
         }

@@ -14,11 +14,12 @@ recorded inline so it is not re-litigated. Canonical architecture stays in
 
 ## Current state
 
-Phases 0-1 done. The 1a shell is live: collapsible nav rail, `LiveRecording` view (REC pill + live
-timer + decorative waveform + End), `SpeakerLine` with colored avatars + newest-line caret, the AI
-footer-strip placeholder, and a My-notes panel placeholder. Verified with a DB-seeded recording
-meeting + Playwright screenshots (expanded + collapsed rail). **Next:** Phase 2 — the My-notes
-backend (DB table + endpoints + autosave) replacing the placeholder panel.
+Phases 0-2 done. The 1a shell is live, and "My notes" is a real persisted feature: `user_notes`
+table, `GET`/`PUT /api/meetings/{id}/user-notes`, debounced autosave with a flush-on-blur, and a
+`my-notes.md` export written on each save via a targeted engine seam (`export_user_notes`) that never
+touches the in-progress transcript. Verified end to end (autosave PUT 200, persistence across reload,
+`my-notes.md` on disk) with a DB-seeded recording meeting + Playwright. **Next:** Phase 3 — the real
+amplitude waveform (forward the helper's `level`/`rms` over the WS).
 
 ## Scope
 
@@ -78,13 +79,16 @@ Each phase is independently shippable; land them as separate commits/PRs onto `f
       wires its real backend. Settings moved from the header button into the nav rail.
 
 ### Phase 2 — "My notes" backend + panel
-- [ ] `hearsay-db/migrations/0009_live_notes.sql` — one row per meeting (`meeting_id` PK/FK,
-      `body TEXT`, `updated_at`); model + `get` / `upsert` in `models.rs` + `queries.rs`
-- [ ] `GET` / `PUT /api/meetings/{id}/live-notes` (new handler, distinct from the LLM `notes.rs`
-      route); utoipa `LiveNotesRead` / `LiveNotesWrite` registered; `make codegen`
-- [ ] Export `my-notes.md` into the meeting folder on save + at finalize (orchestrator export seam)
-- [ ] `MyNotesPanel.tsx` — textarea + debounced autosave (`useSaveMyNotes`), "autosaved" indicator,
-      Bookmark / Mention chips (placeholders)
+- [x] `hearsay-db/migrations/0009_user_notes.sql` — `user_notes` (`meeting_id` PK/FK, `body TEXT`,
+      timestamps); `UserNotes` model + `get_user_notes` / `upsert_user_notes` (+ round-trip/cascade test)
+- [x] `GET` / `PUT /api/meetings/{id}/user-notes` (new `user_notes.rs`, distinct from the LLM
+      `notes.rs`; PUT is allowed while recording); utoipa `UserNotesRead` / `UserNotesWrite`; `make codegen`
+- [x] Export `my-notes.md` via a targeted `LiveEngine::export_user_notes` seam (writes only
+      `my-notes.md`, safe mid-recording); called from the PUT handler on each save
+- [x] `MyNotesPanel.tsx` — textarea + debounced autosave (`useSaveUserNotes`) + flush-on-blur,
+      "autosaved" indicator, Bookmark / Mention chips (placeholders)
+- Note: the route/table/types are named `user-notes` / `user_notes` / `UserNotes` (clearer than the
+      "live-notes" placeholder name in the original plan).
 
 ### Phase 3 — Real waveform (amplitude over the WS)
 - [ ] Surface the helper `level` event out of `drain_control` to the orchestrator (extend the

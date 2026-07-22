@@ -487,6 +487,23 @@ async fn write_notes_file(output_dir: &Path, meeting: &Meeting, notes: &queries:
     }
 }
 
+/// Write a meeting's `my-notes.md` from the user-authored body. Best-effort: a failure is logged,
+/// never surfaced (the body is already persisted in the DB).
+async fn write_user_notes_file(output_dir: &Path, meeting: &Meeting, body: &str) {
+    let dir = meeting.dir_path(output_dir);
+    let meeting = meeting.clone();
+    let body = body.to_string();
+    let write = tokio::task::spawn_blocking(move || {
+        crate::markdown::write_user_notes_md(&dir, &meeting, &body)
+    })
+    .await;
+    match write {
+        Ok(Err(err)) => tracing::error!(error = %err, "failed to write my-notes.md"),
+        Err(err) => tracing::error!(error = %err, "my-notes writer panicked"),
+        Ok(Ok(())) => {}
+    }
+}
+
 #[async_trait]
 impl LiveEngine for Orchestrator {
     async fn start_meeting(&self, title: Option<String>) -> Result<Meeting, LiveError> {
@@ -761,6 +778,22 @@ impl LiveEngine for Orchestrator {
                 action_items: serde_json::from_str(&notes.action_items).unwrap_or_default(),
             };
             write_notes_file(&self.output_dir, &meeting, &result).await;
+        }
+        Ok(())
+    }
+
+    async fn export_user_notes(&self, meeting_id: Uuid) -> Result<(), LiveError> {
+        let Some(meeting) = queries::get_meeting(&self.pool, meeting_id)
+            .await
+            .map_err(OrchestratorError::from)?
+        else {
+            return Ok(());
+        };
+        if let Some(notes) = queries::get_user_notes(&self.pool, meeting_id)
+            .await
+            .map_err(OrchestratorError::from)?
+        {
+            write_user_notes_file(&self.output_dir, &meeting, &notes.body).await;
         }
         Ok(())
     }

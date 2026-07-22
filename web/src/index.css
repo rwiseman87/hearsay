@@ -1992,6 +1992,10 @@ mark.find-hit {
 }
 
 .live__notes-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
   padding: 16px 18px 12px;
   border-bottom: 1px solid var(--border);
 }
@@ -2001,10 +2005,33 @@ mark.find-hit {
   font-weight: 700;
 }
 
-.live__notes-empty {
+.live__notes-status {
+  color: var(--muted);
+  font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Borderless editor filling the panel between the header and the footer chips. */
+.live__notes-editor {
   flex: 1;
-  padding: 16px 18px;
+  min-height: 0;
+  padding: 14px 18px;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
   font-size: var(--fs-md);
+  line-height: 1.7;
+  resize: none;
+}
+
+.live__notes-editor:focus {
+  outline: none;
+}
+
+.live__notes-editor::placeholder {
+  color: var(--muted);
 }
 
 .live__notes-foot {

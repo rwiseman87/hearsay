@@ -93,6 +93,15 @@ pub trait LiveEngine: Send + Sync {
         Ok(())
     }
 
+    /// Best-effort write of a meeting's `my-notes.md` (the user-authored "My notes" body) from the
+    /// stored `user_notes` row. Called after an autosave so the on-disk export stays in step with the
+    /// DB; unlike [`export_meeting`] it touches only `my-notes.md`, so it is safe to call while the
+    /// meeting is still recording (it never rewrites the in-progress transcript). Default no-op for
+    /// engines without an export path.
+    async fn export_user_notes(&self, _meeting_id: Uuid) -> Result<(), LiveError> {
+        Ok(())
+    }
+
     /// Await any in-flight background work (e.g. a post-stop refine + transcript write) so a graceful
     /// shutdown does not cut one off mid-write. Default no-op for engines with no background tasks.
     async fn shutdown(&self) {}
