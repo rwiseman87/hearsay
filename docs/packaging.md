@@ -125,6 +125,34 @@ flowchart TD
   The erase is confirmed through a native dialog driven by the shell (not the web page), and it
   cannot be undone. The app then quits so you can drag `Hearsay.app` to the Trash.
 
+## Windows installer
+
+The Windows bundle is an unsigned NSIS installer built on a Windows x86_64 machine (the port's
+plan and tracking state live in [windows-port.md](windows-port.md)):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\build-windows.ps1        # CPU build
+powershell -ExecutionPolicy Bypass -File scripts\build-windows.ps1 -Vulkan -Aec
+```
+
+The script fetches and stages the models (the sherpa live/diarize set plus `ggml-small.en.bin`
+for the refine), builds the web bundle and `hearsay-core.exe` (features `sherpa,notes`, plus
+`vulkan`/`aec` when flagged), and runs `cargo tauri build --bundles nsis`.
+`tauri.windows.conf.json` narrows the bundle for Windows: NSIS only, and `hearsay-core` as the
+single external binary (no Swift sidecars). The installer lands in
+`web/src-tauri/target/release/bundle/nsis/`.
+
+Windows specifics:
+
+- **Unsigned**: SmartScreen shows "Windows protected your PC" — More info > Run anyway.
+- **WebView2**: the installer bootstraps Microsoft's WebView2 runtime if it is missing
+  (preinstalled on Windows 11 and current Windows 10).
+- **Data locations**: database, recordings, and downloaded models live under
+  `%APPDATA%\com.hearsay.app\`; WebView state under `%LOCALAPPDATA%\com.hearsay.app\`. "Erase
+  all data" removes both (Windows has no per-app permission grants to reset).
+- **Quit during a meeting**: Windows has no SIGTERM-style graceful stop yet, so a meeting active
+  at quit is finalized by the next launch's startup reconciliation instead of at exit.
+
 ## Known limitations
 
 - **Not notarized.** By design; recipients run the `xattr` quarantine strip once.

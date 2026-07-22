@@ -471,6 +471,26 @@ export interface components {
             /** Format: int32 */
             protocol_version: number;
         };
+        /**
+         * @description A capture-health frame (not a transcript line): the named stream is delivering digital silence —
+         *     exactly-zero samples, which a working microphone never produces — so the UI warns that the mic is
+         *     muted or dead. Without this the failure is invisible, because ASR does not return nothing for
+         *     silence, it hallucinates text. Mirrors the orchestrator's `CaptureHealthEvent` on the wire.
+         */
+        CaptureHealthEvent: {
+            /**
+             * @description The constant `kind` discriminant marking a [`CaptureHealthEvent`] (`"capture_health"`).
+             * @enum {string}
+             */
+            kind: "capture_health";
+            /**
+             * @description Whether a capture stream is delivering audio (`ok`) or nothing at all (`silent`).
+             * @enum {string}
+             */
+            state: "ok" | "silent";
+            /** @description The affected stream; only `me` (the mic) is monitored. */
+            stream: string;
+        };
         /** @description One downloadable notes model in the in-app catalog (the internal repo/file/sha are not exposed). */
         CatalogEntry: {
             context: string;

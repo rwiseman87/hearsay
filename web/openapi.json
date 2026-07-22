@@ -1315,6 +1315,36 @@
           }
         }
       },
+      "CaptureHealthEvent": {
+        "type": "object",
+        "description": "A capture-health frame (not a transcript line): the named stream is delivering digital silence —\nexactly-zero samples, which a working microphone never produces — so the UI warns that the mic is\nmuted or dead. Without this the failure is invisible, because ASR does not return nothing for\nsilence, it hallucinates text. Mirrors the orchestrator's `CaptureHealthEvent` on the wire.",
+        "required": [
+          "kind",
+          "stream",
+          "state"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "description": "The constant `kind` discriminant marking a [`CaptureHealthEvent`] (`\"capture_health\"`).",
+            "enum": [
+              "capture_health"
+            ]
+          },
+          "state": {
+            "type": "string",
+            "description": "Whether a capture stream is delivering audio (`ok`) or nothing at all (`silent`).",
+            "enum": [
+              "ok",
+              "silent"
+            ]
+          },
+          "stream": {
+            "type": "string",
+            "description": "The affected stream; only `me` (the mic) is monitored."
+          }
+        }
+      },
       "CatalogEntry": {
         "type": "object",
         "description": "One downloadable notes model in the in-app catalog (the internal repo/file/sha are not exposed).",

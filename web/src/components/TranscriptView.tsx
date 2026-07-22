@@ -62,7 +62,7 @@ export function TranscriptView({ meeting, jumpTo }: Props) {
   const rediarize = useRediarize(meeting?.id ?? "");
   const reveal = useRevealMeeting();
   const editSegment = useEditSegment(meeting?.id ?? "");
-  const { lines, connection, preparing, inactivityPrompt, dismissInactivityPrompt } =
+  const { lines, connection, preparing, inactivityPrompt, micSilent, dismissInactivityPrompt } =
     useTranscript(meeting);
 
   const audioRef = useRef<HTMLAudioElement>(null);
@@ -121,8 +121,14 @@ export function TranscriptView({ meeting, jumpTo }: Props) {
       ?.scrollIntoView({ block: "center" });
   };
 
-  // Reset per-meeting UI state when switching meetings; the <audio> element remounts per meeting, so
-  // drop the old Web Audio graph and let the next play rebuild it against the new element.
+  // Reset per-meeting UI state when switching meetings.
+  //
+  // The Web Audio graph is deliberately NOT torn down here. This view is mounted once for the whole
+  // session (no `key` on it or on the <audio>), so switching meetings only swaps the element's `src`
+  // — the element itself, and the MediaElementAudioSourceNode bound to it, outlive the meeting.
+  // Closing the context here used to leave the surviving element routed into a closed graph (silent
+  // playback) and let the next play call `createMediaElementSource` on it a second time, which
+  // throws InvalidStateError out of the onPlay handler. The context is closed on unmount, below.
   useEffect(() => {
     setCurrentTime(0);
     setHasAudio(true);
@@ -132,9 +138,6 @@ export function TranscriptView({ meeting, jumpTo }: Props) {
     setConfirmRefine(false);
     setJumpIndex(null);
     pinnedToBottom.current = true; // a freshly opened meeting follows the latest by default
-    void audioCtxRef.current?.close();
-    audioCtxRef.current = null;
-    gainRef.current = null;
   }, [meeting?.id]);
 
   // Follow the live transcript: when new lines arrive during recording, keep the newest in view —
@@ -235,12 +238,21 @@ export function TranscriptView({ meeting, jumpTo }: Props) {
   const ensureAudioGraph = () => {
     const audio = audioRef.current;
     if (!audio || audioCtxRef.current) return;
-    const ctx = new AudioContext();
-    const gain = ctx.createGain();
-    gain.gain.value = volumeRef.current;
-    ctx.createMediaElementSource(audio).connect(gain).connect(ctx.destination);
-    audioCtxRef.current = ctx;
-    gainRef.current = gain;
+    // Boosting past 100% is a nicety; playing the meeting is not. Anything that goes wrong building
+    // the graph degrades to the element's own output rather than throwing out of the play handler,
+    // and never leaves a half-built context behind to leak.
+    let ctx: AudioContext | null = null;
+    try {
+      ctx = new AudioContext();
+      const gain = ctx.createGain();
+      gain.gain.value = volumeRef.current;
+      ctx.createMediaElementSource(audio).connect(gain).connect(ctx.destination);
+      audioCtxRef.current = ctx;
+      gainRef.current = gain;
+    } catch (error) {
+      void ctx?.close();
+      console.warn("web audio unavailable; falling back to native volume", error);
+    }
   };
 
   const handleVolume = (value: number) => {
@@ -314,6 +326,15 @@ export function TranscriptView({ meeting, jumpTo }: Props) {
           )}
         </div>
       </header>
+      {recording && micSilent ? (
+        <div className="inactivity-banner" role="alert">
+          <span className="inactivity-banner__text">
+            Your microphone is not being heard — it is sending silence. Check that it is not muted
+            and that the right input device is selected. Anything transcribed as "Me" until this
+            clears is unreliable.
+          </span>
+        </div>
+      ) : null}
       {recording && inactivityPrompt ? (
         <div className="inactivity-banner" role="alert">
           <span className="inactivity-banner__text">

@@ -137,12 +137,15 @@ error otherwise, so a misconfigured deploy fails fast instead of silently using 
 | Models download dir | `HEARSAY_MODELS_DIR` | `outputs/models` |
 | Shell handshake file | `HEARSAY_HANDSHAKE_PATH` | unset (headless dev prints the URL instead) |
 | Bundled FluidAudio models | `HEARSAY_FLUID_MODELS_DIR` | unset (FluidAudio downloads to its cache) |
+| Sherpa models dir (Windows backend) | `HEARSAY_SHERPA_MODELS_DIR` | `outputs/models/sherpa` |
+| Them loopback path (Windows) | `HEARSAY_WIN_LOOPBACK` | `device` (`device` \| `process`) |
 | Environment | `ENVIRONMENT` | `development` |
 
 `HEARSAY_RECORD`, `HEARSAY_AUTO_REFINE`, `HEARSAY_RECOGNITION_THRESHOLD`, and the notes settings
 are the defaults for the editable Settings sections; a stored preference overrides them. The
 handshake and FluidAudio paths are injected by the desktop shell and normally unset in
-development.
+development. The sherpa and loopback settings apply only on Windows (see
+[windows-port.md](windows-port.md)).
 
 **Audio recording and playback.** When recording is on (the default), each meeting records one
 timeline-accurate stereo `audio.wav` (Me on the left channel, Them on the right). This single file
@@ -155,6 +158,51 @@ refine since there is no recording to re-diarize. Deleting a meeting removes the
 When run from source, all runtime data (recordings, the SQLite database, downloaded models) lives
 under the repo's `outputs/` directory, which is gitignored. Override any path with the variables
 above.
+
+## Windows
+
+The Windows build targets `x86_64-pc-windows-msvc` only (no ARM); the port's plan and tracking
+state live in [windows-port.md](windows-port.md). There is no Swift on Windows: capture is
+in-process WASAPI and the live/refine models are the sherpa-onnx set.
+
+Prerequisites on the Windows machine:
+
+- Visual Studio 2022 Build Tools with the "Desktop development with C++" workload (MSVC + the
+  Windows SDK).
+- A Rust toolchain ([rustup](https://rustup.rs/); the default host triple is the MSVC one).
+- [CMake](https://cmake.org) (the whisper-rs / llama-cpp-2 native builds).
+- Node 22.
+- LLVM (`winget install -e --id LLVM.LLVM`) — llama-cpp-2 (the `notes` feature) and `aec` run
+  bindgen, which loads `libclang.dll` at build time.
+- The [Vulkan SDK](https://vulkan.lunarg.com/sdk/home#windows) **and** Windows long-path support —
+  the installer build enables the `vulkan` feature by default (GPU whisper refine + notes on any
+  vendor's GPU; the live sherpa ASR is unaffected, as onnxruntime has no Vulkan provider). ggml
+  builds its Vulkan shader generator as a nested cmake sub-project, and MSBuild's `.tlog` paths
+  under it exceed `MAX_PATH` (`error MSB3491`) regardless of how short `CARGO_TARGET_DIR` is, so
+  long paths are required. Enable them from an elevated PowerShell, then reboot:
+  `Set-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem' -Name LongPathsEnabled -Value 1 -Type DWord`
+  Pass `-NoVulkan` to `scripts\build-windows.ps1` to build CPU-only without either prerequisite.
+
+Build and run from source (PowerShell; `scripts\build-windows.ps1` fetches the models on first
+run, or fetch them from any host with `make fetch-sherpa-models`):
+
+```powershell
+cargo build --manifest-path rust\Cargo.toml --features sherpa,notes
+cargo run --manifest-path rust\Cargo.toml -p hearsay-core --features sherpa,notes
+cargo run --manifest-path rust\Cargo.toml -p hearsay-core --features sherpa,notes -- --synthetic
+```
+
+Everything links against the default dynamic CRT. `hearsay-inference` takes sherpa-onnx's `shared`
+feature so onnxruntime + sherpa arrive as DLLs: the crate's default `static` libs are prebuilt
+against the *static* CRT, which would force `-C target-feature=+crt-static` on the whole binary,
+and whisper.cpp pins CMP0091 OLD so its cmake appends `/MD` after cmake-rs's `/MT` — a mismatch no
+toolchain file can fix, because the platform defaults are set after a toolchain file runs.
+`sherpa-onnx-sys` copies `sherpa-onnx-c-api.dll` + `onnxruntime.dll` next to the built binary; the
+installer stages them alongside the sidecar.
+
+`--synthetic` uses the built-in tone source, so the whole pipeline runs without a microphone or
+system audio. The installer build is `scripts\build-windows.ps1` (see
+[packaging.md](packaging.md)).
 
 ## Testing
 

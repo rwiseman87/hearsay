@@ -484,7 +484,8 @@ the rows and the folder, and the app collects no telemetry.
 ## Cross-platform roadmap
 
 The next platform is Windows, as the same Rust + Tauri app with per-OS code only at the edges.
-Roughly 90 percent of the codebase is platform-neutral.
+Roughly 90 percent of the codebase is platform-neutral. The port's working plan and tracking
+state live in [windows-port.md](windows-port.md).
 
 | Layer | Technology | Shared or per-OS |
 |---|---|---|

@@ -54,8 +54,16 @@ impl Backend for SherpaFileBackend {
     fn build(&self) -> BackendInstance {
         BackendInstance {
             source: Box::new(WavFileSource::new(self.wav.clone())),
-            me: Box::new(SherpaTranscriber::new(load_streaming(&self.model_dir))),
-            them: Box::new(SherpaTranscriber::new(load_streaming(&self.model_dir))),
+            // `None`: this exercises the ASR + pipeline wiring, so it asserts on the raw
+            // recognizer output rather than the punctuation-restored text.
+            me: Box::new(SherpaTranscriber::new(
+                load_streaming(&self.model_dir),
+                None,
+            )),
+            them: Box::new(SherpaTranscriber::new(
+                load_streaming(&self.model_dir),
+                None,
+            )),
         }
     }
 }
@@ -67,8 +75,13 @@ async fn wav_through_sherpa_streaming_persists_transcript() {
     let tmp = tempfile::tempdir().unwrap();
 
     let backend = Arc::new(SherpaFileBackend {
-        wav: repo("outputs/recordings/2026-07-01_1833_miguel-kristina-test2/audio.wav"),
-        model_dir: repo("outputs/models/sherpa-onnx-streaming-zipformer-en-20M-2023-02-17"),
+        // Any 16 kHz recording; override with HEARSAY_BENCH_WAV to drive it from a clip you have.
+        wav: std::env::var("HEARSAY_BENCH_WAV")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| {
+                repo("outputs/recordings/2026-07-01_1833_miguel-kristina-test2/audio.wav")
+            }),
+        model_dir: repo("outputs/models/sherpa/sherpa-onnx-streaming-zipformer-en-2023-06-21"),
     });
     let orch = Orchestrator::new(pool.clone(), tmp.path().to_path_buf(), backend);
 
@@ -76,9 +89,11 @@ async fn wav_through_sherpa_streaming_persists_transcript() {
         .start_meeting(Some("streaming e2e".into()))
         .await
         .unwrap();
-    // stop drains capture -> both live sessions flush -> persistence + transcript.md before returning.
+    // stop drains capture -> both live sessions flush -> segments persist. The transcript write
+    // runs as a tracked background task after stop returns; shutdown awaits it.
     let stopped = orch.stop_meeting(meeting.id).await.unwrap().unwrap();
     assert!(stopped.ended_at.is_some());
+    orch.shutdown().await;
 
     let segments = queries::list_segments(&pool, meeting.id).await.unwrap();
     eprintln!("persisted {} finalized segments", segments.len());
@@ -101,8 +116,8 @@ async fn wav_through_sherpa_streaming_persists_transcript() {
         "expected non-empty Them transcript text"
     );
 
-    // The folder story: transcript.md + meeting.json.
-    let folder = tmp.path().join(&meeting.folder);
+    // The folder story: transcript.md + meeting.json, in the meeting's pinned dir.
+    let folder = stopped.dir_path(tmp.path());
     let transcript = std::fs::read_to_string(folder.join("transcript.md")).unwrap();
     assert!(transcript.starts_with("# streaming e2e\n"));
     let meta = std::fs::read_to_string(folder.join("meeting.json")).unwrap();

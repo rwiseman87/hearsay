@@ -22,6 +22,8 @@ mod refine;
 #[cfg(feature = "sherpa")]
 mod sherpa_diarize;
 #[cfg(feature = "sherpa")]
+mod sherpa_punct;
+#[cfg(feature = "sherpa")]
 mod sherpa_streaming;
 
 pub use asr::{AsrSegment, WhisperAsr, DEFAULT_LANGUAGE};
@@ -33,10 +35,13 @@ pub use notes::summarize;
 pub use notes::MeetingNotes;
 pub use notes::DEFAULT_NOTES_PROMPT;
 pub use refine::{
-    refine_audio_file, refine_them, refine_them_with, RefineOutput, RefinedSegment, SwiftDiarizer,
+    refine_audio_file, refine_audio_file_with, refine_them, refine_them_with, RefineOutput,
+    RefinedSegment, SwiftDiarizer,
 };
 #[cfg(feature = "sherpa")]
 pub use sherpa_diarize::{DiarizeTuning, SherpaDiarizer};
+#[cfg(feature = "sherpa")]
+pub use sherpa_punct::{PunctuationModel, Punctuator};
 #[cfg(feature = "sherpa")]
 pub use sherpa_streaming::{
     StreamEvent, StreamEventKind, StreamingAsr, StreamingModel, StreamingSession,

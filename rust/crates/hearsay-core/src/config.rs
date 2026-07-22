@@ -8,6 +8,8 @@ use std::net::IpAddr;
 use std::path::PathBuf;
 use std::time::Duration;
 
+use hearsay_backends::LoopbackMode;
+
 /// Resolved settings for one process.
 #[derive(Debug, Clone)]
 pub struct Settings {
@@ -84,6 +86,13 @@ pub struct Settings {
     /// The process's home directory (`HOME`): the base of FluidAudio's default model cache when
     /// seeding the bundled models. `None` when `HOME` is unset.
     pub home_dir: Option<PathBuf>,
+    /// Directory holding the sherpa live/diarize models for the Windows backend
+    /// (`HEARSAY_SHERPA_MODELS_DIR`, default `outputs/models/sherpa`; the desktop shell points it at
+    /// the bundled copy). Unused on macOS.
+    pub sherpa_models_dir: PathBuf,
+    /// Which WASAPI loopback path captures the Them stream on Windows (`HEARSAY_WIN_LOOPBACK`,
+    /// `device` | `process`, default `device` — see `docs/windows-port.md`). Unused on macOS.
+    pub win_loopback_mode: LoopbackMode,
 }
 
 fn env_or(key: &str, default: impl Into<String>) -> String {
@@ -125,6 +134,22 @@ fn env_u64(key: &str, default: u64, problems: &mut Vec<String>) -> u64 {
         Ok(value) => value,
         Err(_) => {
             problems.push(format!("{key}={raw:?} is not a non-negative integer"));
+            default
+        }
+    }
+}
+
+/// Parse the Windows loopback-mode env var (`HEARSAY_WIN_LOOPBACK`); `default` when unset. A
+/// set-but-unrecognized value is recorded in `problems` instead of falling back silently.
+fn env_loopback_mode(default: LoopbackMode, problems: &mut Vec<String>) -> LoopbackMode {
+    const KEY: &str = "HEARSAY_WIN_LOOPBACK";
+    let Ok(raw) = env::var(KEY) else {
+        return default;
+    };
+    match raw.parse::<LoopbackMode>() {
+        Ok(mode) => mode,
+        Err(err) => {
+            problems.push(format!("{KEY}: {err}"));
             default
         }
     }
@@ -207,6 +232,7 @@ impl Settings {
         let notes_enabled = env_bool("HEARSAY_NOTES", false, &mut problems);
         let refine_timeout =
             Duration::from_secs(env_u64("HEARSAY_REFINE_TIMEOUT_SECS", 1800, &mut problems));
+        let win_loopback_mode = env_loopback_mode(LoopbackMode::Device, &mut problems);
 
         if !problems.is_empty() {
             if environment == "development" {
@@ -256,6 +282,11 @@ impl Settings {
             handshake_path: env_path("HEARSAY_HANDSHAKE_PATH"),
             fluid_models_dir: env_path("HEARSAY_FLUID_MODELS_DIR"),
             home_dir: env_path("HOME"),
+            sherpa_models_dir: PathBuf::from(env_or(
+                "HEARSAY_SHERPA_MODELS_DIR",
+                "outputs/models/sherpa",
+            )),
+            win_loopback_mode,
         })
     }
 

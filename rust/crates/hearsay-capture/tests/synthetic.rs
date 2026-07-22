@@ -1,6 +1,9 @@
+#![cfg(target_os = "macos")]
 //! End-to-end capture over the real Swift `hearsay-helper` in `--synthetic` mode (generated audio,
 //! no TCC prompts). Ignored by default (needs `make swift-build`); run with:
 //!   cargo test --manifest-path rust/Cargo.toml -p hearsay-capture -- --ignored --nocapture
+//!
+//! macOS-only: `SwiftHelperSource` (and the helper itself) do not exist on the Windows build.
 
 use std::path::PathBuf;
 use std::time::Duration;

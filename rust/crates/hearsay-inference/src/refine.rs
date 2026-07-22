@@ -354,19 +354,36 @@ fn l2_normalize(vector: &[f32]) -> Option<Vec<f32>> {
     }
 }
 
-/// Refine a recorded meeting's `audio.wav` end-to-end: read the Them (right) channel, load the
-/// whisper model, then re-diarize (`diarize_binary`) + re-transcribe. The single ML entry point
-/// shared by the manual `/rediarize` route and the orchestrator's auto-refine-at-stop. Blocking
-/// (whisper + subprocess) — call via `spawn_blocking` from async code.
+/// Refine a recorded meeting's `audio.wav` end-to-end with any [`Diarizer`]: read the Them (right)
+/// channel, load the whisper model, then re-diarize + re-transcribe. The diarizer-agnostic file
+/// entry — the macOS refiner wraps it with [`SwiftDiarizer`] ([`refine_audio_file`]) and the
+/// Windows refiner with `SherpaDiarizer`. Blocking (whisper) — call via `spawn_blocking` from
+/// async code.
+pub fn refine_audio_file_with(
+    audio_path: &Path,
+    diarizer: &dyn Diarizer,
+    model: &Path,
+) -> Result<RefineOutput, InferenceError> {
+    let them = crate::audio::read_them_channel(audio_path)?;
+    let asr = WhisperAsr::load(model)?;
+    refine_them_with(&asr, diarizer, &them)
+}
+
+/// Refine a recorded meeting's `audio.wav` end-to-end with the Swift `hearsay-diarize` sidecar
+/// (`diarize_binary`, bounded by `timeout`) — the macOS entry point shared by the manual
+/// `/rediarize` route and the orchestrator's auto-refine-at-stop. Blocking (whisper + subprocess)
+/// — call via `spawn_blocking` from async code.
 pub fn refine_audio_file(
     audio_path: &Path,
     diarize_binary: &Path,
     model: &Path,
     timeout: Duration,
 ) -> Result<RefineOutput, InferenceError> {
-    let them = crate::audio::read_them_channel(audio_path)?;
-    let asr = WhisperAsr::load(model)?;
-    refine_them(&asr, diarize_binary, &them, timeout)
+    refine_audio_file_with(
+        audio_path,
+        &SwiftDiarizer::new(diarize_binary, timeout),
+        model,
+    )
 }
 
 fn write_mono_wav(path: &Path, samples: &[f32]) -> Result<(), InferenceError> {

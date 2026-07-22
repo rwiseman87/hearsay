@@ -32,6 +32,9 @@ sha2 = "0.10.9"
 # `metal` (see the Makefile) — a large win on Apple Silicon. vulkan/cuda are here for the planned
 # cross-platform builds; enable one per target (building a backend the host lacks fails).
 [features]
+# The cross-platform (Windows) sherpa-onnx live/diarize path; required by the Windows backend
+# (`--features sherpa,notes` there), off by default so the macOS bundle never links onnxruntime.
+sherpa = ["hearsay-backends/sherpa"]
 notes = ["hearsay-backends/notes"]
 aec = ["hearsay-backends/aec"]
 metal = ["hearsay-backends/metal"]
