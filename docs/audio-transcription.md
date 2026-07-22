@@ -314,7 +314,10 @@ nothing while system audio is silent), so a `FrameAligner` turns them into index
 (10 ms) near/far pairs on one absolute sample clock. A Me frame is released once the far buffer covers
 it, **or** once Me runs 0.2 s ahead of the far end (then the far frame is zero-filled — cancelling
 against silence is a near-passthrough, which is correct because a silent far end means no echo)
-(`aec.rs:189`). SpeexDSP is then driven per frame (`aec.rs:252`):
+(`aec.rs:204`). In the other direction the far reference is capped at a trailing 2 s, so a stalled
+Me stream (mic device loss) bounds the backlog instead of growing it (`aec.rs:188`). SpeexDSP is
+then driven per frame with a 300 ms filter tail — long enough to cover Bluetooth/AirPlay playout
+latency in the echo path (`aec.rs:280`):
 
 ```rust
 for f in &frames {
