@@ -11,7 +11,26 @@ interface Props {
 export function NavRail({ meetingsOpen, onToggleMeetings, onOpenSettings }: Props) {
   return (
     <nav className="rail" aria-label="Primary">
-      <img className="rail__logo" src="/hearsay-icon-small.svg" alt="Hearsay" width={30} height={30} />
+      {/* Inlined so it renders in the packaged app too — the core serves only `/` and `/assets/*`,
+          not root public files like the icon SVG. */}
+      <svg
+        className="rail__logo"
+        viewBox="0 0 100 100"
+        width={30}
+        height={30}
+        role="img"
+        aria-label="Hearsay"
+      >
+        <rect width="100" height="100" rx="20" fill="#4b37c9" />
+        <polyline
+          points="20,52 32,30 44,64 56,26 68,60 80,44"
+          fill="none"
+          stroke="#ffffff"
+          strokeWidth={11}
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+      </svg>
       <button
         type="button"
         className={"rail__btn" + (meetingsOpen ? " is-active" : "")}
