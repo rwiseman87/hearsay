@@ -35,6 +35,16 @@ const MAX_REF_HOLD: u64 = 3200;
 #[cfg(any(feature = "aec", test))]
 const MAX_FORWARD_FILL: usize = 5 * 60 * 16_000;
 
+/// The most far-end reference buffered ahead of the emission frontier. Far only runs this far ahead
+/// when the Me stream has stalled (mic device loss mid-meeting) — frames are emitted at Me's pace,
+/// so nothing consumes the reference until Me returns. Those stalled frames can only ever emit with
+/// a zero-filled near side, whose cancelled output is silence regardless of the reference, so the
+/// oldest reference past the cap is dropped rather than held: a mic stall costs a fixed 128 KB
+/// instead of ~230 MB/h. 2 s at 16 kHz — 10x `RESYNC_GAP`, so legitimate cross-stream delivery skew
+/// never trips it.
+#[cfg(any(feature = "aec", test))]
+const MAX_FAR_BUFFER: u64 = 2 * 16_000;
+
 /// One stream's samples, placed contiguously from `base` on the shared absolute sample clock. Gaps
 /// are zero-filled so `near` and `far` stay index-aligned; consumed samples are dropped from the
 /// front as `base` advances.
@@ -177,6 +187,11 @@ impl FrameAligner {
 
     fn push_far(&mut self, t0_s: f64, samples: &[f32]) {
         self.far.push(t0_s, samples);
+        // Keep only the trailing MAX_FAR_BUFFER of reference. Trimming moves `base` forward, so a
+        // frame over the dropped region reads a zero-filled far side — indistinguishable output,
+        // since far only outruns the frontier this much when Me is stalled (zero near).
+        self.far
+            .consume_to(self.far.end().saturating_sub(MAX_FAR_BUFFER));
     }
 
     /// Emit every frame that is ready: near covers `[next, next+FRAME)` and either the far buffer
@@ -206,9 +221,17 @@ impl FrameAligner {
     }
 }
 
+/// MDF adaptive-filter tail in samples: the longest playout + acoustic echo delay the canceller
+/// can model. The `AecConfig` default (1600, 100 ms) covers wired speakers (10-40 ms of playout
+/// latency) but not Bluetooth / AirPlay output, which buffers 150-300 ms — past the tail the
+/// filter never converges and the echo passes through untouched. 300 ms at 16 kHz; the cost is
+/// linear in the tail and trivial at 16 kHz mono.
+#[cfg(feature = "aec")]
+const FILTER_TAIL: i32 = 4800;
+
 #[cfg(feature = "aec")]
 mod cancel {
-    use super::{FrameAligner, FRAME, SAMPLE_RATE};
+    use super::{FrameAligner, FILTER_TAIL, FRAME, SAMPLE_RATE};
     use aec_rs::{Aec, AecConfig};
 
     /// The Speex echo state holds raw C pointers, so it is not `Send` by default. `demux` owns the
@@ -226,7 +249,12 @@ mod cancel {
         pub(crate) fn new() -> Self {
             EchoCanceller {
                 aligner: FrameAligner::new(),
-                aec: SendAec(Aec::new(&AecConfig::default())),
+                aec: SendAec(Aec::new(&AecConfig {
+                    frame_size: FRAME,
+                    filter_length: FILTER_TAIL,
+                    sample_rate: SAMPLE_RATE as u32,
+                    enable_preprocess: true,
+                })),
             }
         }
 
@@ -375,6 +403,48 @@ mod tests {
     }
 
     #[test]
+    fn far_backlog_is_bounded_while_me_stalls() {
+        let mut a = FrameAligner::new();
+        // One Me frame, then the mic stalls while the tap keeps flowing for a minute.
+        a.push_near(0.0, &vec![0.5f32; FRAME]);
+        a.push_far(0.0, &vec![0.1f32; 1600]);
+        a.drain();
+        for i in 1..600 {
+            a.push_far(i as f64 * 0.1, &vec![0.1f32; 1600]);
+            a.drain();
+        }
+        assert!(
+            (a.far.buf.len() as u64) <= MAX_FAR_BUFFER,
+            "far backlog {} exceeds the cap",
+            a.far.buf.len()
+        );
+
+        // Me resumes at the far frontier (both streams share the clock): the retained reference is
+        // exactly what the resumed frames need.
+        let resume_idx = 600 * 1600u64; // 60 s
+        a.push_near(60.0, &vec![0.5f32; FRAME]);
+        a.push_far(60.0, &vec![0.1f32; 1600]);
+        let frames = a.drain();
+        let resumed = frames
+            .iter()
+            .find(|f| f.start == resume_idx)
+            .expect("frame at the resume index");
+        assert!(resumed.near.iter().all(|&s| s == 0.5), "resumed Me intact");
+        assert!(
+            resumed.far.iter().all(|&s| s == 0.1),
+            "resumed frame pairs with the retained (untrimmed) reference"
+        );
+        // A frame deep in the stall gap reads a zero-filled far side — its near side is zero-filled
+        // too, so the trim changed nothing observable.
+        let stalled = frames
+            .iter()
+            .find(|f| f.start == 10 * FRAME as u64)
+            .expect("frame in the stall gap");
+        assert!(stalled.near.iter().all(|&s| s == 0.0));
+        assert!(stalled.far.iter().all(|&s| s == 0.0));
+    }
+
+    #[test]
     fn real_gap_reanchors_to_timestamp() {
         let mut a = FrameAligner::new();
         a.push_near(0.0, &vec![0.5f32; FRAME]);
@@ -444,6 +514,73 @@ mod cancel_tests {
         assert!(
             ratio < 0.5,
             "expected the echo to be attenuated; residual/echo ratio = {ratio}"
+        );
+    }
+
+    /// Deterministic white-ish noise. The delayed-echo test cannot use [`reference`]: delaying a
+    /// periodic (line-spectrum) signal is only a phase shift, which a filter of *any* tail length
+    /// can reproduce — an aperiodic reference is what makes a past-the-tail delay uncancellable.
+    fn noise_signal(len: usize) -> Vec<f32> {
+        let mut state = 0x9E37_79B9_7F4A_7C15u64;
+        (0..len)
+            .map(|_| {
+                state = state
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                // Full 32 high bits, so the noise is zero-mean: a DC bias is cancellable at any
+                // tail length and would dominate the energy ratio.
+                (f64::from((state >> 32) as u32) / f64::from(u32::MAX) - 0.5) as f32 * 0.5
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_filter_tail_covers_bluetooth_playout_delay() {
+        // 150 ms of playout latency (a Bluetooth / AirPlay speaker): past the 100 ms `AecConfig`
+        // default tail, inside FILTER_TAIL. Drives the raw echo state with the preprocessor OFF —
+        // the chained residual suppressor is nonlinear and crushes a stationary noise residual even
+        // when the filter modeled nothing, which would mask a too-short tail (this test fails at
+        // filter_length 1600, the crate default).
+        let aec = aec_rs::Aec::new(&aec_rs::AecConfig {
+            frame_size: FRAME,
+            filter_length: FILTER_TAIL,
+            sample_rate: SAMPLE_RATE as u32,
+            enable_preprocess: false,
+        });
+        let delay = 2400usize;
+        let frames = 1200usize; // 12 s — the longer tail adapts more slowly than the pure-echo case
+        let tail = 200usize;
+        let signal = noise_signal(frames * FRAME);
+        let to_i16 = |s: f32| (s.clamp(-1.0, 1.0) * 32767.0).round() as i16;
+        let mut echo_energy = 0.0f64;
+        let mut residual_energy = 0.0f64;
+        for i in 0..frames {
+            let mut far = [0i16; FRAME];
+            let mut near = [0i16; FRAME];
+            for k in 0..FRAME {
+                let idx = i * FRAME + k;
+                far[k] = to_i16(signal[idx]);
+                near[k] = if idx >= delay {
+                    to_i16(0.6 * signal[idx - delay])
+                } else {
+                    0
+                };
+            }
+            let mut out = [0i16; FRAME];
+            aec.cancel_echo(&near, &far, &mut out);
+            if i >= frames - tail {
+                for &x in &near {
+                    echo_energy += f64::from(x) * f64::from(x);
+                }
+                for &x in &out {
+                    residual_energy += f64::from(x) * f64::from(x);
+                }
+            }
+        }
+        let ratio = residual_energy / echo_energy.max(1e-12);
+        assert!(
+            ratio < 0.5,
+            "expected the delayed echo to be attenuated; residual/echo ratio = {ratio}"
         );
     }
 
