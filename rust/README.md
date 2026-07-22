@@ -36,25 +36,31 @@ Nine crates; edges are `path` dependencies (diagrammed in
 | `hearsay-db` | Persistence: SQLite via SQLx (WAL, `busy_timeout`, foreign keys), UUID primary keys, forward-only numbered migrations; the attribution policy (vote and recognition), FTS transcript search, folders, and the notes and models queries. |
 | `hearsay-engine` | The neutral `LiveEngine` trait seam (meeting lifecycle, live-transcript subscribe, rediarize, notes) and the `DisabledEngine` placeholder the whole API test suite runs against. Exists to break the core/orchestrator cycle. |
 | `hearsay-orchestrator` | Implements `LiveEngine`: creates the meeting row and folder, drives an `AudioSource`, routes each stream's 16 kHz PCM to its `Transcriber`, records the stereo `audio.wav`, persists and broadcasts partials and finals, and runs the refine and notes off the operation lock at stop. Ships the scripted `testing` fakes. |
-| `hearsay-backends` | Per-OS backend wiring behind the engine seam: `MacBackend` (warm sidecar pool), `MacRefiner`, the notes summarizer, startup reconciliation, and `build_engine`. The feature-gated `SherpaTranscriber` is the future Windows live path. |
+| `hearsay-backends` | Per-OS backend wiring behind the engine seam: `MacBackend` (warm sidecar pool), `MacRefiner`, the `SubprocessSummarizer` (spawns the `hearsay-notes` sidecar), startup reconciliation, and `build_engine`. The feature-gated `SherpaTranscriber` is the future Windows live path. |
 | `hearsay-capture` | Audio capture behind the `AudioSource` trait. On macOS, `SwiftHelperSource` drives the Swift `hearsay-helper` (Core Audio tap plus microphone) over the `hearsay-ipc` sockets. Also hosts the TCC permissions probe. |
-| `hearsay-inference` | Local ML, all offline: the whisper ASR (`whisper-rs`, GGML; CPU plus `metal`/`vulkan`/`cuda` features) and the refine (the `hearsay-diarize` sidecar plus whisper re-transcription); the optional `notes` local-LLM summary (`llama-cpp-2`); the feature-gated sherpa-onnx streaming and diarize modules for the Windows path. |
+| `hearsay-inference` | Local ML, all offline: the whisper ASR (`whisper-rs`, GGML; CPU plus `metal`/`vulkan`/`cuda` features) and the refine (the `hearsay-diarize` sidecar plus whisper re-transcription); the feature-gated sherpa-onnx streaming and diarize modules for the Windows path. No llama.cpp — the notes LLM lives in `hearsay-notes`. |
+| `hearsay-notes` | The local-LLM notes sidecar: a standalone binary that owns llama.cpp (`llama-cpp-2`), spawned by the core over stdio (JSON in, JSON out). Separate process so llama's vendored `ggml` never co-links with whisper's (a ~5x refine slowdown). |
+| `hearsay-notes-prompt` | Dependency-free prompt construction + reply parsing for the notes step, shared by the core's config default and the sidecar (so the sidecar never pulls `hearsay-inference` → whisper). |
 | `hearsay-core` | The application binary: the axum HTTP and WebSocket API (loopback plus per-session token), the served React UI, and the composition root. Depends on `hearsay-engine`, `hearsay-backends`, `hearsay-db`, and `hearsay-ipc`; the concrete backends stay hidden behind the seam. |
 
 The Tauri shell lives at `../web/src-tauri/` (`tauri.conf.json` plus `src/main.rs`): it bundles
-and spawns `hearsay-core` and the Swift sidecars. It is a separate crate (not a workspace member)
+and spawns `hearsay-core`, and bundles the Swift sidecars plus the `hearsay-notes` sidecar (the core
+spawns that one). It is a separate crate (not a workspace member)
 but is linted and CVE/license-gated in `make ci`. Build the app with `make dmg` (see
 [`../docs/packaging.md`](../docs/packaging.md)).
 
 ## Cargo features
 
-- `metal` / `vulkan` / `cuda`: per-OS GPU acceleration for the whisper refine (and, with `notes`,
-  the notes LLM). The macOS bundle builds `metal`; the default is portable CPU.
-- `notes`: the optional local-LLM summary and action-items step (`llama-cpp-2`). Built into
-  `make rust-serve` and `make dmg`; off at runtime unless `HEARSAY_NOTES` or the Settings toggle
-  turns it on.
+- `metal` / `vulkan` / `cuda`: per-OS GPU acceleration for the whisper refine. The `hearsay-notes`
+  sidecar takes the same accel via its own matching feature (built separately). The macOS bundle
+  builds `metal`; the default is portable CPU.
 - `sherpa`: the cross-platform (Windows) sherpa-onnx live and diarize path. Off by default, so the
   macOS bundle never compiles or links onnxruntime; the only consumers are ignored tests.
+
+The notes LLM is not a core feature: it ships as the standalone `hearsay-notes` sidecar (built with
+its own `metal`/`vulkan`/`cuda`), so llama.cpp never links into the core with whisper. `make
+rust-serve` and `make dmg` build and bundle it; it is off at runtime unless `HEARSAY_NOTES` or the
+Settings toggle turns it on.
 
 ## Conventions
 

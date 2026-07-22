@@ -10,8 +10,9 @@ since it requires an Apple Developer ID.
 
 - **Targets:** Apple Silicon (arm64) only, macOS 14.4 or later.
 - **Bundle:** a Tauri shell wrapping the Rust `hearsay-core` server, the Swift capture helper and
-  FluidAudio/ANE sidecars, and the React UI. The shell spawns the core and points the window at
-  its loopback URL.
+  FluidAudio/ANE sidecars, the `hearsay-notes` LLM sidecar, and the React UI. The shell spawns the
+  core (which in turn spawns `hearsay-notes` for the notes step) and points the window at its
+  loopback URL.
 
 ## Prerequisites
 
@@ -136,10 +137,11 @@ powershell -ExecutionPolicy Bypass -File scripts\build-windows.ps1 -Vulkan -Aec
 ```
 
 The script fetches and stages the models (the sherpa live/diarize set plus `ggml-small.en.bin`
-for the refine), builds the web bundle and `hearsay-core.exe` (features `sherpa,notes`, plus
-`vulkan`/`aec` when flagged), and runs `cargo tauri build --bundles nsis`.
-`tauri.windows.conf.json` narrows the bundle for Windows: NSIS only, and `hearsay-core` as the
-single external binary (no Swift sidecars). The installer lands in
+for the refine), builds the web bundle, `hearsay-core.exe` (features `sherpa`, plus `vulkan`/`aec`
+unless disabled), and the `hearsay-notes.exe` sidecar (built separately with matching `vulkan` so
+llama.cpp never co-links with the core's whisper), then runs `cargo tauri build --bundles nsis`.
+`tauri.windows.conf.json` narrows the bundle for Windows: NSIS only, and `hearsay-core` +
+`hearsay-notes` as the external binaries (no Swift sidecars). The installer lands in
 `web/src-tauri/target/release/bundle/nsis/`.
 
 Windows specifics:
