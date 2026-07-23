@@ -254,21 +254,24 @@ transcript/status/resync events (reusing the scripted fakes in
 `hearsay-orchestrator/src/testing.rs`), selectable via a test-only flag/env. Both harnesses below
 share it, so a meeting produces identical, assertable output every run.
 
-- [ ] **Scripted-engine mode** in `hearsay-core` — real HTTP + WS + on-disk DB + orchestrator
-      pipeline, deterministic events, no models.
-- [ ] **Full-stack HTTP/WS integration (Rust, in `make ci`).** Boot the real `hearsay-core` server on
-      an ephemeral loopback port with the scripted engine and a real temp-file SQLite DB. Drive a full
-      meeting over the wire with a real HTTP client + a real WS client (`tokio-tungstenite`):
-      `start` → assert live `TranscriptEvent`/`StatusEvent` frames arrive over WS → `stop` → refine →
-      read segments/speakers/notes back via REST. This is the real integration test — it exercises the
-      TCP socket, the WS upgrade/broadcast, the orchestrator, and on-disk persistence together, none
-      of which `api.rs` (oneshot, in-memory, `DisabledEngine`) touches.
-- [ ] **Browser E2E (Playwright, `make e2e`, both OSes).** Run `hearsay-core` (scripted engine) + `vite dev`,
-      then drive the real React app with Playwright through the full flow: load with the session token
-      → start recording → watch the transcript populate over the live WS → stop → find the meeting in
-      Library → rename a speaker → open the Notes panel, asserting the UI reflects each step.
-- [ ] Fold the Rust full-stack test into `make ci`; add `make e2e` for the browser run (needs the
-      Playwright browser binaries, so it stays its own on-demand target).
+- [x] **Scripted-engine seam** — for the Rust full-stack test, no production flag is needed: the test
+      builds a real `Orchestrator` over the scripted `hearsay-orchestrator::testing` fakes and one
+      shared `AppState`, driving HTTP via `oneshot` and the WS via a TCP server (both routers share the
+      engine + pool Arcs). A production `HEARSAY_SCRIPTED` env flag is only needed for the browser E2E
+      (which drives the core *binary*), so it lands with that.
+- [x] **Full-stack HTTP/WS integration (Rust, in `make ci`)** — `full_stack_meeting_drives_events_and_persistence`
+      in `hearsay-core/tests/api.rs`: boots the app on an ephemeral TCP port with the scripted engine,
+      drives a full meeting over the wire (HTTP `start` → pause-snapshot barrier → live `TranscriptEvent`
+      frames over a real `tokio-tungstenite` client → `stop`), then reads the persisted segments +
+      `Speaker 1` cluster back via REST. Exercises the TCP socket, the WS upgrade/broadcast, the
+      orchestrator, and on-disk persistence together — none of which the `oneshot`/`DisabledEngine`
+      tests touch. (Refine/notes read-back is a follow-up: wire a `ScriptedRefiner`/`ScriptedSummarizer`.)
+- [ ] **Browser E2E (Playwright, `make e2e`, both OSes).** Run `hearsay-core` (scripted engine, via the
+      production `HEARSAY_SCRIPTED` flag) + `vite dev`, then drive the real React app with Playwright
+      through the full flow: load with the session token → start recording → watch the transcript
+      populate over the live WS → stop → find the meeting in Library → rename a speaker → open Notes.
+- [x] Rust full-stack test is a plain `#[tokio::test]`, so it already runs under `make ci`. `make e2e`
+      for the browser run (needs the Playwright browser binaries) is still to add.
 - [ ] Isolation & teardown per [Results & cleanup](#results--cleanup): tempdir output + an RAII
       process-group kill in both harnesses; Playwright `webServer` start/stop; reports under
       `outputs/e2e/`.
