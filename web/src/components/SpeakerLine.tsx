@@ -34,10 +34,9 @@ interface Props {
   newest: boolean;
 }
 
-// One transcript row in the live view: a colored initials avatar, a header (name + YOU tag +
+// One transcript row in the live view: a colored initials avatar, a header (name +
 // meeting-relative timestamp), and the body. The newest line ends in a blinking caret.
 export function SpeakerLine({ line, newest }: Props) {
-  const isMe = line.stream === "me";
   const className =
     "live-line" +
     (line.kind === "partial" ? " live-line--partial" : "") +
@@ -50,7 +49,6 @@ export function SpeakerLine({ line, newest }: Props) {
       <div className="live-line__body">
         <div className="live-line__head">
           <span className="live-line__name">{line.speaker_label}</span>
-          {isMe ? <span className="live-line__tag">YOU</span> : null}
           <span className="live-line__time">{formatClock(line.start_s)}</span>
         </div>
         <div className="live-line__text">

@@ -21,6 +21,10 @@ interface Props {
   error: unknown;
   selectedId: string | null;
   onSelect: (id: string) => void;
+  // Rendered inside the home dashboard rather than as the standalone sidebar: drops the sidebar
+  // chrome (border/background) and hides the start-a-meeting composer, since the dashboard's Record
+  // button is the one start affordance.
+  embedded?: boolean;
 }
 
 function errorMessage(error: unknown): string {
@@ -600,7 +604,14 @@ function UnfiledSection({ meetings, ctx }: { meetings: MeetingRead[]; ctx: Sideb
   );
 }
 
-export function MeetingList({ meetings, isLoading, error, selectedId, onSelect }: Props) {
+export function MeetingList({
+  meetings,
+  isLoading,
+  error,
+  selectedId,
+  onSelect,
+  embedded = false,
+}: Props) {
   const [title, setTitle] = useState("");
   const [addingFolder, setAddingFolder] = useState(false);
   const [folderName, setFolderName] = useState("");
@@ -720,30 +731,32 @@ export function MeetingList({ meetings, isLoading, error, selectedId, onSelect }
   };
 
   return (
-    <aside className="meetings">
-      <div className="meetings__new">
-        <input
-          value={title}
-          placeholder="Meeting title (optional)"
-          aria-label="Meeting title"
-          onChange={(event) => setTitle(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key === "Enter") onStart();
-          }}
-        />
-        <button
-          type="button"
-          onClick={onStart}
-          disabled={!canStart}
-          title={
-            recording || sidecarsReady
-              ? undefined
-              : "Loading transcription models — ready to record in a moment"
-          }
-        >
-          {startLabel}
-        </button>
-      </div>
+    <aside className={"meetings" + (embedded ? " meetings--embedded" : "")}>
+      {!embedded ? (
+        <div className="meetings__new">
+          <input
+            value={title}
+            placeholder="Meeting title (optional)"
+            aria-label="Meeting title"
+            onChange={(event) => setTitle(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") onStart();
+            }}
+          />
+          <button
+            type="button"
+            onClick={onStart}
+            disabled={!canStart}
+            title={
+              recording || sidecarsReady
+                ? undefined
+                : "Loading transcription models — ready to record in a moment"
+            }
+          >
+            {startLabel}
+          </button>
+        </div>
+      ) : null}
       <div className="meetings__folder-new">
         {addingFolder ? (
           <form
@@ -794,12 +807,12 @@ export function MeetingList({ meetings, isLoading, error, selectedId, onSelect }
           </button>
         )}
       </div>
-      {!recording && !sidecarsReady ? (
+      {!embedded && !recording && !sidecarsReady ? (
         <p className="muted meetings__preparing" role="status">
           Loading transcription models… you can start recording once they're ready.
         </p>
       ) : null}
-      {start.error ? <p className="error">{errorMessage(start.error)}</p> : null}
+      {!embedded && start.error ? <p className="error">{errorMessage(start.error)}</p> : null}
       {createFolder.error ? <p className="error">{errorMessage(createFolder.error)}</p> : null}
       {isLoading ? <p className="muted">Loading meetings…</p> : null}
       {error ? <p className="error">{errorMessage(error)}</p> : null}

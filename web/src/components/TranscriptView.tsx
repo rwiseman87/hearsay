@@ -1,18 +1,88 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type PointerEvent as ReactPointerEvent,
+  type ReactNode,
+} from "react";
 
 import {
   useEditSegment,
+  useFolders,
   useKeepRecording,
   useRediarize,
   useRevealMeeting,
   useStopMeeting,
 } from "../api/hooks";
 import { getToken } from "../api/token";
-import type { MeetingRead } from "../api/types";
-import { useTranscript } from "../hooks/useTranscript";
+import type { FolderRead, MeetingRead } from "../api/types";
+import { useTranscript, type TranscriptLine } from "../hooks/useTranscript";
 import { NotesPanel } from "./NotesPanel";
 import { SpeakerPanel } from "./SpeakerPanel";
 import { UserNotesSection } from "./UserNotesSection";
+
+const RECAP_MIN = 280;
+const RECAP_MAX = 620;
+const RECAP_DEFAULT = 360;
+const RECAP_KEY = "hearsay.recapWidth";
+
+const clampRecap = (value: number) => Math.min(Math.max(value, RECAP_MIN), RECAP_MAX);
+
+// AI-recap rail width, persisted across sessions in localStorage so a resize sticks (the horizontal
+// analogue of the meeting-list sidebar width the app used to keep).
+function useRecapWidth() {
+  const [width, setWidth] = useState(() => {
+    const stored = Number(localStorage.getItem(RECAP_KEY));
+    return Number.isFinite(stored) && stored > 0 ? clampRecap(stored) : RECAP_DEFAULT;
+  });
+  useEffect(() => {
+    localStorage.setItem(RECAP_KEY, String(width));
+  }, [width]);
+  return [width, setWidth] as const;
+}
+
+// The folder chain a meeting sits in, root-first (["Clients", "Northwind"]), walked up parent_id
+// from the meeting's folder. Empty when the meeting is unfiled.
+function folderChain(folderId: string | null | undefined, folders: FolderRead[]): string[] {
+  const byId = new Map(folders.map((folder) => [folder.id, folder]));
+  const names: string[] = [];
+  const seen = new Set<string>();
+  let current = folderId ?? null;
+  while (current && byId.has(current) && !seen.has(current)) {
+    seen.add(current);
+    const folder = byId.get(current)!;
+    names.unshift(folder.name);
+    current = folder.parent_id ?? null;
+  }
+  return names;
+}
+
+// Per-speaker avatar color, matching SpeakerLine so a speaker keeps one color across the live and
+// finalized views: Me is fixed; each Them speaker rotates deterministically by a hash of its label.
+const SPEAKER_COLORS = ["--spk-1", "--spk-2", "--spk-3", "--spk-4"] as const;
+
+function hashLabel(text: string): number {
+  let acc = 0;
+  for (let i = 0; i < text.length; i++) acc = (acc * 31 + text.charCodeAt(i)) >>> 0;
+  return acc;
+}
+
+function colorVar(line: TranscriptLine): string {
+  if (line.stream === "me") return "--me";
+  return SPEAKER_COLORS[hashLabel(line.speaker_label) % SPEAKER_COLORS.length];
+}
+
+// Up to two initials from a speaker label ("Dana Reyes" -> "DR", "Speaker 1" -> "S1", "Me" -> "M").
+function initials(label: string): string {
+  const parts = label.trim().split(/\s+/).filter(Boolean);
+  if (parts.length === 0) return "?";
+  const first = parts[0][0] ?? "";
+  const second = parts.length > 1 ? (parts[1][0] ?? "") : "";
+  return (first + second).toUpperCase();
+}
 
 function formatTime(seconds: number): string {
   const whole = Math.max(0, Math.floor(seconds));
@@ -21,6 +91,29 @@ function formatTime(seconds: number): string {
     .padStart(2, "0");
   const secs = (whole % 60).toString().padStart(2, "0");
   return `${minutes}:${secs}`;
+}
+
+// The meeting's calendar date for the detail header ("Jul 21, 2026").
+function formatMeetingDate(iso: string): string {
+  return new Date(iso).toLocaleDateString(undefined, {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  });
+}
+
+// The meeting's wall-clock length ("42 min", "1 hr 5 min") from its start/end, or null while it has
+// no end time yet.
+function formatDuration(startedAt: string, endedAt: string | null | undefined): string | null {
+  if (!endedAt) return null;
+  const seconds = (new Date(endedAt).getTime() - new Date(startedAt).getTime()) / 1000;
+  if (!Number.isFinite(seconds) || seconds <= 0) return null;
+  const mins = Math.round(seconds / 60);
+  if (mins < 1) return "<1 min";
+  if (mins < 60) return `${mins} min`;
+  const hours = Math.floor(mins / 60);
+  const rem = mins % 60;
+  return rem === 0 ? `${hours} hr` : `${hours} hr ${rem} min`;
 }
 
 // Wrap each case-insensitive occurrence of `query` in `text` with a <mark> (the in-meeting find
@@ -63,8 +156,32 @@ export function TranscriptView({ meeting, jumpTo }: Props) {
   const rediarize = useRediarize(meeting?.id ?? "");
   const reveal = useRevealMeeting();
   const editSegment = useEditSegment(meeting?.id ?? "");
+  const folders = useFolders();
   const { lines, connection, preparing, inactivityPrompt, micSilent, dismissInactivityPrompt } =
     useTranscript(meeting);
+
+  // Resizable AI-recap rail: its width is driven by --recap-width (a drag on .detail__resizer,
+  // persisted in localStorage).
+  const [recapWidth, setRecapWidth] = useRecapWidth();
+  const recapDrag = useRef<{ startX: number; startWidth: number } | null>(null);
+  const onRecapResizeStart = (event: ReactPointerEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    recapDrag.current = { startX: event.clientX, startWidth: recapWidth };
+    event.currentTarget.setPointerCapture(event.pointerId);
+  };
+  const onRecapResizeMove = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (!recapDrag.current) return;
+    // Dragging the divider left widens the rail (the transcript gives up the space).
+    setRecapWidth(clampRecap(recapDrag.current.startWidth - (event.clientX - recapDrag.current.startX)));
+  };
+  const onRecapResizeEnd = (event: ReactPointerEvent<HTMLDivElement>) => {
+    recapDrag.current = null;
+    event.currentTarget.releasePointerCapture(event.pointerId);
+  };
+  const onRecapResizeKey = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (event.key === "ArrowLeft") setRecapWidth((w) => clampRecap(w + 16));
+    else if (event.key === "ArrowRight") setRecapWidth((w) => clampRecap(w - 16));
+  };
 
   const audioRef = useRef<HTMLAudioElement>(null);
   const activeRef = useRef<HTMLLIElement>(null);
@@ -276,14 +393,32 @@ export function TranscriptView({ meeting, jumpTo }: Props) {
     setCurrentTime(seconds);
   };
 
+  const seekMax = duration || 0;
+  const seekPct = seekMax > 0 ? (Math.min(currentTime, seekMax) / seekMax) * 100 : 0;
+  const durationLabel = formatDuration(meeting.started_at, meeting.ended_at);
+  const metaLine = durationLabel
+    ? `${formatMeetingDate(meeting.started_at)} · ${durationLabel}`
+    : formatMeetingDate(meeting.started_at);
+  const crumb = `Meetings${folderChain(meeting.folder_id, folders.data?.items ?? [])
+    .map((name) => ` / ${name}`)
+    .join("")} /`;
+
   return (
-    <section className="transcript">
-      <header className="transcript__header">
-        <div className="transcript__title">
-          <h2>{meeting.title}</h2>
-          <span className={`badge badge--${meeting.status}`}>{meeting.status}</span>
+    <section className="detail">
+      <header className="detail__header">
+        <span className="detail__crumb" title={crumb}>
+          {crumb}
+        </span>
+        <div className="detail__titleblock">
+          <div className="detail__title-row">
+            <h2 className="detail__title">{meeting.title}</h2>
+            {meeting.status !== "finalized" ? (
+              <span className={`badge badge--${meeting.status}`}>{meeting.status}</span>
+            ) : null}
+          </div>
+          <div className="detail__meta">{metaLine}</div>
         </div>
-        <div className="transcript__actions">
+        <div className="detail__actions">
           <button
             type="button"
             className="transcript__reveal"
@@ -370,7 +505,7 @@ export function TranscriptView({ meeting, jumpTo }: Props) {
         </div>
       ) : null}
       {!recording && hasAudio ? (
-        <div className="player">
+        <div className="detail__scrubber">
           <audio
             ref={audioRef}
             src={audioUrl}
@@ -388,37 +523,64 @@ export function TranscriptView({ meeting, jumpTo }: Props) {
           />
           <button
             type="button"
-            className="player__play"
+            className="detail__play"
             onClick={togglePlay}
             aria-label={isPlaying ? "Pause" : "Play"}
           >
-            {isPlaying ? "Pause" : "Play"}
+            {isPlaying ? (
+              <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true" fill="currentColor">
+                <rect x="4" y="3" width="3" height="10" rx="1" />
+                <rect x="9" y="3" width="3" height="10" rx="1" />
+              </svg>
+            ) : (
+              <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true" fill="currentColor">
+                <path d="M4.5 3.2 12.5 8l-8 4.8z" />
+              </svg>
+            )}
           </button>
-          <span className="player__time">{formatTime(currentTime)}</span>
+          <span className="detail__time">{formatTime(currentTime)}</span>
           <input
             type="range"
-            className="player__seek"
+            className="detail__seek"
             min={0}
-            max={duration || 0}
+            max={seekMax}
             step={0.1}
-            value={Math.min(currentTime, duration || 0)}
+            value={Math.min(currentTime, seekMax)}
             aria-label="Seek"
+            style={{
+              background: `linear-gradient(to right, var(--accent) ${seekPct}%, var(--surface-2) ${seekPct}%)`,
+            }}
             onChange={(event) => handleSeek(event.currentTarget.valueAsNumber)}
           />
-          <span className="player__time">{formatTime(duration)}</span>
-          <input
-            type="range"
-            className="player__volume"
-            min={0}
-            max={2}
-            step={0.01}
-            value={volume}
-            aria-label="Playback volume"
-            title={`Volume ${Math.round(volume * 100)}%`}
-            onChange={(event) => handleVolume(event.currentTarget.valueAsNumber)}
-          />
+          <span className="detail__time detail__time--total">{formatTime(duration)}</span>
+          <span className="detail__volume">
+            <span className="detail__volume-icon" aria-hidden="true">
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+                <path d="M8 2.5 4.6 5.3H2v5.4h2.6L8 13.5z" />
+                <path
+                  d="M10.6 5.4a3.4 3.4 0 0 1 0 5.2M12.4 3.8a5.8 5.8 0 0 1 0 8.4"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.2"
+                  strokeLinecap="round"
+                />
+              </svg>
+            </span>
+            <input
+              type="range"
+              className="detail__volume-slider"
+              min={0}
+              max={2}
+              step={0.01}
+              value={volume}
+              aria-label="Playback volume"
+              title={`Volume ${Math.round(volume * 100)}%`}
+              onChange={(event) => handleVolume(event.currentTarget.valueAsNumber)}
+            />
+          </span>
         </div>
       ) : null}
+      <SpeakerPanel meetingId={meeting.id} />
       {recording && connection && connection !== "open" ? (
         <p className="transcript__status" role="status">
           {connection === "reconnecting"
@@ -446,172 +608,203 @@ export function TranscriptView({ meeting, jumpTo }: Props) {
           Could not save the edit: {(editSegment.error as Error).message}
         </p>
       ) : null}
-      <SpeakerPanel meetingId={meeting.id} />
-      {!recording ? <UserNotesSection key={meeting.id} meetingId={meeting.id} /> : null}
-      <NotesPanel meetingId={meeting.id} recording={recording} />
-      <div className="transcript__toolbar">
-        <span className="transcript__toolbar-title">
-          Transcript
-          {!recording && lines.length > 0 ? (
-            <span className="transcript__toolbar-hint"> · hover a line to edit</span>
-          ) : null}
-        </span>
-        {!recording && lines.length > 0 ? (
-          <div className="find" role="search">
-            <input
-              className="find__input"
-              type="search"
-              placeholder="Find in transcript…"
-              aria-label="Find in transcript"
-              value={findQuery}
-              onChange={(event) => {
-                setFindQuery(event.target.value);
-                setFindIndex(0);
-              }}
-              onKeyDown={(event) => {
-                if (event.key === "Enter") {
-                  event.preventDefault();
-                  stepMatch(event.shiftKey ? -1 : 1);
-                } else if (event.key === "Escape") {
-                  setFindQuery("");
-                }
-              }}
-            />
-            <span className="find__count" aria-live="polite">
-              {findQuery.trim()
-                ? `${matchIndices.length ? Math.min(findIndex, matchIndices.length - 1) + 1 : 0}/${matchIndices.length}`
-                : ""}
-            </span>
-            <button
-              type="button"
-              className="find__nav"
-              aria-label="Previous match"
-              disabled={matchIndices.length === 0}
-              onClick={() => stepMatch(-1)}
-            >
-              ↑
-            </button>
-            <button
-              type="button"
-              className="find__nav"
-              aria-label="Next match"
-              disabled={matchIndices.length === 0}
-              onClick={() => stepMatch(1)}
-            >
-              ↓
-            </button>
-          </div>
-        ) : null}
-      </div>
-      <ol
-        className="transcript__lines"
-        ref={linesRef}
-        onScroll={(event) => {
-          const el = event.currentTarget;
-          pinnedToBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 48;
-        }}
+      <div
+        className="detail__body"
+        style={{ ["--recap-width" as string]: `${recapWidth}px` } as CSSProperties}
       >
-        {lines.map((line, index) => {
-          const active = index === activeIndex;
-          const editing = editingId != null && line.id === editingId;
-          const canEdit = !recording && !!line.id;
-          const className =
-            `line line--${line.stream}` +
-            (line.kind === "partial" ? " line--partial" : "") +
-            (active ? " line--active" : "") +
-            (index === jumpIndex ? " line--jump" : "") +
-            (matchIndices.includes(index) ? " line--match" : "") +
-            (index === currentMatch ? " line--match-current" : "");
-          return (
-            <li
-              key={`${line.stream}:${line.start_s}:${line.kind}`}
-              data-index={index}
-              ref={active ? activeRef : null}
-              className={className}
-              onClick={() => {
-                if (!editing) seekTo(line.start_s);
-              }}
-              title={editing ? undefined : "Jump to this moment"}
-            >
-              <span className="line__time">{formatTime(line.start_s)}</span>
-              <span className="line__speaker">{line.speaker_label}</span>
-              {editing ? (
-                <form
-                  className="line__edit"
-                  onClick={(event) => event.stopPropagation()}
-                  onSubmit={(event) => {
-                    event.preventDefault();
-                    if (line.id) saveEdit(line.id);
+        <div className="detail__transcript">
+          <div className="transcript__toolbar">
+            <span className="transcript__toolbar-title">
+              Transcript
+              {!recording && lines.length > 0 ? (
+                <span className="transcript__toolbar-hint"> · hover a line to edit</span>
+              ) : null}
+            </span>
+            {!recording && lines.length > 0 ? (
+              <div className="find" role="search">
+                <input
+                  className="find__input"
+                  type="search"
+                  placeholder="Find in transcript…"
+                  aria-label="Find in transcript"
+                  value={findQuery}
+                  onChange={(event) => {
+                    setFindQuery(event.target.value);
+                    setFindIndex(0);
                   }}
-                >
-                  <textarea
-                    className="line__edit-input"
-                    value={editText}
-                    autoFocus
-                    aria-label="Edit transcript line"
-                    disabled={editSegment.isPending}
-                    onChange={(event) => setEditText(event.target.value)}
-                    onKeyDown={(event) => {
-                      if (event.key === "Escape") cancelEdit();
-                    }}
-                  />
-                  <div className="line__edit-actions">
-                    <button
-                      type="submit"
-                      className="line__save"
-                      disabled={editSegment.isPending || editText.trim() === ""}
-                    >
-                      {editSegment.isPending ? "Saving…" : "Save"}
-                    </button>
-                    <button
-                      type="button"
-                      className="line__cancel"
-                      disabled={editSegment.isPending}
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        cancelEdit();
-                      }}
-                    >
-                      Cancel
-                    </button>
-                  </div>
-                </form>
-              ) : (
-                <span className="line__text">
-                  {highlightMatches(line.text, findQuery)}
-                  {line.edited ? <span className="line__edited-pill">edited</span> : null}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") {
+                      event.preventDefault();
+                      stepMatch(event.shiftKey ? -1 : 1);
+                    } else if (event.key === "Escape") {
+                      setFindQuery("");
+                    }
+                  }}
+                />
+                <span className="find__count" aria-live="polite">
+                  {findQuery.trim()
+                    ? `${matchIndices.length ? Math.min(findIndex, matchIndices.length - 1) + 1 : 0}/${matchIndices.length}`
+                    : ""}
                 </span>
-              )}
-              {canEdit && !editing ? (
                 <button
                   type="button"
-                  className="line__edit-btn"
-                  aria-label="Edit this line"
-                  title="Edit this line"
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    if (line.id) startEdit(line.id, line.text);
-                  }}
+                  className="find__nav"
+                  aria-label="Previous match"
+                  disabled={matchIndices.length === 0}
+                  onClick={() => stepMatch(-1)}
                 >
-                  <span className="line__edit-icon" aria-hidden="true">
-                    ✎
-                  </span>
-                  <span className="line__edit-label">Edit</span>
+                  ↑
                 </button>
-              ) : null}
-            </li>
-          );
-        })}
-        {lines.length === 0 ? (
-          <li className="muted">
-            {recording
-              ? preparing
-                ? "Preparing transcription (loading models)…"
-                : "Listening…"
-              : "No transcript."}
-          </li>
-        ) : null}
-      </ol>
+                <button
+                  type="button"
+                  className="find__nav"
+                  aria-label="Next match"
+                  disabled={matchIndices.length === 0}
+                  onClick={() => stepMatch(1)}
+                >
+                  ↓
+                </button>
+              </div>
+            ) : null}
+          </div>
+          <ol
+            className="transcript__lines"
+            ref={linesRef}
+            onScroll={(event) => {
+              const el = event.currentTarget;
+              pinnedToBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 48;
+            }}
+          >
+            {lines.map((line, index) => {
+              const active = index === activeIndex;
+              const editing = editingId != null && line.id === editingId;
+              const canEdit = !recording && !!line.id;
+              const className =
+                "live-line" +
+                (line.kind === "partial" ? " live-line--partial" : "") +
+                (active ? " line--active" : "") +
+                (index === jumpIndex ? " line--jump" : "") +
+                (matchIndices.includes(index) ? " line--match" : "") +
+                (index === currentMatch ? " line--match-current" : "");
+              return (
+                <li
+                  key={`${line.stream}:${line.start_s}:${line.kind}`}
+                  data-index={index}
+                  ref={active ? activeRef : null}
+                  className={className}
+                  style={{ ["--spk" as string]: `var(${colorVar(line)})` } as CSSProperties}
+                  onClick={() => {
+                    if (!editing) seekTo(line.start_s);
+                  }}
+                  title={editing ? undefined : "Jump to this moment"}
+                >
+                  <span className="live-line__avatar" aria-hidden="true">
+                    {initials(line.speaker_label)}
+                  </span>
+                  <div className="live-line__body">
+                    <div className="live-line__head">
+                      <span className="live-line__name">{line.speaker_label}</span>
+                      <span className="live-line__time">{formatTime(line.start_s)}</span>
+                    </div>
+                    {editing ? (
+                      <form
+                        className="line__edit"
+                        onClick={(event) => event.stopPropagation()}
+                        onSubmit={(event) => {
+                          event.preventDefault();
+                          if (line.id) saveEdit(line.id);
+                        }}
+                      >
+                        <textarea
+                          className="line__edit-input"
+                          value={editText}
+                          autoFocus
+                          aria-label="Edit transcript line"
+                          disabled={editSegment.isPending}
+                          onChange={(event) => setEditText(event.target.value)}
+                          onKeyDown={(event) => {
+                            if (event.key === "Escape") cancelEdit();
+                          }}
+                        />
+                        <div className="line__edit-actions">
+                          <button
+                            type="submit"
+                            className="line__save"
+                            disabled={editSegment.isPending || editText.trim() === ""}
+                          >
+                            {editSegment.isPending ? "Saving…" : "Save"}
+                          </button>
+                          <button
+                            type="button"
+                            className="line__cancel"
+                            disabled={editSegment.isPending}
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              cancelEdit();
+                            }}
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      </form>
+                    ) : (
+                      <div className="live-line__text">
+                        {highlightMatches(line.text, findQuery)}
+                        {line.edited ? <span className="line__edited-pill">edited</span> : null}
+                      </div>
+                    )}
+                  </div>
+                  {canEdit && !editing ? (
+                    <button
+                      type="button"
+                      className="line__edit-btn"
+                      aria-label="Edit this line"
+                      title="Edit this line"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        if (line.id) startEdit(line.id, line.text);
+                      }}
+                    >
+                      <span className="line__edit-icon" aria-hidden="true">
+                        ✎
+                      </span>
+                      <span className="line__edit-label">Edit</span>
+                    </button>
+                  ) : null}
+                </li>
+              );
+            })}
+            {lines.length === 0 ? (
+              <li className="muted">
+                {recording
+                  ? preparing
+                    ? "Preparing transcription (loading models)…"
+                    : "Listening…"
+                  : "No transcript."}
+              </li>
+            ) : null}
+          </ol>
+          <div className="detail__fade" aria-hidden="true" />
+        </div>
+        <div
+          className="detail__resizer"
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="Resize recap panel"
+          aria-valuenow={recapWidth}
+          aria-valuemin={RECAP_MIN}
+          aria-valuemax={RECAP_MAX}
+          tabIndex={0}
+          onPointerDown={onRecapResizeStart}
+          onPointerMove={onRecapResizeMove}
+          onPointerUp={onRecapResizeEnd}
+          onKeyDown={onRecapResizeKey}
+        />
+        <aside className="detail__recap">
+          <NotesPanel meetingId={meeting.id} recording={recording} />
+          {!recording ? <UserNotesSection key={meeting.id} meetingId={meeting.id} /> : null}
+        </aside>
+      </div>
     </section>
   );
 }

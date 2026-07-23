@@ -27,14 +27,6 @@ export function MyNotesPanel({ meetingId }: Props) {
         onChange={(event) => setDraft(event.target.value)}
         onBlur={flush}
       />
-      <div className="live__notes-foot">
-        <span className="live__chip" aria-disabled="true">
-          + Bookmark
-        </span>
-        <span className="live__chip" aria-disabled="true">
-          @ Mention
-        </span>
-      </div>
     </aside>
   );
 }
