@@ -207,20 +207,38 @@ system audio. The installer build is `scripts\build-windows.ps1` (see
 
 ## Testing
 
+The suite runs on demand from the Makefile -- no hosted CI, no timers, no git hooks. `make ci` is the
+fast deterministic gate; the model/hardware probes, coverage, and the aggregate run are separate
+targets. The plan and tracking state live in [testing.md](testing.md).
+
 ```sh
-make rust-test    # cargo test (unit + router integration tests)
-make test         # Swift cross-language self-test + cargo test
+make ci         # deterministic gate: lint, tests, codegen drift, versions, supply-chain
+make test       # Swift cross-language self-test + cargo test
+make web-test   # web unit/component tests (vitest, jsdom); also folded into web-ci
+make tauri-test # cargo test on the Tauri shell (web/src-tauri)
+make probes     # the #[ignore]d model/hardware tests (needs the models + ANE/GPU)
+make coverage   # cargo-llvm-cov + vitest v8 -> outputs/coverage/ (report-only)
+make test-all   # make ci + make probes (run everything)
 ```
 
-- Integration tests exercise the assembled axum router with `tower::ServiceExt::oneshot` against
-  an in-memory SQLite database, with the capture routes on `DisabledEngine` (503 / clean close);
-  no helper involved.
-- Pure logic (speaker ordering, segment-speaker assignment, voiceprint matching) is unit-tested
-  directly in `hearsay-attribution`.
-- The pipeline is tested end to end with scripted fakes in `hearsay-orchestrator` (a fake audio
-  source plus stubbed transcribers); the refine uses a stub diarizer. No ML dependencies.
-- `hearsay-ipc`'s golden-fixture tests and the Swift `hearsay-helper selftest` both validate the
-  codec against `shared/fixtures/`.
+- **Rust.** Integration tests exercise the assembled axum router with `tower::ServiceExt::oneshot`
+  against an in-memory SQLite database, with the capture routes on `DisabledEngine` (503 / clean
+  close); no helper involved. Pure logic (speaker ordering, segment-speaker assignment, voiceprint
+  matching) is unit-tested directly in `hearsay-attribution`. The pipeline is tested end to end with
+  scripted fakes in `hearsay-orchestrator` (a fake audio source plus stubbed transcribers); the refine
+  uses a stub diarizer. No ML dependencies.
+- **Web.** `web/` uses vitest + jsdom with Testing Library and MSW; tests sit next to the source as
+  `*.test.ts(x)` (config in `web/vite.config.ts`, shared setup in `web/src/test/`). The client layer
+  (`api/client.ts`, `api/ws.ts`, the query hooks, `hooks/useTranscript.ts`) is unit-tested against a
+  stubbed `fetch` / `WebSocket`; MSW backs the component tests that mock the API.
+- **IPC.** `hearsay-ipc`'s golden-fixture tests and the Swift `hearsay-helper selftest` both validate
+  the codec against `shared/fixtures/`.
+- **Isolation.** Every test that touches disk points `HEARSAY_OUTPUT_DIR` + `DATABASE_URL` at a
+  `tempfile::tempdir()` (or in-memory SQLite), so a run leaves the working tree untouched. Coverage and
+  E2E reports land under the gitignored `outputs/`; `make clean-test` removes them.
+- **Windows.** Windows has no `make`, so the same set is mirrored in `scripts\test-windows.ps1`
+  (`-Target ci|web|tauri|probes|coverage|all`), running the same commands with the Windows feature set
+  (`sherpa`, plus `vulkan` for the GPU probes).
 
 ## Troubleshooting
 
