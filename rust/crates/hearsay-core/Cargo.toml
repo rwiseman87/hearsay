@@ -44,3 +44,6 @@ cuda = ["hearsay-backends/cuda"]
 
 [dev-dependencies]
 tempfile = "3.27.0"
+# Real WebSocket client for the handshake-gating integration test (axum's WebSocketUpgrade extractor
+# cannot be driven by tower::oneshot). Already in the lock via the transitive graph.
+tokio-tungstenite = "0.29.0"

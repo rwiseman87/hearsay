@@ -17,6 +17,10 @@ use uuid::Uuid;
 use hearsay_core::{create_app, AppState, DisabledEngine, Settings};
 use hearsay_db::models::Stream;
 use hearsay_db::{connect_options, queries, MIGRATOR};
+use tokio_tungstenite::connect_async;
+use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+use tokio_tungstenite::tungstenite::http::header as ws_header;
+use tokio_tungstenite::tungstenite::Error as WsError;
 
 const TOKEN: &str = "test-session-token";
 
@@ -852,6 +856,9 @@ async fn reads_settings_with_config_defaults_and_about() {
     assert_eq!(body["about"]["protocol_version"], 1);
 }
 
+// Windows has no capture helper -- `win_permissions` returns `available: true` -- so this
+// helper-missing degradation is macOS-specific. See docs/windows-refine-crash.md §4.
+#[cfg(target_os = "macos")]
 #[tokio::test]
 async fn permissions_probe_degrades_when_helper_missing() {
     // `setup()` points `helper_path` at a nonexistent file, so the probe reports unavailable.
@@ -862,6 +869,81 @@ async fn permissions_probe_degrades_when_helper_missing() {
     assert_eq!(body["helper_version"], Value::Null);
     assert_eq!(body["microphone"], "unknown");
     assert_eq!(body["calendar"], "unknown");
+}
+
+// --- Live-transcript WebSocket handshake gating (routes/ws.rs) -------------------------------------
+// Auth mirrors REST but over the handshake: a loopback Origin + the session token as `?token=`. Driven
+// with a real WS client against a server on an ephemeral port, because axum's `WebSocketUpgrade`
+// extractor runs before the handler body and cannot be driven by `oneshot` (it rejects with 426).
+// Delivering the actual transcript/status frames additionally needs a scripted engine -- Phase 4.
+type WsRequest = tokio_tungstenite::tungstenite::handshake::client::Request;
+
+/// Serve the app (`DisabledEngine`) on an ephemeral loopback port; returns the `host:port` authority
+/// and the `TempDir` kept alive for the test's duration.
+async fn serve_ws() -> (String, tempfile::TempDir) {
+    let tmp = tempfile::tempdir().unwrap();
+    let settings = test_settings(tmp.path().to_path_buf(), tmp.path().join("no-web"));
+    let state = AppState::new(
+        memory_pool().await,
+        settings,
+        TOKEN.to_string(),
+        Arc::new(DisabledEngine),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let authority = format!("127.0.0.1:{}", listener.local_addr().unwrap().port());
+    tokio::spawn(async move {
+        axum::serve(listener, create_app(state).into_make_service())
+            .await
+            .unwrap();
+    });
+    (authority, tmp)
+}
+
+/// A WebSocket handshake request for a fresh meeting id, with the given token and Origin.
+fn ws_request(authority: &str, token: Option<&str>, origin: &str) -> WsRequest {
+    let id = Uuid::new_v4();
+    let url = match token {
+        Some(t) => format!("ws://{authority}/ws/meetings/{id}?token={t}"),
+        None => format!("ws://{authority}/ws/meetings/{id}"),
+    };
+    let mut req = url.into_client_request().unwrap();
+    req.headers_mut()
+        .insert(ws_header::ORIGIN, origin.parse().unwrap());
+    req
+}
+
+#[tokio::test]
+async fn ws_handshake_rejects_a_non_loopback_origin() {
+    let (authority, _tmp) = serve_ws().await;
+    let req = ws_request(&authority, Some(TOKEN), "https://evil.example");
+    match connect_async(req).await {
+        Err(WsError::Http(resp)) => assert_eq!(resp.status().as_u16(), 403),
+        Ok(_) => panic!("a cross-site Origin must not complete the handshake"),
+        Err(other) => panic!("expected HTTP 403, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn ws_handshake_rejects_a_missing_or_wrong_token() {
+    let (authority, _tmp) = serve_ws().await;
+    for token in [None, Some("not-the-token")] {
+        let req = ws_request(&authority, token, "http://127.0.0.1:5173");
+        match connect_async(req).await {
+            Err(WsError::Http(resp)) => assert_eq!(resp.status().as_u16(), 401, "token {token:?}"),
+            Ok(_) => panic!("token {token:?} must not complete the handshake"),
+            Err(other) => panic!("token {token:?}: expected HTTP 401, got {other:?}"),
+        }
+    }
+}
+
+#[tokio::test]
+async fn ws_handshake_accepts_a_valid_loopback_token() {
+    let (authority, _tmp) = serve_ws().await;
+    let req = ws_request(&authority, Some(TOKEN), "http://127.0.0.1:5173");
+    // A valid handshake upgrades (101); `DisabledEngine` then closes it cleanly. Reaching 101 proves
+    // the Origin + token gates let it through.
+    let (_stream, resp) = connect_async(req).await.expect("valid handshake accepted");
+    assert_eq!(resp.status().as_u16(), 101);
 }
 
 #[tokio::test]
