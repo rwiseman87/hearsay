@@ -74,3 +74,11 @@ docs/              project documentation
 The `Makefile` is the task runner and `make ci` is the gate: clippy with warnings denied, rustfmt,
 the Swift codec self-test, `cargo test`, codegen drift checks, and CVE/license audits. Full
 conventions are in [CLAUDE.md](CLAUDE.md).
+
+## License
+
+Hearsay is source-available under the [PolyForm Noncommercial License 1.0.0](LICENSE): you may use,
+modify, and share it for any noncommercial purpose. It is not an open-source license — commercial
+use requires a separate license, and the author reserves all commercial rights. The bundled
+machine-learning models and libraries keep their own licenses; see
+[THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
