@@ -25,6 +25,11 @@ all-features = true
 [licenses]
 version = 2
 confidence-threshold = 0.9
+# One `allow` list serves both the rust/ workspace and the web/src-tauri tree, which have different
+# dependency sets, so some permissive ids are used by only one tree (e.g. MPL-2.0 is tauri-only). Keep
+# the superset without the per-tree `license-not-encountered` noise; an actually-denied (copyleft)
+# license still fails, since unlisted licenses are rejected by `version = 2`.
+unused-allowed-license = "allow"
 # Skip our own unpublished workspace crates (publish = false); they carry no license on purpose.
 private = { ignore = true }
 allow = [
