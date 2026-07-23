@@ -24,18 +24,21 @@ and a **progressive-emit fake** (`TimedTranscriber` / `ProgressiveBackend` in
 `hearsay-orchestrator::testing`) that streams the canned transcript *during* recording. Playwright reads
 the session token from the core's existing handshake file, so no token surface was added to the binary.
 
+The **model-free leftovers** then landed too: `queries.rs` error-branch tests (FTS search, the
+cross-meeting segment-edit scope, corrupt-cycle termination), a migration-upgrade test (a sub-slice
+`Migrator` seeds at 0006, then head applies 0007's FTS backfill over the pre-existing rows), and a
+full-stack **refine read-back** (a wired `ScriptedRefiner` replaces the Them track at stop, read back
+over HTTP). The notes path is already exercised by the E2E's "Generate notes" step.
+
 **Next, in rough priority:**
 
-1. **Model-free leftovers (CI-verifiable on macOS):** `queries.rs` direct error-branch tests (P2); the
-   migration-upgrade test (P3) — sqlx's `Migrator` is all-or-nothing, so "seed at an older schema
-   version" needs a hand-rolled prefix (apply the first migration's SQL directly, or build a `Migrator`
-   over a sub-slice); a **refine read-back** for the full-stack path by wiring a `ScriptedRefiner` (the
-   notes path is already exercised — the scripted engine wires a canned summarizer and the E2E drives
-   the "Generate notes" route end to end).
-2. **Model/Windows-gated (not verifiable on macOS):** baselined `make probes` (P3); the
+1. **Model/Windows-gated (not verifiable on macOS):** baselined `make probes` (P3); the
    `storage_override_pins_meeting_dir_off_the_default_root` diagnosis + the Windows capture/backend
    units (P2); run the same browser E2E on the Windows box (`scripts\test-windows.ps1 -Target e2e`) and
    add the Windows packaged-app E2E (P4) via `tauri-driver`.
+2. **Optional polish (CI-verifiable):** the `queries.rs` pass covered the high-value error branches;
+   more per-query direct tests can be added if a gap shows up, and an OpenAPI-doc `insta` snapshot (P3)
+   is still open.
 
 The per-phase checkboxes below carry the detail; this section is the map.
 
@@ -233,8 +236,12 @@ sidecars, `memory_pool()`).
       on the first line (sherpa recognizer), so there is no model-free seam there. The genuinely pure
       buffering — timestamp gap-fill / resync clamp — lives in `hearsay-orchestrator/src/recorder.rs`
       and `audio.rs`, which already have inline `#[cfg(test)]` tests. Retarget or drop this item.
-- [ ] **`hearsay-db/queries.rs`** — direct unit tests for query paths and error branches not hit by
-      `schema.rs` (decide per-query; do not duplicate integration coverage).
+- [x] **`hearsay-db/queries.rs`** — direct unit tests for the error branches not hit by `schema.rs`
+      (in `tests/schema.rs`): the FTS `search`/`count_search` path (ranked hits + highlight-sentinel
+      snippet + non-match), `update_segment_text`'s cross-meeting `AND meeting_id` scope (a segment
+      cannot be edited via another meeting's id), and `folder_is_descendant`'s visited-set guard
+      terminating on an injected corrupt cycle (no infinite loop). Per-query, not a blanket duplicate of
+      the integration coverage.
 - [x] **Tauri shell (`web/src-tauri/src/main.rs`)** — `#[cfg(test)]` for `html_escape` (untrusted
       `detail` interpolated into a `win.eval` string — XSS-adjacent); `make tauri-test` added and wired
       into `make ci`. **Deferred:** `stop_core_gracefully` / `erase_all_data` (need `CommandChild` /
@@ -256,9 +263,12 @@ Lock behavior so future changes cannot silently regress it.
 - [x] **Snapshot tests (`insta`)** for the markdown export — `render_transcript` (speaker grouping +
       `HH:MM:SS`) is snapshotted in `hearsay-orchestrator/src/markdown.rs`. Notes rendering already has
       assertion tests; an OpenAPI-doc snapshot is still open.
-- [ ] **Migration upgrade tests** — seed a populated fixture DB at an older schema version, run the
-      `Migrator`, assert a clean upgrade with data intact. Guards the forward-only/append-only rule
-      (today every test starts from an empty DB).
+- [x] **Migration upgrade tests** — `migrations_upgrade_a_populated_older_db_with_data_intact` in
+      `hearsay-db/tests/schema.rs`. sqlx's `Migrator` is all-or-nothing, so a `prefix_migrator(n)` helper
+      (a `Migrator` over the first `n` embedded migrations) seeds a populated DB at 0006, then head runs
+      0007-0009 on top: the rows survive, 0008's `edited` column defaults on the old row, and 0007's FTS
+      `'rebuild'` backfill indexes a segment that existed before the index — proof a migration processes
+      pre-existing data, guarding the forward-only rule (every other test starts from an empty DB).
 - [x] **Property tests (`proptest`)** — IPC codec header+payload round trip in `hearsay-ipc`; the
       voiceprint `cosine` symmetry / bounds / self-similarity in `hearsay-attribution` (`match_identity`
       threshold selection stays covered by the existing unit tests).
@@ -299,7 +309,10 @@ share the same fakes, so a meeting produces identical, assertable output every r
       frames over a real `tokio-tungstenite` client → `stop`), then reads the persisted segments +
       `Speaker 1` cluster back via REST. Exercises the TCP socket, the WS upgrade/broadcast, the
       orchestrator, and on-disk persistence together — none of which the `oneshot`/`DisabledEngine`
-      tests touch. (Refine/notes read-back is a follow-up: wire a `ScriptedRefiner`/`ScriptedSummarizer`.)
+      tests touch. A companion `full_stack_refine_replaces_them_segments_on_read_back` wires a
+      `ScriptedRefiner`: the auto-refine at stop replaces the live Them guess with the re-diarized
+      segments (`Speaker 1`/`Speaker 2`), read back over HTTP, with the Me track untouched. (The notes
+      read-back is covered by the E2E's "Generate notes" step.)
 - [x] **Browser E2E (Playwright, `make e2e`).** `hearsay-core` (scripted engine, via the dev-only
       `HEARSAY_SCRIPTED` flag) + `vite dev`, then Chromium drives the real React app through the full
       flow: load with the session token → start recording → watch the transcript populate over the live
@@ -335,18 +348,20 @@ How the phases map onto the categories requested.
 
 | Type | Have | Adding |
 |---|---|---|
-| **Unit** | attribution, notes-prompt, IPC codec, inline orchestrator/core units | web client layer + hooks (P1); sherpa/streaming buffering, `reconcile`, queries, Tauri shell (P2); Swift `SidecarIO`/`Resampler` (P3) |
+| **Unit** | attribution, notes-prompt, IPC codec, inline orchestrator/core units, `queries.rs` error branches (search/edit-scope/cycle) | web client layer + hooks (P1); `reconcile`, Tauri shell (P2); Swift `SidecarIO`/`Resampler` (P3) |
 | **Component** | none | MSW-mocked React components (P1) |
-| **Integration** | axum router (api.rs, oneshot/in-memory), DB schema, orchestrator lifecycle | focused WebSocket gating (P2); **full-stack HTTP/WS over a real socket with a real DB** (P4) |
+| **Integration** | axum router (api.rs, oneshot/in-memory), DB schema, orchestrator lifecycle, **full-stack HTTP/WS over a real socket** + refine read-back (P4) | focused WebSocket gating (P2) |
 | **E2E** | **browser Playwright: real UI → real core → real pipeline** (P4) | Windows packaged-app E2E via `tauri-driver`; packaged WKWebView app is a documented manual-smoke gap |
-| **Regression** | golden IPC fixtures, codegen drift | `insta` snapshots, migration-upgrade fixtures, `proptest`, baselined model probes (P3) |
+| **Regression** | golden IPC fixtures, codegen drift, `insta` snapshots, `proptest`, migration-upgrade fixture (P3) | baselined model probes (P3) |
 
 ## Open decisions
 
 - **Swift tests:** extend `selftest` (Command Line Tools only, matches the current convention) vs a
   real XCTest/swift-testing target (needs full Xcode). Default: extend `selftest` for pure logic.
 - **`queries.rs`:** direct unit tests vs continued reliance on `schema.rs` integration — decide per
-  query, favoring direct tests for error branches.
+  query, favoring direct tests for error branches. **Resolved:** direct tests were added for the
+  high-value error branches (FTS search, cross-meeting edit scope, corrupt-cycle termination); the rest
+  stay covered by the `schema.rs` round-trips, with more added per-query only as gaps surface.
 - **Coverage thresholds:** report-only first, ratchet once a baseline exists.
 - **Probe granularity:** one `make probes` for all model tests vs. per-area targets
   (`probes-refine`, `probes-sherpa`, `probes-notes`) so a maintainer can run just the relevant one.

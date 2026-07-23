@@ -3,6 +3,7 @@
 //! (503 / clean close), so this covers the whole self-contained surface without a real pipeline.
 
 use std::path::PathBuf;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -19,8 +20,10 @@ use uuid::Uuid;
 use hearsay_core::{create_app, AppState, DisabledEngine, LiveEngine, Settings};
 use hearsay_db::models::Stream;
 use hearsay_db::{connect_options, queries, MIGRATOR};
-use hearsay_orchestrator::testing::ScriptedBackend;
-use hearsay_orchestrator::{AudioChunk, CaptureChunk, Orchestrator, SegmentKind, SidecarSegment};
+use hearsay_orchestrator::testing::{ScriptedBackend, ScriptedRefiner};
+use hearsay_orchestrator::{
+    AudioChunk, CaptureChunk, Orchestrator, RefinedThemSegment, SegmentKind, SidecarSegment,
+};
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::http::header as ws_header;
@@ -1113,6 +1116,111 @@ async fn full_stack_meeting_drives_events_and_persistence() {
     let (status, speakers) = send(&app, get(&format!("/api/meetings/{id}/speakers"))).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(speakers["items"][0]["label"], "Speaker 1");
+}
+
+#[tokio::test]
+async fn full_stack_refine_replaces_them_segments_on_read_back() {
+    // The live path yields a single Them "Speaker 1" final; a wired refiner re-diarizes it into two
+    // speakers at stop. Everything is driven over the HTTP API and read back over it.
+    let pool = memory_pool().await;
+    let tmp = tempfile::tempdir().unwrap();
+    let (backend, _fed) = ScriptedBackend::new(
+        vec![chunk(Stream::Them, 1_000_000_000, &[0.1, 0.2, 0.3])],
+        vec![seg(SegmentKind::Final, "me kept", 0.0, 1.0, None)],
+        vec![seg(SegmentKind::Final, "live guess", 0.0, 2.0, Some(0))],
+    );
+    let (refiner, calls) = ScriptedRefiner::new(vec![
+        RefinedThemSegment {
+            ordinal: 1,
+            text: "refined one".into(),
+            start_s: 0.0,
+            end_s: 1.0,
+        },
+        RefinedThemSegment {
+            ordinal: 2,
+            text: "refined two".into(),
+            start_s: 1.0,
+            end_s: 2.0,
+        },
+    ]);
+    // Keep the concrete Arc so the test can await the background refine; it coerces to the trait
+    // object AppState wants.
+    let orch = Orchestrator::new(pool.clone(), tmp.path().to_path_buf(), backend)
+        .with_refiner(refiner)
+        .into_arc();
+    let settings = test_settings(tmp.path().to_path_buf(), tmp.path().join("no-web"));
+    let state = AppState::new(pool.clone(), settings, TOKEN.to_string(), orch.clone());
+    let app = create_app(state);
+
+    // Start over HTTP, then drop a placeholder audio.wav into the meeting folder — the refiner ignores
+    // its content, but the auto-refine at stop only runs when a recording exists.
+    let (status, meeting) = send(&app, post("/api/meetings", r#"{"title":"Refine"}"#)).await;
+    assert_eq!(status, StatusCode::CREATED);
+    let id = Uuid::parse_str(meeting["id"].as_str().unwrap()).unwrap();
+    let folder = queries::get_meeting(&pool, id)
+        .await
+        .unwrap()
+        .unwrap()
+        .folder;
+    std::fs::write(tmp.path().join(&folder).join("audio.wav"), b"placeholder").unwrap();
+
+    // Stop returns an interim "refining"; the refine runs in the background, then finalizes.
+    let (status, stopped) = send(&app, post(&format!("/api/meetings/{id}/stop"), "")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(stopped["status"], "refining");
+    orch.wait_for_refines().await;
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "auto-refine ran once at stop"
+    );
+    assert_eq!(
+        queries::get_meeting(&pool, id)
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        hearsay_db::models::MeetingStatus::Finalized
+    );
+
+    // Read back over HTTP: the live Them guess is replaced by the refiner's two segments, the Me track
+    // is untouched, and the refined speakers surface on the speakers endpoint.
+    let (status, segs) = send(&app, get(&format!("/api/meetings/{id}/segments"))).await;
+    assert_eq!(status, StatusCode::OK);
+    let items = segs["items"].as_array().unwrap();
+    let them: Vec<&Value> = items.iter().filter(|s| s["stream"] == "them").collect();
+    assert_eq!(
+        them.len(),
+        2,
+        "the single live Them final is replaced by the two refined segments"
+    );
+    assert_eq!(them[0]["text"], "refined one");
+    assert_eq!(them[1]["text"], "refined two");
+    assert!(
+        !items.iter().any(|s| s["text"] == "live guess"),
+        "the pre-refine Them guess is gone"
+    );
+    let me = items
+        .iter()
+        .find(|s| s["stream"] == "me")
+        .expect("the Me segment");
+    assert_eq!(
+        me["text"], "me kept",
+        "the Me track is untouched by the refine"
+    );
+
+    let (status, speakers) = send(&app, get(&format!("/api/meetings/{id}/speakers"))).await;
+    assert_eq!(status, StatusCode::OK);
+    let labels: Vec<&str> = speakers["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["label"].as_str().unwrap())
+        .collect();
+    assert!(
+        labels.contains(&"Speaker 1") && labels.contains(&"Speaker 2"),
+        "both refined speakers read back: {labels:?}"
+    );
 }
 
 #[tokio::test]
