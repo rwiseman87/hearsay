@@ -9,6 +9,38 @@ lands. The durable "how to test" reference stays in [development.md](development
 once a phase ships, its lasting parts fold into that section. Design rationale is recorded here
 so it is not re-litigated.
 
+## Status (resume here)
+
+Branch `test/suite-buildout` off `main`. Phases 0-3 are complete and Phase 4's Rust half is in; the
+full Rust + web suites are green, and everything below runs under `make ci` except the model/hardware
+probes and the (still-unbuilt) browser E2E.
+
+**Landed:** the Makefile suite + Windows mirror (P0); the web harness + client-layer + component tests
+(P1); WS handshake gating, `reconcile` crash-recovery, Tauri `html_escape`, the macOS cfg-gate (P2);
+`proptest` + `insta` regression locks (P3); the full-stack HTTP/WS integration test (P4).
+
+**Next, in rough priority:**
+
+1. **Browser E2E (Playwright, P4)** — the remaining Phase-4 half; `make e2e` and `test-all`'s `e2e`
+   step do not exist yet and land here. Two prerequisites, both surfaced by the Rust full-stack test:
+   - a **production `HEARSAY_SCRIPTED` env flag** in the core binary — Playwright drives the real core
+     *process*, so the scripted engine can't be injected in-test the way the Rust full-stack test does
+     (that test shares one in-process `AppState`, driving HTTP via `oneshot` and the WS via a real TCP
+     server; a subscribed WS is synchronized against a `pause` connect-snapshot before `stop`);
+   - a **progressive-emit fake** — the `hearsay-orchestrator::testing` fakes emit their segments at
+     *stop*, so asserting the transcript populate *during* recording needs a new fake that emits on a
+     timer (or a `SYNTHETIC=1` fallback, at the cost of nondeterministic ASR — see Open decisions).
+2. **Model-free leftovers:** `queries.rs` direct error-branch tests (P2); the migration-upgrade test
+   (P3) — sqlx's `Migrator` is all-or-nothing, so "seed at an older schema version" needs a hand-rolled
+   prefix (apply the first migration's SQL directly, or build a `Migrator` over a sub-slice); and the
+   full-stack test can grow a refine/notes read-back by wiring a `ScriptedRefiner`/`ScriptedSummarizer`.
+3. **Model/Windows-gated (not verifiable on macOS):** baselined `make probes` (P3); the
+   `storage_override_pins_meeting_dir_off_the_default_root` diagnosis + the Windows capture/backend
+   units (P2); the Windows packaged-app E2E (P4) — run these on the Windows box via
+   `scripts\test-windows.ps1`.
+
+The per-phase checkboxes below carry the detail; this section is the map.
+
 ## Why this doc
 
 The building blocks are already strong (see [Baseline](#baseline)), but two things are missing:
@@ -59,16 +91,17 @@ real differences are asserted where they are real, not papered over.
 
 Two consequences the parity goal forces up front:
 
-- **The shared suite must actually pass on Windows.** Two tests fail there today
-  (windows-refine-crash.md §4): `permissions_probe_degrades_when_helper_missing` asserts macOS-only
-  helper behavior (Windows has no helper, so `win_permissions` returns `available: true`) and must be
-  `cfg`-gated; and `storage_override_pins_meeting_dir_off_the_default_root` fails undiagnosed — a
-  possible real Windows path bug. Green-on-both is Phase 2 work, not an afterthought.
+- **The shared suite must actually pass on Windows.** Of the two tests that failed there
+  (windows-refine-crash.md §4), `permissions_probe_degrades_when_helper_missing` is now `cfg`-gated to
+  macOS (Windows has no helper, so `win_permissions` returns `available: true`); the second,
+  `storage_override_pins_meeting_dir_off_the_default_root`, is still undiagnosed — a possible real
+  Windows path bug to run down on the Windows box.
 - **The entry point must exist on Windows.** Windows has no `make` (it builds via
-  `scripts\build-windows.ps1`), so the targets are mirrored in `scripts\test-windows.ps1` running the
-  same `cargo`/`npm`/Playwright commands with the Windows feature set (`--features sherpa,notes`, and
-  `sherpa,vulkan` for the GPU probe). `hearsay-inference/build.rs` already copies the sherpa/onnx
-  DLLs next to the test binaries, so `cargo test` there needs only the features.
+  `scripts\build-windows.ps1`), so the targets are mirrored in `scripts\test-windows.ps1`
+  (`-Target ci|web|tauri|probes|coverage|all`) running the same `cargo`/`npm` commands with the
+  Windows feature set (`sherpa` for the shared suite, plus `vulkan` for the GPU probes; `notes` is a
+  separate crate, not a workspace feature). `hearsay-inference/build.rs` already copies the
+  sherpa/onnx DLLs next to the test binaries, so `cargo test` there needs only the features.
 
 An in-process fragility unique to Windows shapes the isolation strategy: unlike macOS, which runs
 diarization in the crash-isolated `hearsay-diarize` sidecar, the Windows backend runs the diarizer
@@ -98,10 +131,10 @@ The suite is composed from these on-demand targets (new ones added by the phases
 | `make ci` | the deterministic gate — lint, Rust + Swift + **web + Tauri** unit/integration tests, codegen drift, version, audit, licenses | no |
 | `make web-test` | web unit/component tests (vitest); also folded into `web-ci` | no |
 | `make tauri-test` | `cargo test` on `web/src-tauri` | no |
-| `make e2e` | browser end-to-end (Playwright) against a running core + vite | no (needs browser binaries) |
+| `make e2e` | browser end-to-end (Playwright) against a running core + vite — **not yet built (Phase 4)** | no (needs browser binaries) |
 | `make probes` | the `#[ignore]`d model/hardware tests (`cargo test -- --ignored`) | yes |
 | `make coverage` | `cargo-llvm-cov` + vitest coverage → `outputs/coverage/` | no |
-| `make test-all` | `make ci` + `make e2e` + `make probes` — the one "run everything" target | yes |
+| `make test-all` | currently `make ci` + `make probes`; gains `make e2e` when it lands — the "run everything" target | yes |
 | `make clean-test` | remove the report dirs (`outputs/coverage`, `outputs/e2e`); test *data* auto-cleans | no |
 
 `make ci` stays the fast pre-flight (and includes the full-stack HTTP/WS integration test, which
@@ -120,11 +153,13 @@ or `outputs/recordings/`. `TempDir` removes itself on drop, including on panic, 
 no explicit cleanup. The browser E2E core + vite run against a temp output dir and OS-assigned
 ephemeral ports for the same reason.
 
-**Process teardown (the one new risk).** Unlike a `TempDir`, a spawned OS process is not reaped by a
-panicking test. The full-stack integration and E2E harnesses each own an RAII guard whose `Drop`
-kills the spawned process group (core → sidecars/notes) and waits, so an aborted or failed run leaves
-no zombie process and frees the port. Playwright uses its `webServer` config to start and stop the
-core + vite around the run.
+**Process teardown.** The Rust full-stack test serves the core **in-process** — `axum::serve` on a
+`tokio::spawn` task bound to an ephemeral port — so there is no external process to reap: the task and
+its port are released when the test runtime drops (and WS reads are bounded by a timeout so a hang
+fails fast rather than blocking the suite). The browser E2E is the case that spawns a real OS process;
+it relies on Playwright's `webServer` config to start and stop the core + vite around the run (or, if a
+bespoke harness is used instead, an RAII guard whose `Drop` kills the process group so an aborted run
+leaves no zombie and frees the port).
 
 **Results.** Default reporters go to the terminal (cargo, vitest, Playwright) — pass/fail and
 timings, which is all the gate needs. Artifacts for *triage* are written only under the
