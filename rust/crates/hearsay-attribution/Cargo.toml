@@ -5,3 +5,6 @@ edition.workspace = true
 publish = false
 
 [dependencies]
+
+[dev-dependencies]
+proptest = "1.11.0"

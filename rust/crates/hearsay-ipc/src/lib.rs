@@ -483,4 +483,33 @@ mod tests {
         header[20..24].copy_from_slice(&max_samples.to_le_bytes());
         assert_eq!(expected_payload_len(&header).unwrap(), MAX_PAYLOAD_LEN);
     }
+
+    use proptest::prelude::*;
+
+    proptest! {
+        // Any structurally valid frame survives an encode -> decode round trip unchanged: audio
+        // payloads are a whole number of samples; hello/heartbeat/eos carry none.
+        #[test]
+        fn encode_decode_roundtrips(
+            stream in prop_oneof![Just(Stream::Me), Just(Stream::Them)],
+            format in prop_oneof![Just(SampleFormat::Int16), Just(SampleFormat::Float32)],
+            seq in any::<u32>(),
+            host_ts in any::<u64>(),
+            flags in any::<u8>(),
+            kind in 0usize..4,
+            raw in prop::collection::vec(any::<u8>(), 0..4096),
+        ) {
+            let frame_type =
+                [FrameType::Audio, FrameType::Hello, FrameType::Heartbeat, FrameType::Eos][kind];
+            let payload = if frame_type == FrameType::Audio {
+                let bps = format.bytes_per_sample();
+                raw[..raw.len() - raw.len() % bps].to_vec()
+            } else {
+                Vec::new()
+            };
+            let frame = MediaFrame { frame_type, stream, format, seq, host_ts, payload, flags };
+            let bytes = encode(&frame).unwrap();
+            prop_assert_eq!(decode(&bytes).unwrap(), frame);
+        }
+    }
 }

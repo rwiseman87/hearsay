@@ -136,4 +136,31 @@ mod tests {
         ];
         assert_eq!(match_identity(&[1.0, 0.0], &known, 0.5), Some("first"));
     }
+
+    use proptest::prelude::*;
+
+    // Finite, bounded floats so cosine stays well-defined (no NaN / inf).
+    fn vec_strategy() -> impl Strategy<Value = Vec<f32>> {
+        prop::collection::vec(-1000.0f32..1000.0, 1..64)
+    }
+
+    proptest! {
+        // Cosine is symmetric and stays within [-1, 1] (modulo fp slack) for equal-length inputs.
+        #[test]
+        fn cosine_is_symmetric_and_bounded(a in vec_strategy(), b in vec_strategy()) {
+            let n = a.len().min(b.len());
+            let (a, b) = (&a[..n], &b[..n]);
+            let ab = cosine(a, b);
+            prop_assert!((cosine(b, a) - ab).abs() < 1e-9);
+            prop_assert!((-1.0 - 1e-6..=1.0 + 1e-6).contains(&ab), "out of range: {ab}");
+        }
+
+        // A non-zero vector is maximally similar to itself.
+        #[test]
+        fn cosine_self_is_one_for_nonzero(v in vec_strategy()) {
+            let norm: f64 = v.iter().map(|&x| f64::from(x) * f64::from(x)).sum();
+            prop_assume!(norm > 1e-3);
+            prop_assert!((cosine(&v, &v) - 1.0).abs() < 1e-4);
+        }
+    }
 }

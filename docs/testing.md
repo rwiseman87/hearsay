@@ -219,13 +219,15 @@ sidecars, `memory_pool()`).
 
 Lock behavior so future changes cannot silently regress it.
 
-- [ ] **Snapshot tests (`insta`)** for the markdown export (`hearsay-orchestrator/src/markdown.rs`)
-      and notes parsing; consider one for the OpenAPI doc.
+- [x] **Snapshot tests (`insta`)** for the markdown export — `render_transcript` (speaker grouping +
+      `HH:MM:SS`) is snapshotted in `hearsay-orchestrator/src/markdown.rs`. Notes rendering already has
+      assertion tests; an OpenAPI-doc snapshot is still open.
 - [ ] **Migration upgrade tests** — seed a populated fixture DB at an older schema version, run the
       `Migrator`, assert a clean upgrade with data intact. Guards the forward-only/append-only rule
       (today every test starts from an empty DB).
-- [ ] **Property tests (`proptest`)** — IPC codec header+payload roundtrip in `hearsay-ipc`; the
-      voiceprint cosine/threshold math in `hearsay-attribution`.
+- [x] **Property tests (`proptest`)** — IPC codec header+payload round trip in `hearsay-ipc`; the
+      voiceprint `cosine` symmetry / bounds / self-similarity in `hearsay-attribution` (`match_identity`
+      threshold selection stays covered by the existing unit tests).
 - [ ] **Coverage measurement** — `cargo-llvm-cov` (Rust) + vitest v8 (web), report-only at first
       (baseline recorded here), ratcheted later.
 - [ ] **Baselined model probes (`make probes`, both OSes)** — give the `#[ignore]`d probes recorded
