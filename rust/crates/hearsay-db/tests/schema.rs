@@ -772,6 +772,51 @@ async fn delete_meeting_cascades_notes() {
 }
 
 #[tokio::test]
+async fn user_notes_upsert_get_overwrite_and_cascade() {
+    let pool = memory_pool().await;
+    let meeting = queries::create_meeting(&pool, "Discovery", "/tmp/disc", "", chrono::Utc::now())
+        .await
+        .unwrap();
+
+    // No row yet is the empty state.
+    assert!(queries::get_user_notes(&pool, meeting.id)
+        .await
+        .unwrap()
+        .is_none());
+
+    let first = queries::upsert_user_notes(&pool, meeting.id, "renewals are manual")
+        .await
+        .unwrap();
+    assert_eq!(first.body, "renewals are manual");
+    let created = first.created_at;
+
+    // A later save overwrites the body in place (still one row) and preserves created_at.
+    let second = queries::upsert_user_notes(&pool, meeting.id, "renewals are manual\nask budget")
+        .await
+        .unwrap();
+    assert_eq!(second.body, "renewals are manual\nask budget");
+    assert_eq!(
+        second.created_at, created,
+        "created_at preserved on autosave"
+    );
+
+    let stored = queries::get_user_notes(&pool, meeting.id)
+        .await
+        .unwrap()
+        .expect("notes exist");
+    assert_eq!(stored.body, "renewals are manual\nask budget");
+
+    assert!(queries::delete_meeting(&pool, meeting.id).await.unwrap());
+    assert!(
+        queries::get_user_notes(&pool, meeting.id)
+            .await
+            .unwrap()
+            .is_none(),
+        "user notes cascade-deleted with the meeting"
+    );
+}
+
+#[tokio::test]
 async fn folder_crud_roundtrip_and_reports_missing() {
     let pool = memory_pool().await;
     let work = queries::create_folder(&pool, "Work", None).await.unwrap();

@@ -4,13 +4,13 @@
 use utoipa::OpenApi;
 
 use crate::schema::{
-    AboutInfo, CaptureHealthEvent, CatalogEntry, DownloadRequest, DownloadState, DownloadStatus,
-    FolderCreate, FolderRead, FolderReparent, FolderUpdate, IdentityRead, MeetingCreate,
-    MeetingFolderAssign, MeetingNotesRead, MeetingRead, MeetingStatus, MeetingUpdate, ModelCatalog,
-    ModelSettings, ModelsInfo, NotesEdit, PermissionsInfo, PromptEvent, RecordingSettings,
-    ResyncEvent, SearchHit, SegmentEdit, SegmentRead, SettingsRead, SpeakerRead, SpeakerRename,
-    SpeakerSettings, StatusEvent, StatusInfo, StorageInfo, StorageSettings, Stream,
-    TranscriptEvent,
+    AboutInfo, CaptureHealthEvent, CaptureStateEvent, CatalogEntry, DownloadRequest, DownloadState,
+    DownloadStatus, FolderCreate, FolderRead, FolderReparent, FolderUpdate, IdentityRead,
+    LevelEvent, MeetingCreate, MeetingFolderAssign, MeetingNotesRead, MeetingRead, MeetingStatus,
+    MeetingUpdate, ModelCatalog, ModelSettings, ModelsInfo, NotesEdit, PermissionsInfo,
+    PromptEvent, RecordingSettings, ResyncEvent, SearchHit, SegmentEdit, SegmentRead, SettingsRead,
+    SpeakerRead, SpeakerRename, SpeakerSettings, StatusEvent, StatusInfo, StorageInfo,
+    StorageSettings, Stream, TranscriptEvent, UserNotesRead, UserNotesWrite,
 };
 
 #[derive(OpenApi)]
@@ -25,6 +25,8 @@ use crate::schema::{
         crate::routes::meetings::edit_segment,
         crate::routes::meetings::stop_meeting,
         crate::routes::meetings::keep_recording,
+        crate::routes::meetings::pause_meeting,
+        crate::routes::meetings::resume_meeting,
         crate::routes::meetings::assign_meeting_folder,
         crate::routes::meetings::delete_meeting,
         crate::routes::meetings::reveal_meeting,
@@ -41,6 +43,8 @@ use crate::schema::{
         crate::routes::notes::generate_notes,
         crate::routes::notes::read_notes,
         crate::routes::notes::edit_notes,
+        crate::routes::user_notes::read_user_notes,
+        crate::routes::user_notes::save_user_notes,
         crate::routes::search::search,
         crate::routes::models::catalog,
         crate::routes::models::download_status,
@@ -80,6 +84,8 @@ use crate::schema::{
         ModelsInfo,
         MeetingNotesRead,
         NotesEdit,
+        UserNotesRead,
+        UserNotesWrite,
         CatalogEntry,
         ModelCatalog,
         DownloadStatus,
@@ -93,6 +99,8 @@ use crate::schema::{
         ResyncEvent,
         PromptEvent,
         CaptureHealthEvent,
+        LevelEvent,
+        CaptureStateEvent,
     )),
     tags(
         (name = "meetings", description = "Meeting lifecycle + transcript segments"),

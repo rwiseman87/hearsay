@@ -50,6 +50,7 @@ pub fn create_app(state: AppState) -> Router {
         .merge(routes::folders::router())
         .merge(routes::speakers::router())
         .merge(routes::notes::router())
+        .merge(routes::user_notes::router())
         .merge(routes::models::router())
         .merge(routes::search::router())
         .merge(routes::settings::router())

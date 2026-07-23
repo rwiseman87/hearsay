@@ -11,6 +11,13 @@
   --danger: #ff6b6b;
   --radius: 8px;
   --gap: 12px;
+  --rail-width: 62px;
+
+  /* Rotating speaker colors for the live view's avatars/dots (Me uses --me). */
+  --spk-1: #2ecc9b;
+  --spk-2: #c6b8ff;
+  --spk-3: #ffcf8a;
+  --spk-4: #94e0a4;
 
   --fs-xs: 0.6875rem;
   --fs-sm: 0.75rem;
@@ -44,393 +51,13 @@ body {
   height: 100%;
 }
 
-.app__bar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--gap);
-  padding: 10px 16px;
-  border-bottom: 1px solid var(--border);
-  background: var(--surface);
-}
-
-.app__title {
-  margin: 0;
-  flex: 0 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: var(--fs-xl);
-}
-
-/* The sidebar keeps its dragged width but never crushes the transcript on a narrow window. */
+/* Two columns: the fixed nav rail and the flexible content pane (the meeting list now lives inside
+   the home dashboard, not a persistent sidebar). */
 .app__main {
   display: grid;
-  grid-template-columns: min(var(--sidebar-width, 280px), 45vw) 6px 1fr;
+  grid-template-columns: var(--rail-width) 1fr;
   flex: 1;
   min-height: 0;
-}
-
-/* Drag handle between the sidebar and the main pane; the sidebar's border-right is the visible seam,
-   this is the (wider) grab zone that lights up on hover/focus. */
-.app__resizer {
-  cursor: col-resize;
-  background: transparent;
-  touch-action: none;
-}
-
-.app__resizer:hover,
-.app__resizer:active,
-.app__resizer:focus-visible {
-  background: var(--accent);
-  outline: none;
-}
-
-.meetings {
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-  border-right: 1px solid var(--border);
-  background: var(--surface);
-}
-
-.meetings__new {
-  display: flex;
-  gap: 8px;
-  padding: 12px;
-}
-
-.meetings__new input {
-  flex: 1;
-  min-width: 0;
-}
-
-.meetings__preparing {
-  margin: 0;
-  padding: 0 12px 10px;
-  font-size: var(--fs-sm);
-}
-
-.meetings__folder-new {
-  padding: 0 12px 8px;
-}
-
-.meetings__new-folder-btn {
-  width: 100%;
-  padding: 6px 8px;
-  border: 1px dashed var(--border);
-  border-radius: var(--radius);
-  background: none;
-  color: var(--muted);
-  cursor: pointer;
-  text-align: left;
-}
-
-.meetings__new-folder-btn:hover {
-  color: var(--text);
-  border-color: var(--muted);
-}
-
-.meetings__tree {
-  flex: 1;
-  min-height: 0;
-  margin: 0;
-  padding: 0 8px 12px;
-  overflow-y: auto;
-}
-
-.folder__meetings {
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-.meetings__item {
-  display: flex;
-  align-items: center;
-  gap: 0;
-  padding-right: 6px;
-  border-radius: var(--radius);
-}
-
-.meetings__item:hover {
-  background: var(--surface-2);
-}
-
-.meetings__item.is-selected {
-  background: rgba(91, 157, 255, 0.16);
-}
-
-.meetings__item.is-selected .meetings__title {
-  color: var(--accent);
-  font-weight: 600;
-}
-
-/* Empty leading column for a meeting row, the same width as a folder's chevron + icon, so a
-   meeting's title lines up in the same column as folder names (one level in, via its extra depth). */
-.meetings__lead {
-  flex: none;
-  width: 42px;
-  align-self: stretch;
-}
-
-/* Row/folder actions are hidden at rest so nothing crowds the row and every folder count lands on
-   the same right edge (reserved action space is what knocked them out of line). They appear on hover
-   / keyboard focus; on a folder the count is swapped out for the actions so the row doesn't reflow. */
-.meetings__item .meetings__edit-btn,
-.meetings__item .meetings__delete,
-.folder__actions {
-  display: none;
-}
-
-.meetings__item:hover .meetings__edit-btn,
-.meetings__item:hover .meetings__delete,
-.meetings__item:focus-within .meetings__edit-btn,
-.meetings__item:focus-within .meetings__delete {
-  display: inline-flex;
-}
-
-.folder__header:hover .folder__actions,
-.folder__header:focus-within .folder__actions {
-  display: flex;
-}
-
-.folder__header:hover .folder__count,
-.folder__header:focus-within .folder__count {
-  display: none;
-}
-
-.meetings__open {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 5px 6px 5px 4px;
-  border: none;
-  border-radius: var(--radius);
-  background: none;
-  color: inherit;
-  font-size: var(--fs-md);
-  text-align: left;
-  cursor: pointer;
-}
-
-.meetings__title {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.meetings__delete {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 24px;
-  height: 24px;
-  padding: 0;
-  border: none;
-  border-radius: 6px;
-  background: none;
-  color: var(--muted);
-  font-size: var(--fs-md);
-  line-height: 1;
-  cursor: pointer;
-}
-
-.meetings__delete:hover:not(:disabled) {
-  background: var(--border);
-  color: var(--danger);
-}
-
-.meetings__confirm {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-}
-
-.meetings__confirm-hint {
-  flex-basis: 100%;
-  font-size: var(--fs-xs);
-  color: var(--muted);
-}
-
-.meetings__confirm-yes,
-.meetings__confirm-no {
-  padding: 4px 8px;
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  background: none;
-  font-size: var(--fs-sm);
-  cursor: pointer;
-}
-
-.meetings__confirm-yes {
-  color: var(--danger);
-  border-color: var(--danger);
-}
-
-.meetings__confirm-no {
-  color: var(--muted);
-}
-
-.meetings__edit {
-  flex: 1;
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  padding: 4px;
-}
-
-.meetings__edit-input {
-  flex: 1;
-  min-width: 0;
-  padding: 6px 8px;
-}
-
-.meetings__edit-btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 24px;
-  height: 24px;
-  padding: 0;
-  border: none;
-  border-radius: 6px;
-  background: none;
-  color: var(--muted);
-  font-size: var(--fs-md);
-  line-height: 1;
-  cursor: pointer;
-}
-
-.meetings__edit-btn:hover:not(:disabled) {
-  background: var(--border);
-  color: var(--text);
-}
-
-.meetings__item--dragging {
-  opacity: 0.5;
-}
-
-/* WebKit (Tauri WKWebView) needs -webkit-user-drag to actually start an HTML5 drag, and
-   user-select:none so the gesture drags the row instead of selecting its text. Scoped to
-   `[draggable="true"]` so an inline rename input (draggable=false) keeps normal text selection. */
-.meetings__item[draggable="true"],
-.folder__header[draggable="true"] {
-  -webkit-user-drag: element;
-  user-select: none;
-  cursor: grab;
-}
-
-.meetings__item[draggable="true"]:active,
-.folder__header[draggable="true"]:active {
-  cursor: grabbing;
-}
-
-.folder__header {
-  display: flex;
-  align-items: center;
-  gap: 0;
-  padding-right: 4px;
-  border-radius: var(--radius);
-}
-
-.folder__header:hover {
-  background: var(--surface-2);
-}
-
-/* Highlighted while a valid drag hovers it (a meeting onto any folder, or a folder onto a
-   non-descendant). */
-.folder--drop-active,
-.folder--drop-active:hover {
-  background: var(--surface-2);
-  outline: 2px solid var(--accent);
-  outline-offset: -2px;
-}
-
-.folder__toggle {
-  flex: none;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 20px;
-  align-self: stretch;
-  padding: 0;
-  border: none;
-  background: none;
-  color: var(--muted);
-  cursor: pointer;
-  line-height: 1;
-}
-
-.folder__toggle:hover {
-  color: var(--text);
-}
-
-.folder__chevron-svg {
-  transition: transform 0.12s ease;
-}
-
-/* Folder glyph column, same width for every folder so names align on one column. */
-.folder__icon {
-  flex: none;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 22px;
-  color: var(--muted);
-}
-
-.folder__name {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  padding: 5px 2px 5px 4px;
-  border: none;
-  background: none;
-  color: inherit;
-  font-size: var(--fs-md);
-  font-weight: 600;
-  text-align: left;
-  cursor: pointer;
-}
-
-.folder__count {
-  flex: none;
-  min-width: 18px;
-  margin-left: 6px;
-  padding: 0 6px;
-  border-radius: 999px;
-  background: var(--bg);
-  color: var(--muted);
-  font-size: var(--fs-xs);
-  line-height: 17px;
-  text-align: center;
-  font-variant-numeric: tabular-nums;
-}
-
-.folder__actions {
-  display: none;
-  gap: 2px;
-  margin-left: 6px;
-}
-
-.folder__new-sub {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  padding: 4px 0;
-}
-
-.folder__new-sub input {
-  flex: 1;
-  min-width: 0;
-  padding: 6px 8px;
 }
 
 .transcript {
@@ -443,36 +70,6 @@ body {
 .transcript--empty {
   align-items: center;
   justify-content: center;
-}
-
-.transcript__header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--gap);
-  padding: 12px 16px;
-  border-bottom: 1px solid var(--border);
-}
-
-.transcript__title {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
-}
-
-.transcript__header h2 {
-  margin: 0;
-  font-size: var(--fs-lg);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.transcript__actions {
-  display: flex;
-  align-items: center;
-  gap: 8px;
 }
 
 .transcript__error {
@@ -523,59 +120,24 @@ body {
 .transcript__lines {
   flex: 1;
   min-height: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
   margin: 0;
-  padding: 12px 16px;
+  padding: 4px 28px 24px;
   list-style: none;
   overflow-y: auto;
 }
 
-/* Capped at a readable measure and centered so lines don't run full-bleed on wide windows.
-   The time + speaker columns are fixed so rows align down the page (each line is its own grid). */
-.line {
+/* Finalized rows reuse the live speaker-line layout (avatar + name/time + body). These scoped rules
+   add the finalized-only affordances: click-to-seek, hover, the active/playing row, and the
+   reveal-on-hover edit button. */
+.transcript__lines .live-line {
   position: relative;
-  display: grid;
-  grid-template-columns: 56px 96px minmax(0, 1fr) auto;
-  gap: 12px;
-  align-items: baseline;
-  width: 100%;
-  max-width: 60rem;
-  margin: 0 auto;
-  padding: 5px 6px;
+  padding: 12px 8px;
   border-radius: 6px;
   cursor: pointer;
 }
 
-.line:hover {
+.transcript__lines .live-line:hover {
   background: var(--surface-2);
-}
-
-.line__time {
-  color: var(--muted);
-  font-size: var(--fs-sm);
-  font-variant-numeric: tabular-nums;
-}
-
-.line__speaker {
-  font-weight: 600;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.line--me .line__speaker {
-  color: var(--me);
-}
-
-.line--them .line__speaker {
-  color: var(--them);
-}
-
-.line--partial {
-  opacity: 0.6;
-  font-style: italic;
 }
 
 .line--active {
@@ -583,59 +145,8 @@ body {
   box-shadow: inset 2px 0 0 var(--accent);
 }
 
-.line--active .line__text {
+.line--active .live-line__text {
   color: var(--text);
-}
-
-/* When the transcript pane is narrow (small window or a wide-dragged sidebar), stack each line:
-   time + speaker + edit control on the first row, the text full-width beneath. */
-@container (max-width: 520px) {
-  .line {
-    grid-template-columns: 56px minmax(0, 1fr) auto;
-    row-gap: 2px;
-  }
-
-  .line__text,
-  .line__edit {
-    grid-column: 1 / -1;
-  }
-
-  .line__edit-btn {
-    grid-column: 3;
-    grid-row: 1;
-  }
-}
-
-.player {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin: 8px 16px 0;
-  font-size: var(--fs-sm);
-  color: var(--muted);
-}
-
-.player__play {
-  min-width: 56px;
-  padding: 2px 10px;
-}
-
-.player__time {
-  min-width: 34px;
-  font-variant-numeric: tabular-nums;
-}
-
-.player__seek {
-  flex: 1;
-  min-width: 0;
-  accent-color: var(--accent);
-}
-
-/* Small, fixed-width — not full length; still boosts to 200%. */
-.player__volume {
-  flex: none;
-  width: 72px;
-  accent-color: var(--accent);
 }
 
 .badge {
@@ -656,12 +167,6 @@ body {
 .badge--refining {
   color: var(--accent);
   border-color: var(--accent);
-}
-
-/* Compact status badge in the narrow sidebar (only shown for recording/refining). */
-.meetings__item .badge {
-  padding: 1px 7px;
-  font-size: var(--fs-xs);
 }
 
 button,
@@ -699,25 +204,26 @@ button:not(:disabled):hover {
   color: var(--muted);
 }
 
-.speakers {
+/* Speaker strip above the transcript: a readable, editable row of per-speaker pills. */
+.speakers-bar {
+  flex: none;
   display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding: 10px 16px;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 10px 22px;
   border-bottom: 1px solid var(--border);
-  background: var(--surface);
 }
 
-.speakers__title {
-  margin: 0;
+.speakers-bar__label {
   color: var(--muted);
   font-size: var(--fs-xs);
   font-weight: 600;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.08em;
   text-transform: uppercase;
 }
 
-.speakers__list {
+.speakers-bar__list {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
@@ -726,138 +232,53 @@ button:not(:disabled):hover {
   list-style: none;
 }
 
-.speaker {
-  display: flex;
+.speaker-chip {
+  display: inline-flex;
   align-items: center;
-  gap: 6px;
-  padding: 4px 6px 4px 10px;
+  gap: 8px;
+  padding: 5px 12px;
   border: 1px solid var(--border);
-  border-radius: var(--radius);
+  border-radius: 999px;
   background: var(--surface-2);
 }
 
-.speaker__label {
-  color: var(--them);
-  font-weight: 600;
+.speaker-chip__dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--spk);
+}
+
+.speaker-chip__name {
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--text);
   font-size: var(--fs-md);
-}
-
-.speaker__rename {
-  display: flex;
-  gap: 4px;
-}
-
-.speaker__rename input {
-  width: 110px;
-  padding: 4px 8px;
-  font-size: var(--fs-sm);
-}
-
-.speaker__rename button {
-  padding: 4px 8px;
-  font-size: var(--fs-sm);
-}
-
-.notes {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding: 10px 16px;
-  border-bottom: 1px solid var(--border);
-  background: var(--surface);
-}
-
-.notes__head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-}
-
-.notes__title {
-  margin: 0;
-  color: var(--muted);
-  font-size: var(--fs-xs);
   font-weight: 600;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
+  cursor: pointer;
 }
 
-.notes__body {
-  display: flex;
-  flex-direction: column;
+.speaker-chip__name:hover {
+  color: var(--accent);
+}
+
+.speaker-chip__form {
+  display: inline-flex;
+  align-items: center;
   gap: 6px;
 }
 
-/* The resizable, scrolling notes content region; its height is driven by --notes-height (a drag on
-   .notes__resizer, persisted in localStorage). */
-.notes__scroll {
-  height: var(--notes-height, 200px);
-  min-height: 0;
-  overflow-y: auto;
-}
-
-/* Horizontal drag handle below the notes body — the vertical analogue of .app__resizer. Transparent
-   until hovered/focused, then it lights up as the grab seam. */
-.notes__resizer {
-  height: 6px;
-  cursor: row-resize;
-  background: transparent;
-  touch-action: none;
-}
-
-.notes__resizer:hover,
-.notes__resizer:active,
-.notes__resizer:focus-visible {
-  background: var(--accent);
-  outline: none;
-}
-
-.notes__subhead {
-  margin: 6px 0 0;
+.speaker-chip__input {
+  width: 130px;
+  padding: 3px 8px;
   font-size: var(--fs-sm);
-  font-weight: 600;
-  color: var(--them);
 }
 
-.notes__summary {
-  margin: 0;
-  max-width: 80ch;
-  font-size: var(--fs-md);
-  line-height: 1.5;
-  white-space: pre-wrap;
-}
-
-.notes__actions {
-  margin: 0;
-  padding-left: 20px;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  max-width: 80ch;
-  font-size: var(--fs-md);
-  line-height: 1.4;
-}
-
-.notes__meta {
-  margin: 4px 0 0;
-  font-size: var(--fs-xs);
-}
-
-.notes__hint {
-  margin: 0;
-  font-size: var(--fs-md);
-}
-
-.notes__error {
-  margin: 0;
+.speaker-chip__save {
+  padding: 3px 10px;
   font-size: var(--fs-sm);
-  color: var(--danger);
-}
-
-.app__settings {
-  padding: 4px 12px;
-  font-size: var(--fs-md);
 }
 
 .settings-overlay {
@@ -885,7 +306,9 @@ button:not(:disabled):hover {
   display: flex;
   flex-direction: column;
   width: min(720px, 100%);
-  max-height: min(560px, 100%);
+  /* Fixed height (not max-height) so the box — and the left tab rail — stay put when switching tabs;
+     short panels leave whitespace, tall ones scroll inside .settings__content. */
+  height: min(560px, 100%);
   border: 1px solid var(--border);
   border-radius: var(--radius);
   background: var(--surface);
@@ -1246,16 +669,478 @@ button:not(:disabled):hover {
   font-size: var(--fs-md);
 }
 
-/* --- Global transcript search (header) --- */
+/* --- Global transcript search (popover, opened from the nav rail) --- */
+.search-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+}
+
+.search-overlay__panel {
+  position: absolute;
+  top: 14px;
+  left: calc(var(--rail-width) + 8px);
+  width: 460px;
+  max-width: calc(100vw - var(--rail-width) - 24px);
+}
+
+/* --- New-recording popover (opened from the rail's red record button) --- */
+.record-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+}
+
+.record-overlay__panel {
+  position: absolute;
+  top: 14px;
+  left: calc(var(--rail-width) + 8px);
+  width: 300px;
+  max-width: calc(100vw - var(--rail-width) - 24px);
+}
+
+.record-menu {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+}
+
+.record-menu__label {
+  margin: 0 0 2px;
+  color: var(--muted);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.record-menu__title,
+.record-menu__folder {
+  width: 100%;
+}
+
+.record-menu__start {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 2px;
+  padding: 9px 14px;
+  border: none;
+  border-radius: var(--radius);
+  background: var(--danger);
+  color: #2a0b08;
+  font-weight: 700;
+}
+
+.record-menu__start:not(:disabled):hover {
+  filter: brightness(1.06);
+}
+
+.record-menu__start:disabled {
+  opacity: 0.6;
+}
+
+.record-menu__start-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #2a0b08;
+}
+
+/* Pulse while the models load so "Preparing models…" reads as working, not stuck. */
+.record-menu__start-dot.is-preparing {
+  animation: live-recpulse 1.2s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .record-menu__start-dot.is-preparing {
+    animation: none;
+  }
+}
+
+.record-menu__error {
+  margin: 0;
+  color: var(--danger);
+  font-size: var(--fs-sm);
+}
+
+/* ============================================================================
+   Library — the full-view meetings browser (rail's list icon opens it)
+   ============================================================================ */
+.library {
+  display: grid;
+  grid-template-columns: 232px 1fr;
+  min-width: 0;
+  min-height: 0;
+}
+
+/* Left rail: All meetings + the folder tree as selectable filters. */
+.library__nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 16px 12px;
+  border-right: 1px solid var(--border);
+  background: var(--surface);
+  overflow-y: auto;
+}
+
+.library__nav-head {
+  margin: 14px 8px 4px;
+  color: var(--muted);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.library__nav-head:first-child {
+  margin-top: 0;
+}
+
+.library__item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 7px 8px;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  font-size: var(--fs-md);
+}
+
+.library__item:hover {
+  background: var(--surface-2);
+  border-color: transparent; /* neutralize the global button hover border on the All-meetings button */
+}
+
+.library__item.is-active {
+  background: var(--surface-2);
+  color: var(--accent);
+}
+
+.library__item[data-drop] {
+  background: rgba(91, 157, 255, 0.16);
+  border-color: var(--accent);
+}
+
+/* The selectable part of a folder row (a button, so the row div can hold action buttons too). */
+.library__item-btn {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0;
+  border: none;
+  background: none;
+  color: inherit;
+  text-align: left;
+  font: inherit;
+}
+
+.library__item-icon {
+  display: inline-flex;
+  flex: none;
+  color: var(--muted);
+}
+
+.library__item.is-active .library__item-icon {
+  color: var(--accent);
+}
+
+.library__item-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.library__trailing {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+}
+
+.library__count {
+  color: var(--muted);
+  font-size: var(--fs-sm);
+  font-variant-numeric: tabular-nums;
+}
+
+.library__actions {
+  display: none;
+  gap: 2px;
+}
+
+.library__item:hover .library__actions {
+  display: inline-flex;
+}
+
+.library__item:has(.library__actions):hover .library__count {
+  display: none;
+}
+
+.library__actions button,
+.library__confirm button {
+  padding: 0 5px;
+  border: none;
+  background: none;
+  color: var(--muted);
+  font-size: var(--fs-sm);
+}
+
+.library__actions button:hover {
+  color: var(--text);
+}
+
+.library__confirm {
+  display: inline-flex;
+  gap: 4px;
+  flex: none;
+}
+
+.library__confirm button {
+  color: var(--accent);
+}
+
+.library__edit {
+  display: flex;
+  gap: 4px;
+  padding: 4px 8px;
+}
+
+.library__edit input {
+  flex: 1;
+  min-width: 0;
+  padding: 4px 8px;
+}
+
+.library__edit button {
+  padding: 2px 8px;
+  font-size: var(--fs-sm);
+}
+
+.library__new-folder {
+  margin-top: 6px;
+  padding: 7px 10px;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius);
+  background: none;
+  color: var(--muted);
+  text-align: left;
+}
+
+.library__new-folder:hover {
+  color: var(--text);
+  border-color: var(--muted);
+}
+
+/* Right pane: the filtered meetings, grouped by recency. */
+.library__main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.library__top {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 22px 28px 12px;
+}
+
+.library__title {
+  margin: 0;
+  flex: 1;
+  min-width: 0;
+  font-size: 1.375rem;
+  font-weight: 800;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.library__tools {
+  display: flex;
+  gap: 10px;
+  flex: none;
+}
+
+.library__search {
+  width: 260px;
+  max-width: 40vw;
+  padding: 8px 12px;
+}
+
+.library__list {
+  padding: 4px 28px 28px;
+}
+
+.library__empty {
+  margin: 16px 2px;
+}
+
+.library__group + .library__group {
+  margin-top: 18px;
+}
+
+.library__group-label {
+  margin: 0 0 2px;
+  color: var(--muted);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.library__rows {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.library__rows li {
+  border-bottom: 1px solid var(--border);
+}
+
+.library__row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 8px;
+  border-radius: 8px;
+}
+
+.library__row:hover {
+  background: var(--surface);
+}
+
+/* The clickable "open meeting" area; siblings hold the rename/delete actions. */
+.library__row-open {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 4px 0;
+  border: none;
+  background: none;
+  color: inherit;
+  text-align: left;
+  font: inherit;
+}
+
+.library__row-trailing {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+}
+
+.library__row-actions {
+  display: none;
+  gap: 2px;
+}
+
+.library__row:hover .library__row-actions {
+  display: inline-flex;
+}
+
+.library__row-actions button {
+  padding: 0 6px;
+  border: none;
+  background: none;
+  color: var(--muted);
+  font-size: var(--fs-md);
+}
+
+.library__row-actions button:hover {
+  color: var(--text);
+}
+
+.library__row-edit {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 8px;
+}
+
+.library__row-edit input {
+  flex: 1;
+  min-width: 0;
+  padding: 6px 10px;
+}
+
+.library__row-edit button {
+  padding: 4px 10px;
+  font-size: var(--fs-sm);
+}
+
+.library__avatar {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 9px;
+  font-size: var(--fs-sm);
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.library__row-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.library__row-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--fs-lg);
+}
+
+.library__row-meta {
+  color: var(--muted);
+  font-size: var(--fs-sm);
+}
+
+.library__error {
+  margin: 8px;
+  color: var(--danger);
+  font-size: var(--fs-sm);
+}
+
 .search {
   position: relative;
-  flex: 1 1 auto;
-  max-width: 460px;
 }
 
 .search__input {
   width: 100%;
-  padding: 6px 10px;
+  padding: 8px 12px;
+}
+
+/* The rail popover floats over content, so lift its box; the inline dashboard bar stays flat. */
+.search-overlay__panel .search__input {
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
 }
 
 .search__results {
@@ -1450,10 +1335,12 @@ mark.find-hit {
   vertical-align: middle;
 }
 
-/* The per-line edit control: a faint pencil always shows (so lines read as editable); hovering the
-   line turns it into a clear "✎ Edit" button. */
+/* The per-line edit control: pinned top-right of the row, revealed as a clear "✎ Edit" button when
+   the line is hovered or the button is focused. */
 .line__edit-btn {
-  align-self: start;
+  position: absolute;
+  top: 10px;
+  right: 8px;
   display: inline-flex;
   align-items: center;
   gap: 4px;
@@ -1464,13 +1351,14 @@ mark.find-hit {
   color: var(--muted);
   font-size: var(--fs-sm);
   line-height: 1.5;
-  opacity: 0.55;
+  opacity: 0;
   transition:
     opacity 0.12s ease,
     border-color 0.12s ease;
 }
 
-.line:hover .line__edit-btn {
+.transcript__lines .live-line:hover .line__edit-btn,
+.line__edit-btn:focus-visible {
   opacity: 1;
   border-color: var(--border);
   background: var(--surface);
@@ -1482,10 +1370,10 @@ mark.find-hit {
 }
 
 .line__edit {
-  grid-column: 3 / -1;
   display: flex;
   flex-direction: column;
   gap: 6px;
+  margin-top: 2px;
 }
 
 .line__edit-input {
@@ -1535,26 +1423,765 @@ mark.find-hit {
   font-size: var(--fs-sm);
 }
 
-/* --- Notes editing --- */
-.notes__head-actions {
+/* ============================================================================
+   Nav rail + live recording screen (design direction 1a "Signal")
+   ============================================================================ */
+
+.rail {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  padding: 14px 0;
+  border-right: 1px solid var(--border);
+  background: var(--bg);
+}
+
+.rail__logo {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: none;
+  border-radius: 9px;
+  background: transparent;
+  cursor: pointer;
+}
+
+.rail__logo:hover {
+  filter: brightness(1.1);
+}
+
+.rail__logo:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* The red "new recording" button — a filled tile (like the logo) so it reads as the primary action. */
+.rail__record {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: var(--danger);
+  color: #2a0b08;
+}
+
+.rail__record:not(:disabled):hover {
+  filter: brightness(1.06);
+}
+
+.rail__record.is-active {
+  outline: 2px solid var(--danger);
+  outline-offset: 2px;
+}
+
+.rail__btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--muted);
+}
+
+.rail__btn:not(:disabled):hover {
+  background: var(--surface-2);
+  border-color: var(--border);
+  color: var(--text);
+}
+
+.rail__btn.is-active {
+  background: rgba(91, 157, 255, 0.14);
+  color: var(--accent);
+}
+
+.rail__btn--bottom {
+  margin-top: auto;
+}
+
+.live {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+}
+
+.live__main {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Topbar: REC pill + timer, title/meta, waveform (right-aligned), Pause + End. */
+.live__topbar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  height: 66px;
+  padding: 0 20px;
+  border-bottom: 1px solid var(--border);
+}
+
+.live__rec {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  border-radius: 999px;
+  background: rgba(255, 107, 107, 0.12);
+  border: 1px solid rgba(255, 107, 107, 0.35);
+}
+
+.live__rec-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--danger);
+  animation: live-recpulse 1.6s ease-in-out infinite;
+}
+
+.live__rec-label,
+.live__rec-time {
+  color: var(--danger);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+}
+
+.live__rec-label {
+  letter-spacing: 0.04em;
+}
+
+.live__rec-time {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Paused: the dot stops pulsing and the pill goes muted (no longer "live red"). */
+.live__rec--paused {
+  background: var(--surface-2);
+  border-color: var(--border);
+}
+
+.live__rec--paused .live__rec-dot {
+  animation: none;
+  background: var(--muted);
+}
+
+.live__rec--paused .live__rec-label,
+.live__rec--paused .live__rec-time {
+  color: var(--muted);
+}
+
+.live-wave--paused {
+  opacity: 0.45;
+}
+
+.live__title {
+  min-width: 0;
+}
+
+.live__title-name {
+  font-size: var(--fs-lg);
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.live__title-meta {
+  font-size: var(--fs-sm);
+  color: var(--muted);
+}
+
+.live-wave {
+  margin-left: auto;
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: 26px;
+}
+
+/* Bar height tracks the live input level: the component sets scaleY per bar from the RMS, and the
+   transition smooths the ~10 Hz steps into a moving meter. */
+.live-wave__bar {
+  width: 3px;
+  height: 22px;
+  border-radius: 2px;
+  background: var(--accent);
+  transform-origin: center bottom;
+  transform: scaleY(0.16);
+  transition: transform 0.09s linear;
+}
+
+.live__ghost {
+  padding: 8px 14px;
+  background: transparent;
+  border-color: var(--border);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+}
+
+.live__end {
+  padding: 8px 16px;
+  border: none;
+  border-radius: var(--radius);
+  background: var(--danger);
+  color: #2a0b08;
+  font-size: var(--fs-sm);
+  font-weight: 700;
+}
+
+.live__end:not(:disabled):hover {
+  border-color: transparent;
+  filter: brightness(1.06);
+}
+
+.live__status {
+  margin: 0;
+  padding: 8px 20px;
+  color: var(--accent);
+  font-size: var(--fs-md);
+}
+
+.live__error {
+  margin: 0;
+  padding: 8px 20px;
+  color: var(--danger);
+  font-size: var(--fs-md);
+}
+
+/* Transcript is the hero: a scrolling list with a bottom fade over the newest content. */
+.live__transcript {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 0 28px;
+}
+
+.live__transcript-label {
+  padding: 14px 0 6px;
+  color: var(--muted);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  letter-spacing: 0.14em;
+}
+
+.live__lines {
+  flex: 1;
+  min-height: 0;
+  margin: 0;
+  padding: 0 0 24px;
+  list-style: none;
+  overflow-y: auto;
+}
+
+.live__empty {
+  padding: 12px 0;
+}
+
+.live__fade {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 80px;
+  background: linear-gradient(to top, var(--bg), transparent);
+  pointer-events: none;
+}
+
+.live-line {
+  display: flex;
+  gap: 13px;
+  padding: 13px 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+}
+
+.live-line__avatar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--spk) 20%, transparent);
+  color: var(--spk);
+  font-size: var(--fs-sm);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.live-line__body {
+  flex: 1;
+  min-width: 0;
+}
+
+.live-line__head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-bottom: 4px;
+}
+
+.live-line__name {
+  font-size: var(--fs-md);
+  font-weight: 600;
+}
+
+.live-line__time {
+  color: var(--muted);
+  font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums;
+}
+
+.live-line__text {
+  max-width: 560px;
+  color: rgba(231, 235, 240, 0.8);
+  font-size: var(--fs-md);
+  line-height: 1.6;
+}
+
+.live-line--partial .live-line__text {
+  font-style: italic;
+}
+
+.live-line--newest .live-line__text {
+  color: var(--text);
+}
+
+.live-line__caret {
+  display: inline-block;
+  width: 2px;
+  height: 15px;
+  margin-left: 3px;
+  vertical-align: -2px;
+  background: var(--accent);
+  animation: live-caret 1s steps(1) infinite;
+}
+
+/* AI layer stays quiet and secondary: a footer strip, not a panel. */
+.live__ai {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 12px 20px;
+  border-top: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.live__ai-label {
+  color: var(--accent);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  letter-spacing: 0.12em;
+}
+
+.live__ai-hint {
+  color: var(--muted);
+  font-size: var(--fs-sm);
+}
+
+.live__notes {
+  flex: none;
+  width: 326px;
+  display: flex;
+  flex-direction: column;
+  border-left: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.live__notes-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 16px 18px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.live__notes-title {
+  font-size: var(--fs-md);
+  font-weight: 700;
+}
+
+.live__notes-status {
+  color: var(--muted);
+  font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Borderless editor filling the panel between the header and the footer chips. */
+.live__notes-editor {
+  flex: 1;
+  min-height: 0;
+  padding: 14px 18px;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: var(--fs-md);
+  line-height: 1.7;
+  resize: none;
+}
+
+.live__notes-editor:focus {
+  outline: none;
+}
+
+.live__notes-editor::placeholder {
+  color: var(--muted);
+}
+
+@keyframes live-recpulse {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.4;
+    transform: scale(0.8);
+  }
+}
+
+@keyframes live-caret {
+  0%,
+  49% {
+    opacity: 1;
+  }
+  50%,
+  100% {
+    opacity: 0;
+  }
+}
+
+/* Post-meeting "My notes" panel in the finalized detail view (the notes taken during recording). */
+.user-notes {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.user-notes__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.user-notes__title {
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.user-notes__status {
+  color: var(--muted);
+  font-size: var(--fs-xs);
+}
+
+.user-notes__editor {
+  width: 100%;
+  min-height: 5em;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  color: var(--text);
+  font: inherit;
+  font-size: var(--fs-md);
+  line-height: 1.6;
+  resize: vertical;
+}
+
+.user-notes__editor:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.user-notes__editor::placeholder {
+  color: var(--muted);
+}
+
+/* ============================================================================
+   Meeting detail (design direction 2a) + home dashboard (2b)
+   ============================================================================ */
+
+/* --- 2a: two-column meeting detail --- */
+.detail {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.detail__header {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 14px 22px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.detail__crumb {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 40%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+  font-size: var(--fs-sm);
+}
+
+.detail__titleblock {
+  min-width: 0;
+}
+
+.detail__title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.detail__title {
+  margin: 0;
+  font-size: var(--fs-lg);
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.detail__meta {
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: var(--fs-sm);
+}
+
+.detail__actions {
+  margin-left: auto;
+  flex: none;
   display: flex;
   align-items: center;
   gap: 8px;
 }
 
-.notes__edit-btn {
-  padding: 4px 10px;
-  font-size: var(--fs-md);
+/* Audio scrubber: round play button, elapsed, seek (played portion painted inline), total, volume. */
+.detail__scrubber {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 12px 22px;
+  border-bottom: 1px solid var(--border);
 }
 
-.notes__badge {
+.detail__play {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: var(--accent);
+  color: #0f1115;
+}
+
+.detail__play:not(:disabled):hover {
+  filter: brightness(1.08);
+}
+
+.detail__time {
+  flex: none;
+  min-width: 42px;
   color: var(--muted);
-  font-weight: 400;
-  letter-spacing: 0;
-  text-transform: none;
+  font-size: var(--fs-sm);
+  font-variant-numeric: tabular-nums;
 }
 
-.notes__stale {
+.detail__time--total {
+  text-align: right;
+}
+
+.detail__seek {
+  flex: 1;
+  min-width: 0;
+  height: 5px;
+  padding: 0;
+  border-radius: 3px;
+  -webkit-appearance: none;
+  appearance: none;
+  cursor: pointer;
+}
+
+.detail__seek::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: none;
+  background: var(--text);
+  cursor: pointer;
+}
+
+.detail__volume {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.detail__volume-icon {
+  display: inline-flex;
+  color: var(--muted);
+}
+
+.detail__volume-slider {
+  width: 72px;
+  accent-color: var(--accent);
+}
+
+/* Body: transcript hero (left) + AI-recap rail (right). */
+.detail__body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
+.detail__transcript {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid var(--border);
+}
+
+.detail__fade {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 60px;
+  background: linear-gradient(to top, var(--bg), transparent);
+  pointer-events: none;
+}
+
+.detail__recap {
+  flex: none;
+  width: var(--recap-width, 360px);
+  min-height: 0;
+  overflow-y: auto;
+  background: var(--surface);
+}
+
+.detail__recap > :last-child {
+  border-bottom: none;
+}
+
+/* Drag handle between the transcript and the recap rail; the transcript's border-right is the visible
+   seam, this is the wider grab zone that lights up on hover/focus. */
+.detail__resizer {
+  flex: none;
+  width: 6px;
+  cursor: col-resize;
+  background: transparent;
+  touch-action: none;
+}
+
+.detail__resizer:hover,
+.detail__resizer:active,
+.detail__resizer:focus-visible {
+  background: var(--accent);
+  outline: none;
+}
+
+/* --- 2a: AI-recap rail contents --- */
+.recap {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--border);
+}
+
+.recap__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.recap__eyebrow {
+  color: var(--accent);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  letter-spacing: 0.08em;
+}
+
+.recap__head-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.recap__action {
+  padding: 4px 10px;
+  font-size: var(--fs-sm);
+}
+
+.recap__action--stale {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #0f1115;
+  font-weight: 600;
+}
+
+.recap__action--stale:not(:disabled):hover {
+  border-color: var(--accent);
+  filter: brightness(1.08);
+}
+
+.recap__confirm {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.recap__confirm-text {
+  color: var(--danger);
+  font-size: var(--fs-sm);
+}
+
+.recap__stale {
   margin: 0;
   padding: 6px 8px;
   border-radius: 6px;
@@ -1563,38 +2190,56 @@ mark.find-hit {
   font-size: var(--fs-sm);
 }
 
-/* When the transcript has changed, the Regenerate button becomes a filled call-to-action so the
-   edit clearly points at re-summarizing. */
-.notes__regen--stale {
-  border-color: var(--accent);
-  background: var(--accent);
-  color: #0f1115;
-  font-weight: 600;
-}
-
-.notes__regen--stale:not(:disabled):hover {
-  border-color: var(--accent);
-  filter: brightness(1.08);
-}
-
-.notes__confirm {
+.recap__body {
   display: flex;
-  align-items: center;
-  gap: 6px;
+  flex-direction: column;
+  gap: 8px;
 }
 
-.notes__confirm-text {
+.recap__subhead {
+  color: var(--muted);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  letter-spacing: 0.08em;
+}
+
+.recap__badge {
+  color: var(--muted);
+  font-weight: 400;
+  letter-spacing: 0;
+}
+
+.recap__summary {
+  margin: 0;
+  color: rgba(231, 235, 240, 0.8);
+  font-size: var(--fs-md);
+  line-height: 1.65;
+  white-space: pre-wrap;
+}
+
+.recap__meta {
+  margin: 4px 0 0;
+  font-size: var(--fs-xs);
+}
+
+.recap__hint {
+  margin: 0;
+  font-size: var(--fs-md);
+}
+
+.recap__error {
+  margin: 0;
   color: var(--danger);
   font-size: var(--fs-sm);
 }
 
-.notes__editor {
+.recap__editor {
   display: flex;
   flex-direction: column;
   gap: 6px;
 }
 
-.notes__editor-label {
+.recap__editor-label {
   color: var(--muted);
   font-size: var(--fs-xs);
   font-weight: 600;
@@ -1602,8 +2247,8 @@ mark.find-hit {
   text-transform: uppercase;
 }
 
-.notes__editor-summary,
-.notes__editor-items {
+.recap__editor-summary,
+.recap__editor-items {
   width: 100%;
   padding: 6px 8px;
   font: inherit;
@@ -1612,15 +2257,121 @@ mark.find-hit {
   resize: vertical;
 }
 
-.notes__editor-summary {
-  min-height: 4em;
+.recap__editor-summary {
+  min-height: 5em;
 }
 
-.notes__editor-items {
+.recap__editor-items {
   min-height: 3em;
 }
 
-.notes__editor-actions {
+.recap__editor-actions {
   display: flex;
   gap: 6px;
+}
+
+/* --- 2b: home dashboard --- */
+.dashboard {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0 28px 32px;
+}
+
+/* Centered greeting + the global search bar, the dashboard's front door. */
+.dashboard__hero {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 18px;
+  padding: 12vh 0 44px;
+}
+
+.dashboard__title {
+  margin: 0;
+  font-size: 1.5rem;
+  font-weight: 700;
+  text-align: center;
+  color: var(--text);
+}
+
+.dashboard__search {
+  width: 100%;
+  max-width: 680px;
+}
+
+.dashboard__search .search__input {
+  padding: 13px 16px;
+  border-radius: 12px;
+  font-size: var(--fs-lg);
+}
+
+.dashboard__error {
+  margin: 0 auto 12px;
+  width: 100%;
+  max-width: 900px;
+  color: var(--danger);
+  font-size: var(--fs-md);
+}
+
+/* The flat "recent meetings" list that replaces the folder tree on the home view. */
+.dashboard__recent {
+  width: 100%;
+  max-width: 900px;
+  margin: 0 auto;
+}
+
+.dashboard__recent-label {
+  margin: 0 0 4px;
+  color: var(--muted);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.dashboard__recent-empty {
+  margin: 10px 2px;
+}
+
+.recent {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.recent li {
+  border-bottom: 1px solid var(--border);
+}
+
+.recent__row {
+  display: grid;
+  grid-template-columns: 88px 1fr auto;
+  gap: 16px;
+  align-items: center;
+  width: 100%;
+  padding: 13px 6px;
+  border: none;
+  border-radius: 6px;
+  background: none;
+  text-align: left;
+}
+
+.recent__row:hover {
+  background: var(--surface);
+}
+
+.recent__when {
+  color: var(--muted);
+  font-size: var(--fs-sm);
+}
+
+.recent__title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--fs-lg);
 }

@@ -154,6 +154,27 @@ export interface paths {
         patch: operations["edit_notes"];
         trace?: never;
     };
+    "/api/meetings/{id}/pause": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Pause the live meeting's capture (the "Pause" control): recording + transcription stop and the
+         *     timeline freezes with no gap until resumed. A 404 for any meeting that is not the current
+         *     recording session. Idempotent (pausing an already-paused meeting is a no-op 204).
+         */
+        post: operations["pause_meeting"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/meetings/{id}/rediarize": {
         parameters: {
             query?: never;
@@ -164,6 +185,26 @@ export interface paths {
         get?: never;
         put?: never;
         post: operations["rediarize"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/meetings/{id}/resume": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Resume a paused meeting's capture. A 404 for any meeting that is not the current recording
+         *     session. Idempotent (resuming a non-paused meeting is a no-op 204).
+         */
+        post: operations["resume_meeting"];
         delete?: never;
         options?: never;
         head?: never;
@@ -267,6 +308,22 @@ export interface paths {
         get?: never;
         put?: never;
         post: operations["stop_meeting"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/meetings/{id}/user-notes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["read_user_notes"];
+        put: operations["save_user_notes"];
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -491,6 +548,24 @@ export interface components {
             /** @description The affected stream; only `me` (the mic) is monitored. */
             stream: string;
         };
+        /**
+         * @description A capture-state frame (not a transcript line): the meeting was paused or resumed (the "Pause"
+         *     control). Lets a live view freeze the timer/waveform on pause and resume them; also snapshotted on
+         *     WebSocket connect so a window reopened mid-pause reflects it. Mirrors the orchestrator's
+         *     `CaptureStateEvent` on the wire.
+         */
+        CaptureStateEvent: {
+            /**
+             * @description The constant `kind` discriminant marking a [`CaptureStateEvent`] (`"capture_state"`).
+             * @enum {string}
+             */
+            kind: "capture_state";
+            /**
+             * @description Whether live capture is paused or actively running.
+             * @enum {string}
+             */
+            state: "paused" | "active";
+        };
         /** @description One downloadable notes model in the in-app catalog (the internal repo/file/sha are not exposed). */
         CatalogEntry: {
             context: string;
@@ -568,6 +643,25 @@ export interface components {
             email?: string | null;
             /** Format: uuid */
             id: string;
+        };
+        /**
+         * @description An audio-level frame (not a transcript line): the recent RMS amplitude of a capture stream,
+         *     broadcast a few times a second so the UI can drive a live input waveform. Ephemeral — never
+         *     persisted or replayed to a new subscriber. Mirrors the orchestrator's `LevelEvent` on the wire.
+         */
+        LevelEvent: {
+            /**
+             * @description The constant `kind` discriminant marking a [`LevelEvent`] (`"level"`).
+             * @enum {string}
+             */
+            kind: "level";
+            /**
+             * Format: float
+             * @description Root-mean-square amplitude of the recent audio, normalized f32 samples (`0.0..~1.0`).
+             */
+            rms: number;
+            /** @description The stream this level is for (`me` or `them`). */
+            stream: string;
         };
         /** @description Start a meeting. `title` defaults to a timestamp-derived name when omitted. */
         MeetingCreate: {
@@ -1040,6 +1134,22 @@ export interface components {
             start_s: number;
             stream: components["schemas"]["Stream"];
             text: string;
+        };
+        /**
+         * @description A meeting's user-authored "My notes" body (free-form text typed during the meeting). `body` is
+         *     empty when the user has typed none yet; `updated_at` drives the "autosaved" indicator.
+         */
+        UserNotesRead: {
+            body: string;
+            /** Format: date-time */
+            updated_at: string;
+        };
+        /**
+         * @description An autosave of the user's "My notes" body. Length-bounded at the boundary (reject over-large
+         *     payloads as 422 rather than letting them reach the DB / the on-disk export).
+         */
+        UserNotesWrite: {
+            body: string;
         };
     };
     responses: never;
@@ -1557,6 +1667,31 @@ export interface operations {
             };
         };
     };
+    pause_meeting: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     rediarize: {
         parameters: {
             query?: never;
@@ -1589,6 +1724,31 @@ export interface operations {
                 content?: never;
             };
             503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    resume_meeting: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -1780,6 +1940,70 @@ export interface operations {
                 content?: never;
             };
             503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    read_user_notes: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UserNotesRead"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    save_user_notes: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UserNotesWrite"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UserNotesRead"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };

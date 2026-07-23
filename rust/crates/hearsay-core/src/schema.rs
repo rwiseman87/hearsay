@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use uuid::Uuid;
 
-use hearsay_db::models::{Folder, Identity, Meeting, MeetingNotes, Segment};
+use hearsay_db::models::{Folder, Identity, Meeting, MeetingNotes, Segment, UserNotes};
 use hearsay_db::queries::{SearchHitRow, SpeakerRow};
 
 /// Lifecycle state of a meeting (lowercase on the wire): `recording` while live, `refining` while the
@@ -151,6 +151,30 @@ impl From<MeetingNotes> for MeetingNotesRead {
 pub struct NotesEdit {
     pub summary: String,
     pub action_items: Vec<String>,
+}
+
+/// A meeting's user-authored "My notes" body (free-form text typed during the meeting). `body` is
+/// empty when the user has typed none yet; `updated_at` drives the "autosaved" indicator.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct UserNotesRead {
+    pub body: String,
+    pub updated_at: DateTime<Utc>,
+}
+
+impl From<UserNotes> for UserNotesRead {
+    fn from(n: UserNotes) -> Self {
+        UserNotesRead {
+            body: n.body,
+            updated_at: n.updated_at,
+        }
+    }
+}
+
+/// An autosave of the user's "My notes" body. Length-bounded at the boundary (reject over-large
+/// payloads as 422 rather than letting them reach the DB / the on-disk export).
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+pub struct UserNotesWrite {
+    pub body: String,
 }
 
 /// A transcript segment for the API.
@@ -568,6 +592,53 @@ pub struct CaptureHealthEvent {
     pub stream: &'static str,
     #[schema(inline)]
     pub state: CaptureState,
+}
+
+/// The constant `kind` discriminant marking a [`CaptureStateEvent`] (`"capture_state"`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum CaptureStateKind {
+    CaptureState,
+}
+
+/// Whether live capture is paused or actively running.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum CaptureRunState {
+    Paused,
+    Active,
+}
+
+/// A capture-state frame (not a transcript line): the meeting was paused or resumed (the "Pause"
+/// control). Lets a live view freeze the timer/waveform on pause and resume them; also snapshotted on
+/// WebSocket connect so a window reopened mid-pause reflects it. Mirrors the orchestrator's
+/// `CaptureStateEvent` on the wire.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ToSchema)]
+pub struct CaptureStateEvent {
+    #[schema(inline)]
+    pub kind: CaptureStateKind,
+    #[schema(inline)]
+    pub state: CaptureRunState,
+}
+
+/// The constant `kind` discriminant marking a [`LevelEvent`] (`"level"`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum LevelKind {
+    Level,
+}
+
+/// An audio-level frame (not a transcript line): the recent RMS amplitude of a capture stream,
+/// broadcast a few times a second so the UI can drive a live input waveform. Ephemeral — never
+/// persisted or replayed to a new subscriber. Mirrors the orchestrator's `LevelEvent` on the wire.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, ToSchema)]
+pub struct LevelEvent {
+    #[schema(inline)]
+    pub kind: LevelKind,
+    /// The stream this level is for (`me` or `them`).
+    pub stream: &'static str,
+    /// Root-mean-square amplitude of the recent audio, normalized f32 samples (`0.0..~1.0`).
+    pub rms: f32,
 }
 
 /// The constant `kind` discriminant marking a [`ResyncEvent`] (`"resync"`).

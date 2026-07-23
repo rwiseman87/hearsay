@@ -111,10 +111,19 @@ Resets the active meeting's silence clock — the "Keep recording" action on the
 a present-but-quiet meeting is not nudged again or auto-ended. Returns `204`, or `404` if the
 meeting is not the current recording session (there is no clock to reset).
 
+### `POST /api/meetings/{id}/pause` and `POST /api/meetings/{id}/resume` (pause/resume capture)
+
+Freeze or resume the live meeting's capture (the "Pause" control). While paused, audio is neither
+recorded nor transcribed and the paused span is elided from the timeline, so `audio.wav` and segment
+times stay contiguous with no silent gap on resume. Both return `204`, or `404` if the meeting is not
+the current recording session. Idempotent (pausing an already-paused meeting, or resuming a running
+one, is a no-op `204`). The paused state is broadcast to live WebSocket subscribers as a
+`capture_state` frame and snapshotted on connect, so a window reopened mid-pause reflects it.
+
 ### `DELETE /api/meetings/{id}` (delete a meeting)
 
-Stops it if active, removes the database rows (segments, clusters, and notes cascade), and deletes
-the on-disk folder. Returns `204`, or `404` if unknown.
+Stops it if active, removes the database rows (segments, clusters, notes, and user notes cascade), and
+deletes the on-disk folder. Returns `204`, or `404` if unknown.
 
 ### `GET /api/meetings/{id}/audio` (meeting audio, for playback)
 
@@ -197,7 +206,7 @@ is suggested in the next.
 
 ## Folders
 
-Meetings can be organized into a tree of folders (the sidebar). A folder has an optional
+Meetings can be organized into a tree of folders (shown in the Library view). A folder has an optional
 `parent_id`. Deleting a folder cascade-deletes its sub-folders but un-files its meetings to the
 root; meetings are never deleted by a folder operation. List endpoints are paginated.
 
@@ -233,6 +242,18 @@ transcript. Best-effort: a notes failure never blocks or fails a meeting.
   notes model is configured.
 - `PATCH /api/meetings/{id}/notes` edits the summary or action items; `422` on over-long input,
   `409` while recording.
+
+## My notes (user-authored)
+
+Free-form notes the user types in the "My notes" panel, distinct from the optional LLM Notes above.
+One row per meeting, mirrored best-effort to `my-notes.md` in the meeting folder (the database is the
+source of truth). Unlike LLM notes these may be written while the meeting is still recording, so the
+endpoints do not gate on the active session.
+
+- `GET /api/meetings/{id}/user-notes` reads the stored `body` and its `updated_at`; `404` when nothing
+  has been typed yet (the normal empty state — the panel starts blank).
+- `PUT /api/meetings/{id}/user-notes` autosaves the body `{ "body": "..." }` and returns the stored
+  row; `404` if the meeting is unknown, `422` if the body exceeds 100,000 characters.
 
 ## Models (notes-model download manager)
 
@@ -331,13 +352,16 @@ stream's partial with its next final. Me is always `"Me"`; Them partials carry t
 `"Them"`, while finals carry the diarized label (`Speaker N` or a bound name). After a rename,
 re-fetch `/speakers` and `/segments` to pick up new labels.
 
-Three service events share the channel:
+Service events share the channel:
 
 ```json
 { "kind": "status", "state": "warming" }
 { "kind": "status", "state": "ready" }
 { "kind": "resync" }
 { "kind": "prompt", "silent_seconds": 300 }
+{ "kind": "capture_health", "state": "silent" }
+{ "kind": "capture_state", "state": "paused" }
+{ "kind": "level", "stream": "me", "rms": 0.12 }
 ```
 
 - `status`: sent on connect when the transcription sidecars are still loading their models (a cold
@@ -353,3 +377,13 @@ Three service events share the channel:
   continues to the end threshold the meeting auto-ends with a logged transcript marker; the "Keep
   recording" action (`POST /api/meetings/{id}/keep-recording`) resets the clock. Thresholds are
   configured in the `recording` settings section.
+- `capture_health`: the mic signal path went digitally silent — sustained exact-zero samples, which a
+  working mic never produces (a hardware mute, stale endpoint, or dead driver), `state: "silent"`,
+  cleared with `"ok"`. The UI warns rather than showing the confident nonsense ASR produces from a
+  dead signal. Mic only; the Them loopback is legitimately silent whenever nothing is playing.
+- `capture_state`: the meeting was paused or resumed (the "Pause" control), `state: "paused" |
+  "active"`, so a live view freezes/resumes the timer and waveform. Also sent on connect when the
+  meeting is already paused.
+- `level`: the recent RMS amplitude (`0.0..~1.0`) of a capture `stream` (`"me" | "them"`), pushed
+  ~10 times a second to drive the live input waveform. Ephemeral — never persisted or replayed to a
+  new subscriber.

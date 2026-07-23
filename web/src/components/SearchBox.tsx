@@ -60,13 +60,24 @@ function groupByMeeting(items: SearchHit[]): { id: string; title: string; hits: 
 interface Props {
   // Open a meeting and scroll to a matched moment.
   onJump: (meetingId: string, startS: number) => void;
+  // Dismiss the enclosing popover (Escape with an empty box). Omitted for the inline dashboard bar,
+  // which has nothing to close.
+  onClose?: () => void;
+  // Focus the box on mount — the rail popover wants this; the always-present dashboard bar does not.
+  autoFocus?: boolean;
 }
 
-export function SearchBox({ onJump }: Props) {
+export function SearchBox({ onJump, onClose, autoFocus = false }: Props) {
   const [text, setText] = useState("");
   const [debounced, setDebounced] = useState("");
   const [open, setOpen] = useState(false);
   const blurTimer = useRef<number | undefined>(undefined);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  // The popover opens on demand, so focus the box as soon as it mounts.
+  useEffect(() => {
+    if (autoFocus) inputRef.current?.focus();
+  }, [autoFocus]);
 
   // Debounce so each keystroke doesn't hit the endpoint.
   useEffect(() => {
@@ -86,6 +97,7 @@ export function SearchBox({ onJump }: Props) {
   return (
     <div className="search">
       <input
+        ref={inputRef}
         className="search__input"
         type="search"
         placeholder="Search transcripts…"
@@ -102,8 +114,13 @@ export function SearchBox({ onJump }: Props) {
         }}
         onKeyDown={(event) => {
           if (event.key === "Escape") {
-            setText("");
-            setOpen(false);
+            // First Escape clears a query; a second one (empty box) dismisses the popover.
+            if (text) {
+              setText("");
+              setOpen(false);
+            } else {
+              onClose?.();
+            }
           }
         }}
       />

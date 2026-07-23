@@ -69,6 +69,26 @@ pub trait LiveEngine: Send + Sync {
     /// live capture.
     fn keep_alive(&self, _meeting_id: Uuid) {}
 
+    /// Pause the active meeting's capture (the "Pause" control): recording + transcription stop and
+    /// the timeline freezes (no gap) until [`resume_meeting`](Self::resume_meeting). Returns whether
+    /// it paused — `false` unless `meeting_id` is the active recording session. Default `false` for
+    /// engines without live capture.
+    fn pause_meeting(&self, _meeting_id: Uuid) -> bool {
+        false
+    }
+
+    /// Resume a paused meeting's capture. Returns whether it resumed — `false` unless `meeting_id` is
+    /// the active recording session. Default `false` for engines without live capture.
+    fn resume_meeting(&self, _meeting_id: Uuid) -> bool {
+        false
+    }
+
+    /// Whether the active meeting is currently paused, for the live WebSocket's connect-snapshot (a
+    /// window reopened mid-pause). `None` when `meeting_id` is not the active session. Default `None`.
+    fn paused(&self, _meeting_id: Uuid) -> Option<bool> {
+        None
+    }
+
     /// The active meeting's inactivity-prompt state, so the live WebSocket can snapshot it to a new
     /// subscriber (a user reopening the window mid-silence). `Some(silent_seconds)` while a prompt is
     /// active, `None` otherwise or when `meeting_id` is not the active session. Default `None` for
@@ -90,6 +110,15 @@ pub trait LiveEngine: Send + Sync {
     /// files stay in step with the edited transcript/notes; the DB remains the source of truth
     /// regardless. Default no-op for engines without an export path (e.g. [`DisabledEngine`]).
     async fn export_meeting(&self, _meeting_id: Uuid) -> Result<(), LiveError> {
+        Ok(())
+    }
+
+    /// Best-effort write of a meeting's `my-notes.md` (the user-authored "My notes" body) from the
+    /// stored `user_notes` row. Called after an autosave so the on-disk export stays in step with the
+    /// DB; unlike [`export_meeting`] it touches only `my-notes.md`, so it is safe to call while the
+    /// meeting is still recording (it never rewrites the in-progress transcript). Default no-op for
+    /// engines without an export path.
+    async fn export_user_notes(&self, _meeting_id: Uuid) -> Result<(), LiveError> {
         Ok(())
     }
 

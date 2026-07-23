@@ -627,6 +627,34 @@
         }
       }
     },
+    "/api/meetings/{id}/pause": {
+      "post": {
+        "tags": [
+          "meetings"
+        ],
+        "summary": "Pause the live meeting's capture (the \"Pause\" control): recording + transcription stop and the\ntimeline freezes with no gap until resumed. A 404 for any meeting that is not the current\nrecording session. Idempotent (pausing an already-paused meeting is a no-op 204).",
+        "operationId": "pause_meeting",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          }
+        }
+      }
+    },
     "/api/meetings/{id}/rediarize": {
       "post": {
         "tags": [
@@ -662,6 +690,34 @@
             "description": ""
           },
           "503": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/api/meetings/{id}/resume": {
+      "post": {
+        "tags": [
+          "meetings"
+        ],
+        "summary": "Resume a paused meeting's capture. A 404 for any meeting that is not the current recording\nsession. Idempotent (resuming a non-paused meeting is a no-op 204).",
+        "operationId": "resume_meeting",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": ""
+          },
+          "404": {
             "description": ""
           }
         }
@@ -927,6 +983,85 @@
             "description": ""
           },
           "503": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/api/meetings/{id}/user-notes": {
+      "get": {
+        "tags": [
+          "notes"
+        ],
+        "operationId": "read_user_notes",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserNotesRead"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": ""
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "notes"
+        ],
+        "operationId": "save_user_notes",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UserNotesWrite"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserNotesRead"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": ""
+          },
+          "422": {
             "description": ""
           }
         }
@@ -1345,6 +1480,31 @@
           }
         }
       },
+      "CaptureStateEvent": {
+        "type": "object",
+        "description": "A capture-state frame (not a transcript line): the meeting was paused or resumed (the \"Pause\"\ncontrol). Lets a live view freeze the timer/waveform on pause and resume them; also snapshotted on\nWebSocket connect so a window reopened mid-pause reflects it. Mirrors the orchestrator's\n`CaptureStateEvent` on the wire.",
+        "required": [
+          "kind",
+          "state"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "description": "The constant `kind` discriminant marking a [`CaptureStateEvent`] (`\"capture_state\"`).",
+            "enum": [
+              "capture_state"
+            ]
+          },
+          "state": {
+            "type": "string",
+            "description": "Whether live capture is paused or actively running.",
+            "enum": [
+              "paused",
+              "active"
+            ]
+          }
+        }
+      },
       "CatalogEntry": {
         "type": "object",
         "description": "One downloadable notes model in the in-app catalog (the internal repo/file/sha are not exposed).",
@@ -1544,6 +1704,33 @@
           "id": {
             "type": "string",
             "format": "uuid"
+          }
+        }
+      },
+      "LevelEvent": {
+        "type": "object",
+        "description": "An audio-level frame (not a transcript line): the recent RMS amplitude of a capture stream,\nbroadcast a few times a second so the UI can drive a live input waveform. Ephemeral — never\npersisted or replayed to a new subscriber. Mirrors the orchestrator's `LevelEvent` on the wire.",
+        "required": [
+          "kind",
+          "stream",
+          "rms"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "description": "The constant `kind` discriminant marking a [`LevelEvent`] (`\"level\"`).",
+            "enum": [
+              "level"
+            ]
+          },
+          "rms": {
+            "type": "number",
+            "format": "float",
+            "description": "Root-mean-square amplitude of the recent audio, normalized f32 samples (`0.0..~1.0`)."
+          },
+          "stream": {
+            "type": "string",
+            "description": "The stream this level is for (`me` or `them`)."
           }
         }
       },
@@ -2633,6 +2820,35 @@
             "$ref": "#/components/schemas/Stream"
           },
           "text": {
+            "type": "string"
+          }
+        }
+      },
+      "UserNotesRead": {
+        "type": "object",
+        "description": "A meeting's user-authored \"My notes\" body (free-form text typed during the meeting). `body` is\nempty when the user has typed none yet; `updated_at` drives the \"autosaved\" indicator.",
+        "required": [
+          "body",
+          "updated_at"
+        ],
+        "properties": {
+          "body": {
+            "type": "string"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "UserNotesWrite": {
+        "type": "object",
+        "description": "An autosave of the user's \"My notes\" body. Length-bounded at the boundary (reject over-large\npayloads as 422 rather than letting them reach the DB / the on-disk export).",
+        "required": [
+          "body"
+        ],
+        "properties": {
+          "body": {
             "type": "string"
           }
         }

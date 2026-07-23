@@ -9,6 +9,7 @@ pub mod notes;
 pub mod search;
 pub mod settings;
 pub mod speakers;
+pub mod user_notes;
 pub mod web;
 pub mod ws;
 

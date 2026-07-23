@@ -25,6 +25,7 @@ import type {
   SpeakerSettings,
   StatusInfo,
   StorageSettings,
+  UserNotesRead,
 } from "./types";
 
 export function useMeetings(page = 1, pageSize = 50) {
@@ -120,6 +121,21 @@ export function useStopMeeting() {
 export function useKeepRecording() {
   return useMutation({
     mutationFn: (id: string) => api.post<void>(`/api/meetings/${id}/keep-recording`),
+  });
+}
+
+// Pause / resume the live meeting's capture (the "Pause" control). Fire-and-forget (204, no cache
+// change) — the paused state reaches the UI over the transcript WebSocket (a `capture_state` frame),
+// which is authoritative and also snapshots on reconnect. 404s harmlessly if the meeting is not live.
+export function usePauseMeeting() {
+  return useMutation({
+    mutationFn: (id: string) => api.post<void>(`/api/meetings/${id}/pause`),
+  });
+}
+
+export function useResumeMeeting() {
+  return useMutation({
+    mutationFn: (id: string) => api.post<void>(`/api/meetings/${id}/resume`),
   });
 }
 
@@ -313,6 +329,30 @@ export function useEditNotes(meetingId: string) {
       api.patch<MeetingNotesRead>(`/api/meetings/${meetingId}/notes`, body),
     onSuccess: (notes) => {
       qc.setQueryData<MeetingNotesRead>(queryKeys.meetings.notes(meetingId), notes);
+    },
+  });
+}
+
+// A meeting's user-authored "My notes" body. The endpoint 404s when nothing has been typed yet,
+// which is the normal empty state — don't retry it, and let the caller start with a blank editor.
+export function useUserNotes(meetingId: string | null) {
+  return useQuery({
+    queryKey: queryKeys.meetings.userNotes(meetingId ?? "none"),
+    queryFn: () => api.get<UserNotesRead>(`/api/meetings/${meetingId}/user-notes`),
+    enabled: meetingId !== null,
+    retry: false,
+  });
+}
+
+// Autosave the user's "My notes" body. Called from a debounced effect; on success the server echoes
+// the stored row, so seed it straight into the cache (no refetch, no flicker).
+export function useSaveUserNotes(meetingId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: string) =>
+      api.put<UserNotesRead>(`/api/meetings/${meetingId}/user-notes`, { body }),
+    onSuccess: (notes) => {
+      qc.setQueryData<UserNotesRead>(queryKeys.meetings.userNotes(meetingId), notes);
     },
   });
 }

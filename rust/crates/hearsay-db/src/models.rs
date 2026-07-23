@@ -129,6 +129,17 @@ pub struct Preference {
     pub updated_at: DateTime<Utc>,
 }
 
+/// A meeting's user-authored notes row: the free-form text typed in the "My notes" panel during the
+/// meeting, distinct from [`MeetingNotes`] (the LLM summary + action items). One row per meeting
+/// (keyed by `meeting_id`), upserted on autosave. Cascades on meeting delete.
+#[derive(Debug, Clone, PartialEq, Eq, FromRow)]
+pub struct UserNotes {
+    pub meeting_id: Uuid,
+    pub body: String,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
 /// A meeting's generated notes row: the summary + action items produced by the optional local LLM
 /// summarization step. One row per meeting (keyed by `meeting_id`); `action_items` is a JSON array
 /// of strings and `model` records the GGUF that produced it. Cascades on meeting delete.

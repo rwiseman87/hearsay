@@ -1,51 +1,34 @@
-import {
-  lazy,
-  Suspense,
-  useEffect,
-  useRef,
-  useState,
-  type CSSProperties,
-  type KeyboardEvent as ReactKeyboardEvent,
-  type PointerEvent as ReactPointerEvent,
-} from "react";
+import { lazy, Suspense, useRef, useState } from "react";
 
-import { useMeetings } from "./api/hooks";
+import { useMeetings, useStatus } from "./api/hooks";
 import type { MeetingRead } from "./api/types";
-import { MeetingList } from "./components/MeetingList";
+import { Dashboard } from "./components/Dashboard";
+import { Library } from "./components/Library";
+import { LiveRecording } from "./components/LiveRecording";
+import { NavRail } from "./components/NavRail";
+import { RecordMenu } from "./components/RecordMenu";
 import { SearchBox } from "./components/SearchBox";
 import { TranscriptView } from "./components/TranscriptView";
 
 // Route-level code splitting: the settings page loads only when opened.
 const SettingsPage = lazy(() => import("./components/SettingsPage"));
 
-const SIDEBAR_MIN = 180;
-const SIDEBAR_MAX = 560;
-const SIDEBAR_DEFAULT = 280;
-const SIDEBAR_KEY = "hearsay.sidebarWidth";
-
-const clampSidebar = (value: number) =>
-  Math.min(Math.max(value, SIDEBAR_MIN), SIDEBAR_MAX);
-
-// Sidebar width, persisted across sessions in localStorage so a resize sticks.
-function useSidebarWidth() {
-  const [width, setWidth] = useState(() => {
-    const stored = Number(localStorage.getItem(SIDEBAR_KEY));
-    return Number.isFinite(stored) && stored > 0 ? clampSidebar(stored) : SIDEBAR_DEFAULT;
-  });
-  useEffect(() => {
-    localStorage.setItem(SIDEBAR_KEY, String(width));
-  }, [width]);
-  return [width, setWidth] as const;
-}
-
 export function App() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [showSettings, setShowSettings] = useState(false);
-  const [sidebarWidth, setSidebarWidth] = useSidebarWidth();
-  const drag = useRef<{ startX: number; startWidth: number } | null>(null);
+  const [showSearch, setShowSearch] = useState(false);
+  const [showRecord, setShowRecord] = useState(false);
+  // The Library (meetings browser) is a full main-area view, shown when no meeting is open.
+  const [library, setLibrary] = useState(false);
   const meetings = useMeetings();
   const items = meetings.data?.items ?? [];
   const selected: MeetingRead | null = items.find((m) => m.id === selectedId) ?? null;
+  const recording = items.some((m) => m.status === "recording");
+  // Poll live-engine readiness from app launch (not just when the record popover opens), so the
+  // sidecars' model load overlaps with browsing and the popover reflects readiness immediately. An
+  // errored probe reads as ready so a status-endpoint problem never bricks Start.
+  const status = useStatus();
+  const sidecarsReady = status.isError || (status.data?.sidecars_ready ?? false);
 
   // A pending "jump to this moment" from a global search result. The nonce makes each jump distinct
   // so repeated jumps to the same meeting/time re-trigger the scroll in TranscriptView.
@@ -53,68 +36,78 @@ export function App() {
   const jumpNonce = useRef(0);
   const onJump = (meetingId: string, startS: number) => {
     setSelectedId(meetingId);
+    setShowSearch(false);
     jumpNonce.current += 1;
     setJump({ meetingId, startS, nonce: jumpNonce.current });
   };
 
-  const onResizeStart = (event: ReactPointerEvent<HTMLDivElement>) => {
-    event.preventDefault();
-    drag.current = { startX: event.clientX, startWidth: sidebarWidth };
-    event.currentTarget.setPointerCapture(event.pointerId);
-  };
-  const onResizeMove = (event: ReactPointerEvent<HTMLDivElement>) => {
-    if (!drag.current) return;
-    setSidebarWidth(clampSidebar(drag.current.startWidth + (event.clientX - drag.current.startX)));
-  };
-  const onResizeEnd = (event: ReactPointerEvent<HTMLDivElement>) => {
-    drag.current = null;
-    event.currentTarget.releasePointerCapture(event.pointerId);
-  };
-  // Keyboard resize for the separator (arrow keys nudge the width).
-  const onResizeKey = (event: ReactKeyboardEvent<HTMLDivElement>) => {
-    if (event.key === "ArrowLeft") setSidebarWidth((w) => clampSidebar(w - 16));
-    else if (event.key === "ArrowRight") setSidebarWidth((w) => clampSidebar(w + 16));
-  };
-
   return (
     <div className="app">
-      <header className="app__bar">
-        <h1 className="app__title">Hearsay - It's what happened, probably</h1>
-        <SearchBox onJump={onJump} />
-        <button type="button" className="app__settings" onClick={() => setShowSettings(true)}>
-          Settings
-        </button>
-      </header>
-      <main
-        className="app__main"
-        style={{ "--sidebar-width": `${sidebarWidth}px` } as CSSProperties}
-      >
-        <MeetingList
-          meetings={items}
-          isLoading={meetings.isLoading}
-          error={meetings.error}
-          selectedId={selectedId}
-          onSelect={setSelectedId}
+      <main className="app__main">
+        <NavRail
+          onOpenSettings={() => setShowSettings(true)}
+          onGoHome={() => {
+            setSelectedId(null);
+            setLibrary(false);
+          }}
+          onOpenRecord={() => setShowRecord(true)}
+          recordActive={showRecord}
+          onOpenMeetings={() => {
+            setSelectedId(null);
+            setLibrary(true);
+          }}
+          meetingsActive={library && selected == null}
+          onOpenSearch={() => setShowSearch(true)}
+          searchActive={showSearch}
         />
-        <div
-          className="app__resizer"
-          role="separator"
-          aria-orientation="vertical"
-          aria-label="Resize sidebar"
-          aria-valuenow={sidebarWidth}
-          aria-valuemin={SIDEBAR_MIN}
-          aria-valuemax={SIDEBAR_MAX}
-          tabIndex={0}
-          onPointerDown={onResizeStart}
-          onPointerMove={onResizeMove}
-          onPointerUp={onResizeEnd}
-          onKeyDown={onResizeKey}
-        />
-        <TranscriptView
-          meeting={selected}
-          jumpTo={jump && jump.meetingId === selectedId ? { startS: jump.startS, nonce: jump.nonce } : null}
-        />
+        {selected == null && library ? (
+          <Library
+            meetings={items}
+            isLoading={meetings.isLoading}
+            error={meetings.error}
+            onSelect={setSelectedId}
+          />
+        ) : selected == null ? (
+          <Dashboard
+            meetings={items}
+            isLoading={meetings.isLoading}
+            error={meetings.error}
+            onSelect={setSelectedId}
+            onJump={onJump}
+          />
+        ) : selected.status === "recording" ? (
+          <LiveRecording meeting={selected} />
+        ) : (
+          <TranscriptView
+            meeting={selected}
+            jumpTo={
+              jump && jump.meetingId === selectedId ? { startS: jump.startS, nonce: jump.nonce } : null
+            }
+          />
+        )}
       </main>
+      {showRecord ? (
+        <div className="record-overlay" onMouseDown={() => setShowRecord(false)}>
+          <div className="record-overlay__panel" onMouseDown={(event) => event.stopPropagation()}>
+            <RecordMenu
+              recording={recording}
+              sidecarsReady={sidecarsReady}
+              onStarted={(id) => {
+                setShowRecord(false);
+                setSelectedId(id);
+              }}
+              onClose={() => setShowRecord(false)}
+            />
+          </div>
+        </div>
+      ) : null}
+      {showSearch ? (
+        <div className="search-overlay" onMouseDown={() => setShowSearch(false)}>
+          <div className="search-overlay__panel" onMouseDown={(event) => event.stopPropagation()}>
+            <SearchBox onJump={onJump} onClose={() => setShowSearch(false)} autoFocus />
+          </div>
+        </div>
+      ) : null}
       {showSettings ? (
         <Suspense fallback={null}>
           <SettingsPage onClose={() => setShowSettings(false)} />
