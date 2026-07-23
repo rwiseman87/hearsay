@@ -10,9 +10,10 @@
 # and cannot be removed. If an unlisted *permissive* license appears, add its SPDX id here; never add
 # a strong-copyleft id (GPL / AGPL / LGPL / SSPL / EUPL).
 #
-# First-party crates (hearsay-*, hearsay-app) carry no license by design — the app is unpublished /
-# proprietary — so they are `publish = false` and skipped via `private.ignore` below rather than by
-# claiming an OSS license they do not have.
+# First-party crates (hearsay-*, hearsay-app) are `publish = false` and skipped via `private.ignore`
+# below rather than carrying a per-crate SPDX license: the project is licensed as a whole at the repo
+# root under the PolyForm Noncommercial License 1.0.0 (source-available, not an OSS license), so this
+# gate deliberately covers third-party dependencies only.
 
 [graph]
 # Resolve the dependency graph with ALL features enabled so optional-feature deps
