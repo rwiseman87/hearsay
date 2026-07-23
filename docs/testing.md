@@ -179,8 +179,9 @@ There is no web test runner today. Stand one up and cover the highest-risk clien
         broad invalidation, query-key factory. Plus `api/token.ts` (global vs `?token=` fallback).
   - [x] `hooks/useTranscript.ts` — live transcript assembly (seed merge/replace, final-supersedes-
         partial, status/prompt/health/pause flags, level routing, ordering, reset on meeting change).
-- [ ] **Component (MSW-mocked API):** `SettingsPage` validation, `TranscriptView` editing, `Library`
-      list/actions. Component-level (mocked backend) — the real-backend flows live in Phase 4.
+- [x] **Component (MSW-mocked API):** `TranscriptView` editing — render a finalized meeting (child
+      panels stubbed), edit a line, and assert the `PATCH` round-trips through the real fetch wrapper +
+      MSW and the editor closes. `SettingsPage` validation and `Library` list/actions still to come.
 
 ## Phase 2 — Rust unit + integration fill
 
