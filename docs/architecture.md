@@ -376,7 +376,7 @@ finalized, and rewrites its transcript from the persisted segments
 
 ## Data model
 
-SQLite, eight tables across eight forward-only migrations (`hearsay-db/migrations/`). UUIDs are
+SQLite, nine tables across nine forward-only migrations (`hearsay-db/migrations/`). UUIDs are
 stored as BLOB, timestamps as RFC3339 TEXT; every table also carries `created_at` and `updated_at`
 (omitted below).
 
@@ -385,6 +385,7 @@ erDiagram
     meetings ||--o{ segments : "ON DELETE CASCADE"
     meetings ||--o{ clusters : "ON DELETE CASCADE"
     meetings ||--o| meeting_notes : "ON DELETE CASCADE"
+    meetings ||--o| user_notes : "ON DELETE CASCADE"
     clusters |o--o{ segments : "SET NULL"
     identities |o--o{ clusters : "SET NULL"
     folders |o--o{ meetings : "SET NULL"
@@ -437,6 +438,10 @@ erDiagram
         text model "GGUF that produced it"
         int edited "manual-edit flag"
     }
+    user_notes {
+        blob meeting_id PK "also the FK"
+        text body "user-authored My notes"
+    }
     preferences {
         blob id PK
         text section UK "one JSON object per settings section"
@@ -449,8 +454,8 @@ erDiagram
 
 Semantics that follow from the constraints:
 
-- `meetings` is the aggregate root: deleting one cascades its segments, clusters, and notes in a
-  single DELETE.
+- `meetings` is the aggregate root: deleting one cascades its segments, clusters, and both notes
+  tables (`meeting_notes`, `user_notes`) in a single DELETE.
 - `clusters` joins a meeting's diarized speakers (`ordinal`) to global, cross-meeting
   `identities`. Renaming a speaker binds and locks the cluster; `centroid` holds the voiceprint
   used to recognize a returning person in a later meeting.

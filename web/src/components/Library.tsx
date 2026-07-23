@@ -116,7 +116,7 @@ export function Library({ meetings, isLoading, error, onSelect }: Props) {
   const [draft, setDraft] = useState("");
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
-  const [dropTarget, setDropTarget] = useState<string | null>(null); // folder id or "all"
+  const [dropTarget, setDropTarget] = useState<string | null>(null); // folder id, or UNFILED
   // Per-meeting inline actions (rename / delete), keyed by meeting id.
   const [renamingMeeting, setRenamingMeeting] = useState<string | null>(null);
   const [meetingDraft, setMeetingDraft] = useState("");

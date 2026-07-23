@@ -1,5 +1,5 @@
 import type { TranscriptLine } from "../hooks/useTranscript";
-import { formatClock } from "../hooks/useElapsed";
+import { formatClock } from "../hooks/clock";
 
 // The four rotating "Them" speaker colors (CSS custom properties defined in index.css). "Me" gets the
 // dedicated --me color; every remote speaker maps to one of these by a stable hash of its label, so a

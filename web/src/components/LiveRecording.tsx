@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "reac
 
 import { useKeepRecording, usePauseMeeting, useResumeMeeting, useStopMeeting } from "../api/hooks";
 import type { MeetingRead } from "../api/types";
-import { formatClock } from "../hooks/useElapsed";
+import { formatClock } from "../hooks/clock";
 import { useTranscript, type LevelStore, type TranscriptLine } from "../hooks/useTranscript";
 import { MyNotesPanel } from "./MyNotesPanel";
 import { SpeakerLine } from "./SpeakerLine";

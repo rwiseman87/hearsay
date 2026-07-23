@@ -26,6 +26,12 @@ export function useUserNotesEditor(meetingId: string): UserNotesEditor {
   // every render while still calling the latest mutation.
   const saveRef = useRef(save);
   saveRef.current = save;
+  // Latest draft / last-saved in refs so the unmount flush below sees current values (its cleanup has
+  // empty deps, so it would otherwise capture the mount-time draft).
+  const draftRef = useRef(draft);
+  draftRef.current = draft;
+  const lastSavedRef = useRef(lastSaved);
+  lastSavedRef.current = lastSaved;
 
   // Seed the draft once the read settles. A 404 (no notes yet) resolves to an empty body.
   useEffect(() => {
@@ -44,6 +50,20 @@ export function useUserNotesEditor(meetingId: string): UserNotesEditor {
     }, AUTOSAVE_DELAY_MS);
     return () => clearTimeout(timer);
   }, [draft, lastSaved]);
+
+  // Flush any unsaved edits when the editor unmounts. A blur normally covers this, but the live view
+  // can be torn down without one — e.g. the inactivity watchdog auto-ends the meeting (recording ->
+  // refining) while the user is mid-type; React does not fire the focused textarea's blur on unmount,
+  // so the last debounce window of notes would be lost. Fire the save (its hook-level onSuccess seeds
+  // the cache; no component state is touched, so it is safe post-unmount).
+  useEffect(() => {
+    return () => {
+      const current = draftRef.current;
+      if (current !== null && current !== lastSavedRef.current) {
+        saveRef.current.mutate(current);
+      }
+    };
+  }, []);
 
   const flush = () => {
     if (draft !== null && draft !== lastSaved && !save.isPending) {
