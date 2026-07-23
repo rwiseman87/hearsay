@@ -11,33 +11,31 @@ so it is not re-litigated.
 
 ## Status (resume here)
 
-Branch `test/suite-buildout` off `main`. Phases 0-3 are complete and Phase 4's Rust half is in; the
-full Rust + web suites are green, and everything below runs under `make ci` except the model/hardware
-probes and the (still-unbuilt) browser E2E.
+Branch `test/suite-buildout` off `main`. Phases 0-3 are complete and Phase 4 has landed — both the Rust
+full-stack HTTP/WS test and the browser E2E. The full Rust + web suites are green, `make ci` stays
+model-free, and the browser E2E runs green on macOS via `make e2e`.
 
 **Landed:** the Makefile suite + Windows mirror (P0); the web harness + client-layer + component tests
 (P1); WS handshake gating, `reconcile` crash-recovery, Tauri `html_escape`, the macOS cfg-gate (P2);
-`proptest` + `insta` regression locks (P3); the full-stack HTTP/WS integration test (P4).
+`proptest` + `insta` regression locks (P3); the full-stack HTTP/WS integration test **and the browser
+E2E** (P4). The E2E's two prerequisites both landed: a **dev-only `HEARSAY_SCRIPTED` engine flag** on
+the core binary (honored only when `ENVIRONMENT=development`, so a shipping build never fakes a meeting)
+and a **progressive-emit fake** (`TimedTranscriber` / `ProgressiveBackend` in
+`hearsay-orchestrator::testing`) that streams the canned transcript *during* recording. Playwright reads
+the session token from the core's existing handshake file, so no token surface was added to the binary.
 
 **Next, in rough priority:**
 
-1. **Browser E2E (Playwright, P4)** — the remaining Phase-4 half; `make e2e` and `test-all`'s `e2e`
-   step do not exist yet and land here. Two prerequisites, both surfaced by the Rust full-stack test:
-   - a **production `HEARSAY_SCRIPTED` env flag** in the core binary — Playwright drives the real core
-     *process*, so the scripted engine can't be injected in-test the way the Rust full-stack test does
-     (that test shares one in-process `AppState`, driving HTTP via `oneshot` and the WS via a real TCP
-     server; a subscribed WS is synchronized against a `pause` connect-snapshot before `stop`);
-   - a **progressive-emit fake** — the `hearsay-orchestrator::testing` fakes emit their segments at
-     *stop*, so asserting the transcript populate *during* recording needs a new fake that emits on a
-     timer (or a `SYNTHETIC=1` fallback, at the cost of nondeterministic ASR — see Open decisions).
-2. **Model-free leftovers:** `queries.rs` direct error-branch tests (P2); the migration-upgrade test
-   (P3) — sqlx's `Migrator` is all-or-nothing, so "seed at an older schema version" needs a hand-rolled
-   prefix (apply the first migration's SQL directly, or build a `Migrator` over a sub-slice); and the
-   full-stack test can grow a refine/notes read-back by wiring a `ScriptedRefiner`/`ScriptedSummarizer`.
-3. **Model/Windows-gated (not verifiable on macOS):** baselined `make probes` (P3); the
+1. **Model-free leftovers (CI-verifiable on macOS):** `queries.rs` direct error-branch tests (P2); the
+   migration-upgrade test (P3) — sqlx's `Migrator` is all-or-nothing, so "seed at an older schema
+   version" needs a hand-rolled prefix (apply the first migration's SQL directly, or build a `Migrator`
+   over a sub-slice); a **refine read-back** for the full-stack path by wiring a `ScriptedRefiner` (the
+   notes path is already exercised — the scripted engine wires a canned summarizer and the E2E drives
+   the "Generate notes" route end to end).
+2. **Model/Windows-gated (not verifiable on macOS):** baselined `make probes` (P3); the
    `storage_override_pins_meeting_dir_off_the_default_root` diagnosis + the Windows capture/backend
-   units (P2); the Windows packaged-app E2E (P4) — run these on the Windows box via
-   `scripts\test-windows.ps1`.
+   units (P2); run the same browser E2E on the Windows box (`scripts\test-windows.ps1 -Target e2e`) and
+   add the Windows packaged-app E2E (P4) via `tauri-driver`.
 
 The per-phase checkboxes below carry the detail; this section is the map.
 
@@ -131,10 +129,10 @@ The suite is composed from these on-demand targets (new ones added by the phases
 | `make ci` | the deterministic gate — lint, Rust + Swift + **web + Tauri** unit/integration tests, codegen drift, version, audit, licenses | no |
 | `make web-test` | web unit/component tests (vitest); also folded into `web-ci` | no |
 | `make tauri-test` | `cargo test` on `web/src-tauri` | no |
-| `make e2e` | browser end-to-end (Playwright) against a running core + vite — **not yet built (Phase 4)** | no (needs browser binaries) |
+| `make e2e` | browser end-to-end (Playwright/Chromium) against the scripted core + vite | no (needs `npx playwright install chromium` once) |
 | `make probes` | the `#[ignore]`d model/hardware tests (`cargo test -- --ignored`) | yes |
 | `make coverage` | `cargo-llvm-cov` + vitest coverage → `outputs/coverage/` | no |
-| `make test-all` | currently `make ci` + `make probes`; gains `make e2e` when it lands — the "run everything" target | yes |
+| `make test-all` | `make ci` + `make probes` + `make e2e` — the "run everything" target | yes |
 | `make clean-test` | remove the report dirs (`outputs/coverage`, `outputs/e2e`); test *data* auto-cleans | no |
 
 `make ci` stays the fast pre-flight (and includes the full-stack HTTP/WS integration test, which
@@ -282,18 +280,19 @@ Two real end-to-end paths the current suite has neither of: the core exercised o
 and the UI driven in a real browser. Both run against a deterministic, model-free engine so they
 assert exact output without the ANE/GPU.
 
-**Enabling seam — a scripted engine mode for the core.** Today `api.rs` uses `DisabledEngine` (503s),
-and `SYNTHETIC=1` feeds tone audio into the *real* sidecars (nondeterministic ASR). Add a model-free
-engine that drives the real orchestrator pipeline + persistence but emits canned
-transcript/status/resync events (reusing the scripted fakes in
-`hearsay-orchestrator/src/testing.rs`), selectable via a test-only flag/env. Both harnesses below
-share it, so a meeting produces identical, assertable output every run.
+**Enabling seam — a scripted engine mode for the core.** `api.rs` uses `DisabledEngine` (503s), and
+`SYNTHETIC=1` feeds tone audio into the *real* sidecars (nondeterministic ASR). The model-free path is
+`hearsay_backends::build_scripted_engine`: it drives the real orchestrator pipeline + persistence but
+replays a canned meeting, emitting the transcript progressively over the live WS during recording
+(reusing the scripted fakes in `hearsay-orchestrator/src/testing.rs`). The Rust full-stack test wires it
+in-process; the browser E2E selects it in the core binary via the dev-only `HEARSAY_SCRIPTED` flag. Both
+share the same fakes, so a meeting produces identical, assertable output every run.
 
 - [x] **Scripted-engine seam** — for the Rust full-stack test, no production flag is needed: the test
       builds a real `Orchestrator` over the scripted `hearsay-orchestrator::testing` fakes and one
       shared `AppState`, driving HTTP via `oneshot` and the WS via a TCP server (both routers share the
-      engine + pool Arcs). A production `HEARSAY_SCRIPTED` env flag is only needed for the browser E2E
-      (which drives the core *binary*), so it lands with that.
+      engine + pool Arcs). The `HEARSAY_SCRIPTED` env flag (dev-only) is what the browser E2E uses to
+      select the same engine in the core *binary*; it landed with the E2E (`build_scripted_engine`).
 - [x] **Full-stack HTTP/WS integration (Rust, in `make ci`)** — `full_stack_meeting_drives_events_and_persistence`
       in `hearsay-core/tests/api.rs`: boots the app on an ephemeral TCP port with the scripted engine,
       drives a full meeting over the wire (HTTP `start` → pause-snapshot barrier → live `TranscriptEvent`
@@ -301,15 +300,21 @@ share it, so a meeting produces identical, assertable output every run.
       `Speaker 1` cluster back via REST. Exercises the TCP socket, the WS upgrade/broadcast, the
       orchestrator, and on-disk persistence together — none of which the `oneshot`/`DisabledEngine`
       tests touch. (Refine/notes read-back is a follow-up: wire a `ScriptedRefiner`/`ScriptedSummarizer`.)
-- [ ] **Browser E2E (Playwright, `make e2e`, both OSes).** Run `hearsay-core` (scripted engine, via the
-      production `HEARSAY_SCRIPTED` flag) + `vite dev`, then drive the real React app with Playwright
-      through the full flow: load with the session token → start recording → watch the transcript
-      populate over the live WS → stop → find the meeting in Library → rename a speaker → open Notes.
+- [x] **Browser E2E (Playwright, `make e2e`).** `hearsay-core` (scripted engine, via the dev-only
+      `HEARSAY_SCRIPTED` flag) + `vite dev`, then Chromium drives the real React app through the full
+      flow: load with the session token → start recording → watch the transcript populate over the live
+      WS → stop → find the meeting in Library → rename a speaker → generate Notes. Verified green on
+      macOS; `scripts\test-windows.ps1 -Target e2e` runs the same spec on the Windows box (the core is
+      built with `--features sherpa` there). Spec + config in `web/e2e/` + `web/playwright.config.ts`.
 - [x] Rust full-stack test is a plain `#[tokio::test]`, so it already runs under `make ci`. `make e2e`
-      for the browser run (needs the Playwright browser binaries) is still to add.
-- [ ] Isolation & teardown per [Results & cleanup](#results--cleanup): tempdir output + an RAII
-      process-group kill in both harnesses; Playwright `webServer` start/stop; reports under
-      `outputs/e2e/`.
+      is added (Playwright/Chromium; browser installed once with `npx playwright install chromium`), and
+      `make test-all` now runs it.
+- [x] Isolation & teardown per [Results & cleanup](#results--cleanup): Playwright's `webServer` starts +
+      stops the scripted core and vite around the run; everything the run writes (DB, meeting output,
+      handshake, reports/traces) lands under the gitignored `outputs/e2e/`; the spec uses a per-run
+      meeting title and the config's side-effects are non-destructive (it re-imports per worker), so
+      runs don't clobber a live core. The token comes from the core's handshake file (no new binary
+      surface); a stub notes-model file makes the "Generate notes" button enable for the scripted path.
 - [ ] **Windows packaged-app E2E (parity gain).** WebView2 exposes Edge WebDriver, so the shipping
       NSIS app *can* be driven with `tauri-driver` + WebdriverIO — the same
       record → transcript → stop flow, through the real packaged shell that macOS cannot test.
@@ -333,7 +338,7 @@ How the phases map onto the categories requested.
 | **Unit** | attribution, notes-prompt, IPC codec, inline orchestrator/core units | web client layer + hooks (P1); sherpa/streaming buffering, `reconcile`, queries, Tauri shell (P2); Swift `SidecarIO`/`Resampler` (P3) |
 | **Component** | none | MSW-mocked React components (P1) |
 | **Integration** | axum router (api.rs, oneshot/in-memory), DB schema, orchestrator lifecycle | focused WebSocket gating (P2); **full-stack HTTP/WS over a real socket with a real DB** (P4) |
-| **E2E** | none | **browser Playwright: real UI → real core → real pipeline** (P4); packaged WKWebView app is a documented manual-smoke gap |
+| **E2E** | **browser Playwright: real UI → real core → real pipeline** (P4) | Windows packaged-app E2E via `tauri-driver`; packaged WKWebView app is a documented manual-smoke gap |
 | **Regression** | golden IPC fixtures, codegen drift | `insta` snapshots, migration-upgrade fixtures, `proptest`, baselined model probes (P3) |
 
 ## Open decisions
@@ -346,10 +351,11 @@ How the phases map onto the categories requested.
 - **Probe granularity:** one `make probes` for all model tests vs. per-area targets
   (`probes-refine`, `probes-sherpa`, `probes-notes`) so a maintainer can run just the relevant one.
   Default: a single `make probes`, split later only if runtimes make it annoying.
-- **E2E engine substrate:** a dedicated scripted-engine mode (deterministic, model-free — the
-  default here) vs. driving the browser E2E against `SYNTHETIC=1` + the real sidecars (realistic but
-  nondeterministic ASR, so assertions must avoid transcript text). Default: scripted engine, shared
-  by the Rust full-stack test and Playwright.
+- **E2E engine substrate:** a dedicated scripted-engine mode (deterministic, model-free) vs. driving
+  the browser E2E against `SYNTHETIC=1` + the real sidecars (realistic but nondeterministic ASR, so
+  assertions must avoid transcript text). **Resolved + implemented:** the scripted engine
+  (`build_scripted_engine`, dev-only `HEARSAY_SCRIPTED`), shared by the Rust full-stack test and
+  Playwright, so both assert exact transcript/notes text.
 - **Packaged macOS app E2E:** left as manual smoke (no first-party `WKWebView` WebDriver). Revisit
   only if a maintained, license-compatible embedded-WebDriver option appears or CrabNebula's fork is
   licensed.

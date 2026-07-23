@@ -11,8 +11,11 @@
 #   -Target tauri     the Tauri shell tests only (cargo test on web\src-tauri)
 #   -Target probes    the model/hardware probes -- needs the sherpa models + a Vulkan GPU
 #   -Target coverage  coverage report into outputs\coverage\ (cargo-llvm-cov + vitest v8)
-#   -Target all       ci + probes
+#   -Target e2e       the browser end-to-end (Playwright) vs the scripted core + vite
+#   -Target all       ci + probes + e2e
 #   -NoVulkan         run the rust build + probes CPU-only (drop the vulkan feature)
+#
+# The e2e target needs the Playwright browser once: cd web; npm install; npx playwright install chromium
 #
 # Codegen drift, version, audit, and licenses are platform-independent and run on the primary macOS
 # gate (`make ci`); this mirror focuses on the Windows-specific test execution and shared-suite parity.
@@ -20,7 +23,7 @@
 # rust tests need only the sherpa feature to compile the Windows backend and link at runtime.
 
 param(
-    [ValidateSet("ci", "web", "tauri", "probes", "coverage", "all")]
+    [ValidateSet("ci", "web", "tauri", "probes", "coverage", "e2e", "all")]
     [string]$Target = "ci",
     [switch]$NoVulkan
 )
@@ -104,6 +107,27 @@ function Run-Coverage {
     try { npm run coverage; Assert-Ok "vitest coverage" } finally { Pop-Location }
 }
 
+function Run-E2E {
+    Write-Host "`n==> e2e: Playwright vs the scripted core + vite" -ForegroundColor Cyan
+    if (-not (Test-Path web\node_modules\@playwright\test)) {
+        throw "playwright not installed: run 'cd web; npm install' then 'npx playwright install chromium'"
+    }
+    New-Item -ItemType Directory -Force -Path outputs\e2e | Out-Null
+    # The Windows core must compile the sherpa backend (a compile_error otherwise); the scripted engine
+    # itself is platform-neutral (no refine, so no vulkan needed). playwright.config.ts reads
+    # HEARSAY_CORE_FEATURES to build the `cargo run` command for its core webServer.
+    cargo build --manifest-path rust\Cargo.toml -p hearsay-core --features sherpa
+    Assert-Ok "cargo build (core, e2e)"
+    $env:HEARSAY_CORE_FEATURES = "sherpa"
+    Push-Location web
+    try {
+        npx playwright test; Assert-Ok "playwright test"
+    } finally {
+        Pop-Location
+        Remove-Item Env:\HEARSAY_CORE_FEATURES -ErrorAction SilentlyContinue
+    }
+}
+
 Require-Tool cargo "Install Rust (MSVC toolchain) from https://rustup.rs"
 Require-Tool npm "Install Node from https://nodejs.org"
 
@@ -113,7 +137,8 @@ switch ($Target) {
     "tauri"    { Run-Tauri }
     "probes"   { Run-Probes }
     "coverage" { Run-Coverage }
-    "all"      { Run-Rust; Run-Tauri; Run-Web; Run-Probes }
+    "e2e"      { Run-E2E }
+    "all"      { Run-Rust; Run-Tauri; Run-Web; Run-Probes; Run-E2E }
 }
 
 Write-Host "`nOK: test-windows.ps1 -Target $Target" -ForegroundColor Green

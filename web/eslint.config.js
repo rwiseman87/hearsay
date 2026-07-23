@@ -24,4 +24,10 @@ export default tseslint.config(
       "react-hooks/exhaustive-deps": "error",
     },
   },
+  // The Playwright config + browser E2E specs run under Node (the config) / the Playwright runner,
+  // not in the app's browser context, so they get Node globals (process, etc.).
+  {
+    files: ["playwright.config.ts", "e2e/**/*.ts"],
+    languageOptions: { globals: globals.node },
+  },
 );

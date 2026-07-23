@@ -218,7 +218,8 @@ make web-test   # web unit/component tests (vitest, jsdom); also folded into web
 make tauri-test # cargo test on the Tauri shell (web/src-tauri)
 make probes     # the #[ignore]d model/hardware tests (needs the models + ANE/GPU)
 make coverage   # cargo-llvm-cov + vitest v8 -> outputs/coverage/ (report-only)
-make test-all   # make ci + make probes (run everything)
+make e2e        # browser E2E (Playwright/Chromium) vs the scripted core + vite
+make test-all   # make ci + make probes + make e2e (run everything)
 ```
 
 - **Rust.** Integration tests exercise the assembled axum router with `tower::ServiceExt::oneshot`
@@ -233,12 +234,18 @@ make test-all   # make ci + make probes (run everything)
   stubbed `fetch` / `WebSocket`; MSW backs the component tests that mock the API.
 - **IPC.** `hearsay-ipc`'s golden-fixture tests and the Swift `hearsay-helper selftest` both validate
   the codec against `shared/fixtures/`.
+- **Browser E2E.** `make e2e` runs Playwright/Chromium against the real React app served by `vite dev`,
+  talking to a real `hearsay-core` booted with the dev-only `HEARSAY_SCRIPTED` flag — a model-free
+  engine (`build_scripted_engine`) that replays a canned meeting and streams it over the live WebSocket.
+  It drives the full flow (start → live transcript → stop → Library → rename speaker → generate notes),
+  asserting exact text. One-time setup: `cd web && npm install && npx playwright install chromium`.
+  Config + spec live in `web/playwright.config.ts` + `web/e2e/`.
 - **Isolation.** Every test that touches disk points `HEARSAY_OUTPUT_DIR` + `DATABASE_URL` at a
   `tempfile::tempdir()` (or in-memory SQLite), so a run leaves the working tree untouched. Coverage and
   E2E reports land under the gitignored `outputs/`; `make clean-test` removes them.
 - **Windows.** Windows has no `make`, so the same set is mirrored in `scripts\test-windows.ps1`
-  (`-Target ci|web|tauri|probes|coverage|all`), running the same commands with the Windows feature set
-  (`sherpa`, plus `vulkan` for the GPU probes).
+  (`-Target ci|web|tauri|probes|coverage|e2e|all`), running the same commands with the Windows feature
+  set (`sherpa`, plus `vulkan` for the GPU probes).
 
 ## Troubleshooting
 

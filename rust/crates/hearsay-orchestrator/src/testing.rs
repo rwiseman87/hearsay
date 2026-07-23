@@ -6,6 +6,7 @@
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use async_trait::async_trait;
 use tokio::sync::{mpsc, oneshot, Notify};
@@ -261,6 +262,96 @@ impl Backend for EmptyBackend {
                 vec![],
                 Arc::new(Mutex::new(Vec::new())),
             )),
+        }
+    }
+}
+
+/// The canned Me/Them script a [`ProgressiveBackend`] replays: capture chunks to anchor the shared
+/// clock, plus the timed Me/Them segments. Each segment's [`Duration`] is the gap *after the previous
+/// emit on the same stream* before it is sent, so the transcript grows over the meeting.
+#[derive(Clone)]
+pub struct ProgressivePlan {
+    pub chunks: Vec<CaptureChunk>,
+    pub me: Vec<(Duration, SidecarSegment)>,
+    pub them: Vec<(Duration, SidecarSegment)>,
+}
+
+/// A [`Transcriber`] that emits its segments *progressively during recording* — each after its gap
+/// from the previous emit — rather than all at once on [`close`](Transcriber::close) like
+/// [`ScriptedTranscriber`]. This is what lets a live consumer (the WebSocket push path, and thus the
+/// browser E2E) watch the transcript populate while the meeting is still recording. `feed` is ignored
+/// (the segments are scripted, not derived from the fed audio).
+pub struct TimedTranscriber {
+    to_emit: Vec<(Duration, SidecarSegment)>,
+    tx: Option<mpsc::Sender<SidecarSegment>>,
+    task: Option<tokio::task::JoinHandle<()>>,
+}
+
+impl TimedTranscriber {
+    pub fn new(to_emit: Vec<(Duration, SidecarSegment)>) -> Self {
+        TimedTranscriber {
+            to_emit,
+            tx: None,
+            task: None,
+        }
+    }
+}
+
+#[async_trait]
+impl Transcriber for TimedTranscriber {
+    async fn start(&mut self) -> Result<mpsc::Receiver<SidecarSegment>, OrchestratorError> {
+        let (tx, rx) = mpsc::channel(SEGMENT_CHANNEL_CAPACITY);
+        let emit_tx = tx.clone();
+        let to_emit = std::mem::take(&mut self.to_emit);
+        // Keep the original sender in `self` so the stream stays open (the meeting stays live) until
+        // `close`; the spawned task emits on the clone and exits after the last segment.
+        self.tx = Some(tx);
+        self.task = Some(tokio::spawn(async move {
+            for (gap, seg) in to_emit {
+                tokio::time::sleep(gap).await;
+                if emit_tx.send(seg).await.is_err() {
+                    return; // the consumer went away (meeting stopped) — stop emitting
+                }
+            }
+        }));
+        Ok(rx)
+    }
+
+    async fn feed(&mut self, _samples: Vec<f32>) {}
+
+    async fn close(&mut self) {
+        // Abort any still-pending emits and drop the sender so the segment channel closes and the
+        // pipeline's stream task ends — a real transcriber's `close` closes its stdout to the same
+        // effect.
+        if let Some(task) = self.task.take() {
+            task.abort();
+        }
+        self.tx.take();
+    }
+}
+
+/// A [`Backend`] whose transcribers emit their segments progressively over time (via
+/// [`TimedTranscriber`]) so a live consumer sees the transcript grow *during* recording — the engine
+/// behind the core's dev-only `HEARSAY_SCRIPTED` mode, which drives the browser E2E with no ANE/GPU.
+/// Unlike [`ScriptedBackend`] it clones its plan on each [`build`](Backend::build), so it can serve
+/// more than one meeting in a session (a stop-then-record-again flow).
+pub struct ProgressiveBackend {
+    plan: ProgressivePlan,
+}
+
+impl ProgressiveBackend {
+    pub fn new(plan: ProgressivePlan) -> Self {
+        ProgressiveBackend { plan }
+    }
+}
+
+impl Backend for ProgressiveBackend {
+    fn build(&self) -> BackendInstance {
+        let plan = self.plan.clone();
+        BackendInstance {
+            source: Box::new(ScriptedSource::new(plan.chunks)),
+            me: Box::new(TimedTranscriber::new(plan.me)),
+            them: Box::new(TimedTranscriber::new(plan.them)),
         }
     }
 }

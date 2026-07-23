@@ -1,4 +1,4 @@
-.PHONY: help swift-build swift-test rust-build rust-test rust-lint tauri-lint tauri-test rust-fmt test lint fmt codegen codegen-check web-install web-typecheck web-lint web-test web-build web-ci audit licenses version-check ci probes coverage test-all clean-test build package notarize clean serve rust-serve stage-model fetch-fluid-models stage-fluid-models fetch-sherpa-models stage-sherpa-models stage-release mac-app dmg
+.PHONY: help swift-build swift-test rust-build rust-test rust-lint tauri-lint tauri-test rust-fmt test lint fmt codegen codegen-check web-install web-typecheck web-lint web-test web-build web-ci audit licenses version-check ci probes coverage e2e test-all clean-test build package notarize clean serve rust-serve stage-model fetch-fluid-models stage-fluid-models fetch-sherpa-models stage-sherpa-models stage-release mac-app dmg
 
 PKG := helper
 RUST := rust
@@ -113,7 +113,16 @@ coverage: ## Coverage report (cargo-llvm-cov + vitest v8) into outputs/coverage/
 	cargo llvm-cov report --html --output-dir outputs/coverage/rust --manifest-path $(RUST)/Cargo.toml
 	cd web && npm run coverage
 
-test-all: ci probes ## Run everything: the deterministic gate + the model/hardware probes
+e2e: ## Browser end-to-end (Playwright) vs the scripted core + vite. One-time: cd web && npm install && npx playwright install chromium
+	@command -v npx >/dev/null 2>&1 || { echo "npx not found: install Node (https://nodejs.org)"; exit 1; }
+	@test -d web/node_modules/@playwright/test || { echo "playwright not installed: run 'cd web && npm install' (then 'npx playwright install chromium')"; exit 1; }
+	@mkdir -p outputs/e2e
+	# Build the core up front so Playwright's webServer starts it fast (no cold cargo build under the
+	# start timeout). The scripted engine is platform-neutral, so default features suffice on macOS.
+	cargo build --manifest-path $(RUST)/Cargo.toml -p hearsay-core
+	cd web && npx playwright test
+
+test-all: ci probes e2e ## Run everything: the deterministic gate + the model/hardware probes + the browser E2E
 
 clean-test: ## Remove the coverage + e2e report dirs (test data auto-cleans via tempdirs)
 	rm -rf outputs/coverage outputs/e2e
