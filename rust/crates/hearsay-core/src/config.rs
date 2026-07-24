@@ -117,10 +117,20 @@ fn default_notes_binary() -> PathBuf {
     if let Some(path) = env::var_os("HEARSAY_NOTES_PATH") {
         return PathBuf::from(path);
     }
+    let name = notes_binary_name();
     env::current_exe()
         .ok()
-        .and_then(|exe| exe.parent().map(|dir| dir.join("hearsay-notes")))
-        .unwrap_or_else(|| PathBuf::from("hearsay-notes"))
+        .and_then(|exe| exe.parent().map(|dir| dir.join(&name)))
+        .unwrap_or_else(|| PathBuf::from(name))
+}
+
+/// The sidecar's file name, carrying the platform executable suffix (`hearsay-notes` on macOS,
+/// `hearsay-notes.exe` on Windows — what both the Tauri bundler and cargo's target dir produce).
+/// The suffix is not cosmetic: the summarizer probes the path with `is_file()` before spawning, and
+/// an extension-less path never resolves on Windows, so notes fail with "sidecar not found" against
+/// a sidecar sitting right next to the core.
+fn notes_binary_name() -> String {
+    format!("hearsay-notes{}", env::consts::EXE_SUFFIX)
 }
 
 /// Parse a boolean env var (`1`/`true`/`yes`/`on` -> true, `0`/`false`/`no`/`off` -> false,
@@ -319,7 +329,21 @@ impl Settings {
 
 #[cfg(test)]
 mod tests {
-    use super::{bind_allowed, is_loopback_bind};
+    use super::{bind_allowed, is_loopback_bind, notes_binary_name};
+
+    /// The notes sidecar is found by an `is_file()` probe in the summarizer, so the name the core
+    /// resolves has to match what the packager stages beside it — `hearsay-notes.exe` on Windows.
+    /// Staging it the way the bundler does and probing the resolved path exercises exactly the
+    /// predicate that silently 500'd the "Generate notes" route on Windows.
+    #[test]
+    fn notes_sidecar_resolves_to_the_staged_binary() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let staged = dir
+            .path()
+            .join(format!("hearsay-notes{}", std::env::consts::EXE_SUFFIX));
+        std::fs::write(&staged, b"").expect("stage sidecar");
+        assert!(dir.path().join(notes_binary_name()).is_file());
+    }
 
     #[test]
     fn loopback_bind_accepts_loopback_ips_and_localhost_only() {

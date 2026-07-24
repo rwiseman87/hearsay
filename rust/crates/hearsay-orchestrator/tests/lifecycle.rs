@@ -605,16 +605,14 @@ async fn storage_override_pins_meeting_dir_off_the_default_root() {
     let override_root = tempfile::tempdir().unwrap();
     let (backend, _fed) = ScriptedBackend::new(vec![], vec![], vec![]);
 
-    queries::set_preference(
-        &pool,
-        queries::SECTION_STORAGE,
-        &format!(
-            r#"{{"output_dir":"{}"}}"#,
-            override_root.path().to_str().unwrap()
-        ),
-    )
-    .await
-    .unwrap();
+    // Serialize the preference the way the settings route does instead of interpolating it into a
+    // JSON literal: a Windows path's backslashes are JSON escape sequences, so a hand-built string
+    // stores `C:\Users\...` as invalid escapes, the override fails to parse, and the meeting
+    // silently lands in the default root.
+    let storage = serde_json::json!({ "output_dir": override_root.path() }).to_string();
+    queries::set_preference(&pool, queries::SECTION_STORAGE, &storage)
+        .await
+        .unwrap();
 
     let orch = orchestrator(pool.clone(), default_root.path(), backend);
     let meeting = orch.start_meeting(Some("Elsewhere".into())).await.unwrap();
