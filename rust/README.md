@@ -26,7 +26,7 @@ audio (no microphone, no TCC prompts). `HEARSAY_HELPER_PATH`, `HEARSAY_REFINE_MO
 
 ## Crate map
 
-Nine crates; edges are `path` dependencies (diagrammed in
+Eleven crates; edges are `path` dependencies (diagrammed in
 [`../docs/architecture.md`](../docs/architecture.md)).
 
 | Crate | Responsibility |

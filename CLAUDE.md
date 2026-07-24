@@ -139,13 +139,16 @@ shared/protocol/ipc.md  IPC contract (source of truth)   ·   shared/fixtures/  
 ## Speaker Identification (guardrails)
 
 - Layers: channel (Me/Them) + diarization (Them only, Swift/ANE) + cross-meeting voiceprints + manual
-  labels. Calendar roster + active-speaker hints are the Phase-3 additions.
-- Bind a diarization cluster -> name by **weighted majority vote** over many sparse hints (the Phase-3 design);
-  a single wrong hint must never flip a stable binding. Manual labels lock a binding (votes cannot override).
-  Manual correction works at two granularities: renaming a whole cluster (locks the binding) and
-  reassigning a single line to another/new speaker (segment-level `cluster_id` override, flagged `edited`).
-- Active-speaker is **OCR-primary** (ScreenCaptureKit + Vision); Zoom Accessibility is opt-in. Degrade
-  gracefully to "Speaker N" + manual labeling when hints are absent.
+  labels. Cross-meeting recognition matches a cluster's voiceprint centroid to prior locked speakers by
+  cosine similarity above a threshold.
+- Manual labels lock a binding (recognition cannot override a locked name). Manual correction works at
+  two granularities: renaming a whole cluster (locks the binding) and reassigning a single line to
+  another/new speaker (segment-level `cluster_id` override, flagged `edited`).
+- Degrade gracefully to "Speaker N" + manual labeling when no name is known.
+- Planned (Phase 3, not yet implemented — today these exist only as IPC protocol fixtures with no
+  consumer): calendar roster; active-speaker hints, OCR-primary (ScreenCaptureKit + Vision) with opt-in
+  Zoom Accessibility; and binding a cluster to a name by **weighted majority vote** over many sparse
+  hints so a single wrong hint never flips a stable binding.
 
 ## Privacy & Security
 

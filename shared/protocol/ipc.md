@@ -14,9 +14,9 @@ Swift helper connects to both as a client.
 <run_dir>/control.sock   NDJSON commands/events   bi-directional
 ```
 
-- The core creates `<run_dir>` (for example
-  `~/Library/Application Support/hearsay/run/<session>/`), binds and listens on both sockets, then
-  spawns `hearsay-helper serve --socket-dir <run_dir>`.
+- The core creates `<run_dir>` (a fresh per-session temp directory via `tempfile::tempdir()`, e.g.
+  under `$TMPDIR`; removed on clean shutdown), binds and listens on both sockets, then spawns
+  `hearsay-helper serve --socket-dir <run_dir>`.
 - The helper connects to `control.sock` first and sends a `hello` event, then connects to
   `media.sock` and sends a `hello` frame per stream before any audio.
 - The helper's `stdout`/`stderr` are reserved for newline-delimited JSON logs only, never protocol

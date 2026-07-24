@@ -1,8 +1,8 @@
 # Hearsay Rust workspace — cross-platform (macOS + Windows) foundation.
 # Architecture: ../docs/architecture.md
 #
-# Scaffold only: crates are stubs with no external dependencies yet. Dependencies are added and
-# pinned to verified latest versions as each crate is implemented (see rust/README.md).
+# Dependency versions are declared per crate and locked by the committed Cargo.lock (see
+# rust/README.md for the crate map).
 
 [workspace]
 resolver = "2"
