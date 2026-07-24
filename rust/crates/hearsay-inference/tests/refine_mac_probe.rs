@@ -88,6 +88,20 @@ fn refine_mac_probe() {
     for (text, n) in repeated.iter().take(5) {
         eprintln!("repeated x{n}: {:?}", &text[..text.len().min(60)]);
     }
+
+    // A real meeting produces speech, not a decoder repetition loop. These guard the anti-loop
+    // entropy_thold in asr.rs (see hearsay-refine-performance): when it regresses, whisper collapses
+    // into one phrase repeated hundreds of times (a 17-min meeting once came back 473x).
+    assert!(!them.is_empty(), "extraction produced no Them samples");
+    assert!(!segments.is_empty(), "whisper produced no segments");
+    assert!(total_chars > 0, "whisper produced empty transcript");
+    let max_repeat = repeated.first().map_or(0, |&(_, n)| n);
+    assert!(
+        (max_repeat as f64) < 0.4 * segments.len() as f64,
+        "whisper repetition loop: one phrase repeated {max_repeat}x of {} segments \
+         (anti-loop entropy_thold regressed?)",
+        segments.len()
+    );
     for seg in segments.iter().take(6) {
         eprintln!(
             "  {:7.1}-{:7.1} {:?}",
@@ -134,5 +148,9 @@ fn refine_mac_probe() {
         refined.segments.len(),
         per_ordinal,
         longest
+    );
+    assert!(
+        !refined.segments.is_empty(),
+        "refine assembled no Them segments from a non-empty transcript"
     );
 }

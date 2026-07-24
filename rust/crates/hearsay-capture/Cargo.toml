@@ -7,10 +7,10 @@ publish = false
 [dependencies]
 hearsay-orchestrator = { path = "../hearsay-orchestrator" }
 hearsay-ipc = { path = "../hearsay-ipc" }
-tokio = { version = "1.52.3", features = ["net", "process", "io-util", "sync", "time", "rt", "macros"] }
-async-trait = "0.1.89"
-tempfile = "3.27.0"
-tracing = "0.1.44"
+tokio = { workspace = true, features = ["net", "process", "io-util", "sync", "time", "rt", "macros"] }
+async-trait = { workspace = true }
+tempfile = { workspace = true }
+tracing = { workspace = true }
 
 # Windows capture (`WasapiSource`): WASAPI shared-mode capture + process/device loopback; plus the
 # ConsentStore registry read behind the permissions probe. Target-gated so macOS never compiles
@@ -20,4 +20,4 @@ wasapi = "0.23.0"
 windows-registry = "0.6.1"
 
 [dev-dependencies]
-tokio = { version = "1.52.3", features = ["macros", "rt-multi-thread"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

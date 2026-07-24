@@ -60,7 +60,18 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
   if (response.status === 204) return undefined as T;
 
   const text = await response.text();
-  const data: unknown = text ? JSON.parse(text) : undefined;
+  let data: unknown;
+  try {
+    data = text ? JSON.parse(text) : undefined;
+  } catch {
+    // Non-JSON body (a proxy/gateway HTML error page, a truncated response). Surface it as an
+    // ApiError rather than letting a raw SyntaxError escape the wrapper: HTTP status for a failed
+    // response, 0 (client-side) for a 2xx whose body we could not parse.
+    throw new ApiError(
+      response.ok ? 0 : response.status,
+      response.statusText || "invalid response from server",
+    );
+  }
   if (!response.ok) {
     const detail =
       data && typeof data === "object" && "detail" in data

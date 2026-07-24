@@ -10,4 +10,6 @@ pub mod voiceprint;
 
 pub use consolidate::{consolidate_speakers, ConsolidateConfig, Consolidation};
 pub use mapping::{assign_segment_speaker, max_overlap_turn, order_speakers, SpeakerTurn};
-pub use voiceprint::{centroid_from_bytes, centroid_to_bytes, cosine, match_identity};
+pub use voiceprint::{
+    best_identity, centroid_from_bytes, centroid_to_bytes, cosine, match_identity,
+};

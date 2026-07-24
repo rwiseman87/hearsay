@@ -11,15 +11,15 @@ hearsay-backends = { path = "../hearsay-backends" }
 hearsay-ipc = { path = "../hearsay-ipc" }
 axum = { version = "0.8.9", features = ["ws", "macros"] }
 tower-http = { version = "0.7.0", features = ["fs", "set-header", "trace", "request-id"] }
-tokio = { version = "1.52.3", features = ["macros", "rt-multi-thread", "net", "signal", "fs", "sync", "time", "io-std", "io-util"] }
-serde = { version = "1.0.228", features = ["derive"] }
-serde_json = "1.0.150"
-tracing = "0.1.44"
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net", "signal", "fs", "sync", "time", "io-std", "io-util"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
 tracing-subscriber = { version = "0.3.23", features = ["json", "env-filter", "fmt"] }
 utoipa = { version = "5.5.0", features = ["axum_extras", "uuid", "chrono"] }
-uuid = { version = "1.23.4", features = ["v4", "serde"] }
-chrono = { version = "0.4.45", features = ["serde"] }
-sqlx = { version = "0.9.0", default-features = false, features = ["runtime-tokio", "sqlite", "uuid", "chrono"] }
+uuid = { workspace = true, features = ["v4", "serde"] }
+chrono = { workspace = true, features = ["serde"] }
+sqlx = { workspace = true }
 tower = { version = "0.5.3", features = ["util"] }
 # Notes-model download manager (always compiled — independent of the `notes` inference feature so the
 # `/api/models` surface + codegen stay identical across feature states). ureq: blocking HTTPS with a
@@ -43,7 +43,7 @@ vulkan = ["hearsay-backends/vulkan"]
 cuda = ["hearsay-backends/cuda"]
 
 [dev-dependencies]
-tempfile = "3.27.0"
+tempfile = { workspace = true }
 # Real WebSocket client for the handshake-gating + full-stack integration tests (axum's
 # WebSocketUpgrade extractor cannot be driven by tower::oneshot). Already in the lock.
 tokio-tungstenite = "0.29.0"

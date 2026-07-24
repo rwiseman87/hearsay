@@ -24,6 +24,7 @@
 
 mod aec;
 mod error;
+mod lock;
 mod markdown;
 mod orchestrator;
 mod pipeline;

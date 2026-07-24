@@ -7,15 +7,15 @@ publish = false
 [dependencies]
 hearsay-engine = { path = "../hearsay-engine" }
 hearsay-db = { path = "../hearsay-db" }
-tokio = { version = "1.52.3", features = ["process", "io-util", "sync", "rt", "time", "macros", "fs"] }
-async-trait = "0.1.89"
-serde = { version = "1.0.228", features = ["derive"] }
-serde_json = "1.0.150"
-uuid = { version = "1.23.4", features = ["v4"] }
-chrono = "0.4.45"
-tracing = "0.1.44"
-sqlx = { version = "0.9.0", default-features = false, features = ["runtime-tokio", "sqlite", "uuid", "chrono"] }
-hound = "3.5.1"
+tokio = { workspace = true, features = ["process", "io-util", "sync", "rt", "time", "macros", "fs"] }
+async-trait = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true, features = ["v4"] }
+chrono = { workspace = true }
+tracing = { workspace = true }
+sqlx = { workspace = true }
+hound = { workspace = true }
 # Acoustic echo cancellation (SpeexDSP via aec-rs, MIT; vendored SpeexDSP is BSD-3-Clause). Optional:
 # gated by the `aec` feature so the default `cargo test` build needs no C toolchain. Builds the
 # vendored SpeexDSP with cc + cmake + bindgen. See docs/echo-cancellation.md.
@@ -28,5 +28,5 @@ aec = ["dep:aec-rs"]
 
 [dev-dependencies]
 insta = "1.48.0"
-tempfile = "3.27.0"
-tokio = { version = "1.52.3", features = ["macros", "rt-multi-thread"] }
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
