@@ -160,9 +160,10 @@ drive the same `LiveEngine::rediarize` implementation. The refine:
 
 - diarizes the whole Them track (the right channel of `audio.wav`) with the `hearsay-diarize`
   sidecar, which returns speaker turns and each speaker's mean voiceprint,
-- re-transcribes each turn's audio span with whisper (`hearsay-inference`), so the transcript
-  follows speaker changes turn by turn; `replace_them_segments` swaps the live Them segments and
-  clusters for one segment per refined turn in a single transaction (Me is untouched),
+- transcribes the whole Them track in one whisper pass (`hearsay-inference`) — not a per-turn
+  transcribe loop — then attributes each ASR segment to the diarizer turn it most overlaps, so the
+  transcript follows speaker changes; `replace_them_segments` swaps the live Them segments and
+  clusters for the refined, speaker-attributed segments in a single transaction (Me is untouched),
 - carries manual renames forward by voting each locked name onto the turn ordinal its old segments
   most overlap, so a re-diarize never drops a manual binding (per-line reassignments, being
   segment-level, are rebuilt only at the cluster level — like manual text edits, a refine discards

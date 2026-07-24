@@ -33,19 +33,21 @@ This document describes the product as built. Related references:
 
 ## Process topology
 
-One macOS app bundle containing five processes plus the webview. The Tauri shell owns the window
-and the core's lifecycle; the core owns everything else.
+One macOS app bundle containing six spawned processes plus the webview. The Tauri shell owns the
+window and the core's lifecycle; the core owns everything else. Two of the six — `hearsay-diarize`
+and `hearsay-notes` — are burst sidecars the core spawns on demand rather than keeping resident.
 
 ```mermaid
 flowchart TB
     subgraph bundle["Hearsay.app (ad-hoc signed, not sandboxed)"]
         shell["Tauri shell (web/src-tauri)<br/>window + child-process lifecycle"]
         webview["WKWebView<br/>React + TypeScript UI"]
-        core["hearsay-core (Rust)<br/>axum HTTP + WebSocket on 127.0.0.1<br/>orchestration, SQLite, whisper refine, notes LLM"]
+        core["hearsay-core (Rust)<br/>axum HTTP + WebSocket on 127.0.0.1<br/>orchestration, SQLite, whisper refine"]
         helper["hearsay-helper (Swift)<br/>Core Audio tap + AVAudioEngine mic<br/>lean PCM streamer, no ML"]
         live["hearsay-live (Swift, ANE)<br/>Them: streaming diarization + Parakeet ASR"]
         me["hearsay-me (Swift, ANE)<br/>Me: streaming VAD + Parakeet ASR"]
         diarize["hearsay-diarize (Swift, ANE)<br/>offline refine diarizer + voiceprints"]
+        notes["hearsay-notes (Rust)<br/>llama.cpp notes LLM, burst per generate"]
     end
     subgraph disk["Data at rest (user-writable, outside the bundle)"]
         db[("SQLite database<br/>WAL, foreign keys")]
@@ -62,6 +64,7 @@ flowchart TB
     core <-->|"stdin PCM / stdout NDJSON"| live
     core <-->|"stdin PCM / stdout NDJSON"| me
     core -->|"WAV path in, JSON turns + voiceprints out"| diarize
+    core -->|"stdio: transcript in, Markdown notes out"| notes
     core -->|"reads and writes"| disk
 ```
 
@@ -74,11 +77,13 @@ flowchart TB
 | `hearsay-helper` | The only process that touches TCC-guarded native APIs: the Core Audio process tap (system audio, configured global-except-self) and the microphone. Resamples both to 16 kHz mono and stamps both with one monotonic clock. | Confines the permission surface, and keeps the capture binary free of CoreML so a model problem can never take down capture. |
 | `hearsay-live` / `hearsay-me` | The live audio AI (FluidAudio on the Apple Neural Engine): streaming diarization plus Parakeet ASR for Them, streaming VAD plus Parakeet for Me. One process per stream, one meeting per process. | Each model owns its address space; a crash is contained and the warm pool replaces the pair. |
 | `hearsay-diarize` | The offline refine diarizer: given the recorded Them track, returns speaker turns and per-speaker voiceprint embeddings. | Same CoreML isolation; runs as a burst after the meeting, never live. |
+| `hearsay-notes` | The optional local-LLM notes step (llama.cpp): given the finalized transcript, returns the verbatim Markdown notes over stdio. | llama's vendored `ggml` must not co-link with the whisper refine's (a ~5x refine slowdown), so it runs out-of-process as a burst sidecar. |
 
 ## Rust crate map
 
-Nine workspace crates under `rust/crates/`. Arrows point at the dependency (the actual `path`
-entries in each `Cargo.toml`).
+Eleven workspace crates under `rust/crates/`. Arrows point at the dependency (the actual `path`
+entries in each `Cargo.toml`). `hearsay-notes` is a standalone sidecar binary the core spawns rather
+than links, so it stands apart from the `hearsay-core` link graph.
 
 ```mermaid
 flowchart BT
@@ -88,9 +93,11 @@ flowchart BT
     engine["hearsay-engine<br/>LiveEngine seam"]
     orch["hearsay-orchestrator<br/>pipeline, recorder, traits"]
     cap["hearsay-capture<br/>SwiftHelperSource, TCC probe"]
-    inf["hearsay-inference<br/>whisper refine, notes LLM"]
+    inf["hearsay-inference<br/>whisper refine (no llama)"]
+    notesprompt["hearsay-notes-prompt<br/>prompt build + reply parse, no deps"]
     back["hearsay-backends<br/>MacBackend, MacRefiner, reconcile"]
     core["hearsay-core<br/>axum API, composition root"]
+    notes["hearsay-notes<br/>llama.cpp notes sidecar (standalone binary)"]
 
     db --> attr
     engine --> db
@@ -104,10 +111,12 @@ flowchart BT
     back --> cap
     back --> inf
     back --> db
+    back --> notesprompt
     core --> db
     core --> engine
     core --> back
     core --> ipc
+    notes --> notesprompt
 ```
 
 | Crate | Responsibility |
@@ -119,7 +128,9 @@ flowchart BT
 | `hearsay-orchestrator` | Implements `LiveEngine`: creates the meeting row and folder, drives an `AudioSource`, routes each stream's PCM to its `Transcriber`, records the stereo `audio.wav`, persists and broadcasts segments, and runs the refine and notes steps after stop. Ships scripted test fakes. |
 | `hearsay-capture` | `AudioSource` implementations. On macOS, `SwiftHelperSource` spawns `hearsay-helper` and pumps its socket traffic; also hosts the TCC permissions probe. |
 | `hearsay-inference` | In-process ML, all offline: the whisper refine (GGML; CPU, or Metal/Vulkan/CUDA by feature) and the feature-gated sherpa-onnx modules for the future Windows path (`sherpa` feature). The llama.cpp notes summarizer runs out-of-process in the `hearsay-notes` sidecar (its `ggml` must not co-link with whisper's), reusing the pure prompt/parse logic from `hearsay-notes-prompt`. |
-| `hearsay-backends` | Platform backend wiring behind the engine seam: `MacBackend` (warm sidecar pool), `MacRefiner`, the notes summarizer, startup reconciliation, and `build_engine`, the one place a future `WindowsBackend` plugs in. |
+| `hearsay-notes-prompt` | Dependency-free prompt construction and reply parsing for the notes step, shared by `hearsay-backends` (the `SubprocessSummarizer`) and the `hearsay-notes` sidecar so the sidecar never pulls in `hearsay-inference` → whisper. |
+| `hearsay-notes` | The standalone notes-LLM sidecar binary: owns llama.cpp (`llama-cpp-2`), spawned by the core over stdio (JSON in, JSON out). The only process that links llama's vendored `ggml`, kept out of the core so it never co-links with whisper's. |
+| `hearsay-backends` | Platform backend wiring behind the engine seam: `MacBackend` (warm sidecar pool), `MacRefiner`, the `SubprocessSummarizer` (spawns `hearsay-notes`), startup reconciliation, and `build_engine`, the one place a future `WindowsBackend` plugs in. |
 | `hearsay-core` | The application binary: the axum HTTP + WebSocket API, security middleware, the served UI, OpenAPI generation, and the composition root that calls `build_engine`. Depends only on the seam, never on the concrete backend crates directly. |
 
 The Tauri shell (`web/src-tauri/`) is a separate crate outside the workspace; it spawns the
@@ -144,9 +155,15 @@ classDiagram
         +stop_meeting(id) Option~Meeting~
         +active_meeting() Option~Uuid~
         +subscribe(id) Option~Receiver~
+        +pause_meeting(id) bool
+        +resume_meeting(id) bool
+        +paused(id) Option~bool~
+        +keep_alive(id)
+        +inactivity_prompt(id) Option~u64~
         +rediarize(id)
         +generate_notes(id)
         +export_meeting(id)
+        +export_user_notes(id)
         +transcription_warming(id) Option~bool~
         +sidecars_ready() bool
         +shutdown()
@@ -349,7 +366,7 @@ stateDiagram-v2
     Finalized --> [*]
     note right of Refining
         stop_meeting returns once the row is
-        stamped; the refine runs as a tracked
+        stamped, and the refine runs as a tracked
         background task off the operation lock,
         so a slow refine cannot block the
         next meeting.
@@ -369,6 +386,11 @@ auto-stopped with no prior nudge). When the window is unfocused, the frontend as
 (a granted `notify_still_recording` command) to raise a native OS notification, so a user who has
 switched away still sees the nudge.
 
+Pause and resume (`POST /api/meetings/{id}/pause` and `/resume`) freeze and restart capture on the
+active recording without changing its persisted status. While paused the pipeline drops incoming
+chunks and elides the silent span, and it broadcasts `capture_state=paused` to the live WebSocket;
+both routes are idempotent (204) and return 404 for any meeting that is not the current session.
+
 A hard exit (SIGKILL, panic, power loss) can strand a row in `recording` or `refining`. Because
 nothing can be active at startup, the core sweeps every non-terminal row at boot, marks it
 finalized, and rewrites its transcript from the persisted segments
@@ -376,7 +398,7 @@ finalized, and rewrites its transcript from the persisted segments
 
 ## Data model
 
-SQLite, nine tables across nine forward-only migrations (`hearsay-db/migrations/`). UUIDs are
+SQLite, nine tables across ten forward-only migrations (`hearsay-db/migrations/`). UUIDs are
 stored as BLOB, timestamps as RFC3339 TEXT; every table also carries `created_at` and `updated_at`
 (omitted below).
 
@@ -396,17 +418,17 @@ erDiagram
         blob id PK
         text title
         text folder "on-disk leaf name"
-        text dir "absolute path pinned at create; unique when set"
+        text dir "absolute path pinned at create, unique when set"
         blob folder_id FK "organizational folder, nullable"
-        text status "recording | refining | finalized"
+        text status "recording, refining, or finalized"
         text started_at
         text ended_at "nullable"
     }
     segments {
         blob id PK
         blob meeting_id FK
-        blob cluster_id FK "nullable; Me segments carry none"
-        text stream "me | them"
+        blob cluster_id FK "nullable, Me segments carry none"
+        text stream "me or them"
         text speaker_label
         text text
         real start_s
@@ -433,8 +455,7 @@ erDiagram
     }
     meeting_notes {
         blob meeting_id PK "also the FK"
-        text summary
-        text action_items "JSON array"
+        text content "verbatim Markdown notes"
         text model "GGUF that produced it"
         int edited "manual-edit flag"
     }

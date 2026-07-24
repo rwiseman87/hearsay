@@ -111,6 +111,13 @@ One UTF-8 JSON object per line, terminated by `\n`. Three shapes:
 | `roster` | `{"event_id"?: str, "title"?: str, "start"?: str, "end"?: str, "attendees": [{"name", "email", "response"}]}` |
 | `error` | `{"scope": str, "message": str, "fatal": bool}` |
 
+> **Implemented subset.** The helper currently emits `hello`, `status`, `level`, `tap_health`,
+> `mic_health`, and `error`. `permission` is delivered as the `check_permissions` reply result, not
+> as an unsolicited event (the event-shaped row is a pinned fixture). `name_hint`, `active_speaker`,
+> and `roster` are the planned Phase 3 hint stream (OCR/Accessibility name hints, active-speaker
+> tiles, calendar roster); they exist today only as pinned golden fixtures with no emitter, so a
+> consumer must not expect them on the wire yet.
+
 All events carry `ts` (u64 nanoseconds, the same clock as media `host_ts`) so name hints and
 active-speaker changes align to audio and diarization turns in the fusion engine.
 

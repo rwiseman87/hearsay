@@ -30,10 +30,10 @@ make dmg      # unsigned .app + .dmg (distributable)
 make mac-app  # unsigned .app only (faster; for local testing)
 ```
 
-Both run `stage-release`, which builds release binaries and copies them where Tauri's
-`externalBin` expects them (`web/src-tauri/binaries/<name>-aarch64-apple-darwin`), then invokes
-`cargo tauri build`. `make dmg` also runs `codesign --verify --deep --strict` on the bundle to
-confirm the ad-hoc signature is intact.
+Both run `stage-release`, which builds the release binaries and copies them where Tauri's
+`externalBin` expects them (`web/src-tauri/binaries/<name>-aarch64-apple-darwin`). The `mac-app`
+target (which `dmg` depends on) then invokes `cargo tauri build` and runs `codesign --verify --deep
+--strict` on the bundle to confirm the ad-hoc signature is intact.
 
 `stage-release` stages the whisper refine model. `outputs/models/ggml-large-v3-turbo.bin`
 (about 1.5 GB) must be present: the build copies it to `web/src-tauri/models/`, Tauri bundles it
@@ -132,9 +132,12 @@ The Windows bundle is an unsigned NSIS installer built on a Windows x86_64 machi
 plan and tracking state live in [windows-port.md](windows-port.md)):
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts\build-windows.ps1        # CPU build
-powershell -ExecutionPolicy Bypass -File scripts\build-windows.ps1 -Vulkan -Aec
+powershell -ExecutionPolicy Bypass -File scripts\build-windows.ps1              # default: Vulkan (GPU) + AEC
+powershell -ExecutionPolicy Bypass -File scripts\build-windows.ps1 -NoVulkan     # CPU-only build
 ```
+
+Vulkan and AEC are on by default; opt out with `-NoVulkan` / `-NoAec` (and `-SkipModels` to reuse an
+already-staged model set).
 
 The script fetches and stages the models (the sherpa live/diarize set plus `ggml-small.en.bin`
 for the refine), builds the web bundle, `hearsay-core.exe` (features `sherpa`, plus `vulkan`/`aec`

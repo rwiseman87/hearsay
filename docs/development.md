@@ -7,7 +7,7 @@ How to set up, build, run, test, and troubleshoot the project from source.
 - A Rust toolchain ([rustup](https://rustup.rs/)); builds the core and all crates.
 - Swift; the Command Line Tools are enough to build the helper and sidecars
   (`xcode-select --install`). Full Xcode is only needed for `.app`/`.dmg` packaging.
-- Node 22; builds the React UI.
+- Node 20.19+ (enforced by `web/package.json` `engines`); builds the React UI.
 - Apple Silicon, macOS 14.4 or later (Core Audio process taps).
 
 ## Setup
@@ -37,7 +37,7 @@ The `Makefile` is the task runner.
 | `make licenses` | Fail on any copyleft dependency (`cargo deny`; policy in `rust/deny.toml`). |
 | `make version-check` | Fail if the app version drifts across the workspace, Tauri config, and package.json. |
 | `make ci` | The full gate: lint, tests, codegen drift, version check, audit, licenses, web CI. Must stay green. |
-| `make web-ci` | The web gate: `npm ci`, `tsc`, ESLint, `vite build`. |
+| `make web-ci` | The web gate: `npm ci`, `tsc`, ESLint, vitest (unit/component tests), `vite build`. |
 | `make rust-serve` (alias `serve`) | Build the `hearsay-notes` sidecar (`metal`) and run the core (`metal,aec`); the core spawns the sidecar for notes. |
 | `make dmg` | Build the unsigned, ad-hoc-signed `.dmg` (see [packaging.md](packaging.md)). |
 
@@ -173,7 +173,7 @@ Prerequisites on the Windows machine:
   Windows SDK).
 - A Rust toolchain ([rustup](https://rustup.rs/); the default host triple is the MSVC one).
 - [CMake](https://cmake.org) (the whisper-rs / llama-cpp-2 native builds).
-- Node 22.
+- Node 20.19+.
 - LLVM (`winget install -e --id LLVM.LLVM`) — llama-cpp-2 (the `hearsay-notes` sidecar) and `aec` run
   bindgen, which loads `libclang.dll` at build time.
 - The [Vulkan SDK](https://vulkan.lunarg.com/sdk/home#windows) **and** Windows long-path support —
@@ -189,10 +189,13 @@ Build and run from source (PowerShell; `scripts\build-windows.ps1` fetches the m
 run, or fetch them from any host with `make fetch-sherpa-models`):
 
 ```powershell
-cargo build --manifest-path rust\Cargo.toml --features sherpa,notes
-cargo run --manifest-path rust\Cargo.toml -p hearsay-core --features sherpa,notes
-cargo run --manifest-path rust\Cargo.toml -p hearsay-core --features sherpa,notes -- --synthetic
+cargo build --manifest-path rust\Cargo.toml --workspace --features sherpa
+cargo run --manifest-path rust\Cargo.toml -p hearsay-core --features sherpa
+cargo run --manifest-path rust\Cargo.toml -p hearsay-core --features sherpa -- --synthetic
 ```
+
+(The notes LLM is not a core feature — it builds as the separate `hearsay-notes` sidecar; there is no
+`notes` cargo feature.)
 
 Everything links against the default dynamic CRT. `hearsay-inference` takes sherpa-onnx's `shared`
 feature so onnxruntime + sherpa arrive as DLLs: the crate's default `static` libs are prebuilt
@@ -239,7 +242,8 @@ make test-all   # make ci + make probes + make e2e (run everything)
 - **Browser E2E.** `make e2e` runs Playwright/Chromium against the real React app served by `vite dev`,
   talking to a real `hearsay-core` booted with the dev-only `HEARSAY_SCRIPTED` flag — a model-free
   engine (`build_scripted_engine`) that replays a canned meeting and streams it over the live WebSocket.
-  It drives the full flow (start → live transcript → stop → Library → rename speaker → generate notes),
+  It drives the full flow (start → live transcript → stop → Library → rename speaker → reassign a line
+  → generate notes),
   asserting exact text. One-time setup: `cd web && npm install && npx playwright install chromium`.
   Config + spec live in `web/playwright.config.ts` + `web/e2e/`.
 - **Isolation.** Every test that touches disk points `HEARSAY_OUTPUT_DIR` + `DATABASE_URL` at a

@@ -13,7 +13,7 @@ let package = Package(
     platforms: [.macOS("14.4")],
     dependencies: [
         // On-device AI on the Apple Neural Engine (Apache-2.0). Used by the audio-AI
-        // sidecars (hearsay-{live,me,diarize,asr}); the capture executable stays dependency-free.
+        // sidecars (hearsay-{live,me,diarize}); the capture executable stays dependency-free.
         .package(url: "https://github.com/FluidInference/FluidAudio.git", exact: "0.15.4")
     ],
     targets: [

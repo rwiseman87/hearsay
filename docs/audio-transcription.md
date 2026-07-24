@@ -90,7 +90,7 @@ PCM to `media.sock`.
 Them is captured with a Core Audio **process tap** configured *global-except-self*, wrapped in a
 private aggregate device. Excluding self dodges a per-process-silent bug in some conferencing apps and
 still covers browser meetings. `SystemAudioTap.buildGraphLocked()`
-(`helper/Sources/hearsay-helper/Audio/SystemAudioTap.swift:109`):
+(`helper/Sources/hearsay-helper/Audio/SystemAudioTap.swift`):
 
 ```swift
 private func buildGraphLocked() throws {
@@ -111,7 +111,7 @@ private func buildGraphLocked() throws {
 
 The tap is wrapped in a private aggregate device with drift compensation, and an IOProc drains it.
 The real-time IOProc does the minimum — a `memcpy` of the mono float samples into a lock-free ring, no
-allocation or resampling on the HAL thread (`SystemAudioTap.swift:10`):
+allocation or resampling on the HAL thread (`SystemAudioTap.swift`):
 
 ```swift
 func process(_ inData: UnsafePointer<AudioBufferList>) {
@@ -123,13 +123,13 @@ func process(_ inData: UnsafePointer<AudioBufferList>) {
 ```
 
 Self-exclusion resolves this process's Core Audio object by translating its PID
-(`kAudioHardwarePropertyTranslatePIDToProcessObject`, `CoreAudioSupport.swift:57`), and the tap format
-is strictly validated as mono float32 before use (`SystemAudioTap.swift:124`).
+(`kAudioHardwarePropertyTranslatePIDToProcessObject`, `CoreAudioSupport.swift`), and the tap format
+is strictly validated as mono float32 before use (`SystemAudioTap.swift`).
 
 ### 2.2 The microphone (Me) stream
 
 Me is captured with `AVAudioEngine`'s input node and a resampling tap on bus 0
-(`helper/Sources/hearsay-helper/Audio/MicCapture.swift:85`):
+(`helper/Sources/hearsay-helper/Audio/MicCapture.swift`):
 
 ```swift
 input.installTap(onBus: 0, bufferSize: 1024, format: inFormat) { [weak self] buf, _ in
@@ -149,7 +149,7 @@ input.installTap(onBus: 0, bufferSize: 1024, format: inFormat) { [weak self] buf
 ### 2.3 Resampling to 16 kHz mono
 
 Both sources resample with Apple's stateful `AVAudioConverter`, targeting a single fixed format
-(`helper/Sources/hearsay-helper/Audio/Resampler.swift:10`):
+(`helper/Sources/hearsay-helper/Audio/Resampler.swift`):
 
 ```swift
 static let targetFormat = AVAudioFormat(
@@ -157,13 +157,13 @@ static let targetFormat = AVAudioFormat(
 ```
 
 The converter is kept alive across calls and fed one buffer at a time, returning `.noDataNow` after
-each so it treats the stream as continuous (`Resampler.swift:23`). The mic tap resamples inline on the
+each so it treats the stream as continuous (`Resampler.swift`). The mic tap resamples inline on the
 audio callback; the system tap defers resampling to a 10 ms worker thread so the RT IOProc stays free.
 
 ### 2.4 One clock, aligned by timestamp
 
 Every frame is stamped from a single monotonic clock reading `CLOCK_UPTIME_RAW`
-(`helper/Sources/hearsay-helper/Clock.swift:8`):
+(`helper/Sources/hearsay-helper/Clock.swift`):
 
 ```swift
 struct MonotonicClock: Sendable {
@@ -176,7 +176,7 @@ struct MonotonicClock: Sendable {
 The two streams are aligned **by this timestamp, never by sample index** — the mic and system audio
 come from independent hardware clocks that drift. The uplink loop stamps both streams from one clock
 read per tick and back-corrects `host_ts` for the ring backlog, so `payload[0]` carries the time it was
-actually captured (`Serve.swift:355`):
+actually captured (`Serve.swift`):
 
 ```swift
 let backlogNs = UInt64((Double(remaining) / sampleRate) * 1_000_000_000)
@@ -195,7 +195,7 @@ output ring favors recent audio for live transcription.
 A flow-based watchdog handles a **stuck tap**: amplitude cannot tell a broken tap from genuinely quiet
 system audio, so the watchdog triggers on the *cadence* of audio reaching the ring. On 5 s of no flow
 it emits `tap_health: zero_buffers`, rebuilds the whole graph (tap + aggregate device) with exponential
-backoff, and emits `tap_health: recovered` when audio returns (`SystemAudioTap.swift:346`). Device
+backoff, and emits `tap_health: recovered` when audio returns (`SystemAudioTap.swift`). Device
 default-output and sample-rate changes proactively trigger the same rebuild. The mic has a parallel
 `mic_health` monitor keyed on amplitude, because a revoked TCC grant lets `AVAudioEngine.start()`
 succeed while delivering pure zeros.
@@ -227,7 +227,7 @@ connects back.
 ### 3.1 The media frame
 
 Every media message is a fixed **28-byte little-endian header** plus payload. The full field layout is
-in `hearsay-ipc/src/lib.rs:150` (`MediaFrame`) and the table in `ipc.md`:
+in `hearsay-ipc/src/lib.rs` (`MediaFrame`) and the table in `ipc.md`:
 
 | offset | size | field | notes |
 |---:|---:|---|---|
@@ -244,7 +244,7 @@ in `hearsay-ipc/src/lib.rs:150` (`MediaFrame`) and the table in `ipc.md`:
 Audio is always mono 16 kHz; the rate is fixed by contract, not carried per frame. The decoder
 validates magic and version *before* trusting the length field, and rejects any `n_samples` that would
 size an oversized read (`MAX_PAYLOAD_LEN = 16 MiB`), so a corrupt or hostile header cannot drive a huge
-allocation (`hearsay-ipc/src/lib.rs:216`, `:298`).
+allocation (`hearsay-ipc/src/lib.rs`, the `encode`/`decode` frame codec).
 
 ### 3.2 The control channel
 
@@ -260,7 +260,7 @@ on the same clock as the media `host_ts`.
 `hearsay-helper serve --socket-dir <dir>`, waits for the `hello` event, sends `start_capture`, then
 runs a `media_pump` task that decodes frames into a channel of `CaptureChunk`s. It tracks per-stream
 `seq` for drop detection and resyncs to the frame magic on any malformed frame rather than tearing
-capture down (`hearsay-capture/src/lib.rs:227`). The channel closing on socket EOF is what signals
+capture down (`hearsay-capture/src/lib.rs`). The channel closing on socket EOF is what signals
 capture end.
 
 ---
@@ -275,14 +275,15 @@ testable without hardware or ML:
 - `Refiner` → `MacRefiner` (whisper refine)
 - `Summarizer` → `SubprocessSummarizer` (spawns the `hearsay-notes` sidecar)
 
-`build_engine` (`hearsay-backends/src/mac.rs:282`) is the composition root; shipped and dev builds use
-`--features metal,notes,aec`.
+`build_engine` (`hearsay-backends/src/mac.rs`) is the composition root; shipped and dev builds use
+`--features metal,aec` (the notes LLM is not a core feature — it ships as the separate `hearsay-notes`
+sidecar).
 
 ### 4.1 Demux: record, cancel echo, route
 
 One `demux` task reads the single tagged capture stream and splits it. It records the raw WAV *before*
 any processing, then routes each stream to its sidecar. Them forwards unchanged and doubles as the AEC
-far-end reference; Me is the AEC near-end (`pipeline.rs:313`):
+far-end reference; Me is the AEC near-end (`pipeline.rs`):
 
 ```rust
 match stream {
@@ -314,10 +315,10 @@ nothing while system audio is silent), so a `FrameAligner` turns them into index
 (10 ms) near/far pairs on one absolute sample clock. A Me frame is released once the far buffer covers
 it, **or** once Me runs 0.2 s ahead of the far end (then the far frame is zero-filled — cancelling
 against silence is a near-passthrough, which is correct because a silent far end means no echo)
-(`aec.rs:204`). In the other direction the far reference is capped at a trailing 2 s, so a stalled
-Me stream (mic device loss) bounds the backlog instead of growing it (`aec.rs:188`). SpeexDSP is
+(`aec.rs`). In the other direction the far reference is capped at a trailing 2 s, so a stalled
+Me stream (mic device loss) bounds the backlog instead of growing it (`aec.rs`). SpeexDSP is
 then driven per frame with a 300 ms filter tail — long enough to cover Bluetooth/AirPlay playout
-latency in the echo path (`aec.rs:280`):
+latency in the echo path (`aec.rs`):
 
 ```rust
 for f in &frames {
@@ -345,7 +346,7 @@ file serves both in-browser playback and the offline refine (which reads only th
 ## 5. Detecting and analyzing: the live sidecars
 
 The two live sidecars are where speech is **detected** and **analyzed** into text. Both use FluidAudio
-(pinned `exact: "0.15.4"`, `helper/Package.swift:17`) on the Apple Neural Engine. The core feeds each
+(pinned `exact: "0.15.4"`, `helper/Package.swift`) on the Apple Neural Engine. The core feeds each
 one PCM on stdin and reads NDJSON segments on stdout.
 
 The models each sidecar loads, and the compute unit each runs on:
@@ -356,23 +357,25 @@ The models each sidecar loads, and the compute unit each runs on:
 | Live partials (Them + Me) | `StreamingUnifiedAsrManager` | `FluidInference/parakeet-unified-en-0.6b-coreml` (Parakeet Unified 0.6B, FastConformer-RNNT) | encoder ANE/GPU, decoder CPU |
 | Live Them finals (per turn) | `AsrManager` (`AsrModels version: .v3`) | `FluidInference/parakeet-tdt-0.6b-v3-coreml` (Parakeet TDT 0.6B v3) | ANE |
 | Live Me VAD | `VadManager` | `FluidInference/silero-vad-coreml` (Silero VAD) | ANE + CPU |
-| Offline refine diarization | `OfflineDiarizerManager` | pyannote community-1 segmentation + wespeaker_v2 256-d embeddings + PLDA clustering | mixed |
+| Offline refine diarization | `OfflineDiarizerManager` | pyannote community-1 segmentation + WeSpeaker v2 256-d embeddings + agglomerative clustering (threshold 0.7) | mixed |
 
 `hearsay-live` loads **two** Parakeet models: the streaming Unified 0.6B for live partials and the batch
 TDT-v3 for per-turn finals. `hearsay-me` uses only the streaming Unified 0.6B (for both its partials and
 its finals).
 
-**Latency and windowing.** The streaming Parakeet decodes in 80 ms encoder frames with a 5.6 s left /
-1.04 s chunk / 1.04 s right window (7.68 s total context, ~1.04 s decoded per step, ~2.1 s theoretical
-latency); the encoder is stateless and only the RNNT decoder state persists. The Silero VAD processes
-256 ms (4096-sample) chunks at a 0.85 default threshold. The batch TDT-v3 transcribes each finalized
-turn with a fresh decoder state (no cross-turn state).
+**Latency and windowing.** Live partials come from FluidAudio's streaming Parakeet, which decodes in a
+rolling left-context / chunk / right-context window using the library's internal defaults (not
+configured here), so a chunk finalizes on the order of a second behind live; the encoder is stateless
+and only the RNNT decoder state persists. `hearsay-me` feeds the Silero VAD fixed `VadManager.chunkSize`
+frames and configures its segmentation with `minSpeechDuration 0.2 s`, `minSilenceDuration 0.45 s`, and
+`speechPadding 0.2 s` (`hearsay-me/main.swift`). The batch TDT-v3 transcribes each finalized turn with a
+fresh decoder state (no cross-turn state).
 
 ### 5.1 The sidecar stdio protocol
 
 `SidecarIO` (`helper/Sources/SidecarIO/SidecarIO.swift`) is the shared framing. PCM arrives as
 `[u32 LE count][count × f32 LE]` frames; the count is bounded before allocation so one byte of desync
-cannot drive a huge read (`SidecarIO.swift:42`):
+cannot drive a huge read (`SidecarIO.swift`):
 
 ```swift
 public func readAudioFrame(maxSamples: Int = maxInputSamples) -> FrameResult {
@@ -386,7 +389,7 @@ public func readAudioFrame(maxSamples: Int = maxInputSamples) -> FrameResult {
 }
 ```
 
-The Rust side frames identically (`hearsay-orchestrator/src/transcriber.rs:162`):
+The Rust side frames identically (`hearsay-orchestrator/src/transcriber.rs`):
 
 ```rust
 fn encode_feed(samples: &[f32]) -> Vec<u8> {
@@ -404,7 +407,7 @@ Each sidecar emits one NDJSON line per segment: `{"kind":"partial|final","speake
 them to meeting time. A `{"ready":true}` marker is printed once models finish loading, so a multi-minute
 first-run model download is distinguishable from a hang. The Rust `SidecarSegment` mirrors the line,
 with `kind` defaulting to `final` and `speaker` present only on Them finals
-(`hearsay-orchestrator/src/types.rs:41`).
+(`hearsay-orchestrator/src/types.rs`).
 
 ### 5.2 hearsay-me: VAD + streaming ASR
 
@@ -413,7 +416,7 @@ Me is always the local speaker, so there is no diarization. A streaming **Silero
 (streaming Parakeet) transcribes each utterance — growing partials while you speak, a final when the
 utterance closes.
 
-The VAD is fed fixed-size chunks and tuned for meeting speech (`helper/Sources/hearsay-me/main.swift:137`):
+The VAD is fed fixed-size chunks and tuned for meeting speech (`helper/Sources/hearsay-me/main.swift`):
 
 ```swift
 let vadConfig = VadSegmentationConfig(
@@ -422,7 +425,7 @@ let vadConfig = VadSegmentationConfig(
 
 Shorter `minSilenceDuration` closes quick turn-ends promptly; more `speechPadding` gives the ASR full
 word onsets and tails. The read loop drives VAD events into ASR reset/finalize
-(`hearsay-me/main.swift:178`):
+(`hearsay-me/main.swift`):
 
 ```swift
 if let event = result.event {
@@ -450,7 +453,7 @@ diarizer** marks speaker turns; as each turn finalizes, that turn's audio is sli
 batch Parakeet into a labeled final. On top of that, a streaming ASR pass produces speaker-less partials
 so text appears live.
 
-Three models load, with careful compute-unit placement (`helper/Sources/hearsay-live/main.swift:51`):
+Three models load, with careful compute-unit placement (`helper/Sources/hearsay-live/main.swift`):
 
 ```swift
 async let lseendModel = LSEENDModel.loadFromHuggingFace(
@@ -472,7 +475,7 @@ diarizer = try LSEENDDiarizer(model: try await lseendModel)
   ANE-warms in the background, off the ready path, and is awaited only before the first final.
 
 The main loop feeds each PCM chunk to the diarizer; when it finalizes turns, each turn is transcribed
-and the streaming partial is re-anchored to the turn boundary (`hearsay-live/main.swift:208`):
+and the streaming partial is re-anchored to the turn boundary (`hearsay-live/main.swift`):
 
 ```swift
 if let update = try diarizer.process(samples: samples, sourceSampleRate: 16_000),
@@ -488,7 +491,7 @@ if let update = try diarizer.process(samples: samples, sourceSampleRate: 16_000)
 
 `transcribeAndEmit` slices each finalized turn's audio by its `[startTime, endTime]`, runs batch
 Parakeet on the clip, and emits a `final` carrying the **0-based diarizer speaker index**
-(`hearsay-live/main.swift:135`):
+(`hearsay-live/main.swift`):
 
 ```swift
 let clip = Array(audio[start..<end])
@@ -511,12 +514,12 @@ to cap memory.
 
 ## 6. Live fan-out: persist, broadcast, transcript
 
-Each `stream_loop` (`hearsay-orchestrator/src/pipeline.rs:350`) owns one sidecar, maps sidecar-local
+Each `stream_loop` (`hearsay-orchestrator/src/pipeline.rs`) owns one sidecar, maps sidecar-local
 times to meeting time via the stream's offset, and pads silence across real gaps so the mapping stays
 correct. It first waits on a shared ANE permit so live inference never runs concurrently with the
 offline refine.
 
-`handle` fans each segment out (`pipeline.rs:469`):
+`handle` fans each segment out (`pipeline.rs`):
 
 - **Me** — always labeled "Me"; partials and finals both broadcast, only finals persisted. Me
   **broadcasts before it persists**.
@@ -542,7 +545,7 @@ from `GET /segments`, since every broadcast final is already persisted.
 Results reach the UI through a per-meeting `broadcast::Sender<String>` exposed as
 `LiveEngine::subscribe`. The WS route (`hearsay-core/src/routes/ws.rs`) subscribes, sends a
 `{"kind":"status","state":"warming"}` snapshot if the sidecars are still loading, then forwards each
-JSON frame (`ws.rs:66`):
+JSON frame (`ws.rs`):
 
 ```rust
 loop {
@@ -566,7 +569,7 @@ loop {
 The live `transcript.md` is appended in arrival order (which interleaves the two streams). At stop,
 `close()` sends EOF to each sidecar to flush its tail, then reads every segment back from the database
 sorted by `start_s` and atomically rewrites `transcript.md` in timestamp order, grouping consecutive
-same-speaker segments under one `### HH:MM:SS — Speaker` header (`hearsay-orchestrator/src/markdown.rs:31`).
+same-speaker segments under one `### HH:MM:SS — Speaker` header (`hearsay-orchestrator/src/markdown.rs`).
 The database is the source of truth; the file is a durable projection.
 
 ---
@@ -579,7 +582,7 @@ the "Refine speakers" button; both drive `LiveEngine::rediarize`.
 
 The current design transcribes the **entire Them track in one whisper call**, then assigns speakers by
 overlap with diarizer turns — not a per-turn transcribe loop. `refine_them_with`
-(`hearsay-inference/src/refine.rs:159`):
+(`hearsay-inference/src/refine.rs`):
 
 ```rust
 pub fn refine_them_with(
@@ -600,10 +603,11 @@ skips inter-turn audio, so no speech is dropped.
 
 The binding is `whisper-rs` v0.16 (whisper.cpp). The default model is GGML **large-v3-turbo**
 (`outputs/models/ggml-large-v3-turbo.bin`, overridable via `HEARSAY_REFINE_MODEL` or the Settings →
-Models panel). Sampling is **greedy** (`hearsay-inference/src/asr.rs:57`):
+Models panel). Sampling is **greedy** (`hearsay-inference/src/asr.rs`):
 
 ```rust
 let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
+params.set_entropy_thold(self.entropy_thold); // anti-loop gate, default 3.0
 params.set_language(Some(self.language.as_str()));
 params.set_print_special(false);
 params.set_print_progress(false);
@@ -611,23 +615,33 @@ params.set_print_realtime(false);
 params.set_print_timestamps(false);
 ```
 
+The first parameter set is the anti-loop entropy threshold (`DEFAULT_ENTROPY_THOLD = 3.0`,
+`asr.rs`). Greedy decoding on a long meeting can fall into a whisper repetition attractor — one
+17-minute meeting came back as a single phrase repeated 473 times. whisper's fallback gate compares
+the entropy of the decode window's last tokens against this threshold; observed loops scored
+2.45–2.83 while genuine speech scored 3.06–3.38, so 3.0 (raised from the stock 2.4) makes every
+observed loop fail the gate and retry the window at a higher temperature while real windows pass
+untouched. `with_entropy_thold` overrides it for the probe harness.
+
 GPU acceleration is a Cargo feature forwarded to whisper-rs — `--features metal` on macOS (also
 `vulkan` / `cuda` for other targets); with no feature it runs on CPU.
 
 The refine reads only the **right (Them) channel** of the stereo WAV, at a fixed 16 kHz (a wrong rate
-is a hard error), via `hound` (`hearsay-inference/src/audio.rs:52`).
+is a hard error), via `hound` (`hearsay-inference/src/audio.rs`).
 
 ### 7.2 The diarizer sidecar
 
 `SwiftDiarizer` drives the Swift `hearsay-diarize` sidecar as a bounded, file-based subprocess: it
 writes the Them track to a temp WAV, spawns the sidecar with the WAV path, drains stdout/stderr on
 separate threads, and kills the child on a deadline so a hung sidecar cannot wedge meeting-stop
-(`hearsay-inference/src/refine.rs:86`). The sidecar runs FluidAudio's `OfflineDiarizerManager`
+(`hearsay-inference/src/refine.rs`). The sidecar runs FluidAudio's `OfflineDiarizerManager`
 (pyannote community-1 CoreML) and returns turns plus each speaker's mean embedding
-(`helper/Sources/hearsay-diarize/main.swift:71`):
+(`helper/Sources/hearsay-diarize/main.swift`):
 
 ```swift
-let manager = OfflineDiarizerManager()
+var config = OfflineDiarizerConfig.default
+config.clustering.threshold = 0.7  // above FluidAudio's 0.6 default; HEARSAY_DIARIZE_CLUSTER_THRESHOLD overrides
+let manager = OfflineDiarizerManager(config: config)
 let result = try await manager.process(url)
 
 let turns = result.segments.map {
@@ -640,8 +654,9 @@ let speakers = (result.speakerDatabase ?? [:]).map {
 ```
 
 `OfflineDiarizerManager` runs a fuller pipeline than the live LS-EEND diarizer: pyannote community-1
-segmentation, wespeaker_v2 256-dimensional speaker embeddings, and agglomerative PLDA/VBx clustering.
-Each speaker's returned embedding is the mean of that speaker's segment embeddings — that mean is the
+segmentation, WeSpeaker v2 256-dimensional speaker embeddings, and agglomerative clustering by Euclidean
+distance on the unit embeddings (threshold 0.7, tuned above FluidAudio's 0.6 default, which
+under-separated compressed meeting audio). Each speaker's returned embedding is the mean of that speaker's segment embeddings — that mean is the
 cross-meeting voiceprint the Rust refine stores and matches, so no separate embedder is needed. A silent
 track is reported as `noSpeechDetected` and mapped to a benign no-op that leaves existing segments intact.
 
@@ -649,7 +664,7 @@ track is reported as `noSpeechDetected` and mapped to a benign no-op that leaves
 
 Each whisper segment is attributed to the diarizer turn it **maximally overlaps**, with a nearest-turn
 fallback so no text is ever dropped, then consecutive same-speaker segments are merged
-(`hearsay-inference/src/refine.rs:186`):
+(`hearsay-inference/src/refine.rs`):
 
 ```rust
 let idx = max_overlap_turn(seg.start_s, seg.end_s, &overlap_turns, 0.0)
@@ -682,15 +697,15 @@ persistence in `hearsay-db`:
 3. **Cross-meeting voiceprints** — a named, locked cluster's centroid becomes recognizable later.
 4. **Manual labels** — a rename binds a cluster to a named identity and locks it.
 
-Precedence, realized in `replace_them_segments` (`hearsay-db/src/queries.rs:983`), is **manual (locked)
+Precedence, realized in `replace_them_segments` (`hearsay-db/src/queries.rs`), is **manual (locked)
 > recognized (bound, unlocked) > fresh `Speaker N`**.
 
 ### 8.1 Ordering and overlap
 
 `order_speakers` numbers diarizer labels 1-based by first appearance in time
-(`hearsay-attribution/src/mapping.rs:16`). `max_overlap_turn` / `assign_segment_speaker` map a segment
+(`hearsay-attribution/src/mapping.rs`). `max_overlap_turn` / `assign_segment_speaker` map a segment
 to the turn it overlaps most, with ties broken to the earliest turn and no-overlap returning `None`
-(`mapping.rs:34`):
+(`mapping.rs`):
 
 ```rust
 pub fn max_overlap_turn(start_s: f64, end_s: f64, turns: &[SpeakerTurn], offset_s: f64) -> Option<usize> {
@@ -711,9 +726,9 @@ pub fn max_overlap_turn(start_s: f64, end_s: f64, turns: &[SpeakerTurn], offset_
 ### 8.2 Voiceprints: L2-normalized cosine matching
 
 Each speaker's raw embedding is L2-normalized to a unit-length centroid before storage
-(`hearsay-inference/src/refine.rs:324`), serialized as little-endian float32 bytes on
+(`hearsay-inference/src/refine.rs`), serialized as little-endian float32 bytes on
 `clusters.centroid`. Matching is cosine similarity computed in f64, with a length mismatch treated as a
-safe non-match (`hearsay-attribution/src/voiceprint.rs:28`, `:57`):
+safe non-match (`cosine` / `match_identity` in `hearsay-attribution/src/voiceprint.rs`):
 
 ```rust
 pub fn match_identity<'a>(
@@ -737,15 +752,20 @@ pub fn match_identity<'a>(
 }
 ```
 
+Production recognition calls the score-returning sibling `best_identity` (of which `match_identity` is
+a thin wrapper) so `recognize_speakers` can rank candidates by score and bind each known name to at most
+one ordinal — the highest-scoring cluster wins a name and any runner-up stays `Speaker N`. See
+[voiceprints.md](voiceprints.md) for the full recognition and precedence rules.
+
 The threshold is the `speakers.recognition_threshold` setting, **default 0.6**
 (`HEARSAY_RECOGNITION_THRESHOLD`), range-validated to `[0, 1]`. Recognition only ever pulls candidate
 voiceprints from **other** meetings' named, locked clusters (`KNOWN_VOICEPRINTS_SQL`,
-`queries.rs:16`), and binds a match **unlocked** — provisional, so a later manual rename still wins.
+`queries.rs`), and binds a match **unlocked** — provisional, so a later manual rename still wins.
 
 ### 8.3 Protecting a stable binding across re-diarize
 
 A re-diarize renumbers speakers, so a manual name could be lost. `carry_forward_locked_names`
-(`hearsay-db/src/queries.rs:853`) prevents that by voting each old **locked** segment onto the new
+(`hearsay-db/src/queries.rs`) prevents that by voting each old **locked** segment onto the new
 ordinal its time span most overlaps, then resolving to a one-name↔one-ordinal bijection by descending
 vote count:
 

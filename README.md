@@ -30,7 +30,7 @@ The full picture (process topology, crate map, UML diagrams, data model, securit
 ## Quickstart
 
 Prerequisites: a Rust toolchain ([rustup](https://rustup.rs/)), Swift (Command Line Tools is
-enough), and Node 22.
+enough), and Node 20.19+.
 
 ```sh
 make swift-build                      # capture helper + FluidAudio/ANE sidecars
@@ -74,8 +74,8 @@ docs/              project documentation
 
 The `Makefile` is the task runner and `make ci` is the local pre-commit gate — run on demand, since
 there is no hosted CI: clippy with warnings denied, rustfmt, the Swift codec self-test, `cargo test`,
-codegen drift checks, and dependency-advisory/license audits. Full conventions are in
-[CLAUDE.md](CLAUDE.md).
+the Tauri shell's lint/tests, codegen and app-version drift checks, dependency-advisory/license audits,
+and the web gate (`tsc`, ESLint, vitest, `vite build`). Full conventions are in [CLAUDE.md](CLAUDE.md).
 
 ## License
 

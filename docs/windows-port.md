@@ -48,8 +48,8 @@ flowchart TD
     them["Them stream"] --> mode{"HEARSAY_WIN_LOOPBACK"}
     mode -->|"device (default)"| classic["Classic device loopback<br/>AUDCLNT_STREAMFLAGS_LOOPBACK on the render endpoint<br/>mix format or AUTOCONVERTPCM"]
     mode -->|process| exclude["Process loopback, exclude-self<br/>ActivateAudioInterfaceAsync + PROCESS_LOOPBACK<br/>EXCLUDE_TARGET_PROCESS_TREE on own PID"]
-    classic --> route["IMMNotificationClient: reopen on<br/>default-device change; gap-fill by timestamp"]
-    exclude --> fmt["Self-specified format (GetMixFormat is E_NOTIMPL);<br/>fallback resample if 16 kHz mono is rejected"]
+    classic --> route["IMMNotificationClient reopen on<br/>default-device change, gap-fill by timestamp"]
+    exclude --> fmt["Self-specified format, GetMixFormat is E_NOTIMPL<br/>fallback resample if 16 kHz mono is rejected"]
     route --> clock["QPC timestamps -> host_ts"]
     fmt --> clock
 ```
@@ -173,9 +173,9 @@ unconfirmed Rust-API exposure). They are the candidate upgrade tier once the flo
   `erase_all_data` (no `tccutil`), reveal via `explorer /select,`. Graceful stop is already
   portable (the core exits on stdin EOF; the shell's kill is the backstop).
 - Windows has no `make`: `scripts/build-windows.ps1` mirrors `stage-release` + `cargo tauri
-  build` for the Windows machine. Build features arrive in order: `sherpa,notes` (CPU, fewest
+  build` for the Windows machine. Build features arrive in order: `sherpa` (CPU, fewest
   prerequisites), then `vulkan`, then `aec` — each has a graceful fallback (CPU inference; AEC
-  no-op passthrough).
+  no-op passthrough). The notes LLM builds as the separate `hearsay-notes` sidecar, not a core feature.
 
 ## Windows build prerequisites
 
@@ -185,7 +185,7 @@ On the Windows x86_64 machine:
   Windows SDK).
 - Rust via rustup (defaults to `x86_64-pc-windows-msvc`).
 - CMake (whisper-rs / llama-cpp-2 build).
-- Node 22 (web UI).
+- Node 20.19+ (web UI).
 - LLVM (`winget install -e --id LLVM.LLVM`) — llama-cpp-2 (the `hearsay-notes` sidecar) and `aec` run bindgen, which
   loads `libclang.dll` at build time.
 - Only for the `vulkan` feature: the Vulkan SDK.
@@ -276,12 +276,12 @@ defaults (`outputs\models\sherpa`) resolve:
 
 - [ ] 0. `powershell -ExecutionPolicy Bypass -File scripts\build-windows.ps1` once, or at least
       its model-fetch stage; a full run doubles as steps 1 + 7's build.
-- [ ] 1. `cargo build --manifest-path rust\Cargo.toml --features sherpa,notes`
+- [ ] 1. `cargo build --manifest-path rust\Cargo.toml --features sherpa`
       (surfaces any blind-written compile errors — expected in `wasapi_source.rs` /
       `win_permissions.rs` / the shell arms; report them back verbatim).
-- [ ] 2. `cargo test --manifest-path rust\Cargo.toml --features sherpa,notes`.
+- [ ] 2. `cargo test --manifest-path rust\Cargo.toml --features sherpa`.
 - [ ] 3. Pipeline without real capture:
-      `cargo run --manifest-path rust\Cargo.toml -p hearsay-core --features sherpa,notes -- --synthetic`,
+      `cargo run --manifest-path rust\Cargo.toml -p hearsay-core --features sherpa -- --synthetic`,
       open the printed `?token=` URL in a browser, start a meeting — tone bursts alternate and
       both streams emit segments.
 - [ ] 4. Real capture smoke test: same command without `--synthetic`; start a meeting with a

@@ -93,8 +93,8 @@ Paginated, ordered by `start_s`. This is how a past meeting reloads from the dat
 {
   "total": 2, "page": 1, "page_size": 200,
   "items": [
-    { "id": "a1...", "stream": "me",   "speaker_label": "Me",        "cluster_id": null,   "text": "What is this about?",     "start_s": 8.0,  "end_s": 9.1 },
-    { "id": "b2...", "stream": "them", "speaker_label": "Speaker 1", "cluster_id": "c9...", "text": "Your car is on its way.", "start_s": 28.4, "end_s": 30.0 }
+    { "id": "a1...", "stream": "me",   "speaker_label": "Me",        "cluster_id": null,   "text": "What is this about?",     "start_s": 8.0,  "end_s": 9.1,  "edited": false },
+    { "id": "b2...", "stream": "them", "speaker_label": "Speaker 1", "cluster_id": "c9...", "text": "Your car is on its way.", "start_s": 28.4, "end_s": 30.0, "edited": false }
   ]
 }
 ```
@@ -122,8 +122,9 @@ one, is a no-op `204`). The paused state is broadcast to live WebSocket subscrib
 
 ### `DELETE /api/meetings/{id}` (delete a meeting)
 
-Stops it if active, removes the database rows (segments, clusters, notes, and user notes cascade), and
-deletes the on-disk folder. Returns `204`, or `404` if unknown.
+Removes the database rows (segments, clusters, notes, and user notes cascade) and deletes the on-disk
+folder. The active recording session cannot be deleted — stop it first. Returns `204`, `404` if
+unknown, or `409` if the meeting is currently recording.
 
 ### `GET /api/meetings/{id}/audio` (meeting audio, for playback)
 
@@ -260,7 +261,9 @@ downloaded notes model (see Models). Produces Markdown notes from the finalized 
 returned verbatim as the note's `content` — the user-editable prompt template dictates the format.
 Best-effort: a notes failure never blocks or fails a meeting.
 
-- `GET /api/meetings/{id}/notes` reads the stored notes (`404` if none yet).
+- `GET /api/meetings/{id}/notes` reads the stored notes — `content`, `model`, timestamps, plus
+  `edited` (set once the notes are hand-edited) and `stale` (`true` when the transcript changed after
+  the notes were generated, so the UI can offer a regenerate). `404` if none yet.
 - `POST /api/meetings/{id}/notes` generates or regenerates; `409` while recording, `503` if no
   notes model is configured.
 - `PATCH /api/meetings/{id}/notes` edits the notes `content`; `422` on over-long input,
@@ -286,8 +289,8 @@ on demand into `HEARSAY_MODELS_DIR` and verified by SHA-256.
 
 - `GET /api/models/catalog` returns the catalog, each entry's installed state, and the models
   directory.
-- `GET /api/models/download` returns the current download's status: idle, downloading with
-  progress, or error.
+- `GET /api/models/download` returns the current download's status: `idle`, `downloading` (with
+  progress), `verifying` (checking the SHA-256), `ready`, or `error`.
 - `POST /api/models/download` starts downloading a catalog model, body `{ "id" }`; one at a time.
 
 ## Settings
@@ -298,16 +301,19 @@ permission facts.
 ### `GET /api/settings` (the effective settings)
 
 Returns every editable section (`recording`, `speakers`, `storage`, `models`) plus the read-only
-`storage_info` and `about`.
+`storage_info`, `models_info`, and `about`. `models_info` reports the effective default refine and
+notes models, whether each file is present on disk, and the default notes prompt, so the Models panel
+can show what will run without the user having set an override.
 
 ```json
 // 200 OK
 {
   "recording": { "record": true, "inactivity_prompt_enabled": true, "inactivity_auto_end_enabled": true, "inactivity_prompt_minutes": 5, "inactivity_end_minutes": 10 },
-  "speakers": { "auto_refine": true, "recognition_threshold": 0.6 },
+  "speakers": { "auto_refine": false, "recognition_threshold": 0.6 },
   "storage": { "output_dir": "/Users/you/.../outputs/recordings" },
   "models": { "notes_enabled": false, "notes_model": "", "notes_prompt": "<template with {transcript}>", "refine_model": ".../ggml-large-v3-turbo.bin" },
   "storage_info": { "output_dir": "...", "database_path": ".../hearsay.db", "tracked_bytes": 12345, "meeting_count": 3 },
+  "models_info": { "default_refine_model": ".../ggml-large-v3-turbo.bin", "refine_model_exists": true, "default_notes_model": "", "notes_model_exists": false, "default_notes_prompt": "<template with {transcript}>" },
   "about": { "app_version": "0.1.0", "environment": "production", "protocol_version": 1, "database_path": ".../hearsay.db" }
 }
 ```

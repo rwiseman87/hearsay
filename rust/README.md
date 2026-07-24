@@ -14,7 +14,7 @@ warnings denied, rustfmt, `cargo test`, codegen drift, `cargo audit`, `cargo den
 ```sh
 make swift-build                      # build hearsay-helper + the FluidAudio sidecars (once)
 (cd web && npm ci && npm run build)   # build web/dist (once)
-make rust-serve                       # runs hearsay-core (--features metal,notes); prints a ?token= URL
+make rust-serve                       # runs hearsay-core (--features metal,aec); prints a ?token= URL
 ```
 
 `make rust-serve` binds `127.0.0.1` on `RUST_PORT` (default 8799) and prints
@@ -56,6 +56,10 @@ but is linted and CVE/license-gated in `make ci`. Build the app with `make dmg` 
   builds `metal`; the default is portable CPU.
 - `sherpa`: the cross-platform (Windows) sherpa-onnx live and diarize path. Off by default, so the
   macOS bundle never compiles or links onnxruntime; the only consumers are ignored tests.
+- `aec`: acoustic echo cancellation (SpeexDSP via `aec-rs`) on the live Me stream, using the Them
+  tap as the far-end reference. `make rust-serve` and the release bundle build it (`--features
+  metal,aec`); the raw pre-AEC audio is what the recorder and offline refine read. See
+  [`../docs/echo-cancellation.md`](../docs/echo-cancellation.md).
 
 The notes LLM is not a core feature: it ships as the standalone `hearsay-notes` sidecar (built with
 its own `metal`/`vulkan`/`cuda`), so llama.cpp never links into the core with whisper. `make

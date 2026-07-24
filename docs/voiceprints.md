@@ -24,7 +24,7 @@ Two facts shape everything below:
   centroid:
 
   ```rust
-  // rust/crates/hearsay-orchestrator/src/pipeline.rs:860
+  // rust/crates/hearsay-orchestrator/src/pipeline.rs
   /// Get-or-create the per-meeting cluster for a Them speaker ordinal (unlocked, no centroid live —
   /// the offline refine re-seeds centroids). ...
   queries::create_cluster(pool, meeting_id, ordinal, false, None).await
@@ -53,7 +53,7 @@ flowchart TB
     end
     subgraph use["4. Reference in a later meeting"]
         known["KNOWN_VOICEPRINTS_SQL<br/>locked + centroid + named, other meetings"]
-        match["recognize_speakers -> match_identity<br/>cosine >= recognition_threshold"]
+        match["recognize_speakers -> best_identity<br/>cosine >= threshold, one name per ordinal"]
         known --> match
     end
     norm --> rep
@@ -68,7 +68,7 @@ Both refine paths return the same shape — a `Diarization` of ordinal turns plu
 mean embedding by ordinal — and the refine normalizes those into stored centroids. The seam:
 
 ```rust
-// rust/crates/hearsay-inference/src/diarizer.rs:20
+// rust/crates/hearsay-inference/src/diarizer.rs
 /// A diarization result: ordinal speaker turns (start-sorted) + each speaker's raw mean voiceprint by
 /// ordinal (the refine L2-normalizes these into stored centroids). ...
 pub struct Diarization {
@@ -83,12 +83,17 @@ they use.
 ### Path A — macOS: FluidAudio on the Apple Neural Engine (accuracy tier)
 
 The `hearsay-diarize` Swift sidecar runs FluidAudio's `OfflineDiarizerManager` (pyannote
-community-1 segmentation + **wespeaker_v2 256-d embeddings** + PLDA clustering). The per-speaker
-mean is computed *inside* FluidAudio and exposed as `speakerDatabase`; the sidecar just forwards it:
+community-1 segmentation + **wespeaker_v2 256-d embeddings** + threshold-based agglomerative
+clustering). The clustering threshold is raised from FluidAudio's 0.6 default to **0.7** (0.6
+under-separates compressed meeting audio; overridable via `HEARSAY_DIARIZE_CLUSTER_THRESHOLD`). The
+per-speaker mean is computed *inside* FluidAudio and exposed as `speakerDatabase`; the sidecar just
+forwards it:
 
 ```swift
-// helper/Sources/hearsay-diarize/main.swift:71
-let manager = OfflineDiarizerManager()
+// helper/Sources/hearsay-diarize/main.swift
+var config = OfflineDiarizerConfig.default
+config.clustering.threshold = 0.7
+let manager = OfflineDiarizerManager(config: config)
 let result = try await manager.process(url)
 let turns = result.segments.map {
     Turn(speaker: $0.speakerId, startS: ..., endS: ...)
@@ -107,7 +112,7 @@ that ordinal — no averaging (FluidAudio already did it), and **`consolidate_sp
 on this path**:
 
 ```rust
-// rust/crates/hearsay-inference/src/refine.rs:128
+// rust/crates/hearsay-inference/src/refine.rs
 let ordinals = order_speakers(&ordering);
 ...
 let mut embeddings: HashMap<i64, Vec<f32>> = HashMap::new();
@@ -126,7 +131,7 @@ model (**TitaNet-small, 192-d**): it concatenates each speaker's turn audio and 
 at 30 s (to stay under TitaNet's positional limit) and duration-weighted-averaged, direction-only:
 
 ```rust
-// rust/crates/hearsay-inference/src/sherpa_diarize.rs:159
+// rust/crates/hearsay-inference/src/sherpa_diarize.rs
 let weight = chunk.len() as f64;
 for (acc, v) in sum.iter_mut().zip(&vector) {
     *acc += f64::from(*v) / norm * weight;   // each chunk L2-normalized, weighted by duration
@@ -141,7 +146,7 @@ the sherpa path — and only this path — then runs `consolidate_speakers` over
 centroids to fold the fragments back together and drop non-speech clusters:
 
 ```rust
-// rust/crates/hearsay-inference/src/sherpa_diarize.rs:253
+// rust/crates/hearsay-inference/src/sherpa_diarize.rs
 let merged = consolidate_speakers(&embeddings, &speech_s, self.consolidate);
 turns.retain(|turn| !merged.dropped.contains(&turn.speaker));
 ```
@@ -155,7 +160,7 @@ stored centroid and keeps a centroid only for a speaker who actually appears in 
 segments:
 
 ```rust
-// rust/crates/hearsay-inference/src/refine.rs:172
+// rust/crates/hearsay-inference/src/refine.rs
 let present: HashSet<i64> = segments.iter().map(|s| s.ordinal).collect();
 let mut centroids = build_centroids(&diarization.embeddings);  // l2_normalize per ordinal
 centroids.retain(|ordinal, _| present.contains(ordinal));
@@ -187,7 +192,7 @@ A voiceprint lives in the nullable `centroid` BLOB on the `clusters` table — o
 diarized speaker per meeting:
 
 ```sql
--- rust/crates/hearsay-db/migrations/0001_baseline.sql:26
+-- rust/crates/hearsay-db/migrations/0001_baseline.sql
 CREATE TABLE clusters (
     id          BLOB    NOT NULL PRIMARY KEY,
     meeting_id  BLOB    NOT NULL REFERENCES meetings(id) ON DELETE CASCADE,
@@ -215,7 +220,7 @@ A centroid is serialized as contiguous little-endian float32 — no header, no l
 length is the byte length / 4:
 
 ```rust
-// rust/crates/hearsay-attribution/src/voiceprint.rs:8
+// rust/crates/hearsay-attribution/src/voiceprint.rs
 pub fn centroid_to_bytes(centroid: &[f32]) -> Vec<u8> {
     let mut out = Vec::with_capacity(centroid.len() * 4);
     for value in centroid {
@@ -239,7 +244,7 @@ segments and all its clusters, then creates one cluster per refined ordinal with
 serialized onto the row (Me segments are untouched):
 
 ```rust
-// rust/crates/hearsay-db/src/queries.rs:997
+// rust/crates/hearsay-db/src/queries.rs
 let centroid = result.centroids.get(&seg.ordinal).map(|c| centroid_to_bytes(c));
 sqlx::query(
     "INSERT INTO clusters \
@@ -258,7 +263,7 @@ becomes a voiceprint when the user renames the speaker, via
 `PUT /api/meetings/{id}/speakers/{cluster_id}`:
 
 ```rust
-// rust/crates/hearsay-core/src/routes/speakers.rs:58
+// rust/crates/hearsay-core/src/routes/speakers.rs
 pub(crate) async fn rename_speaker(...) -> ApiResult<Json<SpeakerRead>> {
     let name = body.display_name.trim();
     if name.is_empty() || name.chars().count() > 255 {
@@ -275,7 +280,7 @@ pub(crate) async fn rename_speaker(...) -> ApiResult<Json<SpeakerRead>> {
 transaction:
 
 ```rust
-// rust/crates/hearsay-db/src/queries.rs:631
+// rust/crates/hearsay-db/src/queries.rs
 let identity_id = get_or_create_identity(&mut tx, name, now).await?;
 sqlx::query("UPDATE clusters SET identity_id = ?, locked = 1, updated_at = ? WHERE id = ?")
     .bind(identity_id).bind(now).bind(cluster_id).execute(&mut *tx).await?;
@@ -299,7 +304,7 @@ The "known voiceprints" a refine matches against are exactly the locked, named c
 centroid, from *other* meetings:
 
 ```rust
-// rust/crates/hearsay-db/src/queries.rs:16
+// rust/crates/hearsay-db/src/queries.rs
 const KNOWN_VOICEPRINTS_SQL: &str = "SELECT i.display_name, c.centroid FROM clusters c \
      JOIN identities i ON i.id = c.identity_id \
      WHERE c.locked = 1 AND c.centroid IS NOT NULL AND c.meeting_id != ?";
@@ -307,23 +312,35 @@ const KNOWN_VOICEPRINTS_SQL: &str = "SELECT i.display_name, c.centroid FROM clus
 
 ### The match
 
-During `replace_them_segments`, each new ordinal's centroid is compared against that candidate set;
-the best match at or above the threshold wins:
+During `replace_them_segments`, `recognize_speakers` scores every unclaimed ordinal's centroid
+against that candidate set with `best_identity` (the score-returning form of `match_identity`), then
+resolves so each known name binds to **at most one ordinal** — the highest-scoring cluster wins the
+name and any runner-up stays `Speaker N`:
 
 ```rust
-// rust/crates/hearsay-db/src/queries.rs:838
+// rust/crates/hearsay-db/src/queries.rs
+let mut candidates: Vec<(i64, &str, f64)> = Vec::new();
 for (&ordinal, centroid) in centroids {
     if manual.contains_key(&ordinal) {
         continue; // a manual carry-forward name wins over auto-recognition
     }
-    if let Some(name) = match_identity(centroid, &known, threshold) {
+    if let Some((name, score)) = best_identity(centroid, &known, threshold) {
+        candidates.push((ordinal, name, score));
+    }
+}
+// Highest score first (deterministic tiebreak), then each name is taken by only its top ordinal.
+candidates.sort_by(/* score desc, then ordinal, then name */);
+let mut used_names: HashSet<String> = HashSet::new();
+for (ordinal, name, _score) in candidates {
+    if used_names.insert(name.to_string()) {
         recognized.insert(ordinal, name.to_string());
     }
 }
 ```
 
 A recognized speaker is bound to the identity but left **unlocked** (provisional) — a later manual
-rename can still override it.
+rename can still override it. The per-name dedup means two clusters that both clear the threshold for
+the same person never both take that name.
 
 ### Precedence
 
@@ -332,13 +349,13 @@ rename can still override it.
 | Rank | Source | Binding | Lock | How |
 |---|---|---|---|---|
 | 1 | **Manual carry-forward** | identity | `locked = 1` | A prior *locked* name is voted onto the new ordinal its old segments most overlap (`carry_forward_locked_names`), so a re-diarize never drops a manual binding. |
-| 2 | **Cross-meeting recognition** | identity | `locked = 0` | An unclaimed ordinal whose voiceprint clears the threshold (`recognize_speakers` -> `match_identity`), bound provisionally. |
+| 2 | **Cross-meeting recognition** | identity | `locked = 0` | An unclaimed ordinal whose voiceprint clears the threshold (`recognize_speakers` -> `best_identity`), bound provisionally; each name binds to at most one ordinal. |
 | 3 | **Fresh** | none | `locked = 0` | Otherwise a plain `Speaker N`. |
 
 A single wrong recognition can never flip a stable manual binding: locked names carry forward first
 and are skipped by recognition.
 
-A per-line reassignment (`PATCH .../segments/{id}/speaker`, `reassign_segment_speaker`) is a
+A per-line reassignment (`PATCH .../segments/{segment_id}/speaker`, `reassign_segment_speaker`) is a
 finer-grained correction: it moves one segment's `cluster_id` to another cluster, or to a new locked
 cluster created for a typed name. It operates on the finalized transcript and is not itself carried
 forward — a full re-diarize rebuilds the Them segments from scratch, so it reconstructs speakers only
@@ -350,14 +367,15 @@ at the cluster level (via the precedence above), not per line. The reassigned li
 Recognition uses cosine similarity against a configurable cutoff, the effective
 `speakers.recognition_threshold`:
 
-- **Default `0.6`**, set in config from `HEARSAY_RECOGNITION_THRESHOLD` (validated to `0.0..=1.0`;
-  out-of-range or non-numeric values log a startup problem and fall back to `0.6`) —
-  `rust/crates/hearsay-core/src/config.rs:244`.
+- **Default `0.6`**, set in config from `HEARSAY_RECOGNITION_THRESHOLD` (validated to `0.0..=1.0`).
+  In `development` an out-of-range or non-numeric value logs a startup problem and falls back to
+  `0.6`; in staging/production a bad value fails startup outright rather than silently defaulting —
+  `rust/crates/hearsay-core/src/config.rs`.
 - Overridable per install via `PUT /api/settings/speakers`, which rejects anything outside
   `0.0..=1.0` with a 422 — `rust/crates/hearsay-core/src/routes/settings.rs`.
 - Resolved fresh on every refine by `effective_speakers` (stored override per field, else the
   config default), so a Settings change applies to the next refine with no restart —
-  `rust/crates/hearsay-db/src/queries.rs:1296`.
+  `rust/crates/hearsay-db/src/queries.rs`.
 
 Both refine entry points — auto-refine at stop and the manual "Refine speakers" button
 (`POST /api/meetings/{id}/rediarize`) — read this value and pass it into `replace_them_segments`, so
@@ -369,7 +387,7 @@ Matching is plain cosine similarity, computed in `f64`, with two safety rails: a
 a zero-norm vector returns `0.0` (a safe non-match, never a garbage score).
 
 ```rust
-// rust/crates/hearsay-attribution/src/voiceprint.rs:28
+// rust/crates/hearsay-attribution/src/voiceprint.rs
 pub fn cosine(a: &[f32], b: &[f32]) -> f64 {
     if a.len() != b.len() {
         return 0.0;
@@ -377,7 +395,7 @@ pub fn cosine(a: &[f32], b: &[f32]) -> f64 {
     ...
 }
 
-// rust/crates/hearsay-attribution/src/voiceprint.rs:57
+// rust/crates/hearsay-attribution/src/voiceprint.rs
 pub fn match_identity<'a>(
     centroid: &[f32],
     known: &'a [(String, Vec<f32>)],
@@ -386,6 +404,10 @@ pub fn match_identity<'a>(
     // best score with cosine >= threshold; different-length candidates skipped; ties -> first
 }
 ```
+
+Cross-meeting recognition actually calls the score-returning sibling `best_identity` (same
+selection, but it also returns the winning cosine) so `recognize_speakers` can rank candidates and
+bind each name to one ordinal; `match_identity` is a thin wrapper that drops the score.
 
 The length guard does double duty. It tolerates a model change (a stored centroid of a different
 dimension is simply skipped rather than compared), and it keeps macOS voiceprints (256-d) from ever
@@ -409,7 +431,7 @@ centroids and drops clusters that resemble no voice in the room. It is pure ordi
    whoever was really speaking.
 
 ```rust
-// rust/crates/hearsay-attribution/src/consolidate.rs:213
+// rust/crates/hearsay-attribution/src/consolidate.rs
 let required = config.merge_threshold
     * attenuation(groups[i].weight, config.evidence_s)
     * attenuation(groups[j].weight, config.evidence_s);
@@ -447,7 +469,7 @@ merged voiceprint is still a unit vector suitable for cosine matching.
 
 | Concern | Location |
 |---|---|
-| Serialization, cosine, `match_identity` | `rust/crates/hearsay-attribution/src/voiceprint.rs` |
+| Serialization, cosine, `match_identity` / `best_identity` | `rust/crates/hearsay-attribution/src/voiceprint.rs` |
 | Over-split consolidation + `attenuation` | `rust/crates/hearsay-attribution/src/consolidate.rs` |
 | Diarizer seam (`Diarization`, `Diarizer`) | `rust/crates/hearsay-inference/src/diarizer.rs` |
 | Refine + normalize (`build_centroids`, `l2_normalize`) | `rust/crates/hearsay-inference/src/refine.rs` |

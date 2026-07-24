@@ -2,8 +2,8 @@
 
 Local-first meeting-note transcriber for macOS (Windows planned). Captures the local mic and system
 audio as **separate** streams ("Me" vs "Them"), transcribes in real time, identifies the remote
-speakers, and streams Markdown notes. Transcription, diarization, and the LLM run locally by default;
-AWS Bedrock is configurable.
+speakers, and streams Markdown notes. Transcription, diarization, and the notes LLM all run on-device;
+audio never leaves the machine.
 
 Ships as **one Rust + Tauri application** — a signed installer per OS, no interpreter bundle. The
 Rust core is the single backend and the single source of truth (there is no Python backend).
@@ -72,8 +72,10 @@ shared/protocol/ipc.md  IPC contract (source of truth)   ·   shared/fixtures/  
 - **cargo** for Rust, **npm** for the web UI. The **Makefile** is the task runner.
 - Targets: `make rust-build`, `make test` (Swift selftest + cargo test), `make lint` (clippy + rustfmt),
   `make fmt`, `make codegen`, `make codegen-check`, `make web-ci`, `make audit`, `make licenses`, `make ci`.
-- `make ci` is the gate and must stay green: `clippy -D warnings` + `rustfmt --check` + Swift `selftest` +
-  `cargo test` + codegen-drift check + `cargo audit` + `cargo deny` (license gate).
+- `make ci` is the gate and must stay green (`ci: lint test tauri-test codegen-check version-check audit
+  licenses web-ci`): `clippy -D warnings` + `rustfmt --check` + Swift `selftest` + `cargo test` + the Tauri
+  shell's clippy/tests + codegen-drift check + app-version drift check + `cargo audit` + `cargo deny`
+  (license gate) + the web gate (`tsc` + ESLint + vitest + `vite build`).
 - Run the core locally: `make rust-serve` (`SYNTHETIC=1` for no-permission plumbing). Build the app:
   `make dmg` (see `docs/packaging.md`).
 - Pin exact versions in lockfiles (`rust/Cargo.lock`, `web/package-lock.json`). npm: `ignore-scripts=true`.
@@ -135,6 +137,9 @@ shared/protocol/ipc.md  IPC contract (source of truth)   ·   shared/fixtures/  
   alignment is by timestamp, never by sample index.
 - Zero-buffer watchdog: on sustained all-zero buffers, rebuild BOTH the tap and the aggregate device; emit
   `tap_health`. The mic is always "Me" and is never diarized.
+- Echo cancellation (`aec` feature, built into `rust-serve` + the bundle): SpeexDSP (`aec-rs`) cancels the
+  Them playback out of the live Me stream. The recorder and offline refine read the RAW pre-AEC audio; only
+  live captions see the cancelled Me stream. See `docs/echo-cancellation.md`.
 
 ## Speaker Identification (guardrails)
 
@@ -186,9 +191,12 @@ shared/protocol/ipc.md  IPC contract (source of truth)   ·   shared/fixtures/  
 - HEARSAY_OUTPUT_DIR: root of the per-meeting output folders (audio, transcript, notes)
 - HEARSAY_WEB_DIR: built web UI directory served when it contains `index.html`
 - HEARSAY_SERVER_HOST / HEARSAY_SERVER_PORT: bind host (loopback) / port (`0` = OS-assigned)
+- HEARSAY_HANDSHAKE_PATH: path to the desktop shell's private 0600 `{port, token}` handshake file the core writes on startup so the Tauri shell can reach it (unset in dev; set by the shell)
 - HEARSAY_HELPER_PATH: path to the Swift `hearsay-helper` (the `-live` / `-me` / `-diarize` sidecars resolve as siblings)
 - HEARSAY_REFINE_MODEL: default GGML whisper model for the offline refine (the Settings > Models panel overrides it per install by pointing at any downloaded `ggml-*.bin`; the change applies to the next refine, no restart)
+- HEARSAY_REFINE_TIMEOUT_SECS: deadline for the `hearsay-diarize` refine subprocess before the core aborts it (default 1800)
 - HEARSAY_FLUID_MODELS_DIR: bundled FluidAudio live models the core seeds into FluidAudio's cache on first launch (set by the desktop shell; unset in dev, where FluidAudio downloads them)
+- HEARSAY_DIARIZE_CLUSTER_THRESHOLD: overrides the macOS `hearsay-diarize` sidecar's agglomerative clustering threshold (default 0.7; tuned above FluidAudio's 0.6 default, which under-separates compressed meeting audio)
 - HEARSAY_SHERPA_MODELS_DIR: sherpa live/diarize models for the Windows backend (default `outputs/models/sherpa`; the desktop shell points it at the bundled copy). Conventional contents = the streaming zipformer dir + pyannote segmentation dir + TitaNet-small onnx (`make fetch-sherpa-models`)
 - HEARSAY_WIN_LOOPBACK: which WASAPI path captures Them on Windows — `device` (classic loopback, default; works with new Teams) | `process` (process-loopback-exclude-self; blocked by an open Teams bug — see docs/windows-port.md)
 - HEARSAY_NOTES_MODEL: default GGUF instruct model for the optional local-LLM notes step (Markdown notes, stored + rendered verbatim; the prompt template dictates the format); empty until one is downloaded/chosen. The Settings > Models panel overrides it per install; applies to the next generate, no restart. The notes step runs in the `hearsay-notes` sidecar (llama.cpp, spawned out-of-process so llama's `ggml` never co-links with the whisper refine's — a collision that slows the refine ~5x); `rust-serve` / `dmg` build + bundle it

@@ -50,7 +50,7 @@ Three properties define the design:
    never degrade the archive or the post-meeting refine — it is purely a live-Me cleanup.
 
    ```rust
-   // rust/crates/hearsay-orchestrator/src/pipeline.rs:398
+   // rust/crates/hearsay-orchestrator/src/pipeline.rs
    // Record first ... so `audio.wav` captures every *raw* chunk ...
    // AEC applies only to what live transcription sees — the archive stays raw ...
    if let Some(rec) = recorder.as_mut() {
@@ -63,7 +63,7 @@ Three properties define the design:
    the buffered reference.
 
    ```rust
-   // rust/crates/hearsay-orchestrator/src/pipeline.rs:408
+   // rust/crates/hearsay-orchestrator/src/pipeline.rs
    match stream {
        Stream::Them => {
            let ready = canceller.push_far(t0_s, &samples);
@@ -107,7 +107,7 @@ continues from the running `cursor` and only re-anchors to `round(t0_s * rate)` 
 past `RESYNC_GAP` (0.2 s):
 
 ```rust
-// rust/crates/hearsay-orchestrator/src/aec.rs:84
+// rust/crates/hearsay-orchestrator/src/aec.rs
 let start = match self.cursor {
     None => { self.base = target; target }
     Some(cur) => {
@@ -126,7 +126,7 @@ buffered data are dropped.
 (0.2 s) ahead of the far end — in which case the far frame is zero-filled:
 
 ```rust
-// rust/crates/hearsay-orchestrator/src/aec.rs:204
+// rust/crates/hearsay-orchestrator/src/aec.rs
 while self.near.end() >= next + FRAME as u64 {
     let far_ready = self.far.end() >= next + FRAME as u64;
     let hold_tripped = self.near.end().saturating_sub(next) >= MAX_REF_HOLD;
@@ -145,7 +145,7 @@ means there is no echo to remove.
 
 The mirror bound covers the other direction: frames are emitted at Me's pace, so if the *Me* stream
 stalls (mic device loss mid-meeting) while the tap keeps flowing, nothing consumes the far buffer.
-`push_far` therefore keeps only the trailing `MAX_FAR_BUFFER` (2 s) of reference (`aec.rs:188`) — a
+`push_far` therefore keeps only the trailing `MAX_FAR_BUFFER` (2 s) of reference (`aec.rs`) — a
 mic stall costs a fixed 128 KB instead of ~230 MB/h. Trimming changes nothing observable: far only
 outruns the frontier that far when Me is stalled, and those frames emit with a zero-filled near
 side, whose cancelled output is silence regardless of the reference. When Me resumes, both streams
@@ -156,7 +156,7 @@ share the clock, so it re-anchors at the far frontier and pairs with the retaine
 `EchoCanceller` converts each aligned pair to `i16`, runs `cancel_echo`, and converts back to `f32`:
 
 ```rust
-// rust/crates/hearsay-orchestrator/src/aec.rs:280
+// rust/crates/hearsay-orchestrator/src/aec.rs
 for f in &frames {
     let near = to_i16(&f.near);
     let far  = to_i16(&f.far);
@@ -166,7 +166,7 @@ for f in &frames {
 }
 ```
 
-The canceller is constructed with an explicit config (`aec.rs:252`):
+The canceller is constructed with an explicit config (`aec.rs`):
 
 | Parameter | Value | Meaning |
 |---|---|---|
@@ -180,7 +180,7 @@ echo path the filter must model is not just room acoustics — the tap hands the
 *pre-speaker*, so the path includes output playout latency. Wired speakers sit at 10-40 ms, inside
 the default; Bluetooth and AirPlay output buffer 150-300 ms, past which a 100 ms tail never
 converges and the echo passes through untouched. 300 ms covers both, and the cost is linear in the
-tail and trivial at 16 kHz mono (`aec.rs:230`).
+tail and trivial at 16 kHz mono (`aec.rs`).
 
 With `enable_preprocess` on, `aec-rs` wires a `SpeexPreprocessState` to the echo state
 (`SPEEX_PREPROCESS_SET_ECHO_STATE`) and runs `speex_preprocess_run` on the filter output, so each
@@ -210,7 +210,7 @@ frame gets the adaptive-filter subtraction *plus* a residual-echo/noise cleanup 
 - **Why does `demux` own the canceller exclusively?** The Speex echo state holds raw C pointers and
   is not `Send` by default. `demux` is the single owner and Tokio never polls that future from two
   threads at once, so a narrow `unsafe impl Send for SendAec` is sound and no lock is needed
-  (`aec.rs:241`).
+  (`aec.rs`).
 
 ## Guardrails and edge cases
 

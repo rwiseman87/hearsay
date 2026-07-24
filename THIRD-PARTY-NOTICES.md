@@ -27,7 +27,7 @@ or CC-BY-4.0) — all permit redistribution and commercial use. Licenses below w
 | Streaming Zipformer EN 2023-06-21 | streaming ASR | Apache-2.0 | `csukuangfj/sherpa-onnx-streaming-zipformer-en-2023-06-21` |
 | pyannote segmentation 3.0 | diarization segmentation | MIT | `csukuangfj/sherpa-onnx-pyannote-segmentation-3-0` (license from upstream `pyannote/segmentation-3.0`; conversion repo states none) |
 | Online punctuation EN 2024-08-06 | punctuation | Apache-2.0 | k2-fsa sherpa punctuation zoo (license from upstream Edge-Punct-Casing; conversion repo states none) |
-| TitaNet-small (ONNX) | speaker embeddings | Apache-2.0 (NVIDIA NeMo Toolkit license) | `nemo_en_titanet_small.onnx` |
+| TitaNet-small (ONNX) | speaker embeddings | **CC-BY-4.0** | `nemo_en_titanet_small.onnx` (NVIDIA NeMo TitaNet weights; NGC/HF model card is CC-BY-4.0 — the Apache-2.0 NeMo Toolkit code license does not govern the weights) |
 
 ## Offline refine — bundled
 
@@ -46,6 +46,7 @@ or CC-BY-4.0) — all permit redistribution and commercial use. Licenses below w
 
 | Library | License |
 |---|---|
+| Tauri (`tauri`, `tauri-plugin-*`) | MIT / Apache-2.0 (MPL-2.0 in its dependency tree, allowed by `rust/deny.toml`) |
 | FluidAudio | Apache-2.0 |
 | sherpa-onnx | Apache-2.0 |
 | onnxruntime | MIT |
@@ -62,6 +63,7 @@ the installer:
 - "Parakeet TDT 0.6B v3" and "Parakeet unified EN 0.6B" (c) NVIDIA — CC-BY-4.0; converted to Core ML.
 - "pyannote speaker diarization / segmentation 3.0" (c) Herve Bredin et al., with "WeSpeaker" speaker
   embeddings — distributed under CC-BY-4.0 by FluidInference; converted to Core ML.
+- "TitaNet-small" speaker embeddings (c) NVIDIA — CC-BY-4.0; converted to ONNX (used on the Windows path).
 
 All MIT and Apache-2.0 components require preserving their license text and copyright notices in the
 distributed application.
