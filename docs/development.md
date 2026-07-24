@@ -209,7 +209,8 @@ system audio. The installer build is `scripts\build-windows.ps1` (see
 
 The suite runs on demand from the Makefile -- no hosted CI, no timers, no git hooks. `make ci` is the
 fast deterministic gate; the model/hardware probes, coverage, and the aggregate run are separate
-targets. The plan and tracking state live in [testing.md](testing.md).
+targets. The full test-suite reference -- every target and what it tests, and the suite by layer --
+is [testing.md](testing.md).
 
 ```sh
 make ci         # deterministic gate: lint, tests, codegen drift, versions, supply-chain

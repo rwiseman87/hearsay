@@ -1,388 +1,125 @@
-# Test suite buildout
+# Test suite
 
-The plan and tracking state for growing Hearsay's automated tests into a comprehensive
-suite — unit, integration, and regression — run on demand from the Makefile on the maintainer's
-own machines, not a hosted CI service and not on a timer.
+Hearsay's tests run **on demand from the Makefile** — no hosted CI, no timers, no git hooks. Rust is
+the source of truth for the API + IPC contract, and the tests consume that contract rather than
+re-implementing it. There are two tiers:
 
-This document is the working tracking state: the phase checkboxes below are updated as work
-lands. The durable "how to test" reference stays in [development.md](development.md#testing);
-once a phase ships, its lasting parts fold into that section. Design rationale is recorded here
-so it is not re-litigated.
+- a **deterministic gate** (`make ci`) — fast, hardware-independent, model-free; the pre-flight before
+  a commit or PR.
+- **model/hardware probes** (`make probes`) — the `#[ignore]`d tests that need a downloaded model and
+  the ANE/GPU; run on a box that has them.
 
-## Status (resume here)
+This document maps the targets to what they test and the suite to where it lives. For the quickstart
+(how to run each) see [development.md](development.md#testing).
 
-Branch `test/suite-buildout` off `main`. Phases 0-3 are complete and Phase 4 has landed — both the Rust
-full-stack HTTP/WS test and the browser E2E. The full Rust + web suites are green, `make ci` stays
-model-free, and the browser E2E runs green on macOS via `make e2e`.
+## Targets — what each runs and tests
 
-**Landed:** the Makefile suite + Windows mirror (P0); the web harness + client-layer + component tests
-(P1); WS handshake gating, `reconcile` crash-recovery, Tauri `html_escape`, the macOS cfg-gate (P2);
-`proptest` + `insta` regression locks (P3); the full-stack HTTP/WS integration test **and the browser
-E2E** (P4). The E2E's two prerequisites both landed: a **dev-only `HEARSAY_SCRIPTED` engine flag** on
-the core binary (honored only when `ENVIRONMENT=development`, so a shipping build never fakes a meeting)
-and a **progressive-emit fake** (`TimedTranscriber` / `ProgressiveBackend` in
-`hearsay-orchestrator::testing`) that streams the canned transcript *during* recording. Playwright reads
-the session token from the core's existing handshake file, so no token surface was added to the binary.
+`make ci` is an aggregate of the leaf targets below; each leaf is also runnable on its own.
 
-The **model-free leftovers** then landed too: `queries.rs` error-branch tests (FTS search, the
-cross-meeting segment-edit scope, corrupt-cycle termination), a migration-upgrade test (a sub-slice
-`Migrator` seeds at 0006, then head applies 0007's FTS backfill over the pre-existing rows), and a
-full-stack **refine read-back** (a wired `ScriptedRefiner` replaces the Them track at stop, read back
-over HTTP). The notes path is already exercised by the E2E's "Generate notes" step.
+| Target | Runs | Tests | Models/HW? |
+|---|---|---|---|
+| **`make ci`** | `lint test tauri-test codegen-check version-check audit licenses web-ci` | the whole deterministic gate (everything below except e2e/probes/coverage) | no |
+| `lint` | `rust-lint` (clippy `--all-targets -D warnings` + `rustfmt --check` on `rust/`) + `tauri-lint` (same on `web/src-tauri`) | no warnings, formatted | no |
+| `test` | `swift-build` + `swift-test` + `rust-test` | Swift codec parity + the full Rust workspace | no |
+| `swift-test` | `hearsay-helper selftest` against `shared/fixtures/` | the Swift `FrameCodec` matches the golden IPC frames byte-for-byte | no |
+| `rust-test` | `cargo test` over the `rust/` workspace | every non-`#[ignore]` Rust test (units, DB, HTTP API, full-stack, orchestrator, IPC, regression locks) | no |
+| `tauri-test` | `cargo test` on `web/src-tauri` | the shell's pure logic (e.g. `html_escape` on the untrusted error `detail`) | no |
+| `codegen-check` | regenerate IPC fixtures + OpenAPI + TS, then `git diff --exit-code` | the committed `shared/fixtures/*`, `web/openapi.json`, and `web/src/api/schema.ts` have not drifted from the Rust source | no |
+| `version-check` | compare version strings | `rust/Cargo.toml` (canonical), `tauri.conf.json`, and `web/package.json` agree | no |
+| `audit` | `cargo audit` (both Rust trees) + `npm audit` | no known CVEs in dependencies | no |
+| `licenses` | `cargo deny check licenses` (policy `rust/deny.toml`) | every dependency is MIT/BSD/Apache-2.0 | no |
+| `web-ci` | `web-install` + `web-typecheck` (tsc) + `web-lint` (eslint) + `web-test` + `web-build` | the web UI type-checks, lints, unit/component-tests, and builds | no |
+| `web-test` | `vitest` (jsdom) | the client layer + hooks + MSW-mocked components (also folded into `web-ci`) | no |
+| **`make e2e`** | build the core, then Playwright/Chromium vs the scripted core + `vite dev` | the real React app → real core → real pipeline over a live WebSocket | no (Chromium once) |
+| **`make probes`** | `cargo test -- --ignored` on `hearsay-inference` (metal), `hearsay-notes` (metal), `hearsay-backends`, `hearsay-capture` | the ML paths: whisper refine + diarize, the notes LLM, the live pipeline, capture | **yes** |
+| `make coverage` | `cargo-llvm-cov` + vitest v8 → `outputs/coverage/` | report-only; the "what's untested" view | no |
+| **`make test-all`** | `ci` + `probes` + `e2e` | everything, on a fully-equipped box | yes |
+| `make clean-test` | `rm -rf outputs/coverage outputs/e2e` | (removes report dirs; test *data* auto-cleans via tempdirs) | no |
 
-Per-line **speaker reassignment** (`PATCH .../segments/{id}/speaker`) ships with the same test shape
-as the segment-text edit: a `reassign_segment_speaker` query unit test (schema.rs), an assembled-router
-oneshot covering the existing-cluster / new-name paths and the `404`/`422` guards, the `409`-while-
-recording guard asserted in the full-stack scripted-meeting test, vitest for the hook + the popover
-(MSW), and a reassign step folded into the browser E2E.
+`make ci` + `make e2e` is the complete deterministic suite on a machine without the models. Windows
+has no `make`, so the same set is mirrored in `scripts\test-windows.ps1`
+(`-Target ci|web|tauri|probes|coverage|e2e|all`) with the Windows feature set.
 
-**Next, in rough priority:**
+## The suite by layer
 
-1. **Model/Windows-gated (not verifiable on macOS):** baselined `make probes` (P3); the
-   `storage_override_pins_meeting_dir_off_the_default_root` diagnosis + the Windows capture/backend
-   units (P2); run the same browser E2E on the Windows box (`scripts\test-windows.ps1 -Target e2e`) and
-   add the Windows packaged-app E2E (P4) via `tauri-driver`.
-2. **Optional polish (CI-verifiable):** the `queries.rs` pass covered the high-value error branches;
-   more per-query direct tests can be added if a gap shows up, and an OpenAPI-doc `insta` snapshot (P3)
-   is still open.
+| Layer | What's tested | Where | Run by |
+|---|---|---|---|
+| **Pure-logic units** | speaker ordering / segment-speaker assignment / voiceprint matching (`hearsay-attribution`); notes prompt build + reply parse (`hearsay-notes-prompt`); IPC frame + control codec (`hearsay-ipc`); inline core/orchestrator/inference units (AEC, recorder gap-fill, markdown render) | `#[cfg(test)]` mods in each crate's `src/` | `rust-test` |
+| **Database** | schema round-trips over real migrations, `queries.rs` branches (FTS search, cross-meeting edit scope, the `reassign_segment_speaker` guards, cycle guard), the migration-upgrade fixture (populated old DB → head, data intact) | `hearsay-db/tests/schema.rs` (in-memory SQLite) | `rust-test` |
+| **Core HTTP API** | the assembled axum router via `tower::oneshot` against in-memory SQLite with `DisabledEngine` — every REST route: meetings, segments (edit + per-line speaker reassign), speakers, folders, notes, search, settings, auth/Origin gating | `hearsay-core/tests/api.rs` | `rust-test` |
+| **Full-stack HTTP/WS** | the core booted on a real TCP port with a scripted orchestrator: `start` → live `TranscriptEvent` frames over a real WS client → `stop` → REST read-back; a companion refine read-back replaces the Them track | `hearsay-core/tests/api.rs` | `rust-test` |
+| **Orchestrator** | meeting lifecycle, the capture→transcribe→persist pipeline, recorder/markdown, refine — all with scripted fakes (fake audio source + stubbed transcribers/diarizer, no ML) | `hearsay-orchestrator/tests/`, `src/testing.rs` | `rust-test` |
+| **Web client + hooks** | `api/client.ts` (request shaping, token, timeout, error envelope), `api/ws.ts` (reconnect/backoff, parse), the query hooks + `queryKeys`, `hooks/useTranscript.ts` (live assembly) against a stubbed fetch/WebSocket | `web/src/**/*.test.ts(x)` | `web-test` |
+| **Web components** | `TranscriptView` (line edit + speaker reassign), `Library` (list/select/delete), `SettingsPage` (models validation) against the real fetch wrapper + MSW | `web/src/components/*.test.tsx` | `web-test` |
+| **Browser E2E** | real UI → real core (scripted engine) → real pipeline: start → live transcript → stop → Library → rename speaker → reassign a line → generate notes, asserting exact text | `web/e2e/meeting.spec.ts` | `e2e` |
+| **IPC parity** | the codec against golden fixtures, in **both** languages | `hearsay-ipc/tests/golden_fixtures.rs` + Swift `selftest` | `rust-test`, `swift-test` |
+| **Regression locks** | `insta` snapshot of the markdown export; `proptest` for the IPC codec round-trip + voiceprint `cosine`; codegen-drift diff | across the crates above + `codegen-check` | `rust-test`, `codegen-check` |
+| **Model/hardware probes** | whisper refine + `hearsay-diarize` (`refine_mac_probe`, `transcribe`, embed-cap), the notes LLM (`summarize`), the live pipeline (`streaming_pipeline`), synthetic capture | `*/tests/*probe*.rs`, `hearsay-{notes,backends,capture}/tests/` (all `#[ignore]`d) | `probes` |
 
-The per-phase checkboxes below carry the detail; this section is the map.
+## Fakes and seams
 
-## Why this doc
+The gate stays model-free because the ML is replaced at well-defined seams:
 
-The building blocks are already strong (see [Baseline](#baseline)), but two things are missing:
+- **`DisabledEngine`** — answers every capture route with 503 / a clean close; the `oneshot` API tests
+  run against it, so the router is exercised with no engine at all.
+- **Scripted orchestrator fakes** (`hearsay-orchestrator/src/testing.rs`) — a fake `AudioSource` plus
+  stubbed transcribers/diarizer that replay a canned meeting. The full-stack Rust test wires these into
+  a real `Orchestrator` + `AppState` in-process.
+- **`build_scripted_engine` + the dev-only `HEARSAY_SCRIPTED` flag** — the same scripted engine selected
+  inside the core *binary* (honored only when `ENVIRONMENT=development`, so a shipping build never fakes
+  a meeting). This is what the browser E2E drives, streaming the transcript progressively over the live
+  WebSocket, so both the Rust full-stack test and Playwright assert identical output every run.
+- **`memory_pool()`** — a single-connection `sqlite::memory:` pool running the real migrations, shared
+  by the DB and API tests.
+- **MSW** — mocks the HTTP API for the React component tests while the real fetch wrapper runs.
 
-1. **Whole surfaces have no tests at all** — the entire web/Tauri frontend, the live Swift
-   pipelines, the WebSocket push path, crash-recovery, and the model paths (only exercised by
-   `#[ignore]`d probes that never run).
-2. **There is no single on-demand entry point for the full suite.** `make ci` is the fast
-   deterministic gate, but it has no web tests, skips the model probes, and produces no coverage.
-   The goal is a small set of Makefile targets — deterministic gate, model/hardware probes,
-   coverage, and one "run everything" target — that the maintainer invokes when they want, on
-   their own macOS and Windows machines. No hosted CI, no timers, no git hooks.
+## Isolation and artifacts
 
-## Baseline
+Every test that touches disk points `HEARSAY_OUTPUT_DIR` + `DATABASE_URL` at a `tempfile::tempdir()`
+(or in-memory SQLite), so a run never writes the real `outputs/db/` or `outputs/recordings/` and leaves
+the working tree untouched; `TempDir` cleans itself on drop (including on panic). The full-stack Rust
+test serves the core in-process on an ephemeral port (no external process to reap); the browser E2E is
+the one case that spawns a real process, managed by Playwright's `webServer` config. Triage artifacts —
+coverage (`outputs/coverage/`) and Playwright reports/traces (`outputs/e2e/`) — land only under the
+gitignored `outputs/`; `make clean-test` removes them.
 
-What exists today, so the plan builds on it rather than duplicating it.
-
-| Area | Coverage | Where |
-|---|---|---|
-| Core HTTP API | 42 integration tests over the assembled axum router (`tower::oneshot`, in-memory SQLite, `DisabledEngine`) | `hearsay-core/tests/api.rs` |
-| Database | 26 tests over in-memory SQLite running real migrations | `hearsay-db/tests/schema.rs` |
-| Orchestrator | 17 lifecycle tests + a scripted-fakes library; inline AEC/pipeline/recorder units | `hearsay-orchestrator/tests/`, `src/testing.rs` |
-| Pure logic | attribution (26), notes-prompt (9) | `hearsay-attribution`, `hearsay-notes-prompt` |
-| IPC contract | codec units + cross-language golden parity (Rust test **and** Swift `selftest`) | `hearsay-ipc`, `shared/fixtures/` |
-
-Strong. The gaps below are everything *outside* this table.
-
-## Platform coverage & parity
+## Platform parity (macOS / Windows)
 
 Hearsay is one codebase with per-OS edges: ~90% is shared and must behave identically; capture, live
 ASR/diarization, the refine GPU, and packaging differ by design (see
-[windows-port.md](windows-port.md)). The suite runs on both the macOS (ANE/Metal) and Windows
-(sherpa/Vulkan) machines. The parity goal: the shared surface passes identically on both, and the
-real differences are asserted where they are real, not papered over.
+[windows-port.md](windows-port.md)). The shared surface — core API, DB, orchestrator, attribution,
+notes-prompt, markdown, the full-stack HTTP/WS test, and the browser E2E — runs the **same tests on both
+OSes** and is the parity backbone. The real differences are asserted where they are real: capture
+(`SwiftHelperSource` vs `WasapiSource`), live ASR/diarization (FluidAudio/ANE vs `sherpa`), and the
+refine GPU (`metal` vs `vulkan`/CPU) are covered per-OS by unit tests for the pure logic and by
+`make probes` for the model paths. IPC codec parity and the Swift `selftest` are macOS-only by design
+(no Swift/helper on Windows). Windows runs the whole set through `scripts\test-windows.ps1`.
 
-| Surface | macOS | Windows | Test strategy |
-|---|---|---|---|
-| Core API, DB, orchestrator, attribution, notes-prompt, markdown | shared | shared | **same tests, both OSes** — the parity backbone |
-| Full-stack HTTP/WS integration + browser E2E (scripted engine, P4) | yes | yes | model-free + platform-neutral → literally the same tests |
-| Capture (`AudioSource`) | Swift helper (sockets) | in-process `WasapiSource` | per-OS: loopback-mode/format/gap-fill logic unit-tested; real devices = manual smoke |
-| Live ASR / diarization | FluidAudio/ANE sidecars | `SherpaTranscriber` (`sherpa`) | per-OS model probes (`make probes`) |
-| Live speakers | diarized live | "Speaker N" live, real at refine | **intentional difference** — parity assertions must not require live Windows diarization |
-| Refine | whisper + `hearsay-diarize` sidecar | whisper + in-process `SherpaDiarizer` | shared `assemble`/`parse` logic unit-tested; GPU path = probe |
-| Refine GPU | `metal` | `vulkan` / CPU | probe per platform; the empty-Vulkan-device CPU fallback is currently unexercised (noted in windows-refine-crash.md §4) |
-| IPC codec / Swift `selftest` | yes (cross-language parity) | n/a (no Swift, no helper) | macOS-only by design |
-| Packaged-app E2E | **not possible** (no `WKWebView` WebDriver) | **possible** via `tauri-driver` (WebView2/Edge) | a Windows-only parity gain |
-| Notes sidecar | shared | shared | same tests |
+## Running the probes
 
-Two consequences the parity goal forces up front:
+`make probes` is not model-free: each probe hard-requires a downloaded model, and some need an input
+WAV supplied via environment variable (a bare `make probes` fails on the first such probe by design).
+Point them at real inputs — for example the refine decomposition probe:
 
-- **The shared suite must actually pass on Windows.** Of the two tests that failed there
-  (windows-refine-crash.md §4), `permissions_probe_degrades_when_helper_missing` is now `cfg`-gated to
-  macOS (Windows has no helper, so `win_permissions` returns `available: true`); the second,
-  `storage_override_pins_meeting_dir_off_the_default_root`, is still undiagnosed — a possible real
-  Windows path bug to run down on the Windows box.
-- **The entry point must exist on Windows.** Windows has no `make` (it builds via
-  `scripts\build-windows.ps1`), so the targets are mirrored in `scripts\test-windows.ps1`
-  (`-Target ci|web|tauri|probes|coverage|all`) running the same `cargo`/`npm` commands with the
-  Windows feature set (`sherpa` for the shared suite, plus `vulkan` for the GPU probes; `notes` is a
-  separate crate, not a workspace feature). `hearsay-inference/build.rs` already copies the
-  sherpa/onnx DLLs next to the test binaries, so `cargo test` there needs only the features.
+```sh
+HEARSAY_BENCH_WAV=outputs/recordings/<meeting>/audio.wav \
+HEARSAY_REFINE_MODEL=outputs/models/ggml-large-v3-turbo.bin \
+HEARSAY_DIARIZE_BIN=helper/.build/arm64-apple-macosx/release/hearsay-diarize \
+HEARSAY_NOTES_MODEL=outputs/models/<instruct>.gguf \
+make probes
+```
 
-An in-process fragility unique to Windows shapes the isolation strategy: unlike macOS, which runs
-diarization in the crash-isolated `hearsay-diarize` sidecar, the Windows backend runs the diarizer
-**in-process**, so an uncaught onnx exception aborts core + refine + API together (windows-refine-crash.md
-§1). That is why the refine-crash regression can only assert "absence of death," not `should_panic`.
+The GPU-backed probes that ship their own fixtures (e.g. `refines_real_meeting_them_track`,
+`summarize`) need only the models; the WAV/diarizer vars are for the decomposition/benchmark probes.
+The refine anti-loop entropy thresholds are pinned in `hearsay-inference/tests/refine_mac_probe.rs` so a
+whisper repetition-attractor regression surfaces here.
 
-## Principles
+## Not covered (by design)
 
-- **On-demand via `make`, nothing automatic.** The suite is a handful of Makefile targets the
-  maintainer runs when they want. No hosted CI, no timers/`launchd`/Task Scheduler, no git hooks.
-  Windows has no `make`, so the same targets are mirrored in `scripts\test-windows.ps1`.
-- **Deterministic gate vs. model-gated probes.** Fast, hardware-independent tests live in `make ci`
-  (which now includes the web and Tauri unit tests). Anything needing a downloaded model or
-  specific hardware stays `#[ignore]`d and runs only via `make probes`, where the models and the
-  ANE/GPU exist.
-- **New test deps clear the existing gates.** Every added crate/package must pass the license gate
-  (MIT/BSD/Apache-2.0 via `rust/deny.toml`) and `make audit`, and be pinned to an exact version.
-- **Rust stays the source of truth.** Codegen drift (`make codegen-check`) already guards the
-  OpenAPI → TS and IPC fixtures; new tests do not re-implement that contract, they consume it.
-
-## Make targets
-
-The suite is composed from these on-demand targets (new ones added by the phases below).
-
-| Target | Runs | Needs models/HW? |
-|---|---|---|
-| `make ci` | the deterministic gate — lint, Rust + Swift + **web + Tauri** unit/integration tests, codegen drift, version, audit, licenses | no |
-| `make web-test` | web unit/component tests (vitest); also folded into `web-ci` | no |
-| `make tauri-test` | `cargo test` on `web/src-tauri` | no |
-| `make e2e` | browser end-to-end (Playwright/Chromium) against the scripted core + vite | no (needs `npx playwright install chromium` once) |
-| `make probes` | the `#[ignore]`d model/hardware tests (`cargo test -- --ignored`) | yes |
-| `make coverage` | `cargo-llvm-cov` + vitest coverage → `outputs/coverage/` | no |
-| `make test-all` | `make ci` + `make probes` + `make e2e` — the "run everything" target | yes |
-| `make clean-test` | remove the report dirs (`outputs/coverage`, `outputs/e2e`); test *data* auto-cleans | no |
-
-`make ci` stays the fast pre-flight (and includes the full-stack HTTP/WS integration test, which
-needs no models); `make test-all` is the comprehensive on-demand run. On a box without the models,
-`make ci` + `make e2e` is the complete deterministic suite on its own. Windows runs the same set
-through `scripts\test-windows.ps1` (see [Platform coverage & parity](#platform-coverage--parity)).
-
-## Results & cleanup
-
-The suite is designed to leave the working tree exactly as it found it.
-
-**Isolation.** Every test that touches disk points `HEARSAY_OUTPUT_DIR` and `DATABASE_URL` at a
-`tempfile::tempdir()` (or in-memory SQLite) — the convention the current `lifecycle.rs` /
-`end_to_end.rs` tests already follow. Nothing writes the maintainer's real `outputs/db/hearsay.db`
-or `outputs/recordings/`. `TempDir` removes itself on drop, including on panic, so test *data* needs
-no explicit cleanup. The browser E2E core + vite run against a temp output dir and OS-assigned
-ephemeral ports for the same reason.
-
-**Process teardown.** The Rust full-stack test serves the core **in-process** — `axum::serve` on a
-`tokio::spawn` task bound to an ephemeral port — so there is no external process to reap: the task and
-its port are released when the test runtime drops (and WS reads are bounded by a timeout so a hang
-fails fast rather than blocking the suite). The browser E2E is the case that spawns a real OS process;
-it relies on Playwright's `webServer` config to start and stop the core + vite around the run (or, if a
-bespoke harness is used instead, an RAII guard whose `Drop` kills the process group so an aborted run
-leaves no zombie and frees the port).
-
-**Results.** Default reporters go to the terminal (cargo, vitest, Playwright) — pass/fail and
-timings, which is all the gate needs. Artifacts for *triage* are written only under the
-already-gitignored `outputs/` (matching the repo's scratch convention):
-
-| Artifact | Path | Retention |
-|---|---|---|
-| Coverage (lcov + HTML) | `outputs/coverage/` | overwritten each `make coverage`; `cargo llvm-cov clean` first |
-| Playwright HTML report | `outputs/e2e/playwright-report/` | last run |
-| Playwright trace / screenshot / video | `outputs/e2e/test-results/` | **captured on failure only**, for the trace viewer |
-
-`make coverage` is the "what's untested" view; `make clean-test` purges both dirs and is folded into
-`make clean`.
-
----
-
-## Phase 0 — On-demand entry points (Makefile)
-
-Add the targets that compose the suite. No new test logic yet — this is the scaffolding the later
-phases hang their tests on, and it makes the model probes runnable at all.
-
-- [x] `make probes` — `cargo test -- --ignored` across `hearsay-inference`, `hearsay-notes`,
-      `hearsay-backends`, `hearsay-capture` (mac uses `--features metal`; the crate-clean-skip on
-      absent models is Phase 3's baselining work).
-- [x] `make test-all` = `make ci` + `make probes`.
-- [x] `make coverage` — `cargo-llvm-cov` (workspace) + vitest v8, report-only into `outputs/coverage/`
-      (`cargo-llvm-cov` is a prerequisite; the target preflights it with an install hint).
-- [x] `make web-test` (wired into `web-ci` now) and `make tauri-test` (defined; wired into `ci` with
-      the Tauri shell test in Phase 2).
-- [x] `scripts\test-windows.ps1` — the PowerShell mirror (`-Target ci|web|tauri|probes|coverage|all`),
-      running the same commands with the Windows feature set (`sherpa`, plus `vulkan` for the GPU
-      probes; `notes` is not a workspace feature — the notes sidecar is a separate crate).
-- [x] Document the target set (and the Windows mirror) in [development.md](development.md#testing).
-
-## Phase 1 — Web test harness
-
-There is no web test runner today. Stand one up and cover the highest-risk client code.
-
-- [x] Add dev deps (exact-pinned, license-checked): `vitest`, `@testing-library/react`,
-      `@testing-library/dom` (peer), `@testing-library/user-event`, `jsdom`, `msw`,
-      `@vitest/coverage-v8`. (`vitest-axe` deferred with the a11y rule.)
-- [x] Add a `test` block to `web/vite.config.ts` (jsdom env, v8 coverage) and `test` / `test:watch`
-      / `coverage` scripts to `web/package.json`.
-- [x] Wire `web-ci` to run `npm run test` after typecheck/lint.
-- [x] **Unit — the client layer (highest risk):**
-  - [x] `api/client.ts` — request shaping, bearer-token header, timeout/abort composition,
-        error-envelope normalization. (No FormData path exists — the wrapper is JSON-only, so that
-        case is not tested.)
-  - [x] `api/ws.ts` — connect/reconnect (exponential backoff + reset-on-open), token url-encoding,
-        message parse + malformed-drop, resync routing.
-  - [x] `api/hooks.ts` + `api/queryKeys.ts` — `useSegments` pagination, `setQueryData` cache patch vs
-        broad invalidation, query-key factory. Plus `api/token.ts` (global vs `?token=` fallback).
-  - [x] `hooks/useTranscript.ts` — live transcript assembly (seed merge/replace, final-supersedes-
-        partial, status/prompt/health/pause flags, level routing, ordering, reset on meeting change).
-- [x] **Component (MSW-mocked API):** all three flows land against the real fetch wrapper + MSW —
-      `TranscriptView` line editing (PATCH round-trip + editor close), `Library` list / select / delete
-      (+ error state), and `SettingsPage` models validation (a save surfaces the server 422).
-
-## Phase 2 — Rust unit + integration fill
-
-Close the untested backend surfaces, reusing the existing fakes (`DisabledEngine`, scripted
-sidecars, `memory_pool()`).
-
-- [x] **WebSocket path (`hearsay-core/src/routes/ws.rs`)** — handshake gating done with a real WS
-      client (`tokio-tungstenite`) against a server on an ephemeral port: non-loopback Origin -> 403,
-      missing/wrong token -> 401, valid loopback token -> 101 (in `api.rs`). `oneshot` cannot drive it
-      (`WebSocketUpgrade` runs before the handler body -> 426). **Deferred:** broadcast of the three
-      event types via a scripted engine — folds into the Phase 4 full-stack harness (same real server).
-- [x] **`hearsay-backends::reconcile_stranded_meetings`** — crash-recovery test (`tests/reconcile.rs`):
-      a `recording` row with no `ended_at` is finalized (`ended_at` stamped) and its transcript.md /
-      meeting.json written on the startup sweep; the empty case is a clean no-op.
-- [ ] **`hearsay-inference` pure buffering** — the code says `StreamingSession::feed`/`finish` is FFI
-      on the first line (sherpa recognizer), so there is no model-free seam there. The genuinely pure
-      buffering — timestamp gap-fill / resync clamp — lives in `hearsay-orchestrator/src/recorder.rs`
-      and `audio.rs`, which already have inline `#[cfg(test)]` tests. Retarget or drop this item.
-- [x] **`hearsay-db/queries.rs`** — direct unit tests for the error branches not hit by `schema.rs`
-      (in `tests/schema.rs`): the FTS `search`/`count_search` path (ranked hits + highlight-sentinel
-      snippet + non-match), `update_segment_text`'s cross-meeting `AND meeting_id` scope (a segment
-      cannot be edited via another meeting's id), and `folder_is_descendant`'s visited-set guard
-      terminating on an injected corrupt cycle (no infinite loop). Per-query, not a blanket duplicate of
-      the integration coverage.
-- [x] **Tauri shell (`web/src-tauri/src/main.rs`)** — `#[cfg(test)]` for `html_escape` (untrusted
-      `detail` interpolated into a `win.eval` string — XSS-adjacent); `make tauri-test` added and wired
-      into `make ci`. **Deferred:** `stop_core_gracefully` / `erase_all_data` (need `CommandChild` /
-      `AppHandle` fakes).
-- [x] **Parity: make the shared suite green on Windows.** `cfg`-gated
-      `permissions_probe_degrades_when_helper_missing` to macOS (Windows has no helper). **Deferred:**
-      diagnose `storage_override_pins_meeting_dir_off_the_default_root` (a possible Windows path bug,
-      not a test bug — needs the Windows box) — both flagged in windows-refine-crash.md §4.
-- [ ] **Windows capture logic (`hearsay-capture/src/wasapi_source.rs`)** — unit-test the pure-logic
-      parts: `HEARSAY_WIN_LOOPBACK` device/process selection, the self-specified-format fallback,
-      and gap-fill-by-timestamp. Real COM/audio devices stay manual smoke.
-- [ ] **Windows backend wiring (`hearsay-backends/src/windows.rs`)** — `build_engine` assembly under
-      the `sherpa` feature, mirroring the mac `build_engine` test.
-
-## Phase 3 — Regression hardening
-
-Lock behavior so future changes cannot silently regress it.
-
-- [x] **Snapshot tests (`insta`)** for the markdown export — `render_transcript` (speaker grouping +
-      `HH:MM:SS`) is snapshotted in `hearsay-orchestrator/src/markdown.rs`. Notes rendering already has
-      assertion tests; an OpenAPI-doc snapshot is still open.
-- [x] **Migration upgrade tests** — `migrations_upgrade_a_populated_older_db_with_data_intact` in
-      `hearsay-db/tests/schema.rs`. sqlx's `Migrator` is all-or-nothing, so a `prefix_migrator(n)` helper
-      (a `Migrator` over the first `n` embedded migrations) seeds a populated DB at 0006, then head runs
-      0007-0009 on top: the rows survive, 0008's `edited` column defaults on the old row, and 0007's FTS
-      `'rebuild'` backfill indexes a segment that existed before the index — proof a migration processes
-      pre-existing data, guarding the forward-only rule (every other test starts from an empty DB).
-- [x] **Property tests (`proptest`)** — IPC codec header+payload round trip in `hearsay-ipc`; the
-      voiceprint `cosine` symmetry / bounds / self-similarity in `hearsay-attribution` (`match_identity`
-      threshold selection stays covered by the existing unit tests).
-- [ ] **Coverage measurement** — `cargo-llvm-cov` (Rust) + vitest v8 (web), report-only at first
-      (baseline recorded here), ratcheted later.
-- [ ] **Baselined model probes (`make probes`, both OSes)** — give the `#[ignore]`d probes recorded
-      expectations so accuracy regressions surface. macOS: pin the refine anti-loop entropy thresholds
-      (the whisper repetition-attractor loops). Windows: the refine-crash guards already in
-      `hearsay-inference/tests/embed_cap_probe.rs` (TitaNet's 122.88s / 12288-frame embed cap —
-      asserting *absence of death*, since the failure aborts the process) plus `refine_probe.rs`;
-      keep them in the probe set so the fixed crash cannot silently return.
-- [ ] **Swift pure-logic parity** — extend the CLT-friendly `selftest` harness to cover
-      `SidecarIO` framing and the `Resampler` DSP (keeps the Command-Line-Tools build path; avoids
-      the full-Xcode XCTest requirement). macOS-only (no Swift on Windows).
-
-## Phase 4 — Full-stack integration & E2E
-
-Two real end-to-end paths the current suite has neither of: the core exercised over its real socket,
-and the UI driven in a real browser. Both run against a deterministic, model-free engine so they
-assert exact output without the ANE/GPU.
-
-**Enabling seam — a scripted engine mode for the core.** `api.rs` uses `DisabledEngine` (503s), and
-`SYNTHETIC=1` feeds tone audio into the *real* sidecars (nondeterministic ASR). The model-free path is
-`hearsay_backends::build_scripted_engine`: it drives the real orchestrator pipeline + persistence but
-replays a canned meeting, emitting the transcript progressively over the live WS during recording
-(reusing the scripted fakes in `hearsay-orchestrator/src/testing.rs`). The Rust full-stack test wires it
-in-process; the browser E2E selects it in the core binary via the dev-only `HEARSAY_SCRIPTED` flag. Both
-share the same fakes, so a meeting produces identical, assertable output every run.
-
-- [x] **Scripted-engine seam** — for the Rust full-stack test, no production flag is needed: the test
-      builds a real `Orchestrator` over the scripted `hearsay-orchestrator::testing` fakes and one
-      shared `AppState`, driving HTTP via `oneshot` and the WS via a TCP server (both routers share the
-      engine + pool Arcs). The `HEARSAY_SCRIPTED` env flag (dev-only) is what the browser E2E uses to
-      select the same engine in the core *binary*; it landed with the E2E (`build_scripted_engine`).
-- [x] **Full-stack HTTP/WS integration (Rust, in `make ci`)** — `full_stack_meeting_drives_events_and_persistence`
-      in `hearsay-core/tests/api.rs`: boots the app on an ephemeral TCP port with the scripted engine,
-      drives a full meeting over the wire (HTTP `start` → pause-snapshot barrier → live `TranscriptEvent`
-      frames over a real `tokio-tungstenite` client → `stop`), then reads the persisted segments +
-      `Speaker 1` cluster back via REST. Exercises the TCP socket, the WS upgrade/broadcast, the
-      orchestrator, and on-disk persistence together — none of which the `oneshot`/`DisabledEngine`
-      tests touch. A companion `full_stack_refine_replaces_them_segments_on_read_back` wires a
-      `ScriptedRefiner`: the auto-refine at stop replaces the live Them guess with the re-diarized
-      segments (`Speaker 1`/`Speaker 2`), read back over HTTP, with the Me track untouched. (The notes
-      read-back is covered by the E2E's "Generate notes" step.)
-- [x] **Browser E2E (Playwright, `make e2e`).** `hearsay-core` (scripted engine, via the dev-only
-      `HEARSAY_SCRIPTED` flag) + `vite dev`, then Chromium drives the real React app through the full
-      flow: load with the session token → start recording → watch the transcript populate over the live
-      WS → stop → find the meeting in Library → rename a speaker → generate Notes. Verified green on
-      macOS; `scripts\test-windows.ps1 -Target e2e` runs the same spec on the Windows box (the core is
-      built with `--features sherpa` there). Spec + config in `web/e2e/` + `web/playwright.config.ts`.
-- [x] Rust full-stack test is a plain `#[tokio::test]`, so it already runs under `make ci`. `make e2e`
-      is added (Playwright/Chromium; browser installed once with `npx playwright install chromium`), and
-      `make test-all` now runs it.
-- [x] Isolation & teardown per [Results & cleanup](#results--cleanup): Playwright's `webServer` starts +
-      stops the scripted core and vite around the run; everything the run writes (DB, meeting output,
-      handshake, reports/traces) lands under the gitignored `outputs/e2e/`; the spec uses a per-run
-      meeting title and the config's side-effects are non-destructive (it re-imports per worker), so
-      runs don't clobber a live core. The token comes from the core's handshake file (no new binary
-      surface); a stub notes-model file makes the "Generate notes" button enable for the scripted path.
-- [ ] **Windows packaged-app E2E (parity gain).** WebView2 exposes Edge WebDriver, so the shipping
-      NSIS app *can* be driven with `tauri-driver` + WebdriverIO — the same
-      record → transcript → stop flow, through the real packaged shell that macOS cannot test.
-      Windows-only; a distinct target so it never blocks the cross-platform browser E2E.
-
-**Known gap — the packaged macOS app (macOS-only; Windows is covered by the bullet above).** Apple
-ships no WebDriver for `WKWebView`, so the shipping
-`.app` cannot be driven by the standard `tauri-driver`; the only options are CrabNebula's paid fork
-or a third-party embedded-WebDriver plugin compiled into the app — neither worth adding to a
-noncommercial shipping binary for tests. The Playwright path drives the identical web bundle against
-the identical core, so the only slice left to manual smoke-testing is the real WKWebView runtime plus
-the shell↔core boot handshake (whose Rust side is unit-tested in Phase 2). Recorded as out of scope,
-not overlooked.
-
-## Coverage by test type
-
-How the phases map onto the categories requested.
-
-| Type | Have | Adding |
-|---|---|---|
-| **Unit** | attribution, notes-prompt, IPC codec, inline orchestrator/core units, `queries.rs` error branches (search/edit-scope/cycle) | web client layer + hooks (P1); `reconcile`, Tauri shell (P2); Swift `SidecarIO`/`Resampler` (P3) |
-| **Component** | none | MSW-mocked React components (P1) |
-| **Integration** | axum router (api.rs, oneshot/in-memory), DB schema, orchestrator lifecycle, **full-stack HTTP/WS over a real socket** + refine read-back (P4) | focused WebSocket gating (P2) |
-| **E2E** | **browser Playwright: real UI → real core → real pipeline** (P4) | Windows packaged-app E2E via `tauri-driver`; packaged WKWebView app is a documented manual-smoke gap |
-| **Regression** | golden IPC fixtures, codegen drift, `insta` snapshots, `proptest`, migration-upgrade fixture (P3) | baselined model probes (P3) |
-
-## Open decisions
-
-- **Swift tests:** extend `selftest` (Command Line Tools only, matches the current convention) vs a
-  real XCTest/swift-testing target (needs full Xcode). Default: extend `selftest` for pure logic.
-- **`queries.rs`:** direct unit tests vs continued reliance on `schema.rs` integration — decide per
-  query, favoring direct tests for error branches. **Resolved:** direct tests were added for the
-  high-value error branches (FTS search, cross-meeting edit scope, corrupt-cycle termination); the rest
-  stay covered by the `schema.rs` round-trips, with more added per-query only as gaps surface.
-- **Coverage thresholds:** report-only first, ratchet once a baseline exists.
-- **Probe granularity:** one `make probes` for all model tests vs. per-area targets
-  (`probes-refine`, `probes-sherpa`, `probes-notes`) so a maintainer can run just the relevant one.
-  Default: a single `make probes`, split later only if runtimes make it annoying.
-- **E2E engine substrate:** a dedicated scripted-engine mode (deterministic, model-free) vs. driving
-  the browser E2E against `SYNTHETIC=1` + the real sidecars (realistic but nondeterministic ASR, so
-  assertions must avoid transcript text). **Resolved + implemented:** the scripted engine
-  (`build_scripted_engine`, dev-only `HEARSAY_SCRIPTED`), shared by the Rust full-stack test and
-  Playwright, so both assert exact transcript/notes text.
-- **Packaged macOS app E2E:** left as manual smoke (no first-party `WKWebView` WebDriver). Revisit
-  only if a maintained, license-compatible embedded-WebDriver option appears or CrabNebula's fork is
-  licensed.
-- **Windows runner:** a `scripts\test-windows.ps1` mirror (default — matches the existing
-  `build-windows.ps1`) vs. requiring GNU `make` under Git-Bash/MSYS on the Windows box. Default: the
-  PowerShell mirror, so Windows needs no extra toolchain.
-- **Windows packaged-app E2E:** worth building now vs. deferred. It is a real parity gain (macOS
-  can't do it) but adds a `tauri-driver` + WebdriverIO stack; default is to land the cross-platform
-  browser E2E first and add the Windows packaged run as a follow-up.
+- **The packaged macOS `.app`** cannot be driven end-to-end: Apple ships no WebDriver for `WKWebView`.
+  The Playwright path drives the identical web bundle against an identical core, so only the real
+  WKWebView runtime + the shell↔core boot handshake are left to manual smoke (the Rust side of that
+  handshake is unit-tested). Windows *can* drive its packaged app via `tauri-driver` (WebView2) — a
+  Windows-only parity gain, not yet wired up.
+- **Real capture devices** (mic, system-audio tap, screen recording) need TCC permissions and hardware;
+  the pure device-selection/format/gap-fill logic is unit-tested, the live devices are manual smoke.
