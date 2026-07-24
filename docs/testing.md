@@ -30,6 +30,12 @@ cross-meeting segment-edit scope, corrupt-cycle termination), a migration-upgrad
 full-stack **refine read-back** (a wired `ScriptedRefiner` replaces the Them track at stop, read back
 over HTTP). The notes path is already exercised by the E2E's "Generate notes" step.
 
+Per-line **speaker reassignment** (`PATCH .../segments/{id}/speaker`) ships with the same test shape
+as the segment-text edit: a `reassign_segment_speaker` query unit test (schema.rs), an assembled-router
+oneshot covering the existing-cluster / new-name paths and the `404`/`422` guards, the `409`-while-
+recording guard asserted in the full-stack scripted-meeting test, vitest for the hook + the popover
+(MSW), and a reassign step folded into the browser E2E.
+
 **Next, in rough priority:**
 
 1. **Model/Windows-gated (not verifiable on macOS):** baselined `make probes` (P3); the

@@ -653,6 +653,141 @@ pub async fn rename_cluster(
     }))
 }
 
+/// Where a single line is being reassigned: an existing cluster in the same meeting, or a person by
+/// name (reuse that identity's cluster in the meeting if it has one, else create a locked one).
+#[derive(Debug, Clone)]
+pub enum SpeakerTarget<'a> {
+    Cluster(Uuid),
+    Name(&'a str),
+}
+
+/// Outcome of [`reassign_segment_speaker`], mapped by the route to 200/404/422.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ReassignOutcome {
+    /// The line was reassigned; carries the updated segment row.
+    Reassigned(Segment),
+    /// No segment with that id exists in the meeting.
+    SegmentNotFound,
+    /// The line is a Me segment; only diarized Them lines have a cluster to reassign.
+    NotThemStream,
+    /// The target `cluster_id` does not exist in this meeting.
+    ClusterNotFound,
+}
+
+/// Reassign one Them line to a different speaker: repoint its `cluster_id` and re-copy the resolved
+/// `speaker_label`, marking it `edited` (so the "warn before refine" badge covers it). Scoped by
+/// `meeting_id` so an id from another meeting cannot be touched. All in one transaction; a `Name`
+/// target get-or-creates the identity and reuses-or-creates its cluster (mirrors [`rename_cluster`]),
+/// but at the granularity of a single segment rather than the whole cluster.
+pub async fn reassign_segment_speaker(
+    pool: &SqlitePool,
+    meeting_id: Uuid,
+    segment_id: Uuid,
+    target: SpeakerTarget<'_>,
+) -> Result<ReassignOutcome, sqlx::Error> {
+    let mut tx = pool.begin().await?;
+
+    let segment =
+        sqlx::query_as::<_, Segment>("SELECT * FROM segments WHERE id = ? AND meeting_id = ?")
+            .bind(segment_id)
+            .bind(meeting_id)
+            .fetch_optional(&mut *tx)
+            .await?;
+    let Some(segment) = segment else {
+        return Ok(ReassignOutcome::SegmentNotFound);
+    };
+    if segment.stream != Stream::Them {
+        return Ok(ReassignOutcome::NotThemStream);
+    }
+
+    let now = Utc::now();
+    let (cluster_id, label) = match target {
+        SpeakerTarget::Cluster(target_id) => {
+            let cluster = sqlx::query_as::<_, Cluster>(
+                "SELECT * FROM clusters WHERE id = ? AND meeting_id = ?",
+            )
+            .bind(target_id)
+            .bind(meeting_id)
+            .fetch_optional(&mut *tx)
+            .await?;
+            let Some(cluster) = cluster else {
+                return Ok(ReassignOutcome::ClusterNotFound);
+            };
+            let name: Option<String> = match cluster.identity_id {
+                Some(identity_id) => {
+                    sqlx::query_scalar("SELECT display_name FROM identities WHERE id = ?")
+                        .bind(identity_id)
+                        .fetch_optional(&mut *tx)
+                        .await?
+                }
+                None => None,
+            };
+            let label = name.unwrap_or_else(|| format!("Speaker {}", cluster.ordinal));
+            (target_id, label)
+        }
+        SpeakerTarget::Name(name) => {
+            let identity_id = get_or_create_identity(&mut tx, name, now).await?;
+            // Reuse this person's existing cluster in the meeting so their lines share one cluster
+            // (hence one color); else create a fresh locked cluster bound to them.
+            let existing: Option<Uuid> = sqlx::query_scalar(
+                "SELECT id FROM clusters WHERE meeting_id = ? AND identity_id = ?",
+            )
+            .bind(meeting_id)
+            .bind(identity_id)
+            .fetch_optional(&mut *tx)
+            .await?;
+            let cluster_id = match existing {
+                Some(id) => id,
+                None => {
+                    let ordinal: i64 = sqlx::query_scalar(
+                        "SELECT COALESCE(MAX(ordinal), 0) + 1 FROM clusters WHERE meeting_id = ?",
+                    )
+                    .bind(meeting_id)
+                    .fetch_one(&mut *tx)
+                    .await?;
+                    let id = Uuid::new_v4();
+                    sqlx::query(
+                        "INSERT INTO clusters \
+                         (id, meeting_id, ordinal, identity_id, locked, centroid, created_at, updated_at) \
+                         VALUES (?, ?, ?, ?, 1, NULL, ?, ?)",
+                    )
+                    .bind(id)
+                    .bind(meeting_id)
+                    .bind(ordinal)
+                    .bind(identity_id)
+                    .bind(now)
+                    .bind(now)
+                    .execute(&mut *tx)
+                    .await?;
+                    id
+                }
+            };
+            (cluster_id, name.to_string())
+        }
+    };
+
+    sqlx::query(
+        "UPDATE segments SET cluster_id = ?, speaker_label = ?, edited = 1, updated_at = ? \
+         WHERE id = ? AND meeting_id = ?",
+    )
+    .bind(cluster_id)
+    .bind(&label)
+    .bind(now)
+    .bind(segment_id)
+    .bind(meeting_id)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+
+    Ok(ReassignOutcome::Reassigned(Segment {
+        cluster_id: Some(cluster_id),
+        speaker_label: label,
+        edited: true,
+        updated_at: now,
+        ..segment
+    }))
+}
+
 /// Get an identity id by display name, creating the identity if it does not exist. Runs on a
 /// transaction connection so callers stay atomic. Shared by [`rename_cluster`] and the refine's
 /// locked-label carry-forward.

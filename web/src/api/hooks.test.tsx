@@ -9,12 +9,13 @@ vi.mock("./client", () => ({
 }));
 
 import { api } from "./client";
-import { useSegments, useUpdateRecording } from "./hooks";
+import { useReassignSpeaker, useSegments, useUpdateRecording } from "./hooks";
 import { queryKeys } from "./queryKeys";
 import type { RecordingSettings, SegmentRead, SettingsRead } from "./types";
 
 const apiGet = api.get as unknown as Mock;
 const apiPut = api.put as unknown as Mock;
+const apiPatch = api.patch as unknown as Mock;
 
 function makeClient() {
   return new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -78,5 +79,37 @@ describe("settings cache patch", () => {
     expect(cached?.recording).toEqual(updated);
     expect(cached?.speakers).toEqual(initial.speakers); // untouched — a patch, not a refetch
     expect(apiPut).toHaveBeenCalledWith("/api/settings/recording", updated);
+  });
+});
+
+describe("useReassignSpeaker", () => {
+  it("PATCHes the segment-speaker route and refreshes the transcript + speakers", async () => {
+    const client = makeClient();
+    const invalidate = vi.spyOn(client, "invalidateQueries");
+    apiPatch.mockResolvedValue(segRow(1));
+
+    const { result } = renderHook(() => useReassignSpeaker("m1"), { wrapper: wrapperFor(client) });
+
+    // Reassign to an existing cluster.
+    act(() => {
+      result.current.mutate({ segmentId: "s1", clusterId: "c9" });
+    });
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(apiPatch).toHaveBeenCalledWith("/api/meetings/m1/segments/s1/speaker", {
+      cluster_id: "c9",
+      display_name: undefined,
+    });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.meetings.segments("m1") });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.meetings.speakers("m1") });
+
+    // Assign to a person by name.
+    act(() => {
+      result.current.mutate({ segmentId: "s2", displayName: "Dana" });
+    });
+    await waitFor(() => expect(apiPatch).toHaveBeenCalledTimes(2));
+    expect(apiPatch).toHaveBeenLastCalledWith("/api/meetings/m1/segments/s2/speaker", {
+      cluster_id: undefined,
+      display_name: "Dana",
+    });
   });
 });

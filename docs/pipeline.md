@@ -164,7 +164,9 @@ drive the same `LiveEngine::rediarize` implementation. The refine:
   follows speaker changes turn by turn; `replace_them_segments` swaps the live Them segments and
   clusters for one segment per refined turn in a single transaction (Me is untouched),
 - carries manual renames forward by voting each locked name onto the turn ordinal its old segments
-  most overlap, so a re-diarize never drops a manual binding,
+  most overlap, so a re-diarize never drops a manual binding (per-line reassignments, being
+  segment-level, are rebuilt only at the cluster level — like manual text edits, a refine discards
+  them, and the `edited` flag warns first),
 - stores each speaker's centroid on its cluster and matches it against people named in prior
   meetings; a returning person is auto-named provisionally, and a manual rename still wins,
 - rewrites `transcript.md` from the rebuilt segments.

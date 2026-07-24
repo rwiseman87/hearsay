@@ -8,7 +8,8 @@ machine. It ships as one Rust + Tauri app: a single installer, no interpreter to
 
 The live path works end to end: capture, streaming captions with speaker labels, an offline
 refine that improves diarization and recognizes returning speakers by voiceprint, full-text search,
-transcript and notes editing, nested meeting folders, and optional local-LLM meeting notes.
+transcript and notes editing, per-line speaker reassignment, nested meeting folders, and optional
+local-LLM meeting notes.
 
 ```mermaid
 flowchart LR

@@ -338,6 +338,13 @@ rename can still override it.
 A single wrong recognition can never flip a stable manual binding: locked names carry forward first
 and are skipped by recognition.
 
+A per-line reassignment (`PATCH .../segments/{id}/speaker`, `reassign_segment_speaker`) is a
+finer-grained correction: it moves one segment's `cluster_id` to another cluster, or to a new locked
+cluster created for a typed name. It operates on the finalized transcript and is not itself carried
+forward — a full re-diarize rebuilds the Them segments from scratch, so it reconstructs speakers only
+at the cluster level (via the precedence above), not per line. The reassigned line is flagged
+`edited`, so the UI warns before a refine would discard it.
+
 ### The recognition threshold
 
 Recognition uses cosine similarity against a configurable cutoff, the effective
@@ -447,7 +454,8 @@ merged voiceprint is still a unit vector suitable for cosine matching.
 | sherpa producer (`embed`, consolidation call) | `rust/crates/hearsay-inference/src/sherpa_diarize.rs` |
 | macOS producer (Swift sidecar) | `helper/Sources/hearsay-diarize/main.swift` |
 | Backend assembly | `rust/crates/hearsay-backends/src/{mac,windows}.rs` |
-| Storage, `known_voiceprints`, `recognize_speakers`, `replace_them_segments`, `rename_cluster` | `rust/crates/hearsay-db/src/queries.rs` |
+| Storage, `known_voiceprints`, `recognize_speakers`, `replace_them_segments`, `rename_cluster`, `reassign_segment_speaker` | `rust/crates/hearsay-db/src/queries.rs` |
 | Schema | `rust/crates/hearsay-db/migrations/0001_baseline.sql` |
 | Rename / re-diarize routes | `rust/crates/hearsay-core/src/routes/speakers.rs` |
+| Per-line reassign route | `rust/crates/hearsay-core/src/routes/meetings.rs` |
 | Threshold config + validation | `rust/crates/hearsay-core/src/config.rs`, `.../routes/settings.rs` |

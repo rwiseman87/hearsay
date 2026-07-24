@@ -187,8 +187,8 @@ pub struct SegmentRead {
     pub text: String,
     pub start_s: f64,
     pub end_s: f64,
-    /// Whether this segment's text has been manually edited (drives the "edited" badge + the
-    /// discard-on-refine warning).
+    /// Whether this segment has been manually edited — its text or its speaker assignment (drives the
+    /// "edited" badge + the discard-on-refine warning).
     pub edited: bool,
 }
 
@@ -212,6 +212,17 @@ impl From<Segment> for SegmentRead {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
 pub struct SegmentEdit {
     pub text: String,
+}
+
+/// Reassign a single Them line to a different speaker. Provide exactly one of: `cluster_id` (an
+/// existing cluster in the meeting) or `display_name` (a person by name — reuses that identity's
+/// cluster in the meeting if it has one, else creates a new locked speaker).
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
+pub struct SegmentSpeakerAssign {
+    #[serde(default)]
+    pub cluster_id: Option<Uuid>,
+    #[serde(default)]
+    pub display_name: Option<String>,
 }
 
 /// One transcript-search hit for the API: the matched segment with enough meeting context to render

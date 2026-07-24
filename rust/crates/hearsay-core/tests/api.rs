@@ -1064,6 +1064,18 @@ async fn full_stack_meeting_drives_events_and_persistence() {
     assert_eq!(meeting["status"], "recording");
     let id = Uuid::parse_str(meeting["id"].as_str().unwrap()).unwrap();
 
+    // A per-line speaker reassignment is refused (409) while the meeting is still recording — the
+    // guard short-circuits before any segment lookup, so a placeholder id suffices.
+    let (status, _) = send(
+        &app,
+        patch(
+            &format!("/api/meetings/{id}/segments/{}/speaker", Uuid::new_v4()),
+            r#"{"display_name":"Nope"}"#,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+
     // Pause so the WS connect yields a deterministic paused snapshot — our subscribe barrier.
     let (status, _) = send(&app, post(&format!("/api/meetings/{id}/pause"), "")).await;
     assert_eq!(status, StatusCode::NO_CONTENT);
@@ -1722,6 +1734,122 @@ async fn edit_segment_validates_and_404s() {
         patch(
             &format!("/api/meetings/{}/segments/{}", m.id, Uuid::new_v4()),
             r#"{"text":"x"}"#,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn reassign_segment_speaker_moves_line_and_validates() {
+    let (app, pool, _tmp) = setup().await;
+    let m = queries::create_meeting(&pool, "M", "f", "", chrono::Utc::now())
+        .await
+        .unwrap();
+    let c1 = queries::create_cluster(&pool, m.id, 1, false, None)
+        .await
+        .unwrap();
+    let c2 = queries::create_cluster(&pool, m.id, 2, false, None)
+        .await
+        .unwrap();
+    let them = queries::insert_segment(
+        &pool,
+        m.id,
+        Stream::Them,
+        "Speaker 1",
+        "hi",
+        0.0,
+        1.0,
+        Some(c1.id),
+    )
+    .await
+    .unwrap();
+    let me = queries::insert_segment(&pool, m.id, Stream::Me, "Me", "mine", 1.0, 2.0, None)
+        .await
+        .unwrap();
+    let speaker_uri = format!("/api/meetings/{}/segments/{}/speaker", m.id, them.id);
+
+    // Move the Them line to the other existing (unbound) cluster: label falls back to its ordinal.
+    let (status, body) = send(
+        &app,
+        patch(&speaker_uri, &format!(r#"{{"cluster_id":"{}"}}"#, c2.id)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["speaker_label"], "Speaker 2");
+    assert_eq!(body["cluster_id"], c2.id.to_string());
+    assert_eq!(body["edited"], true);
+
+    // Assign it to a brand-new named speaker (trimmed): a new cluster shows in the speakers list.
+    let (status, body) = send(&app, patch(&speaker_uri, r#"{"display_name":"  Dana  "}"#)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["speaker_label"], "Dana");
+    let (status, speakers) = send(&app, get(&format!("/api/meetings/{}/speakers", m.id))).await;
+    assert_eq!(status, StatusCode::OK);
+    let labels: Vec<&str> = speakers["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["label"].as_str().unwrap())
+        .collect();
+    assert!(labels.contains(&"Dana"));
+
+    // 422: both fields set.
+    let (status, _) = send(
+        &app,
+        patch(
+            &speaker_uri,
+            &format!(r#"{{"cluster_id":"{}","display_name":"X"}}"#, c1.id),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+
+    // 422: neither field set.
+    let (status, _) = send(&app, patch(&speaker_uri, r#"{}"#)).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+
+    // 422: a blank (whitespace-only) display_name.
+    let (status, _) = send(&app, patch(&speaker_uri, r#"{"display_name":"   "}"#)).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+
+    // 422: a display_name over the 255-char bound.
+    let long = "x".repeat(256);
+    let (status, _) = send(
+        &app,
+        patch(&speaker_uri, &format!(r#"{{"display_name":"{long}"}}"#)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+
+    // 422: reassigning a Me line.
+    let (status, _) = send(
+        &app,
+        patch(
+            &format!("/api/meetings/{}/segments/{}/speaker", m.id, me.id),
+            &format!(r#"{{"cluster_id":"{}"}}"#, c1.id),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+
+    // 422: target cluster is not in this meeting.
+    let (status, _) = send(
+        &app,
+        patch(
+            &speaker_uri,
+            &format!(r#"{{"cluster_id":"{}"}}"#, Uuid::new_v4()),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+
+    // 404: unknown segment id.
+    let (status, _) = send(
+        &app,
+        patch(
+            &format!("/api/meetings/{}/segments/{}/speaker", m.id, Uuid::new_v4()),
+            &format!(r#"{{"cluster_id":"{}"}}"#, c1.id),
         ),
     )
     .await;

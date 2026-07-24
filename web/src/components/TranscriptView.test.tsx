@@ -30,15 +30,21 @@ const meeting: MeetingRead = {
   ended_at: "2026-07-21T10:42:00Z",
 };
 
-function segment(text: string, edited: boolean): SegmentRead {
+function segment(
+  text: string,
+  edited: boolean,
+  label = "Speaker 1",
+  clusterId: string | null = "c1",
+  stream: "me" | "them" = "them",
+): SegmentRead {
   return {
     id: "seg-1",
-    cluster_id: null,
+    cluster_id: clusterId,
     edited,
     end_s: 4,
-    speaker_label: "Speaker 1",
+    speaker_label: label,
     start_s: 2,
-    stream: "them",
+    stream,
     text,
   };
 }
@@ -51,10 +57,14 @@ function renderView() {
 }
 
 let currentText: string;
+let currentLabel: string;
+let currentCluster: string | null;
 let edited: boolean;
 
 beforeEach(() => {
   currentText = "original text";
+  currentLabel = "Speaker 1";
+  currentCluster = "c1";
   edited = false;
   server.use(
     http.get("/api/meetings/:id/segments", () =>
@@ -62,17 +72,45 @@ beforeEach(() => {
         total: 1,
         page: 1,
         page_size: 200,
-        items: [segment(currentText, edited)],
+        items: [segment(currentText, edited, currentLabel, currentCluster)],
       }),
     ),
     http.get("/api/folders", () =>
       HttpResponse.json({ total: 0, page: 1, page_size: 200, items: [] }),
     ),
+    // TranscriptView now fetches the meeting's speakers + known identities itself (for the reassign
+    // popover), so these must be mocked even for the plain edit flow.
+    http.get("/api/meetings/:id/speakers", () =>
+      HttpResponse.json({
+        total: 2,
+        page: 1,
+        page_size: 2,
+        items: [
+          { id: "c1", ordinal: 1, label: "Speaker 1", identity_id: null, locked: false },
+          { id: "c2", ordinal: 2, label: "Speaker 2", identity_id: null, locked: false },
+        ],
+      }),
+    ),
+    http.get("/api/identities", () =>
+      HttpResponse.json({ total: 0, page: 1, page_size: 50, items: [] }),
+    ),
     http.patch("/api/meetings/:id/segments/:segmentId", async ({ request }) => {
       const body = (await request.json()) as { text: string };
       currentText = body.text;
       edited = true;
-      return HttpResponse.json(segment(currentText, edited));
+      return HttpResponse.json(segment(currentText, edited, currentLabel, currentCluster));
+    }),
+    http.patch("/api/meetings/:id/segments/:segmentId/speaker", async ({ request }) => {
+      const body = (await request.json()) as { cluster_id?: string; display_name?: string };
+      if (body.display_name) {
+        currentLabel = body.display_name.trim();
+        currentCluster = "c-new";
+      } else if (body.cluster_id) {
+        currentCluster = body.cluster_id;
+        currentLabel = body.cluster_id === "c2" ? "Speaker 2" : "Speaker 1";
+      }
+      edited = true;
+      return HttpResponse.json(segment(currentText, edited, currentLabel, currentCluster));
     }),
   );
 });
@@ -94,5 +132,59 @@ describe("TranscriptView editing", () => {
     // editor has closed.
     expect(await screen.findByText("corrected text")).toBeTruthy();
     expect(screen.queryByRole("textbox", { name: "Edit transcript line" })).toBeNull();
+  });
+});
+
+describe("TranscriptView speaker reassignment", () => {
+  it("reassigns a line to an existing speaker", async () => {
+    const user = userEvent.setup();
+    renderView();
+
+    expect(await screen.findByText("original text")).toBeTruthy();
+    expect(screen.getByText("Speaker 1")).toBeTruthy();
+
+    await user.click(screen.getByRole("button", { name: "Reassign speaker" }));
+    // The line's current speaker is offered but disabled (you can't reassign to where it already is).
+    const current = await screen.findByRole("button", { name: /Speaker 1 \(current\)/ });
+    expect(current).toHaveProperty("disabled", true);
+
+    await user.click(await screen.findByRole("button", { name: /Speaker 2/ }));
+
+    // After the PATCH + refetch, the line carries the new speaker and the popover has closed.
+    expect(await screen.findByText("Speaker 2")).toBeTruthy();
+    // The name field is a combobox (its datalist `list=` attribute upgrades the role from textbox).
+    expect(screen.queryByRole("combobox", { name: "New speaker name" })).toBeNull();
+  });
+
+  it("assigns a line to a brand-new named speaker", async () => {
+    const user = userEvent.setup();
+    renderView();
+
+    expect(await screen.findByText("original text")).toBeTruthy();
+
+    await user.click(screen.getByRole("button", { name: "Reassign speaker" }));
+    const input = await screen.findByRole("combobox", { name: "New speaker name" });
+    await user.type(input, "Dana");
+    await user.click(screen.getByRole("button", { name: "Add" }));
+
+    expect(await screen.findByText("Dana")).toBeTruthy();
+  });
+
+  it("offers no speaker reassignment on a Me line", async () => {
+    server.use(
+      http.get("/api/meetings/:id/segments", () =>
+        HttpResponse.json({
+          total: 1,
+          page: 1,
+          page_size: 200,
+          items: [segment("mine", false, "Me", null, "me")],
+        }),
+      ),
+    );
+    renderView();
+
+    expect(await screen.findByText("mine")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Edit this line" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Reassign speaker" })).toBeNull();
   });
 });

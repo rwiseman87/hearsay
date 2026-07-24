@@ -864,6 +864,65 @@
         }
       }
     },
+    "/api/meetings/{id}/segments/{segment_id}/speaker": {
+      "patch": {
+        "tags": [
+          "meetings"
+        ],
+        "operationId": "reassign_segment_speaker",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "segment_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SegmentSpeakerAssign"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SegmentRead"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          },
+          "422": {
+            "description": ""
+          }
+        }
+      }
+    },
     "/api/meetings/{id}/speakers": {
       "get": {
         "tags": [
@@ -2281,7 +2340,7 @@
                 },
                 "edited": {
                   "type": "boolean",
-                  "description": "Whether this segment's text has been manually edited (drives the \"edited\" badge + the\ndiscard-on-refine warning)."
+                  "description": "Whether this segment has been manually edited — its text or its speaker assignment (drives the\n\"edited\" badge + the discard-on-refine warning)."
                 },
                 "end_s": {
                   "type": "number",
@@ -2577,7 +2636,7 @@
           },
           "edited": {
             "type": "boolean",
-            "description": "Whether this segment's text has been manually edited (drives the \"edited\" badge + the\ndiscard-on-refine warning)."
+            "description": "Whether this segment has been manually edited — its text or its speaker assignment (drives the\n\"edited\" badge + the discard-on-refine warning)."
           },
           "end_s": {
             "type": "number",
@@ -2599,6 +2658,25 @@
           },
           "text": {
             "type": "string"
+          }
+        }
+      },
+      "SegmentSpeakerAssign": {
+        "type": "object",
+        "description": "Reassign a single Them line to a different speaker. Provide exactly one of: `cluster_id` (an\nexisting cluster in the meeting) or `display_name` (a person by name — reuses that identity's\ncluster in the meeting if it has one, else creates a new locked speaker).",
+        "properties": {
+          "cluster_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "display_name": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         }
       },

@@ -266,6 +266,22 @@ export interface paths {
         patch: operations["edit_segment"];
         trace?: never;
     };
+    "/api/meetings/{id}/segments/{segment_id}/speaker": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch: operations["reassign_segment_speaker"];
+        trace?: never;
+    };
     "/api/meetings/{id}/speakers": {
         parameters: {
             query?: never;
@@ -883,8 +899,8 @@ export interface components {
                 /** Format: uuid */
                 cluster_id?: string | null;
                 /**
-                 * @description Whether this segment's text has been manually edited (drives the "edited" badge + the
-                 *     discard-on-refine warning).
+                 * @description Whether this segment has been manually edited — its text or its speaker assignment (drives the
+                 *     "edited" badge + the discard-on-refine warning).
                  */
                 edited: boolean;
                 /** Format: double */
@@ -1016,8 +1032,8 @@ export interface components {
             /** Format: uuid */
             cluster_id?: string | null;
             /**
-             * @description Whether this segment's text has been manually edited (drives the "edited" badge + the
-             *     discard-on-refine warning).
+             * @description Whether this segment has been manually edited — its text or its speaker assignment (drives the
+             *     "edited" badge + the discard-on-refine warning).
              */
             edited: boolean;
             /** Format: double */
@@ -1029,6 +1045,16 @@ export interface components {
             start_s: number;
             stream: components["schemas"]["Stream"];
             text: string;
+        };
+        /**
+         * @description Reassign a single Them line to a different speaker. Provide exactly one of: `cluster_id` (an
+         *     existing cluster in the meeting) or `display_name` (a person by name — reuses that identity's
+         *     cluster in the meeting if it has one, else creates a new locked speaker).
+         */
+        SegmentSpeakerAssign: {
+            /** Format: uuid */
+            cluster_id?: string | null;
+            display_name?: string | null;
         };
         /**
          * @description The full editable settings, one field per panel/section. `storage_info` and `about` are
@@ -1824,6 +1850,50 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": components["schemas"]["SegmentEdit"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SegmentRead"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    reassign_segment_speaker: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                segment_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SegmentSpeakerAssign"];
             };
         };
         responses: {

@@ -172,6 +172,35 @@ export function useEditSegment(meetingId: string) {
   });
 }
 
+// Reassign one transcript line to a different speaker: pass `{ clusterId }` to move it to an existing
+// speaker, or `{ displayName }` to assign it to a person by name (reused if present, else a new
+// speaker). The server marks the segment `edited`, re-exports transcript.md, and returns the updated
+// row; refresh the transcript + speakers (a new speaker may appear) + identities + notes.
+export function useReassignSpeaker(meetingId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      segmentId,
+      clusterId,
+      displayName,
+    }: {
+      segmentId: string;
+      clusterId?: string;
+      displayName?: string;
+    }) =>
+      api.patch<SegmentRead>(`/api/meetings/${meetingId}/segments/${segmentId}/speaker`, {
+        cluster_id: clusterId,
+        display_name: displayName,
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: queryKeys.meetings.segments(meetingId) });
+      qc.invalidateQueries({ queryKey: queryKeys.meetings.speakers(meetingId) });
+      qc.invalidateQueries({ queryKey: queryKeys.meetings.notes(meetingId) });
+      qc.invalidateQueries({ queryKey: queryKeys.identities.all });
+    },
+  });
+}
+
 // Rename a meeting's title. The server trims + length-checks the title and returns the updated row;
 // invalidate the list so every view reflects the new title.
 export function useRenameMeeting() {

@@ -10,6 +10,7 @@ export type FolderRead = Schemas["FolderRead"];
 export type FolderCreate = Schemas["FolderCreate"];
 export type PageFolder = Schemas["Page_FolderRead"];
 export type SegmentRead = Schemas["SegmentRead"];
+export type SegmentSpeakerAssign = Schemas["SegmentSpeakerAssign"];
 export type PageMeeting = Schemas["Page_MeetingRead"];
 export type PageSegment = Schemas["Page_SegmentRead"];
 export type SearchHit = Schemas["SearchHit"];

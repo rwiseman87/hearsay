@@ -1335,12 +1335,17 @@ mark.find-hit {
   vertical-align: middle;
 }
 
-/* The per-line edit control: pinned top-right of the row, revealed as a clear "✎ Edit" button when
-   the line is hovered or the button is focused. */
-.line__edit-btn {
+/* The per-line action controls (Edit + Reassign speaker): pinned top-right of the row, each revealed
+   as a clear button when the line is hovered or a button is focused. */
+.line__actions {
   position: absolute;
   top: 10px;
   right: 8px;
+  display: flex;
+  gap: 4px;
+}
+
+.line__edit-btn {
   display: inline-flex;
   align-items: center;
   gap: 4px;
@@ -1367,6 +1372,94 @@ mark.find-hit {
 .line__edit-btn:not(:disabled):hover {
   border-color: var(--accent);
   color: var(--text);
+}
+
+/* The per-line reassign popover: a small card anchored under the action buttons, listing the
+   meeting's speakers plus a "new speaker" field. */
+.line__reassign {
+  position: absolute;
+  top: 40px;
+  right: 8px;
+  z-index: 5;
+  width: 220px;
+  max-width: calc(100% - 16px);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: var(--shadow, 0 6px 20px rgba(0, 0, 0, 0.28));
+}
+
+.line__reassign-title {
+  color: var(--muted);
+  font-size: var(--fs-xs);
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.line__reassign-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 180px;
+  overflow-y: auto;
+}
+
+.line__reassign-option {
+  width: 100%;
+  padding: 4px 8px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: none;
+  color: var(--text);
+  font-size: var(--fs-sm);
+  text-align: left;
+}
+
+.line__reassign-option:not(:disabled):hover {
+  border-color: var(--accent);
+  background: var(--surface-2);
+}
+
+.line__reassign-option[aria-current="true"] {
+  color: var(--muted);
+}
+
+.line__reassign-new {
+  display: flex;
+  gap: 6px;
+}
+
+.line__reassign-input {
+  flex: 1;
+  min-width: 0;
+  padding: 4px 8px;
+  font: inherit;
+  font-size: var(--fs-sm);
+}
+
+.line__reassign-save {
+  padding: 4px 10px;
+  font-size: var(--fs-sm);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.line__reassign-cancel {
+  padding: 4px 10px;
+  font-size: var(--fs-sm);
+  align-self: flex-start;
+}
+
+.line__reassign-error {
+  color: var(--danger, #d33);
+  font-size: var(--fs-xs);
 }
 
 .line__edit {

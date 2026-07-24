@@ -245,6 +245,186 @@ async fn rename_cluster_binds_relabels_and_joins() {
 }
 
 #[tokio::test]
+async fn reassign_segment_speaker_moves_line_and_creates_named_speaker() {
+    let pool = memory_pool().await;
+    let meeting = queries::create_meeting(&pool, "t", "f", "", chrono::Utc::now())
+        .await
+        .unwrap();
+    let c1 = queries::create_cluster(&pool, meeting.id, 1, false, None)
+        .await
+        .unwrap();
+    let c2 = queries::create_cluster(&pool, meeting.id, 2, false, None)
+        .await
+        .unwrap();
+    let seg_a = queries::insert_segment(
+        &pool,
+        meeting.id,
+        Stream::Them,
+        "Speaker 1",
+        "alpha",
+        0.0,
+        1.0,
+        Some(c1.id),
+    )
+    .await
+    .unwrap();
+    let seg_b = queries::insert_segment(
+        &pool,
+        meeting.id,
+        Stream::Them,
+        "Speaker 1",
+        "beta",
+        1.0,
+        2.0,
+        Some(c1.id),
+    )
+    .await
+    .unwrap();
+    let me_seg =
+        queries::insert_segment(&pool, meeting.id, Stream::Me, "Me", "mine", 2.0, 3.0, None)
+            .await
+            .unwrap();
+
+    // Move seg_a to the existing (unbound) cluster c2 — label falls back to its ordinal.
+    let updated = match queries::reassign_segment_speaker(
+        &pool,
+        meeting.id,
+        seg_a.id,
+        queries::SpeakerTarget::Cluster(c2.id),
+    )
+    .await
+    .unwrap()
+    {
+        queries::ReassignOutcome::Reassigned(s) => s,
+        other => panic!("expected reassigned, got {other:?}"),
+    };
+    assert_eq!(updated.cluster_id, Some(c2.id));
+    assert_eq!(updated.speaker_label, "Speaker 2");
+    assert!(updated.edited);
+    // seg_b is left alone (only the one line moved).
+    let segments = queries::list_segments(&pool, meeting.id).await.unwrap();
+    let b = segments.iter().find(|s| s.id == seg_b.id).unwrap();
+    assert_eq!(b.cluster_id, Some(c1.id));
+    assert!(!b.edited);
+
+    // Assign seg_a to a new named speaker: a fresh locked cluster + identity.
+    let dana_a = match queries::reassign_segment_speaker(
+        &pool,
+        meeting.id,
+        seg_a.id,
+        queries::SpeakerTarget::Name("Dana"),
+    )
+    .await
+    .unwrap()
+    {
+        queries::ReassignOutcome::Reassigned(s) => s,
+        other => panic!("expected reassigned, got {other:?}"),
+    };
+    assert_eq!(dana_a.speaker_label, "Dana");
+    let dana_cluster = dana_a.cluster_id.expect("bound to a cluster");
+    assert_ne!(dana_cluster, c1.id);
+    assert_ne!(dana_cluster, c2.id);
+
+    // A second line given the same name reuses that person's cluster (one identity, one color).
+    let dana_b = match queries::reassign_segment_speaker(
+        &pool,
+        meeting.id,
+        seg_b.id,
+        queries::SpeakerTarget::Name("Dana"),
+    )
+    .await
+    .unwrap()
+    {
+        queries::ReassignOutcome::Reassigned(s) => s,
+        other => panic!("expected reassigned, got {other:?}"),
+    };
+    assert_eq!(dana_b.cluster_id, Some(dana_cluster));
+    assert_eq!(queries::count_identities(&pool).await.unwrap(), 1);
+    let rows = queries::list_speaker_rows(&pool, meeting.id).await.unwrap();
+    let dana_row = rows.iter().find(|r| r.id == dana_cluster).unwrap();
+    assert_eq!(dana_row.display_name.as_deref(), Some("Dana"));
+    assert!(dana_row.locked);
+
+    // Reassigning to a cluster that is *bound* to an identity resolves the label from that identity
+    // (not the ordinal). Bind c2 to "Cara", then move seg_a onto c2.
+    queries::rename_cluster(&pool, c2.id, "Cara")
+        .await
+        .unwrap()
+        .expect("cluster exists");
+    let cara = match queries::reassign_segment_speaker(
+        &pool,
+        meeting.id,
+        seg_a.id,
+        queries::SpeakerTarget::Cluster(c2.id),
+    )
+    .await
+    .unwrap()
+    {
+        queries::ReassignOutcome::Reassigned(s) => s,
+        other => panic!("expected reassigned, got {other:?}"),
+    };
+    assert_eq!(cara.cluster_id, Some(c2.id));
+    assert_eq!(cara.speaker_label, "Cara");
+
+    // A `Name` target for an identity that already exists but has no cluster in this meeting reuses
+    // the identity (no duplicate) and creates a fresh cluster bound to it.
+    queries::create_identity(&pool, "Evan", None).await.unwrap();
+    let before = queries::count_identities(&pool).await.unwrap(); // Dana + Cara + Evan
+    let evan = match queries::reassign_segment_speaker(
+        &pool,
+        meeting.id,
+        seg_b.id,
+        queries::SpeakerTarget::Name("Evan"),
+    )
+    .await
+    .unwrap()
+    {
+        queries::ReassignOutcome::Reassigned(s) => s,
+        other => panic!("expected reassigned, got {other:?}"),
+    };
+    assert_eq!(evan.speaker_label, "Evan");
+    let evan_cluster = evan.cluster_id.expect("bound to a cluster");
+    assert_ne!(evan_cluster, dana_cluster);
+    assert_ne!(evan_cluster, c2.id);
+    assert_eq!(queries::count_identities(&pool).await.unwrap(), before); // reused, not duplicated
+
+    // Guards: unknown segment, a Me line, and a target cluster from nowhere.
+    assert_eq!(
+        queries::reassign_segment_speaker(
+            &pool,
+            meeting.id,
+            uuid::Uuid::new_v4(),
+            queries::SpeakerTarget::Cluster(c2.id)
+        )
+        .await
+        .unwrap(),
+        queries::ReassignOutcome::SegmentNotFound
+    );
+    assert_eq!(
+        queries::reassign_segment_speaker(
+            &pool,
+            meeting.id,
+            me_seg.id,
+            queries::SpeakerTarget::Cluster(c2.id)
+        )
+        .await
+        .unwrap(),
+        queries::ReassignOutcome::NotThemStream
+    );
+    assert_eq!(
+        queries::reassign_segment_speaker(
+            &pool,
+            meeting.id,
+            seg_a.id,
+            queries::SpeakerTarget::Cluster(uuid::Uuid::new_v4())
+        )
+        .await
+        .unwrap(),
+        queries::ReassignOutcome::ClusterNotFound
+    );
+}
+
+#[tokio::test]
 async fn delete_meeting_removes_clusters_and_reports_missing() {
     let pool = memory_pool().await;
     let meeting = queries::create_meeting(&pool, "t", "f", "", chrono::Utc::now())

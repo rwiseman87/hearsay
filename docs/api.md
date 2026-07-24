@@ -144,6 +144,28 @@ Replaces one segment's `text`. The database is the source of truth; `transcript.
 best-effort. Scoped to the meeting (`404` if the segment is not in it), `422` on empty or
 over-long text, `409` while the meeting is recording.
 
+### `PATCH /api/meetings/{id}/segments/{segment_id}/speaker` (reassign one line's speaker)
+
+Reassigns a single Them line to a different speaker — for fixing an individual diarization
+mistake without renaming the whole cluster. Send exactly one of:
+
+- `{ "cluster_id": "<uuid>" }` — move the line to an existing speaker in the meeting.
+- `{ "display_name": "<name>" }` — assign it to a person by name: reuses that identity's cluster in
+  the meeting if it has one, else creates a new locked speaker (get-or-create identity, as with the
+  cluster rename).
+
+The line's `cluster_id` + `speaker_label` are updated and it is flagged `edited` (so it counts
+toward the discard-before-refine warning). The database is the source of truth; `transcript.md` is
+re-exported best-effort. Returns the updated `SegmentRead`. `404` if the segment is not in the
+meeting; `422` on a Me line, an unknown target cluster, or a body that is not exactly one of the two
+fields; `409` while the meeting is recording.
+
+```sh
+curl -X PATCH http://127.0.0.1:8137/api/meetings/$MID/segments/$SID/speaker \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"display_name": "Dana"}'
+```
+
 ### `PUT /api/meetings/{id}/folder` (file into a folder)
 
 Body `{ "folder_id": "<uuid>" }`, or `null` to un-file to the root. `404` if the meeting or the
@@ -349,8 +371,8 @@ While connected, the server pushes one JSON event per text frame. Transcript eve
 `partial` events stream during ongoing speech and are not persisted; `final` events are also
 written to the database and `transcript.md`. Clients render by `(stream, start_s)` and replace a
 stream's partial with its next final. Me is always `"Me"`; Them partials carry the generic
-`"Them"`, while finals carry the diarized label (`Speaker N` or a bound name). After a rename,
-re-fetch `/speakers` and `/segments` to pick up new labels.
+`"Them"`, while finals carry the diarized label (`Speaker N` or a bound name). After a rename or a
+per-line reassignment, re-fetch `/speakers` and `/segments` to pick up new labels.
 
 Service events share the channel:
 

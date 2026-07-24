@@ -28,7 +28,9 @@ async function readToken(): Promise<string> {
 // runs (the config keeps its side-effects non-destructive — see playwright.config.ts).
 const TITLE = `E2E Meeting ${Date.now()}`;
 
-test("record -> live transcript -> stop -> library -> rename speaker -> notes", async ({ page }) => {
+test("record -> live transcript -> stop -> library -> rename speaker -> reassign line -> notes", async ({
+  page,
+}) => {
   const token = await readToken();
   // Dev serves the app via vite; the token rides in the query param (token.ts falls back to it).
   await page.goto(`/?token=${token}`);
@@ -62,6 +64,16 @@ test("record -> live transcript -> stop -> library -> rename speaker -> notes", 
   // The chip (and the relabeled transcript lines) now read "Alice"; "Speaker 1" is gone.
   await expect(page.locator(".speaker-chip__name").filter({ hasText: "Alice" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Speaker 1", exact: true })).toHaveCount(0);
+
+  // Reassign that one line to a brand-new speaker at the line level (distinct from the whole-cluster
+  // rename above). Hovering the row reveals the per-line controls.
+  const themLine = page.locator(".live-line", { hasText: "hi everyone, thanks for joining" });
+  await themLine.hover();
+  await themLine.getByRole("button", { name: "Reassign speaker" }).click();
+  await page.getByLabel("New speaker name").fill("Bob");
+  await page.getByRole("button", { name: "Add" }).click();
+  // The line now carries the new per-line speaker.
+  await expect(page.locator(".live-line__name").filter({ hasText: "Bob" })).toBeVisible();
 
   // Generate notes: the button is enabled because a (stub) notes model resolves, and the scripted
   // summarizer returns a fixed summary.
