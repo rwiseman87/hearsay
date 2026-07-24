@@ -38,7 +38,10 @@ This document maps the targets to what they test and the suite to where it lives
 
 `make ci` + `make e2e` is the complete deterministic suite on a machine without the models. Windows
 has no `make`, so the same set is mirrored in `scripts\test-windows.ps1`
-(`-Target ci|web|tauri|probes|coverage|e2e|all`) with the Windows feature set.
+(`-Target ci|web|tauri|probes|coverage|e2e|all`) with the Windows feature set. Its Rust-building
+targets (`ci`, `probes`, `coverage`, `all`) share the installer build's prerequisites — CMake,
+LLVM/libclang, and, unless `-NoVulkan`, the Vulkan SDK + Ninja + Windows long paths — preflighted for
+both scripts by `scripts\windows-build-env.ps1`.
 
 ## The suite by layer
 

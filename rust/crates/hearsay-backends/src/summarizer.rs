@@ -112,10 +112,21 @@ fn run_notes_sidecar(
     })
     .map_err(|e| format!("serialize notes request: {e}"))?;
 
-    let mut child = Command::new(binary)
+    let mut command = Command::new(binary);
+    command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::piped());
+    // The desktop shell spawns the core with CREATE_NO_WINDOW, so the core has no console of its
+    // own; Windows would then allocate a fresh one for this console-subsystem child and show it for
+    // the whole generation (tens of seconds to minutes). Suppress it the same way the shell does.
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+    let mut child = command
         .spawn()
         .map_err(|e| format!("spawn hearsay-notes: {e}"))?;
 

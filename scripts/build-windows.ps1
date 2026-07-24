@@ -23,11 +23,9 @@ $ErrorActionPreference = "Stop"
 $repo = Split-Path -Parent $PSScriptRoot
 Set-Location $repo
 
-function Require-Tool($name, $hint) {
-    if (-not (Get-Command $name -ErrorAction SilentlyContinue)) {
-        throw "$name not found. $hint"
-    }
-}
+# Require-Tool / Initialize-LibClang / Initialize-VulkanBuild, shared with scripts\test-windows.ps1.
+. "$PSScriptRoot\windows-build-env.ps1"
+
 Require-Tool cargo "Install Rust (MSVC toolchain) from https://rustup.rs"
 Require-Tool npm "Install Node 22 from https://nodejs.org"
 Require-Tool cmake "Install CMake (whisper-rs / llama-cpp-2 build) from https://cmake.org"
@@ -36,53 +34,15 @@ if (-not (cargo tauri --version 2>$null)) {
     throw "tauri-cli not found. Run: cargo install tauri-cli --locked"
 }
 
-# llama-cpp-2 (the hearsay-notes sidecar) and the aec feature generate bindings with bindgen, which
-# loads libclang.dll at build time.
-if (-not $env:LIBCLANG_PATH) {
-    $candidates = @("C:\Program Files\LLVM\bin") + (
-        Get-ChildItem "C:\Program Files*\Microsoft Visual Studio\*\*\VC\Tools\Llvm\x64\bin" `
-            -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName)
-    $libclang = $candidates | Where-Object { Test-Path (Join-Path $_ "libclang.dll") } | Select-Object -First 1
-    if (-not $libclang) {
-        throw "libclang.dll not found (needed by bindgen). Install LLVM: winget install -e --id LLVM.LLVM"
-    }
-    $env:LIBCLANG_PATH = $libclang
-    Write-Host "LIBCLANG_PATH=$libclang"
-}
+Initialize-LibClang
 
 # The vulkan feature compiles ggml's Vulkan backend, which needs the SDK's headers + glslc at build
-# time, and Windows long-path support: ggml builds its `vulkan-shaders-gen` helper as a nested cmake
-# sub-project, and MSBuild's .tlog paths under it blow past MAX_PATH (error MSB3491) no matter how
-# short CARGO_TARGET_DIR is. Fail here with both fixes rather than deep inside ggml's cmake.
+# time plus Windows long-path support and the Ninja generator. Preflight it here (with the fixes in
+# the message) rather than failing deep inside ggml's cmake. `$coreTarget` is the short target dir
+# the shader sub-build needs; it is applied to the core build only (below), never exported, since
+# the Tauri build must keep writing to web\src-tauri\target where the bundle is collected from.
 if (-not $NoVulkan) {
-    if (-not $env:VULKAN_SDK) {
-        throw "VULKAN_SDK not set. Install the Vulkan SDK from https://vulkan.lunarg.com/sdk/home#windows, or pass -NoVulkan to build CPU-only."
-    }
-    $longPaths = (Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem" `
-            -Name LongPathsEnabled -ErrorAction SilentlyContinue).LongPathsEnabled
-    if ($longPaths -ne 1) {
-        throw @"
-Windows long paths are disabled, so the ggml Vulkan shader sub-build will fail with MSB3491.
-Enable them from an elevated PowerShell, then reboot:
-  Set-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem' -Name LongPathsEnabled -Value 1 -Type DWord
-Or pass -NoVulkan to build CPU-only.
-"@
-    }
-    # ggml builds its Vulkan shader generator as a nested cmake sub-project. Under the Visual Studio
-    # generator that sub-build fails three different ways (MSB3491 .tlog over MAX_PATH, FTK1011 from
-    # FileTracker — which is native and ignores the long-path setting — and an MSB8066/VCEnd custom
-    # build step). Ninja produces none of them.
-    Require-Tool ninja "Install Ninja: winget install -e --id Ninja-build.Ninja"
-    $env:CMAKE_GENERATOR = "Ninja"
-
-    # Even under Ninja, cl.exe is not long-path aware, and the sub-build's compiler-probe objects sit
-    # ~230 characters below the target dir. Build into a short path so they stay under MAX_PATH.
-    # Applied to the core build only (below), never exported: the Tauri build must keep writing to
-    # web\src-tauri\target, which is where the bundle is collected from.
-    $coreTarget = if ($env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR } else { "$env:USERPROFILE\.hs" }
-    if ($coreTarget.Length -gt 24) {
-        throw "CARGO_TARGET_DIR '$coreTarget' is too long for the ggml Vulkan sub-build; use a path of 24 characters or fewer (or pass -NoVulkan)."
-    }
+    $coreTarget = Initialize-VulkanBuild
 }
 # Where cargo writes the core binaries (the Vulkan path redirects it; see above).
 $target = if ($coreTarget) { "$coreTarget\release" } else { "rust\target\release" }
