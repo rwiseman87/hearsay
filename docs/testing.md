@@ -26,7 +26,7 @@ This document maps the targets to what they test and the suite to where it lives
 | `tauri-test` | `cargo test` on `web/src-tauri` | the shell's pure logic (e.g. `html_escape` on the untrusted error `detail`) | no |
 | `codegen-check` | regenerate IPC fixtures + OpenAPI + TS, then `git diff --exit-code` | the committed `shared/fixtures/*`, `web/openapi.json`, and `web/src/api/schema.ts` have not drifted from the Rust source | no |
 | `version-check` | compare version strings | `rust/Cargo.toml` (canonical), `tauri.conf.json`, and `web/package.json` agree | no |
-| `audit` | `cargo audit` (both Rust trees) + `npm audit` | no known CVEs in dependencies | no |
+| `audit` | `cargo audit` (both Rust trees) + `npm audit` | no un-ignored advisories (the ignore list + rationale live in `web/src-tauri/.cargo/audit.toml`) | no |
 | `licenses` | `cargo deny check licenses` (policy `rust/deny.toml`) | every dependency is MIT/BSD/Apache-2.0 | no |
 | `web-ci` | `web-install` + `web-typecheck` (tsc) + `web-lint` (eslint) + `web-test` + `web-build` | the web UI type-checks, lints, unit/component-tests, and builds | no |
 | `web-test` | `vitest` (jsdom) | the client layer + hooks + MSW-mocked components (also folded into `web-ci`) | no |

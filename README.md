@@ -63,7 +63,7 @@ are in [docs/packaging.md](docs/packaging.md).
 ## Repository layout
 
 ```
-rust/crates/       nine Rust crates; hearsay-core is the app binary (see docs/architecture.md)
+rust/crates/       eleven Rust crates; hearsay-core is the app binary (see docs/architecture.md)
 helper/            SwiftPM package: the capture helper + the FluidAudio sidecars
 web/               React + TypeScript UI; web/src-tauri/ is the Tauri desktop shell
 shared/            IPC contract + golden frame fixtures (generated from Rust)
@@ -72,9 +72,10 @@ docs/              project documentation
 
 ## Conventions
 
-The `Makefile` is the task runner and `make ci` is the gate: clippy with warnings denied, rustfmt,
-the Swift codec self-test, `cargo test`, codegen drift checks, and CVE/license audits. Full
-conventions are in [CLAUDE.md](CLAUDE.md).
+The `Makefile` is the task runner and `make ci` is the local pre-commit gate — run on demand, since
+there is no hosted CI: clippy with warnings denied, rustfmt, the Swift codec self-test, `cargo test`,
+codegen drift checks, and dependency-advisory/license audits. Full conventions are in
+[CLAUDE.md](CLAUDE.md).
 
 ## License
 
