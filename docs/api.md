@@ -256,13 +256,14 @@ curl "http://127.0.0.1:8137/api/search?q=budget&page=1&page_size=50" -H "Authori
 ## Notes (optional local-LLM summary)
 
 Generation runs in the bundled `hearsay-notes` sidecar (llama.cpp, out-of-process) and requires a
-downloaded notes model (see Models). Produces a summary and action items from the finalized
-transcript. Best-effort: a notes failure never blocks or fails a meeting.
+downloaded notes model (see Models). Produces Markdown notes from the finalized transcript, stored and
+returned verbatim as the note's `content` — the user-editable prompt template dictates the format.
+Best-effort: a notes failure never blocks or fails a meeting.
 
 - `GET /api/meetings/{id}/notes` reads the stored notes (`404` if none yet).
 - `POST /api/meetings/{id}/notes` generates or regenerates; `409` while recording, `503` if no
   notes model is configured.
-- `PATCH /api/meetings/{id}/notes` edits the summary or action items; `422` on over-long input,
+- `PATCH /api/meetings/{id}/notes` edits the notes `content`; `422` on over-long input,
   `409` while recording.
 
 ## My notes (user-authored)

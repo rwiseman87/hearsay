@@ -436,8 +436,8 @@ function ModelsPanel() {
           <span className="settings__row-body">
             <span className="settings__row-label">Summarize meetings</span>
             <span className="settings__row-hint muted">
-              When a meeting ends, generate a summary and action items with a local model (you can
-              also generate them on demand from any finished meeting). Applies to your next meeting.
+              When a meeting ends, generate notes with a local model (you can also generate them on
+              demand from any finished meeting). Applies to your next meeting.
             </span>
           </span>
         </label>

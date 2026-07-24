@@ -109,7 +109,7 @@ use crate::schema::{
         (name = "meetings", description = "Meeting lifecycle + transcript segments"),
         (name = "folders", description = "Nested organizational folders for meetings"),
         (name = "speakers", description = "Diarization clusters + cross-meeting identities"),
-        (name = "notes", description = "Local-LLM meeting summaries + action items"),
+        (name = "notes", description = "Local-LLM meeting notes"),
         (name = "search", description = "Full-text transcript search across meetings"),
         (name = "models", description = "Notes-model catalog + download manager"),
         (name = "settings", description = "Editable preferences + live permission status"),

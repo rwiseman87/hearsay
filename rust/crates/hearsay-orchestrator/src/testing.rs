@@ -198,11 +198,10 @@ pub struct ScriptedSummarizer {
 }
 
 impl ScriptedSummarizer {
-    /// A summarizer that returns `summary` + `action_items` on each call, plus a shared call counter.
-    pub fn new(summary: &str, action_items: Vec<String>) -> (Arc<Self>, Arc<AtomicUsize>) {
+    /// A summarizer that returns `content` (the verbatim note) on each call, plus a shared call counter.
+    pub fn new(content: &str) -> (Arc<Self>, Arc<AtomicUsize>) {
         Self::from_result(Ok(NotesResult {
-            summary: summary.to_string(),
-            action_items,
+            content: content.to_string(),
         }))
     }
 

@@ -1820,10 +1820,9 @@
       },
       "MeetingNotesRead": {
         "type": "object",
-        "description": "A meeting's generated notes for the API: the summary + action items, and which model produced\nthem. `action_items` is decoded from the stored JSON array (a corrupt row degrades to empty\nrather than failing the read, matching the settings-section tolerance).",
+        "description": "A meeting's generated notes for the API: the model's reply as verbatim Markdown `content`, and\nwhich model produced them. The prompt template dictates the note's format, so there is no\nstructured summary/action-item shape.",
         "required": [
-          "summary",
-          "action_items",
+          "content",
           "model",
           "created_at",
           "updated_at",
@@ -1831,11 +1830,8 @@
           "stale"
         ],
         "properties": {
-          "action_items": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            }
+          "content": {
+            "type": "string"
           },
           "created_at": {
             "type": "string",
@@ -1851,9 +1847,6 @@
           "stale": {
             "type": "boolean",
             "description": "Whether the transcript changed after these notes were generated/edited — i.e. the notes may be\nout of date. Computed at read time (a mutating response sets it `false`)."
-          },
-          "summary": {
-            "type": "string"
           },
           "updated_at": {
             "type": "string",
@@ -1966,7 +1959,7 @@
         "properties": {
           "notes_enabled": {
             "type": "boolean",
-            "description": "Generate a summary + action items at meeting stop (the optional local-LLM notes step).\n`#[serde(default)]` so a `models` row written before notes existed still deserializes."
+            "description": "Generate meeting notes at stop (the optional local-LLM notes step).\n`#[serde(default)]` so a `models` row written before notes existed still deserializes."
           },
           "notes_model": {
             "type": "string",
@@ -2012,19 +2005,12 @@
       },
       "NotesEdit": {
         "type": "object",
-        "description": "A manual notes edit: replace the `summary` and `action_items`. Validated at the boundary\n(length-bounded summary, capped item count/length).",
+        "description": "A manual notes edit: replace the Markdown `content`. Validated at the boundary (length-bounded).",
         "required": [
-          "summary",
-          "action_items"
+          "content"
         ],
         "properties": {
-          "action_items": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            }
-          },
-          "summary": {
+          "content": {
             "type": "string"
           }
         }
@@ -2948,7 +2934,7 @@
     },
     {
       "name": "notes",
-      "description": "Local-LLM meeting summaries + action items"
+      "description": "Local-LLM meeting notes"
     },
     {
       "name": "search",

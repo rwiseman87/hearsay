@@ -113,13 +113,12 @@ impl From<Folder> for FolderRead {
     }
 }
 
-/// A meeting's generated notes for the API: the summary + action items, and which model produced
-/// them. `action_items` is decoded from the stored JSON array (a corrupt row degrades to empty
-/// rather than failing the read, matching the settings-section tolerance).
+/// A meeting's generated notes for the API: the model's reply as verbatim Markdown `content`, and
+/// which model produced them. The prompt template dictates the note's format, so there is no
+/// structured summary/action-item shape.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
 pub struct MeetingNotesRead {
-    pub summary: String,
-    pub action_items: Vec<String>,
+    pub content: String,
     pub model: String,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -134,8 +133,7 @@ pub struct MeetingNotesRead {
 impl From<MeetingNotes> for MeetingNotesRead {
     fn from(n: MeetingNotes) -> Self {
         MeetingNotesRead {
-            summary: n.summary,
-            action_items: serde_json::from_str(&n.action_items).unwrap_or_default(),
+            content: n.content,
             model: n.model,
             created_at: n.created_at,
             updated_at: n.updated_at,
@@ -145,12 +143,10 @@ impl From<MeetingNotes> for MeetingNotesRead {
     }
 }
 
-/// A manual notes edit: replace the `summary` and `action_items`. Validated at the boundary
-/// (length-bounded summary, capped item count/length).
+/// A manual notes edit: replace the Markdown `content`. Validated at the boundary (length-bounded).
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema)]
 pub struct NotesEdit {
-    pub summary: String,
-    pub action_items: Vec<String>,
+    pub content: String,
 }
 
 /// A meeting's user-authored "My notes" body (free-form text typed during the meeting). `body` is
@@ -397,7 +393,7 @@ pub struct StorageInfo {
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ModelSettings {
     pub refine_model: String,
-    /// Generate a summary + action items at meeting stop (the optional local-LLM notes step).
+    /// Generate meeting notes at stop (the optional local-LLM notes step).
     /// `#[serde(default)]` so a `models` row written before notes existed still deserializes.
     #[serde(default)]
     pub notes_enabled: bool,

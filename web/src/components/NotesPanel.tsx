@@ -7,11 +7,12 @@ interface Props {
   recording: boolean;
 }
 
-// The AI-recap block in the meeting-detail rail: a local-LLM summary + action items over the
-// finalized transcript, folded into one prose chunk (local models don't reliably emit structured
-// owner/due cards). Shows the stored recap when present, an inline editor, a Generate/Regenerate
-// action, and points at Settings when no summarization model is configured yet. Hidden while a
-// meeting is still recording (the transcript is not final, so there is nothing to summarize).
+// The AI-recap block in the meeting-detail rail: local-LLM notes over the finalized transcript, shown
+// verbatim as the model produced them (Markdown). The Settings prompt template dictates the format, so
+// the notes are a single free-form field — not a parsed summary + action-item structure. Shows the
+// stored notes when present, an inline editor, a Generate/Regenerate action, and points at Settings
+// when no summarization model is configured yet. Hidden while a meeting is still recording (the
+// transcript is not final, so there is nothing to summarize).
 export function NotesPanel({ meetingId, recording }: Props) {
   // Skip the fetch while recording — its 404 empty-state would be meaningless mid-meeting.
   const notes = useMeetingNotes(recording ? null : meetingId);
@@ -21,10 +22,9 @@ export function NotesPanel({ meetingId, recording }: Props) {
   const modelReady = settings.data?.models_info.notes_model_exists ?? false;
   const data = notes.data;
 
-  // Inline edit state: the summary draft + action items as one-per-line text.
+  // Inline edit state: the notes content as one editable Markdown field.
   const [editing, setEditing] = useState(false);
-  const [summaryDraft, setSummaryDraft] = useState("");
-  const [itemsDraft, setItemsDraft] = useState("");
+  const [contentDraft, setContentDraft] = useState("");
   // Confirm gate for a regenerate that would overwrite manual edits.
   const [confirmRegen, setConfirmRegen] = useState(false);
 
@@ -36,19 +36,11 @@ export function NotesPanel({ meetingId, recording }: Props) {
   const startEdit = () => {
     if (!data) return;
     edit.reset();
-    setSummaryDraft(data.summary);
-    setItemsDraft(data.action_items.join("\n"));
+    setContentDraft(data.content);
     setEditing(true);
   };
   const save = () => {
-    const action_items = itemsDraft
-      .split("\n")
-      .map((line) => line.trim())
-      .filter((line) => line.length > 0);
-    edit.mutate(
-      { summary: summaryDraft.trim(), action_items },
-      { onSuccess: () => setEditing(false) },
-    );
+    edit.mutate({ content: contentDraft.trim() }, { onSuccess: () => setEditing(false) });
   };
   const runGenerate = () => {
     setConfirmRegen(false);
@@ -110,25 +102,15 @@ export function NotesPanel({ meetingId, recording }: Props) {
 
       {editing ? (
         <div className="recap__editor">
-          <label className="recap__editor-label" htmlFor="notes-summary">
-            Summary
+          <label className="recap__editor-label" htmlFor="notes-content">
+            Notes (Markdown)
           </label>
           <textarea
-            id="notes-summary"
-            className="recap__editor-summary"
-            value={summaryDraft}
+            id="notes-content"
+            className="recap__editor-content"
+            value={contentDraft}
             disabled={edit.isPending}
-            onChange={(event) => setSummaryDraft(event.target.value)}
-          />
-          <label className="recap__editor-label" htmlFor="notes-items">
-            Action items (one per line)
-          </label>
-          <textarea
-            id="notes-items"
-            className="recap__editor-items"
-            value={itemsDraft}
-            disabled={edit.isPending}
-            onChange={(event) => setItemsDraft(event.target.value)}
+            onChange={(event) => setContentDraft(event.target.value)}
           />
           <div className="recap__editor-actions">
             <button type="button" className="line__save" onClick={save} disabled={edit.isPending}>
@@ -152,25 +134,18 @@ export function NotesPanel({ meetingId, recording }: Props) {
       ) : data ? (
         <div className="recap__body">
           <div className="recap__subhead">
-            SUMMARY
+            NOTES
             {data.edited ? <span className="recap__badge"> · edited</span> : null}
           </div>
-          <p className="recap__summary">{data.summary}</p>
-          {data.action_items.map((item, index) => (
-            <p key={index} className="recap__summary">
-              {item}
-            </p>
-          ))}
+          <p className="recap__summary">{data.content}</p>
           <p className="recap__meta muted">Generated locally by {data.model}</p>
         </div>
       ) : !modelReady ? (
         <p className="muted recap__hint">
-          Choose a summarization model in Settings › Models to generate a summary and action items.
+          Choose a summarization model in Settings › Models to generate notes for this meeting.
         </p>
       ) : (
-        <p className="muted recap__hint">
-          No notes yet — Generate to summarize this meeting and pull out action items.
-        </p>
+        <p className="muted recap__hint">No notes yet — Generate to summarize this meeting.</p>
       )}
 
       {generate.isError ? (

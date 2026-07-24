@@ -45,11 +45,11 @@ struct NotesRequest<'a> {
     transcript: &'a str,
 }
 
-/// The response read from the sidecar's stdout (mirrors `hearsay-notes`'s `Response`).
+/// The response read from the sidecar's stdout (mirrors `hearsay-notes`'s `Response`): the model's
+/// reply verbatim as the note.
 #[derive(Deserialize)]
 struct NotesResponse {
-    summary: String,
-    action_items: Vec<String>,
+    content: String,
 }
 
 #[async_trait]
@@ -90,8 +90,7 @@ impl hearsay_orchestrator::Summarizer for SubprocessSummarizer {
         .map_err(|e| OrchestratorError::Backend(format!("notes task panicked: {e}")))?
         .map_err(OrchestratorError::Backend)?;
         Ok(hearsay_orchestrator::NotesResult {
-            summary: response.summary,
-            action_items: response.action_items,
+            content: response.content,
         })
     }
 }

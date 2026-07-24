@@ -2340,22 +2340,14 @@ mark.find-hit {
   text-transform: uppercase;
 }
 
-.recap__editor-summary,
-.recap__editor-items {
+.recap__editor-content {
   width: 100%;
+  min-height: 10em;
   padding: 6px 8px;
   font: inherit;
   font-size: var(--fs-md);
   line-height: 1.5;
   resize: vertical;
-}
-
-.recap__editor-summary {
-  min-height: 5em;
-}
-
-.recap__editor-items {
-  min-height: 3em;
 }
 
 .recap__editor-actions {

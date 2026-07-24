@@ -1,7 +1,8 @@
-//! Meeting notes (local-LLM summary + action items). `POST /meetings/{id}/notes` generates (or
-//! regenerates) them from the finalized transcript; `GET /meetings/{id}/notes` reads the stored row.
-//! Thin, like the other routers: existence/state checks here, the LLM work behind the engine seam
-//! (`LiveEngine::generate_notes`) — the same path the auto-at-stop generation uses.
+//! Meeting notes (local-LLM Markdown notes). `POST /meetings/{id}/notes` generates (or regenerates)
+//! them from the finalized transcript; `GET /meetings/{id}/notes` reads the stored row. Thin, like the
+//! other routers: existence/state checks here, the LLM work behind the engine seam
+//! (`LiveEngine::generate_notes`) — the same path the auto-at-stop generation uses. The model's reply
+//! is stored and returned verbatim; the prompt template dictates its shape.
 
 use axum::extract::State;
 use axum::routing::post;
@@ -16,11 +17,9 @@ use crate::extract::{Json, Path};
 use crate::schema::{MeetingNotesRead, NotesEdit};
 use crate::state::AppState;
 
-/// Boundary limits for a manual notes edit (reject over-large payloads as 422, never let them reach
-/// the DB / LLM prompt).
-const MAX_SUMMARY_LEN: usize = 20_000;
-const MAX_ACTION_ITEMS: usize = 200;
-const MAX_ACTION_ITEM_LEN: usize = 2_000;
+/// Boundary limit for a manual notes edit (reject an over-large payload as 422, never let it reach the
+/// DB). Generous: notes are a short Markdown document, but a user may paste a long transcript recap.
+const MAX_CONTENT_LEN: usize = 40_000;
 
 /// Routes served under the `/api` prefix (token-gated by the caller).
 pub fn router() -> Router<AppState> {
@@ -109,32 +108,13 @@ pub(crate) async fn edit_notes(
             "cannot edit notes for a meeting while it is recording".into(),
         ));
     }
-    let summary = body.summary.trim();
-    if summary.chars().count() > MAX_SUMMARY_LEN {
+    let content = body.content.trim();
+    if content.chars().count() > MAX_CONTENT_LEN {
         return Err(ApiError::Unprocessable(format!(
-            "summary exceeds {MAX_SUMMARY_LEN} characters"
+            "notes exceed {MAX_CONTENT_LEN} characters"
         )));
     }
-    if body.action_items.len() > MAX_ACTION_ITEMS {
-        return Err(ApiError::Unprocessable(format!(
-            "too many action items (max {MAX_ACTION_ITEMS})"
-        )));
-    }
-    // Drop blank items (a trailing empty input is normal in the editor) and length-check the rest.
-    let mut items: Vec<String> = Vec::with_capacity(body.action_items.len());
-    for item in &body.action_items {
-        let trimmed = item.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        if trimmed.chars().count() > MAX_ACTION_ITEM_LEN {
-            return Err(ApiError::Unprocessable(format!(
-                "an action item exceeds {MAX_ACTION_ITEM_LEN} characters"
-            )));
-        }
-        items.push(trimmed.to_string());
-    }
-    let notes = queries::update_meeting_notes(&state.pool, id, summary, &items)
+    let notes = queries::update_meeting_notes(&state.pool, id, content)
         .await?
         .ok_or(ApiError::NotFound("no notes for this meeting"))?;
     // Keep notes.md in step with the edit (best-effort; the DB is the source of truth).

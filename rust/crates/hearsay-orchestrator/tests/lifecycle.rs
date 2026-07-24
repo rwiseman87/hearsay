@@ -637,7 +637,7 @@ async fn storage_override_pins_meeting_dir_off_the_default_root() {
 }
 
 /// With the `notes_enabled` override on and a summarizer wired, a stop auto-generates notes: the
-/// summary + action items are persisted and `notes.md` is written into the meeting folder.
+/// verbatim content is persisted and `notes.md` is written into the meeting folder.
 #[tokio::test]
 async fn stop_auto_generates_notes_when_enabled() {
     let pool = memory_pool().await;
@@ -650,8 +650,7 @@ async fn stop_auto_generates_notes_when_enabled() {
     let chunks = vec![chunk(Stream::Them, 1_000_000_000, &[0.1, 0.2, 0.3])];
     let them_segments = vec![seg(SegmentKind::Final, "hello there", 0.0, 1.0, Some(0))];
     let (backend, _fed) = ScriptedBackend::new(chunks, vec![], them_segments);
-    let (summarizer, calls) =
-        ScriptedSummarizer::new("A short summary.", vec!["Do the thing".into()]);
+    let (summarizer, calls) = ScriptedSummarizer::new("A short summary.\n\n- Do the thing");
     let orch = orchestrator(pool.clone(), tmp.path(), backend).with_summarizer(summarizer);
 
     let meeting = orch.start_meeting(Some("Notes Me".into())).await.unwrap();
@@ -665,9 +664,7 @@ async fn stop_auto_generates_notes_when_enabled() {
         .await
         .unwrap()
         .expect("notes generated at stop");
-    assert_eq!(notes.summary, "A short summary.");
-    let items: Vec<String> = serde_json::from_str(&notes.action_items).unwrap();
-    assert_eq!(items, vec!["Do the thing".to_string()]);
+    assert_eq!(notes.content, "A short summary.\n\n- Do the thing");
 
     let notes_md =
         std::fs::read_to_string(tmp.path().join(&meeting.folder).join("notes.md")).unwrap();
@@ -686,7 +683,7 @@ async fn manual_generate_notes_ignores_toggle() {
     let chunks = vec![chunk(Stream::Them, 1_000_000_000, &[0.1, 0.2, 0.3])];
     let them_segments = vec![seg(SegmentKind::Final, "agenda item", 0.0, 1.0, Some(0))];
     let (backend, _fed) = ScriptedBackend::new(chunks, vec![], them_segments);
-    let (summarizer, calls) = ScriptedSummarizer::new("Manual summary.", vec![]);
+    let (summarizer, calls) = ScriptedSummarizer::new("Manual summary.");
     let orch = orchestrator(pool.clone(), tmp.path(), backend).with_summarizer(summarizer);
 
     let meeting = orch.start_meeting(None).await.unwrap();
@@ -706,7 +703,7 @@ async fn manual_generate_notes_ignores_toggle() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(notes.summary, "Manual summary.");
+    assert_eq!(notes.content, "Manual summary.");
 }
 
 /// A notes error at stop is best-effort: the stop still finalizes and no notes row is written.

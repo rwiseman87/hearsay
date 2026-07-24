@@ -51,25 +51,14 @@ pub fn render_transcript(title: &str, segments: &[Segment]) -> String {
     render(title, segments)
 }
 
-/// Render the notes document: the summary, then the action items as a bulleted list (or a `_None._`
-/// placeholder when there are none).
+/// Render the notes document: a title heading followed by the notes `content` verbatim (the model's
+/// reply, which the prompt template shaped as Markdown). The content is used as-is — no structural
+/// summary/action-item scaffolding.
 fn render_notes(title: &str, notes: &NotesResult) -> String {
-    let mut out = format!(
-        "# {title} — Notes\n\n## Summary\n\n{}\n",
-        notes.summary.trim()
-    );
-    out.push_str("\n## Action items\n\n");
-    if notes.action_items.is_empty() {
-        out.push_str("_None._\n");
-    } else {
-        for item in &notes.action_items {
-            out.push_str(&format!("- {}\n", item.trim()));
-        }
-    }
-    out
+    format!("# {title} — Notes\n\n{}\n", notes.content.trim())
 }
 
-/// Write `notes.md` (summary + action items) into `dir` atomically, mirroring
+/// Write `notes.md` (the model's verbatim Markdown notes) into `dir` atomically, mirroring
 /// [`write_meeting_files`]'s crash-safe temp-file-plus-rename write.
 pub fn write_notes_md(
     dir: &Path,
@@ -159,25 +148,14 @@ mod tests {
     }
 
     #[test]
-    fn render_notes_includes_summary_and_action_items() {
+    fn render_notes_wraps_content_verbatim_under_a_title() {
         let notes = NotesResult {
-            summary: "We agreed on the plan.".into(),
-            action_items: vec!["Ship it".into(), "Tell Bob".into()],
+            content: "## Summary\n\nWe agreed on the plan.\n\n- Ship it\n- Tell Bob".into(),
         };
         let md = render_notes("Sync", &notes);
-        assert!(md.starts_with("# Sync — Notes"));
-        assert!(md.contains("## Summary\n\nWe agreed on the plan."));
-        assert!(md.contains("- Ship it"));
-        assert!(md.contains("- Tell Bob"));
-    }
-
-    #[test]
-    fn render_notes_empty_action_items_shows_none() {
-        let notes = NotesResult {
-            summary: "s".into(),
-            action_items: vec![],
-        };
-        assert!(render_notes("T", &notes).contains("## Action items\n\n_None._"));
+        assert!(md.starts_with("# Sync — Notes\n\n"));
+        // The model's Markdown is carried through as-is.
+        assert!(md.contains("## Summary\n\nWe agreed on the plan.\n\n- Ship it\n- Tell Bob"));
     }
 
     use hearsay_db::models::Stream;
