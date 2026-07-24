@@ -35,6 +35,9 @@ if (-not (cargo tauri --version 2>$null)) {
 }
 
 Initialize-LibClang
+# Never inherit the build host's instruction set -- an AVX-512 host would ship a core that dies with
+# STATUS_ILLEGAL_INSTRUCTION on any Intel machine. Unconditional: -NoVulkan is affected identically.
+Initialize-GgmlIsaFloor
 
 # The vulkan feature compiles ggml's Vulkan backend, which needs the SDK's headers + glslc at build
 # time plus Windows long-path support and the Ninja generator. Preflight it here (with the fixes in
@@ -139,6 +142,8 @@ Write-Host "building hearsay-core (features: $features) + hearsay-notes (feature
 $prevTargetDir = $env:CARGO_TARGET_DIR
 if ($coreTarget) { $env:CARGO_TARGET_DIR = $coreTarget }
 try {
+    # Inside the try so it sees the same CARGO_TARGET_DIR the build will write to.
+    Reset-StaleGgmlBuild $(if ($coreTarget) { $coreTarget } else { "rust\target" })
     cargo build --release --manifest-path rust\Cargo.toml -p hearsay-core --features $features
     if ($LASTEXITCODE -ne 0) { throw "cargo build (core) failed" }
     if ($notesFeatures) {
