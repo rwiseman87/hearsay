@@ -11,12 +11,12 @@ hearsay-capture = { path = "../hearsay-capture" }
 hearsay-inference = { path = "../hearsay-inference" }
 hearsay-notes-prompt = { path = "../hearsay-notes-prompt" }
 hearsay-db = { path = "../hearsay-db" }
-tokio = { version = "1.52.3", features = ["rt", "sync"] }
-async-trait = "0.1.89"
-tracing = "0.1.44"
-serde = { version = "1.0.228", features = ["derive"] }
-serde_json = "1.0.150"
-sqlx = { version = "0.9.0", default-features = false, features = ["runtime-tokio", "sqlite", "uuid", "chrono"] }
+tokio = { workspace = true, features = ["rt", "sync"] }
+async-trait = { workspace = true }
+tracing = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sqlx = { workspace = true }
 
 # `sherpa` forwards to `hearsay-inference/sherpa` to build the cross-platform (Windows) sherpa-onnx
 # live/diarize path (`SherpaTranscriber` + the streaming test); off by default so the macOS bundle
@@ -34,5 +34,5 @@ vulkan = ["hearsay-inference/vulkan"]
 cuda = ["hearsay-inference/cuda"]
 
 [dev-dependencies]
-tokio = { version = "1.52.3", features = ["macros", "rt-multi-thread"] }
-tempfile = "3.27.0"
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+tempfile = { workspace = true }

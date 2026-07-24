@@ -59,19 +59,28 @@ pub fn match_identity<'a>(
     known: &'a [(String, Vec<f32>)],
     threshold: f64,
 ) -> Option<&'a str> {
-    let mut best_name: Option<&'a str> = None;
-    let mut best_score = -1.0_f64;
+    best_identity(centroid, known, threshold).map(|(name, _score)| name)
+}
+
+/// Like [`match_identity`], but also returns the winning cosine score so a caller can rank or dedup
+/// competing matches (e.g. keep the highest-scoring ordinal when two clusters match the same
+/// person). `None` if nothing clears `threshold`.
+pub fn best_identity<'a>(
+    centroid: &[f32],
+    known: &'a [(String, Vec<f32>)],
+    threshold: f64,
+) -> Option<(&'a str, f64)> {
+    let mut best: Option<(&'a str, f64)> = None;
     for (name, vector) in known {
         if vector.len() != centroid.len() {
             continue;
         }
         let score = cosine(centroid, vector);
-        if score >= threshold && score > best_score {
-            best_score = score;
-            best_name = Some(name.as_str());
+        if score >= threshold && score > best.map_or(-1.0, |(_, s)| s) {
+            best = Some((name.as_str(), score));
         }
     }
-    best_name
+    best
 }
 
 #[cfg(test)]

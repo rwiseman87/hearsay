@@ -64,6 +64,7 @@ fn refine_gate_probe() {
         ),
     ];
 
+    let mut results: Vec<(usize, usize)> = Vec::new(); // (transcript speakers, total words) per setting
     for (label, consolidate) in settings {
         let diarizer = SherpaDiarizer::load_tuned(
             &seg,
@@ -87,6 +88,7 @@ fn refine_gate_probe() {
             entry.2 += segment.end_s - segment.start_s;
         }
         let words: usize = per_speaker.values().map(|(_, words, _)| words).sum();
+        results.push((per_speaker.len(), words));
         eprintln!(
             "\n== {label} ==\n  {} diarizer turns -> {} transcript speakers, {} segments, {words} words",
             clusters,
@@ -97,4 +99,23 @@ fn refine_gate_probe() {
             eprintln!("  Speaker {ordinal}: {segments} segments, {words} words, {secs:.1}s");
         }
     }
+
+    // Consolidation relabels text; it must never delete any. Whisper transcribes the whole Them
+    // track independently of the diarizer, so the total word count is identical across all three
+    // settings, and no setting invents speakers beyond the raw (un-consolidated) count.
+    let words: Vec<usize> = results.iter().map(|&(_, w)| w).collect();
+    let speakers: Vec<usize> = results.iter().map(|&(s, _)| s).collect();
+    assert!(
+        words.iter().all(|&w| w > 0),
+        "no transcript produced: {words:?}"
+    );
+    assert!(
+        words.windows(2).all(|w| w[0] == w[1]),
+        "consolidation changed total words across settings: {words:?} (it must relabel, never delete)"
+    );
+    let raw_speakers = speakers[0];
+    assert!(
+        speakers.iter().all(|&s| s <= raw_speakers),
+        "consolidation produced more speakers than the raw pass: {speakers:?}"
+    );
 }

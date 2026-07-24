@@ -6,9 +6,9 @@ publish = false
 
 [dependencies]
 hearsay-attribution = { path = "../hearsay-attribution" }
-hound = "3.5.1"
-serde = { version = "1.0.228", features = ["derive"] }
-serde_json = "1.0.150"
+hound = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
 # `shared` (not the crate's default `static`) links sherpa-onnx + onnxruntime as DLLs. The static
 # libs are prebuilt against the *static* CRT, which would force `-C target-feature=+crt-static` on
 # the whole binary — and whisper.cpp pins CMP0091 OLD, so its cmake appends `/MD` after the `/MT`
@@ -17,7 +17,7 @@ serde_json = "1.0.150"
 sherpa-onnx = { version = "1.13.3", optional = true, default-features = false, features = [
     "shared",
 ] }
-tempfile = "3.27.0"
+tempfile = { workspace = true }
 whisper-rs = "0.16.0"
 
 # `sherpa` enables the cross-platform (Windows) sherpa-onnx diarize + streaming path; it is off by

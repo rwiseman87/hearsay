@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
 use hearsay_attribution::{
-    assign_segment_speaker, centroid_from_bytes, centroid_to_bytes, match_identity, SpeakerTurn,
+    assign_segment_speaker, best_identity, centroid_from_bytes, centroid_to_bytes, SpeakerTurn,
 };
 use sqlx::{FromRow, SqlitePool};
 use uuid::Uuid;
@@ -865,21 +865,18 @@ pub async fn upsert_user_notes(
     body: &str,
 ) -> Result<UserNotes, sqlx::Error> {
     let now = Utc::now();
-    sqlx::query(
+    sqlx::query_as::<_, UserNotes>(
         "INSERT INTO user_notes (meeting_id, body, created_at, updated_at) \
          VALUES (?, ?, ?, ?) \
-         ON CONFLICT(meeting_id) DO UPDATE SET body = excluded.body, updated_at = excluded.updated_at",
+         ON CONFLICT(meeting_id) DO UPDATE SET body = excluded.body, updated_at = excluded.updated_at \
+         RETURNING *",
     )
     .bind(meeting_id)
     .bind(body)
     .bind(now)
     .bind(now)
-    .execute(pool)
-    .await?;
-    // The row always exists after the upsert.
-    Ok(get_user_notes(pool, meeting_id)
-        .await?
-        .expect("user_notes row present after upsert"))
+    .fetch_one(pool)
+    .await
 }
 
 /// Insert or replace a meeting's generated notes (one row per meeting; regenerating overwrites).
@@ -1007,11 +1004,29 @@ async fn recognize_speakers(
         .into_iter()
         .map(|(name, blob)| (name, centroid_from_bytes(&blob)))
         .collect();
+    // Score every ordinal's best match, then resolve so each name binds to at most one ordinal (the
+    // highest-scoring), mirroring `carry_forward_locked_names`. Without this, two clusters that both
+    // clear the threshold for the same person would both take that name; the runner-up now stays
+    // "Speaker N" instead.
+    let mut candidates: Vec<(i64, &str, f64)> = Vec::new();
     for (&ordinal, centroid) in centroids {
         if manual.contains_key(&ordinal) {
             continue; // a manual carry-forward name wins over auto-recognition
         }
-        if let Some(name) = match_identity(centroid, &known, threshold) {
+        if let Some((name, score)) = best_identity(centroid, &known, threshold) {
+            candidates.push((ordinal, name, score));
+        }
+    }
+    // Highest score first; deterministic tiebreak (lower ordinal, then name).
+    candidates.sort_by(|a, b| {
+        b.2.partial_cmp(&a.2)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(a.0.cmp(&b.0))
+            .then(a.1.cmp(b.1))
+    });
+    let mut used_names: HashSet<String> = HashSet::new();
+    for (ordinal, name, _score) in candidates {
+        if used_names.insert(name.to_string()) {
             recognized.insert(ordinal, name.to_string());
         }
     }

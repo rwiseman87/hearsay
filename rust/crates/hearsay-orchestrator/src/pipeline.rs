@@ -25,6 +25,7 @@ use hearsay_db::queries;
 
 use crate::aec::EchoCanceller;
 use crate::error::OrchestratorError;
+use crate::lock::MutexExt;
 use crate::recorder::MeetingAudioRecorder;
 use crate::traits::{AudioSource, BackendInstance, StreamRole, Transcriber};
 use crate::types::{CaptureChunk, SegmentKind, SidecarSegment, Stream};
@@ -147,7 +148,7 @@ impl Pipeline {
     /// Reset the silence clock to now — the "Keep recording" action. The next watchdog tick then sees
     /// no silence, clears any active prompt, and re-arms; the auto-end is measured afresh from here.
     pub(crate) fn keep_alive(&self) {
-        *self.last_activity.lock().unwrap() = Instant::now();
+        *self.last_activity.lock_recover() = Instant::now();
     }
 
     /// Pause capture: demux stops recording/forwarding and the timeline freezes. Idempotent.
@@ -162,7 +163,7 @@ impl Pipeline {
     /// counted as inactivity, and broadcasts a `capture_state` frame. Idempotent.
     pub(crate) fn resume(&self) {
         if self.paused.swap(false, Ordering::SeqCst) {
-            *self.last_activity.lock().unwrap() = Instant::now();
+            *self.last_activity.lock_recover() = Instant::now();
             publish_capture_state(&self.broadcast_tx, "active");
         }
     }
@@ -564,7 +565,7 @@ async fn stream_loop(
                 Some(seg) => {
                     // Any emitted segment (partial or final, either stream) is VAD-gated speech, so it
                     // resets the silence clock the inactivity watchdog measures.
-                    *last_activity.lock().unwrap() = Instant::now();
+                    *last_activity.lock_recover() = Instant::now();
                     handle(
                         role,
                         &seg,
@@ -846,14 +847,14 @@ async fn inactivity_watchdog(
         // A paused meeting is not idle — the user stepped away deliberately. Hold the silence clock at
         // now and clear any active prompt so a pause is never mistaken for inactivity and auto-ended.
         if paused.load(Ordering::SeqCst) {
-            *last_activity.lock().unwrap() = Instant::now();
+            *last_activity.lock_recover() = Instant::now();
             if prompted {
                 prompted = false;
                 let _ = prompt_tx.send(None);
             }
             continue;
         }
-        let silence = last_activity.lock().unwrap().elapsed();
+        let silence = last_activity.lock_recover().elapsed();
         match silence_stage(silence, &cfg, prompted) {
             Stage::None => {
                 // Speech (or a Keep-recording reset) dropped the silence below the prompt threshold:

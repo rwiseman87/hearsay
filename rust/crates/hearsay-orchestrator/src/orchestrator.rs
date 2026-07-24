@@ -19,6 +19,7 @@ use hearsay_db::queries;
 use hearsay_engine::{LiveEngine, LiveError};
 
 use crate::error::OrchestratorError;
+use crate::lock::MutexExt;
 use crate::pipeline::{self, InactivityConfig, Pipeline};
 use crate::traits::{Backend, Refiner, Summarizer};
 
@@ -290,7 +291,7 @@ impl Orchestrator {
             inactivity,
         )
         .await?;
-        *self.active.lock().unwrap() = Some(ActiveSession {
+        *self.active.lock_recover() = Some(ActiveSession {
             meeting_id: meeting.id,
             pipeline,
         });
@@ -362,7 +363,7 @@ impl Orchestrator {
 
     /// Track an in-flight post-stop finalize task, pruning any already-finished handles.
     fn track_background(&self, handle: JoinHandle<()>) {
-        let mut background = self.background.lock().unwrap();
+        let mut background = self.background.lock_recover();
         background.retain(|h| !h.is_finished());
         background.push(handle);
     }
@@ -370,7 +371,7 @@ impl Orchestrator {
     /// Await every in-flight post-stop finalize task (refine + transcript write + status flip).
     /// For graceful shutdown and for tests that assert on the refined result.
     pub async fn wait_for_refines(&self) {
-        let handles: Vec<_> = std::mem::take(&mut *self.background.lock().unwrap());
+        let handles: Vec<_> = std::mem::take(&mut *self.background.lock_recover());
         for handle in handles {
             let _ = handle.await;
         }
@@ -508,7 +509,7 @@ async fn write_user_notes_file(output_dir: &Path, meeting: &Meeting, body: &str)
 impl LiveEngine for Orchestrator {
     async fn start_meeting(&self, title: Option<String>) -> Result<Meeting, LiveError> {
         let _op = self.op_lock.lock().await;
-        if self.active.lock().unwrap().is_some() {
+        if self.active.lock_recover().is_some() {
             return Err(LiveError::Busy("a meeting is already recording".into()));
         }
         Ok(self.start_meeting_inner(title).await?)
@@ -524,7 +525,7 @@ impl LiveEngine for Orchestrator {
             // Take + close the active session if it is this meeting (stopping a non-active meeting
             // id still finalizes its row).
             let session = {
-                let mut guard = self.active.lock().unwrap();
+                let mut guard = self.active.lock_recover();
                 if guard.as_ref().is_some_and(|s| s.meeting_id == meeting_id) {
                     guard.take()
                 } else {
@@ -643,11 +644,11 @@ impl LiveEngine for Orchestrator {
     }
 
     fn active_meeting(&self) -> Option<Uuid> {
-        self.active.lock().unwrap().as_ref().map(|s| s.meeting_id)
+        self.active.lock_recover().as_ref().map(|s| s.meeting_id)
     }
 
     fn subscribe(&self, meeting_id: Uuid) -> Option<broadcast::Receiver<String>> {
-        let guard = self.active.lock().unwrap();
+        let guard = self.active.lock_recover();
         match guard.as_ref() {
             Some(s) if s.meeting_id == meeting_id => Some(s.pipeline.broadcast_tx.subscribe()),
             _ => None,
@@ -655,7 +656,7 @@ impl LiveEngine for Orchestrator {
     }
 
     fn transcription_warming(&self, meeting_id: Uuid) -> Option<bool> {
-        let guard = self.active.lock().unwrap();
+        let guard = self.active.lock_recover();
         match guard.as_ref() {
             Some(s) if s.meeting_id == meeting_id => {
                 Some(s.pipeline.warming.load(Ordering::SeqCst))
@@ -665,7 +666,7 @@ impl LiveEngine for Orchestrator {
     }
 
     fn keep_alive(&self, meeting_id: Uuid) {
-        let guard = self.active.lock().unwrap();
+        let guard = self.active.lock_recover();
         if let Some(s) = guard.as_ref() {
             if s.meeting_id == meeting_id {
                 s.pipeline.keep_alive();
@@ -674,7 +675,7 @@ impl LiveEngine for Orchestrator {
     }
 
     fn inactivity_prompt(&self, meeting_id: Uuid) -> Option<u64> {
-        let guard = self.active.lock().unwrap();
+        let guard = self.active.lock_recover();
         match guard.as_ref() {
             Some(s) if s.meeting_id == meeting_id => *s.pipeline.inactivity_prompt.borrow(),
             _ => None,
@@ -682,7 +683,7 @@ impl LiveEngine for Orchestrator {
     }
 
     fn pause_meeting(&self, meeting_id: Uuid) -> bool {
-        let guard = self.active.lock().unwrap();
+        let guard = self.active.lock_recover();
         match guard.as_ref() {
             Some(s) if s.meeting_id == meeting_id => {
                 s.pipeline.pause();
@@ -693,7 +694,7 @@ impl LiveEngine for Orchestrator {
     }
 
     fn resume_meeting(&self, meeting_id: Uuid) -> bool {
-        let guard = self.active.lock().unwrap();
+        let guard = self.active.lock_recover();
         match guard.as_ref() {
             Some(s) if s.meeting_id == meeting_id => {
                 s.pipeline.resume();
@@ -704,7 +705,7 @@ impl LiveEngine for Orchestrator {
     }
 
     fn paused(&self, meeting_id: Uuid) -> Option<bool> {
-        let guard = self.active.lock().unwrap();
+        let guard = self.active.lock_recover();
         match guard.as_ref() {
             Some(s) if s.meeting_id == meeting_id => Some(s.pipeline.is_paused()),
             _ => None,
