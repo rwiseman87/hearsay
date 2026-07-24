@@ -44,6 +44,10 @@ $probeFeatureArgs = if ($NoVulkan) { @() } else { @("--features", "vulkan") }
 
 # Require-Tool / Initialize-LibClang / Initialize-VulkanBuild, shared with scripts\build-windows.ps1.
 . "$PSScriptRoot\windows-build-env.ps1"
+# Unconditional so no -Target can miss it: `e2e` builds the core outside the $buildsWorkspace
+# preflight below, and testing at a different ISA than the installer ships is how the AVX-512 crash
+# stayed invisible here in the first place. Env-only, so it costs the web/tauri targets nothing.
+Initialize-GgmlIsaFloor
 
 # $ErrorActionPreference = Stop does not trip on a native command's non-zero exit, so check explicitly.
 function Assert-Ok($label) {
@@ -154,6 +158,7 @@ if ($buildsWorkspace) {
     Require-Tool cmake "Install CMake (whisper-rs / llama-cpp-2 build) from https://cmake.org"
     Initialize-LibClang
     if (-not $NoVulkan) { $coreTarget = Initialize-VulkanBuild }
+    Reset-StaleGgmlBuild $(if ($coreTarget) { $coreTarget } else { "rust\target" })
 }
 
 switch ($Target) {

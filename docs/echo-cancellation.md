@@ -211,6 +211,22 @@ frame gets the adaptive-filter subtraction *plus* a residual-echo/noise cleanup 
   is not `Send` by default. `demux` is the single owner and Tokio never polls that future from two
   threads at once, so a narrow `unsafe impl Send for SendAec` is sound and no lock is needed
   (`aec.rs`).
+- **Why is the Windows mic opened RAW?** Because otherwise there is nothing to cancel *linearly*.
+  A normally-opened WASAPI capture stream arrives through the APO chain — "Audio enhancements",
+  vendor noise suppression and AGC, and on most laptops the OEM's own echo canceller — which makes
+  Me a nonlinear, time-varying function of the acoustic field. An adaptive linear filter cannot
+  model that, so Speex cancels almost nothing and every remote utterance leaks into Me anyway.
+  Measured on one laptop as the best ERLE *any* linear canceller could reach (an offline
+  least-squares FIR, 200 ms fit, speakers, user silent): **1.7 dB** with enhancements on and the
+  stream processed, **16.8 dB** with them manually off, and **17.3 dB** with them left on but the
+  stream opened RAW. So RAW recovers the full ~15 dB without the user having to find the "Audio
+  enhancements" checkbox — which matters because it is on by default. `wasapi_source.rs` therefore
+  opens Me with `StreamOption::Raw`, falling back to the processed stream only if the endpoint
+  refuses (logged, so a degraded mic is diagnosable rather than silent).
+  Only Me: the loopback reference is a digital copy of the render mix with no APO chain in front of
+  it. Note the ceiling keeps climbing to ~17 dB out at 300 ms of filter, which is why `FILTER_TAIL`
+  is sized at 4800 and not the crate default — the echo path through a laptop chassis has a long
+  reverb tail, and a 50 ms fit understates what is cancellable by ~10 dB.
 
 ## Guardrails and edge cases
 

@@ -21,8 +21,8 @@ use tokio::sync::{mpsc, oneshot};
 
 use hearsay_orchestrator::{AudioChunk, AudioSource, CaptureChunk, OrchestratorError, Stream};
 use wasapi::{
-    deinitialize, initialize_mta, AudioCaptureClient, AudioClient, DeviceEnumerator, Direction,
-    Handle, SampleType, StreamMode, WaveFormat,
+    deinitialize, initialize_mta, AudioCaptureClient, AudioClient, AudioClientProperties,
+    DeviceEnumerator, Direction, Handle, SampleType, StreamMode, StreamOption, WaveFormat,
 };
 
 use crate::LoopbackMode;
@@ -174,11 +174,41 @@ fn capture_thread(
     deinitialize();
 }
 
+/// Build a capture session, preferring a RAW mic stream and falling back to the processed one.
+///
+/// The Me endpoint is opened RAW so it bypasses the Windows APO chain — "Audio enhancements", the
+/// vendor's noise suppression and AGC, and on most laptops the OEM's own echo canceller. Those make
+/// the mic a nonlinear, time-varying function of the acoustic field, which destroys our own AEC.
+/// Measured on one laptop as the best ERLE *any* linear canceller could reach (an offline
+/// least-squares FIR over a 200 ms fit, speakers, user silent):
+///
+///   enhancements on,  processed -> 1.7 dB   (nothing cancellable; echo passes straight through)
+///   enhancements off, processed -> 16.8 dB  (a linear path SpeexDSP can converge on)
+///   enhancements on,  RAW       -> 17.3 dB  (this code path: the APO chain is bypassed)
+///
+/// So RAW recovers ~15 dB without the user having to find the "Audio enhancements" checkbox — which
+/// matters because it is on by default. RAW is not guaranteed on every endpoint, hence the fallback:
+/// a mic that refuses it still captures, just with the old echo behaviour. Only Me is opened RAW —
+/// the loopback reference is a digital copy of the render mix with no APO chain in front of it.
+fn build_session(loopback: Option<LoopbackMode>) -> Result<Session, String> {
+    if loopback.is_none() {
+        match build_session_raw(loopback, true) {
+            Ok(session) => return Ok(session),
+            Err(err) => tracing::warn!(
+                error = %err,
+                "mic does not support raw capture; using the processed stream (Windows audio \
+                 enhancements on this endpoint will degrade echo cancellation)"
+            ),
+        }
+    }
+    build_session_raw(loopback, false)
+}
+
 /// Build, initialize, and start one capture client for the stream kind. 16 kHz mono f32 is
 /// requested directly: the mic and device-loopback paths enable the engine's format converter
 /// (`AUTOCONVERTPCM` + `SRC_DEFAULT_QUALITY`); process loopback specifies the format outright (its
 /// client cannot report a mix format) and the engine mixes into it.
-fn build_session(loopback: Option<LoopbackMode>) -> Result<Session, String> {
+fn build_session_raw(loopback: Option<LoopbackMode>, raw: bool) -> Result<Session, String> {
     let format = WaveFormat::new(32, 32, &SampleType::Float, SAMPLE_RATE, 1, None);
     let (mut client, device_id, autoconvert) = match loopback {
         // Them via process loopback: everything except our own process tree (`include_tree =
@@ -215,6 +245,12 @@ fn build_session(loopback: Option<LoopbackMode>) -> Result<Session, String> {
             (client, id, true)
         }
     };
+    // Must precede Initialize: SetClientProperties is only honoured on an uninitialized client.
+    if raw {
+        client
+            .set_properties(AudioClientProperties::new().set_option(StreamOption::Raw))
+            .map_err(|e| format!("raw stream option: {e}"))?;
+    }
     let mode = StreamMode::EventsShared {
         autoconvert,
         buffer_duration_hns: BUFFER_DURATION_HNS,

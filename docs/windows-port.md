@@ -176,6 +176,16 @@ unconfirmed Rust-API exposure). They are the candidate upgrade tier once the flo
   build` for the Windows machine. Build features arrive in order: `sherpa` (CPU, fewest
   prerequisites), then `vulkan`, then `aec` — each has a graceful fallback (CPU inference; AEC
   no-op passthrough). The notes LLM builds as the separate `hearsay-notes` sidecar, not a core feature.
+- **The ggml CPU instruction set is pinned to an AVX2 floor** (`Initialize-GgmlIsaFloor` in
+  `scripts/windows-build-env.ps1`, called by both the build and test scripts). ggml resolves the ISA
+  at compile time — there is no runtime dispatch here — and whisper.cpp's cmake defaults
+  `GGML_NATIVE=ON`, which probes the *build host's* CPUID. Packaging on an AVX-512 host (any Zen 4/5)
+  therefore produced a `hearsay-core.exe` that died with `STATUS_ILLEGAL_INSTRUCTION` (`0xC000001D`)
+  the moment the whisper refine ran on any Intel machine, since consumer Intel has had AVX-512 fused
+  off since 12th gen. The pin is unconditional — `-NoVulkan` inherited the host ISA identically — and
+  AVX2 is the floor because `llama-cpp-sys-2` already derives exactly that for the `hearsay-notes`
+  sidecar in the same installer. Because `whisper-rs-sys` declares no `rerun-if-env-changed` for
+  `GGML_*`, `Reset-StaleGgmlBuild` force-cleans any host-native build so the pin actually reaches it.
 
 ## Windows build prerequisites
 
