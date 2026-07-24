@@ -836,13 +836,13 @@ pub struct RefineResult {
     pub centroids: HashMap<i64, Vec<f32>>,
 }
 
-/// The local-LLM summarization step's output, persisted by [`upsert_meeting_notes`]: a short summary
-/// plus a flat list of action items. The orchestrator's [`crate::Summarizer`] analogue produces it
-/// from the finalized transcript.
+/// The local-LLM summarization step's output, persisted by [`upsert_meeting_notes`]: the model's
+/// reply verbatim as the Markdown note. The orchestrator's [`crate::Summarizer`] analogue produces it
+/// from the finalized transcript; the prompt template dictates its format, so it is a single
+/// `content` field with no structured summary/action-item shape.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct NotesResult {
-    pub summary: String,
-    pub action_items: Vec<String>,
+    pub content: String,
 }
 
 /// A meeting's user-authored notes row, or `None` when the user has typed none yet.
@@ -880,7 +880,7 @@ pub async fn upsert_user_notes(
 }
 
 /// Insert or replace a meeting's generated notes (one row per meeting; regenerating overwrites).
-/// `action_items` is stored as a JSON array of strings; `model` records the GGUF that produced it.
+/// `content` is the model's reply stored verbatim; `model` records the GGUF that produced it.
 /// `created_at` is preserved across regenerations via the upsert's `excluded`/existing coalesce so
 /// the row keeps its first-produced timestamp while `updated_at` advances.
 pub async fn upsert_meeting_notes(
@@ -890,19 +890,16 @@ pub async fn upsert_meeting_notes(
     model: &str,
 ) -> Result<(), sqlx::Error> {
     let now = Utc::now();
-    let action_items = serde_json::to_string(&result.action_items)
-        .map_err(|e| sqlx::Error::Encode(Box::new(e)))?;
     sqlx::query(
         "INSERT INTO meeting_notes \
-         (meeting_id, summary, action_items, model, created_at, updated_at) \
-         VALUES (?, ?, ?, ?, ?, ?) \
+         (meeting_id, content, model, created_at, updated_at) \
+         VALUES (?, ?, ?, ?, ?) \
          ON CONFLICT(meeting_id) DO UPDATE SET \
-         summary = excluded.summary, action_items = excluded.action_items, \
+         content = excluded.content, \
          model = excluded.model, updated_at = excluded.updated_at, edited = 0",
     )
     .bind(meeting_id)
-    .bind(&result.summary)
-    .bind(&action_items)
+    .bind(&result.content)
     .bind(model)
     .bind(now)
     .bind(now)
@@ -922,25 +919,19 @@ pub async fn get_meeting_notes(
         .await
 }
 
-/// Overwrite a meeting's notes with a manual edit: replace the summary + action items, mark `edited`,
-/// and stamp `updated_at`. `action_items` is stored as a JSON array of strings (matching
-/// [`upsert_meeting_notes`]); `model` is left as-is (the notes still originated from that model, now
-/// hand-corrected). Returns the updated row, or `None` when the meeting has no notes row yet — editing
-/// applies only to already-generated notes.
+/// Overwrite a meeting's notes with a manual edit: replace the `content`, mark `edited`, and stamp
+/// `updated_at`. `model` is left as-is (the notes still originated from that model, now hand-corrected).
+/// Returns the updated row, or `None` when the meeting has no notes row yet — editing applies only to
+/// already-generated notes.
 pub async fn update_meeting_notes(
     pool: &SqlitePool,
     meeting_id: Uuid,
-    summary: &str,
-    action_items: &[String],
+    content: &str,
 ) -> Result<Option<MeetingNotes>, sqlx::Error> {
-    let items =
-        serde_json::to_string(action_items).map_err(|e| sqlx::Error::Encode(Box::new(e)))?;
     let result = sqlx::query(
-        "UPDATE meeting_notes SET summary = ?, action_items = ?, edited = 1, updated_at = ? \
-         WHERE meeting_id = ?",
+        "UPDATE meeting_notes SET content = ?, edited = 1, updated_at = ? WHERE meeting_id = ?",
     )
-    .bind(summary)
-    .bind(&items)
+    .bind(content)
     .bind(Utc::now())
     .bind(meeting_id)
     .execute(pool)

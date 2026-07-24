@@ -782,24 +782,22 @@ a re-diarize (refused while the meeting is live).
 
 Notes are optional: off by default, running in the bundled `hearsay-notes` sidecar and requiring a downloaded
 GGUF model. When enabled, stopping a meeting (or the manual "Generate notes" route) runs one local-LLM
-pass over the finalized transcript through `llama-cpp-2` (llama.cpp), the in-process sibling of the
-whisper embed.
+pass over the finalized transcript through `llama-cpp-2` (llama.cpp) in the out-of-process
+`hearsay-notes` sidecar — a separate binary so llama.cpp's vendored `ggml` never co-links with the
+whisper refine's (a collision that slows the refine ~5x).
 
-The prompt wraps the transcript in a `{transcript}` placeholder and a strict output format
-(`hearsay-inference/src/notes.rs:27`):
+The prompt is a user-editable template with a `{transcript}` placeholder. The model's reply is the
+note: it is stored and rendered verbatim (as Markdown), so the template alone dictates the output —
+there is no structured summary/action-item shape. The built-in default
+(`hearsay-notes-prompt/src/lib.rs`) is:
 
 ```rust
-pub const DEFAULT_NOTES_PROMPT: &str = "You are a meeting assistant. Read the transcript and \
-     produce a concise summary and a list of concrete action items.\n\n\
+pub const DEFAULT_NOTES_PROMPT: &str = "You are a meeting assistant. Read the transcript and write \
+     concise meeting notes in Markdown: a short summary of what was discussed, followed by any \
+     concrete action items as a bulleted list. Keep it faithful to the transcript and do not invent \
+     details.\n\n\
      Meeting transcript:\n\n\
-     {transcript}\n\n\
-     Reply in exactly this format:\n\
-     SUMMARY:\n\
-     <2 to 4 sentences>\n\
-     ACTION ITEMS:\n\
-     - <action item>\n\
-     - <action item>\n\
-     Write \"- none\" under ACTION ITEMS if there are none.";
+     {transcript}";
 ```
 
 `build_prompt` substitutes the transcript (appending it if the placeholder is absent so it is never
@@ -807,10 +805,10 @@ dropped) and wraps it in ChatML turns; the transcript is first sanitized to neut
 ChatML control tokens — a prompt-injection guard. Generation is greedy, the model is loaded per call
 and dropped on return (so the ~GB weights are resident only during generation), and the KV context is
 sized to the actual prompt-plus-generation need and capped at 16k tokens
-(`hearsay-inference/src/notes.rs:247`). The transcript is fit to a token budget so a long or
-dense-script meeting cannot overflow the cache. Output is parsed tolerantly into
-`{ summary, action_items }` and written to `notes.md`. Notes are best-effort: a missing model or a
-generation error is logged and never fails the meeting.
+(`hearsay-notes/src/main.rs`). The transcript is fit to a token budget so a long or dense-script
+meeting cannot overflow the cache. The reply is cleaned of any echoed ChatML markers (`clean_reply`)
+and stored verbatim as the note's Markdown `content`, then written to `notes.md`. Notes are
+best-effort: a missing model or a generation error is logged and never fails the meeting.
 
 The in-app download manager (`hearsay-core/src/models.rs`) offers a curated catalog of Apache-2.0 GGUF
 instruct models (Qwen3-4B-Instruct recommended, Qwen3-1.7B, SmolLM3-3B), with resumable, SHA256-verified,

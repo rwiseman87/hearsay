@@ -48,7 +48,7 @@ pub trait LiveEngine: Send + Sync {
     /// [`LiveError::Unavailable`] when no capture/inference engine is wired.
     async fn rediarize(&self, meeting_id: Uuid) -> Result<(), LiveError>;
 
-    /// Generate (or regenerate) the meeting's notes — a summary + action items — from its finalized
+    /// Generate (or regenerate) the meeting's notes — the model's verbatim Markdown — from its finalized
     /// transcript with the local LLM, persist them, and write `notes.md`. Re-runnable on demand
     /// (the "Generate notes" route) independent of re-diarization, and run automatically at stop when
     /// the setting is on. [`LiveError::Unavailable`] when no summarizer/model is wired or the meeting

@@ -889,8 +889,7 @@ async fn meeting_notes_upsert_get_and_regenerate() {
         .unwrap();
 
     let first = NotesResult {
-        summary: "We discussed the roadmap.".into(),
-        action_items: vec!["Ship the beta".into(), "Email the client".into()],
+        content: "## Summary\nWe discussed the roadmap.\n\n## Action items\n- Ship the beta".into(),
     };
     queries::upsert_meeting_notes(&pool, meeting.id, &first, "qwen3-4b")
         .await
@@ -900,16 +899,13 @@ async fn meeting_notes_upsert_get_and_regenerate() {
         .await
         .unwrap()
         .expect("notes exist");
-    assert_eq!(stored.summary, first.summary);
+    assert_eq!(stored.content, first.content);
     assert_eq!(stored.model, "qwen3-4b");
-    let items: Vec<String> = serde_json::from_str(&stored.action_items).unwrap();
-    assert_eq!(items, first.action_items);
     let created = stored.created_at;
 
-    // Regenerating overwrites summary/items/model in place (still one row) and preserves created_at.
+    // Regenerating overwrites content/model in place (still one row) and preserves created_at.
     let second = NotesResult {
-        summary: "Revised summary.".into(),
-        action_items: vec!["One item".into()],
+        content: "Revised notes.".into(),
     };
     queries::upsert_meeting_notes(&pool, meeting.id, &second, "smollm3-3b")
         .await
@@ -918,11 +914,9 @@ async fn meeting_notes_upsert_get_and_regenerate() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(stored.summary, "Revised summary.");
+    assert_eq!(stored.content, "Revised notes.");
     assert_eq!(stored.model, "smollm3-3b");
     assert_eq!(stored.created_at, created, "created_at preserved on upsert");
-    let items: Vec<String> = serde_json::from_str(&stored.action_items).unwrap();
-    assert_eq!(items, vec!["One item".to_string()]);
 }
 
 #[tokio::test]
@@ -935,8 +929,7 @@ async fn delete_meeting_cascades_notes() {
         &pool,
         meeting.id,
         &NotesResult {
-            summary: "s".into(),
-            action_items: vec![],
+            content: "s".into(),
         },
         "m",
     )

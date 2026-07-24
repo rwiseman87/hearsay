@@ -1,7 +1,9 @@
 //! The notes sidecar: read a summarize request as JSON on stdin, run the local GGUF instruct model
-//! via llama.cpp, and write the parsed notes as JSON on stdout. Errors go to stderr with a non-zero
-//! exit — the same contract shape as `hearsay-diarize`. Loading the model per invocation (and exiting
-//! after) keeps the ~GBs resident only while generating, matching the previous in-process behavior.
+//! via llama.cpp, and write the model's reply verbatim as JSON on stdout. Errors go to stderr with a
+//! non-zero exit — the same contract shape as `hearsay-diarize`. Loading the model per invocation (and
+//! exiting after) keeps the ~GBs resident only while generating, matching the previous in-process
+//! behavior. The reply is used as-is (only ChatML markers stripped): the prompt template dictates the
+//! note's content and Markdown format, with no structural parsing.
 //!
 //! This binary exists solely so llama.cpp's vendored `ggml` never links into the core alongside
 //! whisper.cpp's: co-linking the two degrades the whisper refine ~5x (a `ggml` symbol collision).
@@ -20,12 +22,12 @@ use llama_cpp_2::model::{AddBos, LlamaModel};
 use llama_cpp_2::sampling::LlamaSampler;
 use serde::{Deserialize, Serialize};
 
-use hearsay_notes_prompt::{build_prompt, parse_notes, MeetingNotes};
+use hearsay_notes_prompt::{build_prompt, clean_reply};
 
 /// Upper bound on the generation context (tokens). KV memory scales with `n_ctx`, so the context is
 /// sized to the actual prompt + generation up to this cap; a transcript beyond it is truncated.
 const N_CTX_CAP: u32 = 16_384;
-/// Cap on generated tokens (a summary + action items is well under this).
+/// Cap on generated tokens (concise meeting notes are well under this).
 const MAX_TOKENS: usize = 1024;
 /// Physical decode batch (and prompt-prefill chunk) size.
 const N_BATCH: usize = 512;
@@ -44,11 +46,10 @@ struct Request {
     transcript: String,
 }
 
-/// The response this sidecar writes to stdout on success.
+/// The response this sidecar writes to stdout on success: the model's reply verbatim as the note.
 #[derive(Serialize)]
 struct Response {
-    summary: String,
-    action_items: Vec<String>,
+    content: String,
 }
 
 fn main() -> ExitCode {
@@ -64,21 +65,18 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let notes = match summarize(
+    let content = match summarize(
         Path::new(&request.model),
         &request.template,
         &request.transcript,
     ) {
-        Ok(notes) => notes,
+        Ok(content) => content,
         Err(e) => {
             eprintln!("{e}");
             return ExitCode::FAILURE;
         }
     };
-    let response = Response {
-        summary: notes.summary,
-        action_items: notes.action_items,
-    };
+    let response = Response { content };
     match serde_json::to_string(&response) {
         Ok(json) => {
             println!("{json}");
@@ -121,9 +119,10 @@ fn fit_transcript_to_tokens(
     Ok(out)
 }
 
-/// Summarize `transcript` into [`MeetingNotes`] with the GGUF model at `model`, using the
-/// user-editable `template`: load the model, run one instruct prompt (greedy), and parse the reply.
-fn summarize(model: &Path, template: &str, transcript: &str) -> Result<MeetingNotes, String> {
+/// Summarize `transcript` into the note text with the GGUF model at `model`, using the user-editable
+/// `template`: load the model, run one instruct prompt (greedy), and return the reply verbatim (only
+/// ChatML markers stripped). The template dictates the output; there is no structural parsing.
+fn summarize(model: &Path, template: &str, transcript: &str) -> Result<String, String> {
     let backend = LlamaBackend::init().map_err(|e| err("llama backend init", e))?;
     let llama = LlamaModel::load_from_file(&backend, model, &LlamaModelParams::default())
         .map_err(|e| err("load notes model", e))?;
@@ -190,5 +189,5 @@ fn summarize(model: &Path, template: &str, transcript: &str) -> Result<MeetingNo
         ctx.decode(&mut batch).map_err(|e| err("gen decode", e))?;
     }
 
-    Ok(parse_notes(&out))
+    Ok(clean_reply(&out))
 }

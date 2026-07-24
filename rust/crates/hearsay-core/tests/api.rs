@@ -1870,8 +1870,7 @@ async fn edit_notes_marks_edited_and_tracks_stale() {
         &pool,
         m.id,
         &queries::NotesResult {
-            summary: "auto summary".into(),
-            action_items: vec!["do a thing".into()],
+            content: "auto summary\n\n- do a thing".into(),
         },
         "test-model",
     )
@@ -1898,21 +1897,19 @@ async fn edit_notes_marks_edited_and_tracks_stale() {
     let (_s, body) = send(&app, get(&format!("/api/meetings/{}/notes", m.id))).await;
     assert_eq!(body["stale"], true);
 
-    // Editing the notes sets `edited` and clears `stale` (they are now the newest write). Blank
-    // action items are dropped.
+    // Editing the notes sets `edited` and clears `stale` (they are now the newest write).
     let (status, body) = send(
         &app,
         patch(
             &format!("/api/meetings/{}/notes", m.id),
-            r#"{"summary":"hand edited","action_items":["fixed item",""]}"#,
+            r#"{"content":"hand edited\n\n- fixed item"}"#,
         ),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(body["summary"], "hand edited");
+    assert_eq!(body["content"], "hand edited\n\n- fixed item");
     assert_eq!(body["edited"], true);
     assert_eq!(body["stale"], false);
-    assert_eq!(body["action_items"].as_array().unwrap().len(), 1);
 
     // The edit persists on a subsequent read (until a regenerate would clear `edited`).
     let (_s, body) = send(&app, get(&format!("/api/meetings/{}/notes", m.id))).await;
@@ -1930,7 +1927,7 @@ async fn edit_notes_is_404_without_generated_notes() {
         &app,
         patch(
             &format!("/api/meetings/{}/notes", m.id),
-            r#"{"summary":"x","action_items":[]}"#,
+            r#"{"content":"x"}"#,
         ),
     )
     .await;

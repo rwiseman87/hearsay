@@ -131,7 +131,7 @@ pub struct Preference {
 }
 
 /// A meeting's user-authored notes row: the free-form text typed in the "My notes" panel during the
-/// meeting, distinct from [`MeetingNotes`] (the LLM summary + action items). One row per meeting
+/// meeting, distinct from [`MeetingNotes`] (the LLM-generated notes). One row per meeting
 /// (keyed by `meeting_id`), upserted on autosave. Cascades on meeting delete.
 #[derive(Debug, Clone, PartialEq, Eq, FromRow)]
 pub struct UserNotes {
@@ -141,14 +141,14 @@ pub struct UserNotes {
     pub updated_at: DateTime<Utc>,
 }
 
-/// A meeting's generated notes row: the summary + action items produced by the optional local LLM
-/// summarization step. One row per meeting (keyed by `meeting_id`); `action_items` is a JSON array
-/// of strings and `model` records the GGUF that produced it. Cascades on meeting delete.
+/// A meeting's generated notes row: the local LLM summarization step's reply, stored verbatim as the
+/// Markdown `content`. One row per meeting (keyed by `meeting_id`); `model` records the GGUF that
+/// produced it. The prompt template dictates the note's format, so there is no structured
+/// summary/action-item shape. Cascades on meeting delete.
 #[derive(Debug, Clone, PartialEq, Eq, FromRow)]
 pub struct MeetingNotes {
     pub meeting_id: Uuid,
-    pub summary: String,
-    pub action_items: String,
+    pub content: String,
     pub model: String,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,

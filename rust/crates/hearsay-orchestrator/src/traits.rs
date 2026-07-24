@@ -68,8 +68,8 @@ pub trait Refiner: Send + Sync {
 /// with the whisper refine).
 #[async_trait]
 pub trait Summarizer: Send + Sync {
-    /// Summarize the rendered speaker-attributed `transcript` into a short summary + a flat list of
-    /// action items.
+    /// Summarize the rendered speaker-attributed `transcript` into the note text (the model's reply
+    /// verbatim; the prompt template dictates its shape).
     async fn summarize(&self, transcript: &str) -> Result<NotesResult, OrchestratorError>;
 }
 

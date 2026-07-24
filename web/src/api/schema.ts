@@ -693,12 +693,12 @@ export interface components {
             folder_id?: string | null;
         };
         /**
-         * @description A meeting's generated notes for the API: the summary + action items, and which model produced
-         *     them. `action_items` is decoded from the stored JSON array (a corrupt row degrades to empty
-         *     rather than failing the read, matching the settings-section tolerance).
+         * @description A meeting's generated notes for the API: the model's reply as verbatim Markdown `content`, and
+         *     which model produced them. The prompt template dictates the note's format, so there is no
+         *     structured summary/action-item shape.
          */
         MeetingNotesRead: {
-            action_items: string[];
+            content: string;
             /** Format: date-time */
             created_at: string;
             /**
@@ -712,7 +712,6 @@ export interface components {
              *     out of date. Computed at read time (a mutating response sets it `false`).
              */
             stale: boolean;
-            summary: string;
             /** Format: date-time */
             updated_at: string;
         };
@@ -763,7 +762,7 @@ export interface components {
          */
         ModelSettings: {
             /**
-             * @description Generate a summary + action items at meeting stop (the optional local-LLM notes step).
+             * @description Generate meeting notes at stop (the optional local-LLM notes step).
              *     `#[serde(default)]` so a `models` row written before notes existed still deserializes.
              */
             notes_enabled?: boolean;
@@ -793,13 +792,9 @@ export interface components {
             notes_model_exists: boolean;
             refine_model_exists: boolean;
         };
-        /**
-         * @description A manual notes edit: replace the `summary` and `action_items`. Validated at the boundary
-         *     (length-bounded summary, capped item count/length).
-         */
+        /** @description A manual notes edit: replace the Markdown `content`. Validated at the boundary (length-bounded). */
         NotesEdit: {
-            action_items: string[];
-            summary: string;
+            content: string;
         };
         /** @description Paginated list envelope used by every list endpoint (`{ total, page, page_size, items }`). */
         Page_FolderRead: {

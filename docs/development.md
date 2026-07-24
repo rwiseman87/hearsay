@@ -97,9 +97,10 @@ report the model as unavailable rather than failing the meeting. Packaging bundl
 the `.app` (see [packaging.md](packaging.md)).
 
 **Notes (optional local LLM).** When enabled (`HEARSAY_NOTES`, default off), stopping a meeting
-generates a summary and action items from the finalized transcript with a local GGUF instruct model
-(llama.cpp) run out-of-process in the `hearsay-notes` sidecar — a separate binary so llama.cpp's
-`ggml` never co-links with the whisper refine's (a collision that slows the refine ~5x). `make
+generates Markdown notes from the finalized transcript with a local GGUF instruct model (llama.cpp)
+run out-of-process in the `hearsay-notes` sidecar — a separate binary so llama.cpp's `ggml` never
+co-links with the whisper refine's (a collision that slows the refine ~5x). The model's reply is
+stored and rendered verbatim; the user-editable prompt template dictates the format. `make
 rust-serve` and `make dmg` build + bundle the sidecar. Choose the model in Settings > Models, which lists a small catalog
 and downloads the pick into `HEARSAY_MODELS_DIR` with a SHA-256 check. `HEARSAY_NOTES_MODEL` sets
 the active model path and `HEARSAY_NOTES_PROMPT` the template (its `{transcript}` placeholder is

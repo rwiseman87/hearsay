@@ -805,8 +805,7 @@ impl LiveEngine for Orchestrator {
             .map_err(OrchestratorError::from)?
         {
             let result = queries::NotesResult {
-                summary: notes.summary,
-                action_items: serde_json::from_str(&notes.action_items).unwrap_or_default(),
+                content: notes.content,
             };
             write_notes_file(&self.output_dir, &meeting, &result).await;
         }

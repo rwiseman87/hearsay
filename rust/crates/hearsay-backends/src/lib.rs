@@ -100,8 +100,7 @@ pub struct EngineConfig {
 pub fn build_scripted_engine(config: EngineConfig) -> Arc<dyn LiveEngine> {
     let backend = Arc::new(ProgressiveBackend::new(scripted_meeting_plan()));
     let (summarizer, _) = ScriptedSummarizer::new(
-        "Scripted summary for the end-to-end test.",
-        vec!["Ship the browser E2E.".to_string()],
+        "Scripted summary for the end-to-end test.\n\n- Ship the browser E2E.",
     );
     Orchestrator::new(config.pool, config.output_dir, backend)
         .with_defaults(

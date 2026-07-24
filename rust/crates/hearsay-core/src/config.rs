@@ -60,7 +60,7 @@ pub struct Settings {
     /// marker (`HEARSAY_INACTIVITY_END_MINUTES`, default 10; must exceed the prompt threshold when both
     /// are enabled; the `recording` section overrides it).
     pub inactivity_end_minutes: u64,
-    /// Default for the optional local-LLM notes step: generate a summary + action items at stop
+    /// Default for the optional local-LLM notes step: generate meeting notes at stop
     /// (`HEARSAY_NOTES`, default off — opt-in, and needs a downloaded model). The `models` settings
     /// section overrides it per install.
     pub notes_enabled: bool,

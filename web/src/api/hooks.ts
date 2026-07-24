@@ -321,7 +321,7 @@ export function useRediarize(meetingId: string) {
   });
 }
 
-// Persisted meeting notes (local-LLM summary + action items). The endpoint 404s when notes have
+// Persisted meeting notes (local-LLM Markdown, stored verbatim). The endpoint 404s when notes have
 // not been generated yet, which is the normal empty state — don't retry it, and let the caller
 // render the "generate" affordance rather than an error.
 export function useMeetingNotes(meetingId: string | null) {
@@ -349,12 +349,12 @@ export function useGenerateNotes(meetingId: string) {
   });
 }
 
-// Edit a meeting's notes (summary + action items). The server marks them `edited`, re-exports
+// Edit a meeting's notes (the verbatim Markdown content). The server marks them `edited`, re-exports
 // notes.md, and returns the updated row (with `stale: false`); seed it into the cache.
 export function useEditNotes(meetingId: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (body: { summary: string; action_items: string[] }) =>
+    mutationFn: (body: { content: string }) =>
       api.patch<MeetingNotesRead>(`/api/meetings/${meetingId}/notes`, body),
     onSuccess: (notes) => {
       qc.setQueryData<MeetingNotesRead>(queryKeys.meetings.notes(meetingId), notes);

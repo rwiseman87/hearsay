@@ -47,21 +47,14 @@ fn summarizes_a_short_meeting_via_the_sidecar() {
     assert!(output.status.success(), "sidecar exited non-zero");
 
     let notes: Value = serde_json::from_slice(&output.stdout).expect("parse notes JSON");
-    let summary = notes["summary"].as_str().unwrap_or("");
-    let action_items = notes["action_items"]
-        .as_array()
-        .expect("action_items array");
-    println!("SUMMARY:\n{summary}\n");
-    println!("ACTION ITEMS:");
-    for item in action_items {
-        println!("  - {}", item.as_str().unwrap_or(""));
-    }
+    let content = notes["content"].as_str().expect("content field");
+    println!("NOTES:\n{content}\n");
 
-    assert!(!summary.trim().is_empty(), "expected a non-empty summary");
-    // The transcript names concrete owners + dates, so a working instruct model should extract at
-    // least one action item.
+    // The notes are the model's reply verbatim (the template dictates the shape), so we only assert
+    // it produced non-empty Markdown that reflects the transcript's named action.
+    assert!(!content.trim().is_empty(), "expected non-empty notes");
     assert!(
-        !action_items.is_empty(),
-        "expected at least one action item"
+        content.to_lowercase().contains("migration"),
+        "expected the notes to mention the migration discussed in the transcript"
     );
 }

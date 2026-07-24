@@ -202,7 +202,7 @@ export function LiveRecording({ meeting }: Props) {
         <div className="live__ai">
           <span className="live__ai-label">AI</span>
           <span className="live__ai-hint">
-            A summary and action items can be generated after the meeting ends.
+            Notes can be generated after the meeting ends.
           </span>
         </div>
         {stop.isError ? (
