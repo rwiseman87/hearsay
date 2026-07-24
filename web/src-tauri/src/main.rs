@@ -361,7 +361,10 @@ fn main() {
                             // core every request fails, so silently leaving the UI up makes the app
                             // look broken in a dozen unrelated ways instead of one obvious one.
                             if !drain_settled.swap(true, Ordering::SeqCst) {
-                                show_boot_error(&drain_handle, &format!("{detail} During startup."));
+                                show_boot_error(
+                                    &drain_handle,
+                                    &format!("{detail} During startup."),
+                                );
                             } else {
                                 show_boot_error(
                                     &drain_handle,
@@ -419,4 +422,21 @@ fn main() {
                 }
             }
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::html_escape;
+
+    #[test]
+    fn html_escape_neutralizes_markup_metacharacters() {
+        assert_eq!(html_escape("plain text"), "plain text");
+        assert_eq!(
+            html_escape("<script>alert(1)</script>"),
+            "&lt;script&gt;alert(1)&lt;/script&gt;",
+        );
+        // `&` is escaped first, so an existing entity is not left double-decodable on render.
+        assert_eq!(html_escape("Tom & <Jerry>"), "Tom &amp; &lt;Jerry&gt;");
+        assert_eq!(html_escape("a &amp; b"), "a &amp;amp; b");
+    }
 }

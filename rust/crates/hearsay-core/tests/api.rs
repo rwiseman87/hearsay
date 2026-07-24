@@ -3,20 +3,31 @@
 //! (503 / clean close), so this covers the whole self-contained surface without a real pipeline.
 
 use std::path::PathBuf;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use axum::Router;
+use futures_util::StreamExt;
 use serde_json::Value;
 use sqlx::sqlite::SqlitePoolOptions;
 use sqlx::SqlitePool;
 use tower::ServiceExt;
 use uuid::Uuid;
 
-use hearsay_core::{create_app, AppState, DisabledEngine, Settings};
+use hearsay_core::{create_app, AppState, DisabledEngine, LiveEngine, Settings};
 use hearsay_db::models::Stream;
 use hearsay_db::{connect_options, queries, MIGRATOR};
+use hearsay_orchestrator::testing::{ScriptedBackend, ScriptedRefiner};
+use hearsay_orchestrator::{
+    AudioChunk, CaptureChunk, Orchestrator, RefinedThemSegment, SegmentKind, SidecarSegment,
+};
+use tokio_tungstenite::connect_async;
+use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+use tokio_tungstenite::tungstenite::http::header as ws_header;
+use tokio_tungstenite::tungstenite::{Error as WsError, Message};
 
 const TOKEN: &str = "test-session-token";
 
@@ -852,6 +863,9 @@ async fn reads_settings_with_config_defaults_and_about() {
     assert_eq!(body["about"]["protocol_version"], 1);
 }
 
+// Windows has no capture helper -- `win_permissions` returns `available: true` -- so this
+// helper-missing degradation is macOS-specific. See docs/windows-refine-crash.md §4.
+#[cfg(target_os = "macos")]
 #[tokio::test]
 async fn permissions_probe_degrades_when_helper_missing() {
     // `setup()` points `helper_path` at a nonexistent file, so the probe reports unavailable.
@@ -862,6 +876,363 @@ async fn permissions_probe_degrades_when_helper_missing() {
     assert_eq!(body["helper_version"], Value::Null);
     assert_eq!(body["microphone"], "unknown");
     assert_eq!(body["calendar"], "unknown");
+}
+
+// --- Live-transcript WebSocket handshake gating (routes/ws.rs) -------------------------------------
+// Auth mirrors REST but over the handshake: a loopback Origin + the session token as `?token=`. Driven
+// with a real WS client against a server on an ephemeral port, because axum's `WebSocketUpgrade`
+// extractor runs before the handler body and cannot be driven by `oneshot` (it rejects with 426).
+// Delivering the actual transcript/status frames additionally needs a scripted engine -- Phase 4.
+type WsRequest = tokio_tungstenite::tungstenite::handshake::client::Request;
+
+/// Serve the app (`DisabledEngine`) on an ephemeral loopback port; returns the `host:port` authority
+/// and the `TempDir` kept alive for the test's duration.
+async fn serve_ws() -> (String, tempfile::TempDir) {
+    let tmp = tempfile::tempdir().unwrap();
+    let settings = test_settings(tmp.path().to_path_buf(), tmp.path().join("no-web"));
+    let state = AppState::new(
+        memory_pool().await,
+        settings,
+        TOKEN.to_string(),
+        Arc::new(DisabledEngine),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let authority = format!("127.0.0.1:{}", listener.local_addr().unwrap().port());
+    tokio::spawn(async move {
+        axum::serve(listener, create_app(state).into_make_service())
+            .await
+            .unwrap();
+    });
+    (authority, tmp)
+}
+
+/// A WebSocket handshake request for a meeting, with the given token and Origin.
+fn ws_request(authority: &str, id: Uuid, token: Option<&str>, origin: &str) -> WsRequest {
+    let url = match token {
+        Some(t) => format!("ws://{authority}/ws/meetings/{id}?token={t}"),
+        None => format!("ws://{authority}/ws/meetings/{id}"),
+    };
+    let mut req = url.into_client_request().unwrap();
+    req.headers_mut()
+        .insert(ws_header::ORIGIN, origin.parse().unwrap());
+    req
+}
+
+#[tokio::test]
+async fn ws_handshake_rejects_a_non_loopback_origin() {
+    let (authority, _tmp) = serve_ws().await;
+    let req = ws_request(
+        &authority,
+        Uuid::new_v4(),
+        Some(TOKEN),
+        "https://evil.example",
+    );
+    match connect_async(req).await {
+        Err(WsError::Http(resp)) => assert_eq!(resp.status().as_u16(), 403),
+        Ok(_) => panic!("a cross-site Origin must not complete the handshake"),
+        Err(other) => panic!("expected HTTP 403, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn ws_handshake_rejects_a_missing_or_wrong_token() {
+    let (authority, _tmp) = serve_ws().await;
+    for token in [None, Some("not-the-token")] {
+        let req = ws_request(&authority, Uuid::new_v4(), token, "http://127.0.0.1:5173");
+        match connect_async(req).await {
+            Err(WsError::Http(resp)) => assert_eq!(resp.status().as_u16(), 401, "token {token:?}"),
+            Ok(_) => panic!("token {token:?} must not complete the handshake"),
+            Err(other) => panic!("token {token:?}: expected HTTP 401, got {other:?}"),
+        }
+    }
+}
+
+#[tokio::test]
+async fn ws_handshake_accepts_a_valid_loopback_token() {
+    let (authority, _tmp) = serve_ws().await;
+    let req = ws_request(
+        &authority,
+        Uuid::new_v4(),
+        Some(TOKEN),
+        "http://127.0.0.1:5173",
+    );
+    // A valid handshake upgrades (101); `DisabledEngine` then closes it cleanly. Reaching 101 proves
+    // the Origin + token gates let it through.
+    let (_stream, resp) = connect_async(req).await.expect("valid handshake accepted");
+    assert_eq!(resp.status().as_u16(), 101);
+}
+
+// --- Full-stack HTTP + WS integration over a real socket (routes + orchestrator + persistence) ----
+// One shared AppState with a model-free scripted Orchestrator engine: HTTP is driven with `oneshot`,
+// the live transcript over a real WS client against a TCP server (the two routers share the engine +
+// pool Arcs). The scripted transcribers emit at stop, so a socket connected mid-meeting must be
+// subscribed before the stop broadcasts; pausing first yields a deterministic `capture_state: paused`
+// connect snapshot to synchronize on (a broadcast receiver only sees sends made after it subscribed).
+
+type WsStream =
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+
+/// Next JSON text frame off the socket (skipping ping/pong), or `None` once it closes. Bounded so a
+/// hang fails fast instead of blocking the suite.
+async fn next_ws_json(socket: &mut WsStream) -> Option<Value> {
+    loop {
+        let msg = tokio::time::timeout(Duration::from_secs(10), socket.next())
+            .await
+            .expect("WS read timed out");
+        match msg {
+            Some(Ok(Message::Text(text))) => return Some(serde_json::from_str(&text).unwrap()),
+            Some(Ok(Message::Close(_))) | None => return None,
+            Some(Ok(_)) => continue,
+            // The server drops the socket when the meeting's broadcast closes, which arrives as a
+            // TCP reset rather than a WS Close frame — treat that (and the closed states) as the
+            // end of the stream, not a failure.
+            Some(Err(
+                WsError::ConnectionClosed
+                | WsError::AlreadyClosed
+                | WsError::Protocol(
+                    tokio_tungstenite::tungstenite::error::ProtocolError::ResetWithoutClosingHandshake,
+                ),
+            )) => return None,
+            Some(Err(err)) => panic!("WS error: {err}"),
+        }
+    }
+}
+
+fn chunk(stream: Stream, host_ts: u64, samples: &[f32]) -> CaptureChunk {
+    CaptureChunk {
+        stream,
+        chunk: AudioChunk {
+            host_ts,
+            samples: samples.to_vec(),
+        },
+    }
+}
+
+fn seg(
+    kind: SegmentKind,
+    text: &str,
+    start_s: f64,
+    end_s: f64,
+    speaker: Option<i64>,
+) -> SidecarSegment {
+    SidecarSegment {
+        kind,
+        text: text.to_string(),
+        start_s,
+        end_s,
+        speaker,
+    }
+}
+
+#[tokio::test]
+async fn full_stack_meeting_drives_events_and_persistence() {
+    // Me anchors t0; Them arrives +0.5s. The scripted segments (and thus the WS frames + persisted
+    // rows) are emitted at stop.
+    let pool = memory_pool().await;
+    let tmp = tempfile::tempdir().unwrap();
+    let (backend, _fed) = ScriptedBackend::new(
+        vec![
+            chunk(Stream::Me, 1_000_000_000, &[0.1, 0.2]),
+            chunk(Stream::Them, 1_500_000_000, &[0.3, 0.4, 0.5]),
+        ],
+        vec![
+            seg(SegmentKind::Partial, "hello", 0.0, 0.5, None),
+            seg(SegmentKind::Final, "hello there", 0.0, 1.0, None),
+        ],
+        vec![
+            seg(SegmentKind::Partial, "hi", 0.0, 0.5, None),
+            seg(SegmentKind::Final, "hi everyone", 1.0, 2.0, Some(0)),
+        ],
+    );
+    let engine: Arc<dyn LiveEngine> =
+        Orchestrator::new(pool.clone(), tmp.path().to_path_buf(), backend).into_arc();
+    let settings = test_settings(tmp.path().to_path_buf(), tmp.path().join("no-web"));
+    let state = AppState::new(pool.clone(), settings, TOKEN.to_string(), engine);
+
+    let app = create_app(state.clone());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let authority = format!("127.0.0.1:{}", listener.local_addr().unwrap().port());
+    tokio::spawn(async move {
+        axum::serve(listener, create_app(state).into_make_service())
+            .await
+            .unwrap();
+    });
+
+    // Start the meeting over HTTP.
+    let (status, meeting) = send(&app, post("/api/meetings", r#"{"title":"Full Stack"}"#)).await;
+    assert_eq!(status, StatusCode::CREATED);
+    assert_eq!(meeting["status"], "recording");
+    let id = Uuid::parse_str(meeting["id"].as_str().unwrap()).unwrap();
+
+    // A per-line speaker reassignment is refused (409) while the meeting is still recording — the
+    // guard short-circuits before any segment lookup, so a placeholder id suffices.
+    let (status, _) = send(
+        &app,
+        patch(
+            &format!("/api/meetings/{id}/segments/{}/speaker", Uuid::new_v4()),
+            r#"{"display_name":"Nope"}"#,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+
+    // Pause so the WS connect yields a deterministic paused snapshot — our subscribe barrier.
+    let (status, _) = send(&app, post(&format!("/api/meetings/{id}/pause"), "")).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+
+    let (mut socket, _resp) = connect_async(ws_request(
+        &authority,
+        id,
+        Some(TOKEN),
+        "http://127.0.0.1:5173",
+    ))
+    .await
+    .expect("ws handshake");
+    let snapshot = next_ws_json(&mut socket)
+        .await
+        .expect("paused snapshot frame");
+    assert_eq!(snapshot["kind"], "capture_state");
+    assert_eq!(snapshot["state"], "paused");
+
+    // Resume, then stop: the four scripted transcript frames now broadcast to the subscribed socket.
+    send(&app, post(&format!("/api/meetings/{id}/resume"), "")).await;
+    let (status, stopped) = send(&app, post(&format!("/api/meetings/{id}/stop"), "")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(stopped["status"], "finalized");
+
+    // Drain the live transcript frames off the socket until it closes.
+    let mut events = Vec::new();
+    while let Some(frame) = next_ws_json(&mut socket).await {
+        if frame["kind"] == "partial" || frame["kind"] == "final" {
+            events.push(frame);
+        }
+    }
+    let find = |kind: &str, stream: &str| {
+        events
+            .iter()
+            .find(|e| e["kind"] == kind && e["stream"] == stream)
+            .unwrap_or_else(|| panic!("missing {kind}/{stream} frame over the WS"))
+    };
+    assert_eq!(find("final", "me")["text"], "hello there");
+    let them_final = find("final", "them");
+    assert_eq!(them_final["text"], "hi everyone");
+    assert_eq!(them_final["speaker_label"], "Speaker 1");
+    assert!(events
+        .iter()
+        .any(|e| e["kind"] == "partial" && e["stream"] == "me"));
+
+    // Read the persisted result back over HTTP: two finals, Them bound to a Speaker 1 cluster.
+    let (status, segs) = send(&app, get(&format!("/api/meetings/{id}/segments"))).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(segs["items"].as_array().unwrap().len(), 2);
+    let (status, speakers) = send(&app, get(&format!("/api/meetings/{id}/speakers"))).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(speakers["items"][0]["label"], "Speaker 1");
+}
+
+#[tokio::test]
+async fn full_stack_refine_replaces_them_segments_on_read_back() {
+    // The live path yields a single Them "Speaker 1" final; a wired refiner re-diarizes it into two
+    // speakers at stop. Everything is driven over the HTTP API and read back over it.
+    let pool = memory_pool().await;
+    let tmp = tempfile::tempdir().unwrap();
+    let (backend, _fed) = ScriptedBackend::new(
+        vec![chunk(Stream::Them, 1_000_000_000, &[0.1, 0.2, 0.3])],
+        vec![seg(SegmentKind::Final, "me kept", 0.0, 1.0, None)],
+        vec![seg(SegmentKind::Final, "live guess", 0.0, 2.0, Some(0))],
+    );
+    let (refiner, calls) = ScriptedRefiner::new(vec![
+        RefinedThemSegment {
+            ordinal: 1,
+            text: "refined one".into(),
+            start_s: 0.0,
+            end_s: 1.0,
+        },
+        RefinedThemSegment {
+            ordinal: 2,
+            text: "refined two".into(),
+            start_s: 1.0,
+            end_s: 2.0,
+        },
+    ]);
+    // Keep the concrete Arc so the test can await the background refine; it coerces to the trait
+    // object AppState wants.
+    let orch = Orchestrator::new(pool.clone(), tmp.path().to_path_buf(), backend)
+        .with_refiner(refiner)
+        .into_arc();
+    let settings = test_settings(tmp.path().to_path_buf(), tmp.path().join("no-web"));
+    let state = AppState::new(pool.clone(), settings, TOKEN.to_string(), orch.clone());
+    let app = create_app(state);
+
+    // Start over HTTP, then drop a placeholder audio.wav into the meeting folder — the refiner ignores
+    // its content, but the auto-refine at stop only runs when a recording exists.
+    let (status, meeting) = send(&app, post("/api/meetings", r#"{"title":"Refine"}"#)).await;
+    assert_eq!(status, StatusCode::CREATED);
+    let id = Uuid::parse_str(meeting["id"].as_str().unwrap()).unwrap();
+    let folder = queries::get_meeting(&pool, id)
+        .await
+        .unwrap()
+        .unwrap()
+        .folder;
+    std::fs::write(tmp.path().join(&folder).join("audio.wav"), b"placeholder").unwrap();
+
+    // Stop returns an interim "refining"; the refine runs in the background, then finalizes.
+    let (status, stopped) = send(&app, post(&format!("/api/meetings/{id}/stop"), "")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(stopped["status"], "refining");
+    orch.wait_for_refines().await;
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "auto-refine ran once at stop"
+    );
+    assert_eq!(
+        queries::get_meeting(&pool, id)
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        hearsay_db::models::MeetingStatus::Finalized
+    );
+
+    // Read back over HTTP: the live Them guess is replaced by the refiner's two segments, the Me track
+    // is untouched, and the refined speakers surface on the speakers endpoint.
+    let (status, segs) = send(&app, get(&format!("/api/meetings/{id}/segments"))).await;
+    assert_eq!(status, StatusCode::OK);
+    let items = segs["items"].as_array().unwrap();
+    let them: Vec<&Value> = items.iter().filter(|s| s["stream"] == "them").collect();
+    assert_eq!(
+        them.len(),
+        2,
+        "the single live Them final is replaced by the two refined segments"
+    );
+    assert_eq!(them[0]["text"], "refined one");
+    assert_eq!(them[1]["text"], "refined two");
+    assert!(
+        !items.iter().any(|s| s["text"] == "live guess"),
+        "the pre-refine Them guess is gone"
+    );
+    let me = items
+        .iter()
+        .find(|s| s["stream"] == "me")
+        .expect("the Me segment");
+    assert_eq!(
+        me["text"], "me kept",
+        "the Me track is untouched by the refine"
+    );
+
+    let (status, speakers) = send(&app, get(&format!("/api/meetings/{id}/speakers"))).await;
+    assert_eq!(status, StatusCode::OK);
+    let labels: Vec<&str> = speakers["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["label"].as_str().unwrap())
+        .collect();
+    assert!(
+        labels.contains(&"Speaker 1") && labels.contains(&"Speaker 2"),
+        "both refined speakers read back: {labels:?}"
+    );
 }
 
 #[tokio::test]
@@ -1363,6 +1734,122 @@ async fn edit_segment_validates_and_404s() {
         patch(
             &format!("/api/meetings/{}/segments/{}", m.id, Uuid::new_v4()),
             r#"{"text":"x"}"#,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn reassign_segment_speaker_moves_line_and_validates() {
+    let (app, pool, _tmp) = setup().await;
+    let m = queries::create_meeting(&pool, "M", "f", "", chrono::Utc::now())
+        .await
+        .unwrap();
+    let c1 = queries::create_cluster(&pool, m.id, 1, false, None)
+        .await
+        .unwrap();
+    let c2 = queries::create_cluster(&pool, m.id, 2, false, None)
+        .await
+        .unwrap();
+    let them = queries::insert_segment(
+        &pool,
+        m.id,
+        Stream::Them,
+        "Speaker 1",
+        "hi",
+        0.0,
+        1.0,
+        Some(c1.id),
+    )
+    .await
+    .unwrap();
+    let me = queries::insert_segment(&pool, m.id, Stream::Me, "Me", "mine", 1.0, 2.0, None)
+        .await
+        .unwrap();
+    let speaker_uri = format!("/api/meetings/{}/segments/{}/speaker", m.id, them.id);
+
+    // Move the Them line to the other existing (unbound) cluster: label falls back to its ordinal.
+    let (status, body) = send(
+        &app,
+        patch(&speaker_uri, &format!(r#"{{"cluster_id":"{}"}}"#, c2.id)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["speaker_label"], "Speaker 2");
+    assert_eq!(body["cluster_id"], c2.id.to_string());
+    assert_eq!(body["edited"], true);
+
+    // Assign it to a brand-new named speaker (trimmed): a new cluster shows in the speakers list.
+    let (status, body) = send(&app, patch(&speaker_uri, r#"{"display_name":"  Dana  "}"#)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["speaker_label"], "Dana");
+    let (status, speakers) = send(&app, get(&format!("/api/meetings/{}/speakers", m.id))).await;
+    assert_eq!(status, StatusCode::OK);
+    let labels: Vec<&str> = speakers["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["label"].as_str().unwrap())
+        .collect();
+    assert!(labels.contains(&"Dana"));
+
+    // 422: both fields set.
+    let (status, _) = send(
+        &app,
+        patch(
+            &speaker_uri,
+            &format!(r#"{{"cluster_id":"{}","display_name":"X"}}"#, c1.id),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+
+    // 422: neither field set.
+    let (status, _) = send(&app, patch(&speaker_uri, r#"{}"#)).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+
+    // 422: a blank (whitespace-only) display_name.
+    let (status, _) = send(&app, patch(&speaker_uri, r#"{"display_name":"   "}"#)).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+
+    // 422: a display_name over the 255-char bound.
+    let long = "x".repeat(256);
+    let (status, _) = send(
+        &app,
+        patch(&speaker_uri, &format!(r#"{{"display_name":"{long}"}}"#)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+
+    // 422: reassigning a Me line.
+    let (status, _) = send(
+        &app,
+        patch(
+            &format!("/api/meetings/{}/segments/{}/speaker", m.id, me.id),
+            &format!(r#"{{"cluster_id":"{}"}}"#, c1.id),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+
+    // 422: target cluster is not in this meeting.
+    let (status, _) = send(
+        &app,
+        patch(
+            &speaker_uri,
+            &format!(r#"{{"cluster_id":"{}"}}"#, Uuid::new_v4()),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+
+    // 404: unknown segment id.
+    let (status, _) = send(
+        &app,
+        patch(
+            &format!("/api/meetings/{}/segments/{}/speaker", m.id, Uuid::new_v4()),
+            &format!(r#"{{"cluster_id":"{}"}}"#, c1.id),
         ),
     )
     .await;

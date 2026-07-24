@@ -8,9 +8,10 @@ use crate::schema::{
     DownloadStatus, FolderCreate, FolderRead, FolderReparent, FolderUpdate, IdentityRead,
     LevelEvent, MeetingCreate, MeetingFolderAssign, MeetingNotesRead, MeetingRead, MeetingStatus,
     MeetingUpdate, ModelCatalog, ModelSettings, ModelsInfo, NotesEdit, PermissionsInfo,
-    PromptEvent, RecordingSettings, ResyncEvent, SearchHit, SegmentEdit, SegmentRead, SettingsRead,
-    SpeakerRead, SpeakerRename, SpeakerSettings, StatusEvent, StatusInfo, StorageInfo,
-    StorageSettings, Stream, TranscriptEvent, UserNotesRead, UserNotesWrite,
+    PromptEvent, RecordingSettings, ResyncEvent, SearchHit, SegmentEdit, SegmentRead,
+    SegmentSpeakerAssign, SettingsRead, SpeakerRead, SpeakerRename, SpeakerSettings, StatusEvent,
+    StatusInfo, StorageInfo, StorageSettings, Stream, TranscriptEvent, UserNotesRead,
+    UserNotesWrite,
 };
 
 #[derive(OpenApi)]
@@ -23,6 +24,7 @@ use crate::schema::{
         crate::routes::meetings::update_meeting,
         crate::routes::meetings::list_segments,
         crate::routes::meetings::edit_segment,
+        crate::routes::meetings::reassign_segment_speaker,
         crate::routes::meetings::stop_meeting,
         crate::routes::meetings::keep_recording,
         crate::routes::meetings::pause_meeting,
@@ -64,6 +66,7 @@ use crate::schema::{
         Stream,
         SegmentRead,
         SegmentEdit,
+        SegmentSpeakerAssign,
         SpeakerRead,
         SearchHit,
         IdentityRead,

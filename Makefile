@@ -1,4 +1,4 @@
-.PHONY: help swift-build swift-test rust-build rust-test rust-lint tauri-lint rust-fmt test lint fmt codegen codegen-check web-install web-typecheck web-lint web-build web-ci audit licenses version-check ci build package notarize clean serve rust-serve stage-model fetch-fluid-models stage-fluid-models fetch-sherpa-models stage-sherpa-models stage-release mac-app dmg
+.PHONY: help swift-build swift-test rust-build rust-test rust-lint tauri-lint tauri-test rust-fmt test lint fmt codegen codegen-check web-install web-typecheck web-lint web-test web-build web-ci audit licenses version-check ci probes coverage e2e test-all clean-test build package notarize clean serve rust-serve stage-model fetch-fluid-models stage-fluid-models fetch-sherpa-models stage-sherpa-models stage-release mac-app dmg
 
 PKG := helper
 RUST := rust
@@ -32,6 +32,9 @@ tauri-lint: ## Lint the Tauri shell (the shipping entrypoint; excluded from the 
 	cargo clippy --manifest-path web/src-tauri/Cargo.toml --all-targets -- -D warnings
 	cargo fmt --manifest-path web/src-tauri/Cargo.toml --check
 
+tauri-test: ## Test the Tauri shell (cargo test on web/src-tauri; excluded from the rust/ workspace)
+	cargo test --manifest-path web/src-tauri/Cargo.toml
+
 rust-fmt: ## Format Rust (rustfmt)
 	cargo fmt --manifest-path $(RUST)/Cargo.toml --all
 
@@ -61,10 +64,13 @@ web-typecheck: ## Type-check the web UI (tsc)
 web-lint: ## Lint the web UI (ESLint: typescript-eslint + react-hooks)
 	cd web && npm run lint
 
+web-test: ## Web unit/component tests (vitest, jsdom); also folded into web-ci
+	cd web && npm run test
+
 web-build: ## Build the web UI bundle (web/dist)
 	cd web && npm run build
 
-web-ci: web-install web-typecheck web-lint web-build ## Web CI gate (install, typecheck, lint, build)
+web-ci: web-install web-typecheck web-lint web-test web-build ## Web CI gate (install, typecheck, lint, test, build)
 
 audit: ## Dependency CVE scan (cargo-audit over both Rust trees + npm audit)
 	cd $(RUST) && cargo audit
@@ -86,14 +92,47 @@ version-check: ## Fail if the app version drifts across the Rust workspace, Taur
 	fi; \
 	echo "version $$rust consistent across rust/Cargo.toml, tauri.conf.json, package.json"
 
-ci: lint test codegen-check version-check audit licenses web-ci ## Full CI gate (Rust + Swift + Tauri + web + codegen drift + versions + supply-chain)
+ci: lint test tauri-test codegen-check version-check audit licenses web-ci ## Full CI gate (Rust + Swift + Tauri + web + codegen drift + versions + supply-chain)
+
+# On-demand test suite (docs/testing.md). `make ci` above is the fast deterministic gate; the targets
+# below are the model/hardware probes, coverage, and the "run everything" aggregate — run when you want
+# on a box that has the models + ANE/GPU. Nothing here is automatic (no timers, no hooks). Windows has
+# no `make`, so the same set is mirrored in scripts\test-windows.ps1.
+probes: ## Model/hardware tests (the #[ignore]d refine/notes/live probes). Needs the models + ANE/GPU.
+	cargo test --manifest-path $(RUST)/Cargo.toml -p hearsay-inference --features metal -- --ignored
+	cargo test --manifest-path $(RUST)/Cargo.toml -p hearsay-notes --features metal -- --ignored
+	cargo test --manifest-path $(RUST)/Cargo.toml -p hearsay-backends -- --ignored
+	cargo test --manifest-path $(RUST)/Cargo.toml -p hearsay-capture -- --ignored
+
+coverage: ## Coverage report (cargo-llvm-cov + vitest v8) into outputs/coverage/ (report-only)
+	@command -v cargo-llvm-cov >/dev/null 2>&1 || { echo "cargo-llvm-cov not installed: run 'cargo install cargo-llvm-cov'"; exit 1; }
+	@mkdir -p outputs/coverage/rust
+	cargo llvm-cov clean --workspace --manifest-path $(RUST)/Cargo.toml
+	cargo llvm-cov --no-report --workspace --manifest-path $(RUST)/Cargo.toml
+	cargo llvm-cov report --lcov --output-path outputs/coverage/rust/lcov.info --manifest-path $(RUST)/Cargo.toml
+	cargo llvm-cov report --html --output-dir outputs/coverage/rust --manifest-path $(RUST)/Cargo.toml
+	cd web && npm run coverage
+
+e2e: ## Browser end-to-end (Playwright) vs the scripted core + vite. One-time: cd web && npm install && npx playwright install chromium
+	@command -v npx >/dev/null 2>&1 || { echo "npx not found: install Node (https://nodejs.org)"; exit 1; }
+	@test -d web/node_modules/@playwright/test || { echo "playwright not installed: run 'cd web && npm install' (then 'npx playwright install chromium')"; exit 1; }
+	@mkdir -p outputs/e2e
+	# Build the core up front so Playwright's webServer starts it fast (no cold cargo build under the
+	# start timeout). The scripted engine is platform-neutral, so default features suffice on macOS.
+	cargo build --manifest-path $(RUST)/Cargo.toml -p hearsay-core
+	cd web && npx playwright test
+
+test-all: ci probes e2e ## Run everything: the deterministic gate + the model/hardware probes + the browser E2E
+
+clean-test: ## Remove the coverage + e2e report dirs (test data auto-cleans via tempdirs)
+	rm -rf outputs/coverage outputs/e2e
 
 build notarize: ## Notarized distribution (needs an Apple Developer account; out of scope)
 	@echo "$@: needs an Apple Developer ID + notarization; use 'make dmg' for the unsigned build"
 
 package: dmg ## Build the distributable DMG (alias for 'dmg')
 
-clean: ## Remove build artifacts (Swift, Rust, web bundle + deps, Tauri target, staged binaries/models)
+clean: clean-test ## Remove build artifacts (Swift, Rust, web bundle + deps, Tauri target, staged binaries/models)
 	rm -rf $(PKG)/.build $(RUST)/target web/dist web/node_modules web/src-tauri/target $(STAGE) $(dir $(MODEL_DST))
 
 serve rust-serve: ## Serve the Rust core (SYNTHETIC=1 for no-permission plumbing; needs swift-build + web-build for a live run)

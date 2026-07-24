@@ -3,12 +3,14 @@
 //! A single-connection memory pool is used so every query hits the same database (each
 //! connection to `sqlite::memory:` is otherwise a distinct database).
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 
 use hearsay_attribution::{centroid_from_bytes, centroid_to_bytes};
 use hearsay_db::models::{MeetingStatus, Stream};
 use hearsay_db::queries::{NotesResult, RefineResult, RefinedThemSegment};
 use hearsay_db::{connect_options, queries, MIGRATOR};
+use sqlx::migrate::Migrator;
 use sqlx::sqlite::SqlitePoolOptions;
 use sqlx::SqlitePool;
 
@@ -240,6 +242,186 @@ async fn rename_cluster_binds_relabels_and_joins() {
         .await
         .unwrap()
         .is_none());
+}
+
+#[tokio::test]
+async fn reassign_segment_speaker_moves_line_and_creates_named_speaker() {
+    let pool = memory_pool().await;
+    let meeting = queries::create_meeting(&pool, "t", "f", "", chrono::Utc::now())
+        .await
+        .unwrap();
+    let c1 = queries::create_cluster(&pool, meeting.id, 1, false, None)
+        .await
+        .unwrap();
+    let c2 = queries::create_cluster(&pool, meeting.id, 2, false, None)
+        .await
+        .unwrap();
+    let seg_a = queries::insert_segment(
+        &pool,
+        meeting.id,
+        Stream::Them,
+        "Speaker 1",
+        "alpha",
+        0.0,
+        1.0,
+        Some(c1.id),
+    )
+    .await
+    .unwrap();
+    let seg_b = queries::insert_segment(
+        &pool,
+        meeting.id,
+        Stream::Them,
+        "Speaker 1",
+        "beta",
+        1.0,
+        2.0,
+        Some(c1.id),
+    )
+    .await
+    .unwrap();
+    let me_seg =
+        queries::insert_segment(&pool, meeting.id, Stream::Me, "Me", "mine", 2.0, 3.0, None)
+            .await
+            .unwrap();
+
+    // Move seg_a to the existing (unbound) cluster c2 — label falls back to its ordinal.
+    let updated = match queries::reassign_segment_speaker(
+        &pool,
+        meeting.id,
+        seg_a.id,
+        queries::SpeakerTarget::Cluster(c2.id),
+    )
+    .await
+    .unwrap()
+    {
+        queries::ReassignOutcome::Reassigned(s) => s,
+        other => panic!("expected reassigned, got {other:?}"),
+    };
+    assert_eq!(updated.cluster_id, Some(c2.id));
+    assert_eq!(updated.speaker_label, "Speaker 2");
+    assert!(updated.edited);
+    // seg_b is left alone (only the one line moved).
+    let segments = queries::list_segments(&pool, meeting.id).await.unwrap();
+    let b = segments.iter().find(|s| s.id == seg_b.id).unwrap();
+    assert_eq!(b.cluster_id, Some(c1.id));
+    assert!(!b.edited);
+
+    // Assign seg_a to a new named speaker: a fresh locked cluster + identity.
+    let dana_a = match queries::reassign_segment_speaker(
+        &pool,
+        meeting.id,
+        seg_a.id,
+        queries::SpeakerTarget::Name("Dana"),
+    )
+    .await
+    .unwrap()
+    {
+        queries::ReassignOutcome::Reassigned(s) => s,
+        other => panic!("expected reassigned, got {other:?}"),
+    };
+    assert_eq!(dana_a.speaker_label, "Dana");
+    let dana_cluster = dana_a.cluster_id.expect("bound to a cluster");
+    assert_ne!(dana_cluster, c1.id);
+    assert_ne!(dana_cluster, c2.id);
+
+    // A second line given the same name reuses that person's cluster (one identity, one color).
+    let dana_b = match queries::reassign_segment_speaker(
+        &pool,
+        meeting.id,
+        seg_b.id,
+        queries::SpeakerTarget::Name("Dana"),
+    )
+    .await
+    .unwrap()
+    {
+        queries::ReassignOutcome::Reassigned(s) => s,
+        other => panic!("expected reassigned, got {other:?}"),
+    };
+    assert_eq!(dana_b.cluster_id, Some(dana_cluster));
+    assert_eq!(queries::count_identities(&pool).await.unwrap(), 1);
+    let rows = queries::list_speaker_rows(&pool, meeting.id).await.unwrap();
+    let dana_row = rows.iter().find(|r| r.id == dana_cluster).unwrap();
+    assert_eq!(dana_row.display_name.as_deref(), Some("Dana"));
+    assert!(dana_row.locked);
+
+    // Reassigning to a cluster that is *bound* to an identity resolves the label from that identity
+    // (not the ordinal). Bind c2 to "Cara", then move seg_a onto c2.
+    queries::rename_cluster(&pool, c2.id, "Cara")
+        .await
+        .unwrap()
+        .expect("cluster exists");
+    let cara = match queries::reassign_segment_speaker(
+        &pool,
+        meeting.id,
+        seg_a.id,
+        queries::SpeakerTarget::Cluster(c2.id),
+    )
+    .await
+    .unwrap()
+    {
+        queries::ReassignOutcome::Reassigned(s) => s,
+        other => panic!("expected reassigned, got {other:?}"),
+    };
+    assert_eq!(cara.cluster_id, Some(c2.id));
+    assert_eq!(cara.speaker_label, "Cara");
+
+    // A `Name` target for an identity that already exists but has no cluster in this meeting reuses
+    // the identity (no duplicate) and creates a fresh cluster bound to it.
+    queries::create_identity(&pool, "Evan", None).await.unwrap();
+    let before = queries::count_identities(&pool).await.unwrap(); // Dana + Cara + Evan
+    let evan = match queries::reassign_segment_speaker(
+        &pool,
+        meeting.id,
+        seg_b.id,
+        queries::SpeakerTarget::Name("Evan"),
+    )
+    .await
+    .unwrap()
+    {
+        queries::ReassignOutcome::Reassigned(s) => s,
+        other => panic!("expected reassigned, got {other:?}"),
+    };
+    assert_eq!(evan.speaker_label, "Evan");
+    let evan_cluster = evan.cluster_id.expect("bound to a cluster");
+    assert_ne!(evan_cluster, dana_cluster);
+    assert_ne!(evan_cluster, c2.id);
+    assert_eq!(queries::count_identities(&pool).await.unwrap(), before); // reused, not duplicated
+
+    // Guards: unknown segment, a Me line, and a target cluster from nowhere.
+    assert_eq!(
+        queries::reassign_segment_speaker(
+            &pool,
+            meeting.id,
+            uuid::Uuid::new_v4(),
+            queries::SpeakerTarget::Cluster(c2.id)
+        )
+        .await
+        .unwrap(),
+        queries::ReassignOutcome::SegmentNotFound
+    );
+    assert_eq!(
+        queries::reassign_segment_speaker(
+            &pool,
+            meeting.id,
+            me_seg.id,
+            queries::SpeakerTarget::Cluster(c2.id)
+        )
+        .await
+        .unwrap(),
+        queries::ReassignOutcome::NotThemStream
+    );
+    assert_eq!(
+        queries::reassign_segment_speaker(
+            &pool,
+            meeting.id,
+            seg_a.id,
+            queries::SpeakerTarget::Cluster(uuid::Uuid::new_v4())
+        )
+        .await
+        .unwrap(),
+        queries::ReassignOutcome::ClusterNotFound
+    );
 }
 
 #[tokio::test]
@@ -982,4 +1164,241 @@ async fn delete_folder_cascades_subtree_and_unfiles_meetings() {
             .unwrap(),
         "deleting a missing folder reports false"
     );
+}
+
+#[tokio::test]
+async fn search_ranks_hits_with_highlight_snippet_and_ignores_nonmatches() {
+    let pool = memory_pool().await;
+    let started = chrono::Utc::now();
+    let review = queries::create_meeting(&pool, "Review", "/tmp/review", "", started)
+        .await
+        .unwrap();
+    let lunch = queries::create_meeting(&pool, "Lunch", "/tmp/lunch", "", started)
+        .await
+        .unwrap();
+    // Two segments mention "budget" (across two meetings); one does not. The FTS index is kept in
+    // sync by the segments_ai trigger, so a plain insert is immediately searchable.
+    queries::insert_segment(
+        &pool,
+        review.id,
+        Stream::Them,
+        "Speaker 1",
+        "the quarterly budget review",
+        0.0,
+        1.0,
+        None,
+    )
+    .await
+    .unwrap();
+    queries::insert_segment(
+        &pool,
+        lunch.id,
+        Stream::Me,
+        "Me",
+        "budget forecast for next year",
+        0.0,
+        1.0,
+        None,
+    )
+    .await
+    .unwrap();
+    queries::insert_segment(
+        &pool,
+        lunch.id,
+        Stream::Me,
+        "Me",
+        "lunch plans on friday",
+        1.0,
+        2.0,
+        None,
+    )
+    .await
+    .unwrap();
+
+    // A prefix token is exactly what routes::search::build_match emits ("budget" -> "budget*").
+    assert_eq!(queries::count_search(&pool, "budget*").await.unwrap(), 2);
+    assert_eq!(queries::count_search(&pool, "zznope*").await.unwrap(), 0);
+
+    let hits = queries::search_segments(&pool, "budget*", 10, 0)
+        .await
+        .unwrap();
+    assert_eq!(hits.len(), 2);
+    // Each hit carries its meeting context (both meetings match) ...
+    let titles: std::collections::HashSet<&str> =
+        hits.iter().map(|h| h.meeting_title.as_str()).collect();
+    assert!(titles.contains("Review") && titles.contains("Lunch"));
+    // ... and a snippet that wraps the match in the private-use highlight sentinels U+E000/U+E001
+    // (char(57344)/char(57345)) — no HTML in the payload.
+    let hit = hits
+        .iter()
+        .find(|h| h.meeting_title == "Review")
+        .expect("the Review meeting matched");
+    assert!(
+        hit.snippet.contains('\u{E000}') && hit.snippet.contains('\u{E001}'),
+        "snippet highlights the match with sentinels: {:?}",
+        hit.snippet
+    );
+    assert!(hit.snippet.to_lowercase().contains("budget"));
+}
+
+#[tokio::test]
+async fn update_segment_text_scopes_to_its_meeting_and_reports_missing() {
+    let pool = memory_pool().await;
+    let started = chrono::Utc::now();
+    let a = queries::create_meeting(&pool, "A", "/tmp/a", "", started)
+        .await
+        .unwrap();
+    let b = queries::create_meeting(&pool, "B", "/tmp/b", "", started)
+        .await
+        .unwrap();
+    let seg = queries::insert_segment(
+        &pool,
+        a.id,
+        Stream::Them,
+        "Speaker 1",
+        "original",
+        0.0,
+        1.0,
+        None,
+    )
+    .await
+    .unwrap();
+    assert!(!seg.edited);
+
+    // Editing via the owning meeting updates the text and marks the row edited.
+    let edited = queries::update_segment_text(&pool, a.id, seg.id, "corrected")
+        .await
+        .unwrap()
+        .expect("segment edited via its own meeting");
+    assert_eq!(edited.text, "corrected");
+    assert!(edited.edited, "a manual edit sets the edited flag");
+
+    // A segment id from another meeting cannot be edited via B's route (the `AND meeting_id` scope
+    // is a cross-meeting boundary): None, and the row is untouched.
+    assert!(
+        queries::update_segment_text(&pool, b.id, seg.id, "hijacked")
+            .await
+            .unwrap()
+            .is_none(),
+        "a segment cannot be edited through a different meeting's id"
+    );
+    // A segment id that does not exist is also None.
+    assert!(
+        queries::update_segment_text(&pool, a.id, uuid::Uuid::new_v4(), "x")
+            .await
+            .unwrap()
+            .is_none()
+    );
+    // The stored text is still the one legitimate edit.
+    let rows = queries::list_segments(&pool, a.id).await.unwrap();
+    assert_eq!(rows[0].text, "corrected");
+}
+
+#[tokio::test]
+async fn folder_is_descendant_terminates_on_a_corrupt_cycle() {
+    let pool = memory_pool().await;
+    let x = queries::create_folder(&pool, "X", None).await.unwrap();
+    let y = queries::create_folder(&pool, "Y", None).await.unwrap();
+    // Inject a cycle directly (the reparent guard refuses to create one through the query layer):
+    // X -> Y -> X. Both rows exist, so the parent_id FK stays satisfied; only the shape is corrupt.
+    for (child, parent) in [(x.id, y.id), (y.id, x.id)] {
+        sqlx::query("UPDATE folders SET parent_id = ? WHERE id = ?")
+            .bind(parent)
+            .bind(child)
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+    // Walking from X toward an unrelated ancestor must break on the first revisited node and return
+    // false rather than spin the (single) pool connection forever — the visited-set guard. Bound it
+    // with a timeout so a regression fails fast instead of hanging the suite.
+    let unrelated = uuid::Uuid::new_v4();
+    let terminated = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        queries::folder_is_descendant(&pool, x.id, unrelated),
+    )
+    .await
+    .expect("the walk terminates on the corrupt cycle (no infinite loop)")
+    .unwrap();
+    assert!(!terminated);
+    // It still answers a real membership question on the corrupt cycle correctly (Y is X's parent).
+    assert!(queries::folder_is_descendant(&pool, x.id, y.id)
+        .await
+        .unwrap());
+}
+
+/// A [`Migrator`] over just the first `count` migrations. sqlx's `run` is otherwise all-or-nothing, so
+/// this lets a test seed a DB at an older schema version before upgrading it to head. The extra fields
+/// are copied from the embedded [`MIGRATOR`] (they are `#[doc(hidden)]` but public for `migrate!`).
+fn prefix_migrator(count: usize) -> Migrator {
+    Migrator {
+        migrations: Cow::Owned(MIGRATOR.migrations[..count].to_vec()),
+        ignore_missing: MIGRATOR.ignore_missing,
+        locking: MIGRATOR.locking,
+        no_tx: MIGRATOR.no_tx,
+        table_name: MIGRATOR.table_name.clone(),
+        create_schemas: MIGRATOR.create_schemas.clone(),
+    }
+}
+
+#[tokio::test]
+async fn migrations_upgrade_a_populated_older_db_with_data_intact() {
+    // A bare pool (memory_pool runs the full migrator; here we apply a partial one first).
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(connect_options("sqlite::memory:").unwrap())
+        .await
+        .unwrap();
+
+    // Seed at an older schema: apply through 0006 (folders) — before FTS search (0007), the segment
+    // `edited` column (0008), and user_notes (0009). The high-level inserts touch only columns present
+    // by 0006, so they stand in for data written by an older build.
+    assert!(
+        MIGRATOR.migrations.len() >= 7,
+        "this test seeds at 0006 and upgrades; it assumes >= 7 migrations"
+    );
+    prefix_migrator(6).run(&pool).await.unwrap();
+
+    let started = chrono::Utc::now();
+    let meeting = queries::create_meeting(&pool, "Retro", "/tmp/retro", "", started)
+        .await
+        .unwrap();
+    queries::insert_segment(
+        &pool,
+        meeting.id,
+        Stream::Them,
+        "Speaker 1",
+        "we shipped the migration test",
+        0.0,
+        2.0,
+        None,
+    )
+    .await
+    .unwrap();
+
+    // Upgrade to head: the forward-only migrations must apply cleanly on top of the existing rows.
+    MIGRATOR.run(&pool).await.unwrap();
+
+    // The seeded rows survived every later migration ...
+    let after = queries::get_meeting(&pool, meeting.id)
+        .await
+        .unwrap()
+        .expect("the seeded meeting survives the upgrade");
+    assert_eq!(after.title, "Retro");
+    let segs = queries::list_segments(&pool, meeting.id).await.unwrap();
+    assert_eq!(segs.len(), 1);
+    // ... the column 0008 added defaulted correctly on the pre-existing row ...
+    assert!(
+        !segs[0].edited,
+        "the edited column (0008) defaults to false on rows written before it existed"
+    );
+    // ... and 0007's FTS backfill ('rebuild') indexed a segment that existed BEFORE the index did, so
+    // it is searchable after the upgrade — proof the migration processed pre-existing data, not just
+    // new writes.
+    assert_eq!(queries::count_search(&pool, "migration*").await.unwrap(), 1);
+    let hits = queries::search_segments(&pool, "migration*", 10, 0)
+        .await
+        .unwrap();
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].meeting_id, meeting.id);
 }

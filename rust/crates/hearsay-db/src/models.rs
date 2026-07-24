@@ -88,8 +88,9 @@ pub struct Segment {
     pub end_s: f64,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
-    /// Set once a user manually edits this segment's text, so the UI can badge it and warn before a
-    /// re-diarize would discard the edit. Defaults to `0`; refine-inserted segments are unedited.
+    /// Set once a user manually edits this segment — its text or its speaker assignment — so the UI
+    /// can badge it and warn before a re-diarize would discard the change. Defaults to `0`;
+    /// refine-inserted segments are unedited.
     #[sqlx(default)]
     pub edited: bool,
 }

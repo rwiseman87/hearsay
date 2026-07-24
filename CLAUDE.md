@@ -142,6 +142,8 @@ shared/protocol/ipc.md  IPC contract (source of truth)   ·   shared/fixtures/  
   labels. Calendar roster + active-speaker hints are the Phase-3 additions.
 - Bind a diarization cluster -> name by **weighted majority vote** over many sparse hints (the Phase-3 design);
   a single wrong hint must never flip a stable binding. Manual labels lock a binding (votes cannot override).
+  Manual correction works at two granularities: renaming a whole cluster (locks the binding) and
+  reassigning a single line to another/new speaker (segment-level `cluster_id` override, flagged `edited`).
 - Active-speaker is **OCR-primary** (ScreenCaptureKit + Vision); Zoom Accessibility is opt-in. Degrade
   gracefully to "Speaker N" + manual labeling when hints are absent.
 

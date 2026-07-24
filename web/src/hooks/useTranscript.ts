@@ -28,6 +28,9 @@ export interface TranscriptLine {
   // row yet). Drive the inline edit affordance + the "edited" badge; undefined lines are not editable.
   id?: string;
   edited?: boolean;
+  // The Them line's diarization cluster, present on DB-seeded finals; lets the reassign picker mark
+  // the line's current speaker. Null for Me / unclustered lines and absent on live WS finals.
+  cluster_id?: string | null;
 }
 
 interface State {

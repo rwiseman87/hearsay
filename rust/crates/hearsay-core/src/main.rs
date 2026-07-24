@@ -9,7 +9,7 @@ use tokio::net::TcpListener;
 use utoipa::OpenApi as _;
 use uuid::Uuid;
 
-use hearsay_backends::{build_engine, EngineConfig};
+use hearsay_backends::{build_engine, build_scripted_engine, EngineConfig};
 use hearsay_core::{create_app, ApiDoc, AppState, Settings};
 
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
@@ -57,7 +57,7 @@ async fn main() -> Result<(), BoxError> {
     // installs the orchestrator's self-reference (so a capture death finalizes the meeting); the
     // binary holds only the trait object. Config defaults seed it; the editable Settings panels
     // override per meeting.
-    let engine = build_engine(EngineConfig {
+    let engine_config = EngineConfig {
         pool: pool.clone(),
         output_dir: settings.output_dir.clone(),
         helper_path: settings.helper_path.clone(),
@@ -77,7 +77,17 @@ async fn main() -> Result<(), BoxError> {
         notes_binary: settings.notes_binary.clone(),
         sherpa_models_dir: settings.sherpa_models_dir.clone(),
         win_loopback_mode: settings.win_loopback_mode,
-    });
+    };
+    // Dev-only: `HEARSAY_SCRIPTED` swaps the real platform backend for a deterministic, model-free
+    // engine that replays a canned meeting (see `hearsay_backends::build_scripted_engine`), so the
+    // browser end-to-end test can drive this binary with no capture devices or ANE/GPU. Gated to
+    // development so a shipping build never honors it.
+    let engine = if is_dev && std::env::var_os("HEARSAY_SCRIPTED").is_some() {
+        tracing::info!("HEARSAY_SCRIPTED set: using the scripted (model-free) engine");
+        build_scripted_engine(engine_config)
+    } else {
+        build_engine(engine_config)
+    };
     // A prior hard exit (SIGKILL / panic / power loss) can strand a meeting row `recording` or
     // `refining` forever, with no session to finalize it. Nothing is active at startup, so sweep and
     // finalize every such row (writing its transcript from the persisted segments) before we serve.

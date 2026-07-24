@@ -458,7 +458,9 @@ Semantics that follow from the constraints:
   tables (`meeting_notes`, `user_notes`) in a single DELETE.
 - `clusters` joins a meeting's diarized speakers (`ordinal`) to global, cross-meeting
   `identities`. Renaming a speaker binds and locks the cluster; `centroid` holds the voiceprint
-  used to recognize a returning person in a later meeting.
+  used to recognize a returning person in a later meeting. A single Them line can also be
+  reassigned on its own — repointing that segment's `cluster_id` (to another cluster, or a new one
+  created for a typed name) and flagging it `edited` — without touching the rest of the cluster.
 - Deleting an organizational folder cascades its sub-folders but un-files its meetings to the root
   (`folder_id` is set NULL); meetings are never deleted by a folder operation.
 - `segments_fts` is an external-content FTS5 index over `segments.text`, kept in step by triggers,

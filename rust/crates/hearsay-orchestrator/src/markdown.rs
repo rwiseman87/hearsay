@@ -179,4 +179,36 @@ mod tests {
         };
         assert!(render_notes("T", &notes).contains("## Action items\n\n_None._"));
     }
+
+    use hearsay_db::models::Stream;
+
+    fn seg(stream: Stream, speaker: &str, text: &str, start_s: f64) -> Segment {
+        Segment {
+            id: uuid::Uuid::nil(),
+            meeting_id: uuid::Uuid::nil(),
+            cluster_id: None,
+            stream,
+            speaker_label: speaker.to_string(),
+            text: text.to_string(),
+            start_s,
+            end_s: start_s + 2.0,
+            created_at: chrono::DateTime::from_timestamp(0, 0).unwrap(),
+            updated_at: chrono::DateTime::from_timestamp(0, 0).unwrap(),
+            edited: false,
+        }
+    }
+
+    // Locks the transcript.md layout: `# title`, one `### HH:MM:SS — Speaker` header per speaker
+    // change (consecutive same-speaker turns share a header), then each turn's text.
+    #[test]
+    fn transcript_render_snapshot() {
+        let segments = vec![
+            seg(Stream::Me, "Me", "Morning — shall we start?", 0.0),
+            seg(Stream::Them, "Speaker 1", "Yes, let's do it.", 3.0),
+            seg(Stream::Them, "Speaker 1", "First item is the release.", 7.0),
+            seg(Stream::Them, "Speaker 2", "I have the numbers ready.", 65.0),
+            seg(Stream::Me, "Me", "Great, go ahead.", 70.0),
+        ];
+        insta::assert_snapshot!(render_transcript("Weekly Sync", &segments));
+    }
 }

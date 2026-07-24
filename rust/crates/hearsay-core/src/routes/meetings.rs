@@ -16,7 +16,7 @@ use crate::routes::settings::reveal_in_file_manager;
 use crate::routes::Pagination;
 use crate::schema::{
     MeetingCreate, MeetingFolderAssign, MeetingRead, MeetingUpdate, Page, SegmentEdit, SegmentRead,
-    StatusInfo,
+    SegmentSpeakerAssign, StatusInfo,
 };
 use crate::state::AppState;
 use hearsay_engine::LiveError;
@@ -36,6 +36,10 @@ pub fn router() -> Router<AppState> {
         )
         .route("/meetings/{id}/segments", get(list_segments))
         .route("/meetings/{id}/segments/{segment_id}", patch(edit_segment))
+        .route(
+            "/meetings/{id}/segments/{segment_id}/speaker",
+            patch(reassign_segment_speaker),
+        )
         .route("/meetings/{id}/stop", post(stop_meeting))
         .route("/meetings/{id}/keep-recording", post(keep_recording))
         .route("/meetings/{id}/pause", post(pause_meeting))
@@ -220,6 +224,65 @@ pub(crate) async fn edit_segment(
     // Keep transcript.md in step with the edit (best-effort; the DB is the source of truth).
     if let Err(err) = state.engine.export_meeting(id).await {
         tracing::warn!(error = ?err, meeting_id = %id, "segment edit: re-export failed");
+    }
+    Ok(Json(segment.into()))
+}
+
+#[utoipa::path(
+    patch, path = "/api/meetings/{id}/segments/{segment_id}/speaker", tag = "meetings",
+    params(("id" = Uuid, Path), ("segment_id" = Uuid, Path)),
+    request_body = SegmentSpeakerAssign,
+    responses((status = 200, body = SegmentRead), (status = 404), (status = 409), (status = 422)),
+)]
+pub(crate) async fn reassign_segment_speaker(
+    State(state): State<AppState>,
+    Path((id, segment_id)): Path<(Uuid, Uuid)>,
+    Json(body): Json<SegmentSpeakerAssign>,
+) -> ApiResult<Json<SegmentRead>> {
+    // Reassigning is finalized-only: while recording, the live pipeline is still writing segments.
+    if state.engine.active_meeting() == Some(id) {
+        return Err(ApiError::Conflict(
+            "cannot reassign a segment while the meeting is recording".into(),
+        ));
+    }
+    // Exactly one of cluster_id / display_name selects the target speaker.
+    let target = match (body.cluster_id, body.display_name.as_deref()) {
+        (Some(cluster_id), None) => queries::SpeakerTarget::Cluster(cluster_id),
+        (None, Some(name)) => {
+            let name = name.trim();
+            if name.is_empty() || name.chars().count() > 255 {
+                return Err(ApiError::Unprocessable(
+                    "display_name must be 1..=255 characters".into(),
+                ));
+            }
+            queries::SpeakerTarget::Name(name)
+        }
+        _ => {
+            return Err(ApiError::Unprocessable(
+                "provide exactly one of cluster_id or display_name".into(),
+            ))
+        }
+    };
+    let segment =
+        match queries::reassign_segment_speaker(&state.pool, id, segment_id, target).await? {
+            queries::ReassignOutcome::Reassigned(segment) => segment,
+            queries::ReassignOutcome::SegmentNotFound => {
+                return Err(ApiError::NotFound("segment not found"))
+            }
+            queries::ReassignOutcome::NotThemStream => {
+                return Err(ApiError::Unprocessable(
+                    "only Them lines can be reassigned".into(),
+                ))
+            }
+            queries::ReassignOutcome::ClusterNotFound => {
+                return Err(ApiError::Unprocessable(
+                    "cluster not found in meeting".into(),
+                ))
+            }
+        };
+    // Keep transcript.md in step with the reassignment (best-effort; the DB is the source of truth).
+    if let Err(err) = state.engine.export_meeting(id).await {
+        tracing::warn!(error = ?err, meeting_id = %id, "segment reassignment: re-export failed");
     }
     Ok(Json(segment.into()))
 }

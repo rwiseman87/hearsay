@@ -12,9 +12,12 @@ import {
 import {
   useEditSegment,
   useFolders,
+  useIdentities,
   useKeepRecording,
+  useReassignSpeaker,
   useRediarize,
   useRevealMeeting,
+  useSpeakers,
   useStopMeeting,
 } from "../api/hooks";
 import { getToken } from "../api/token";
@@ -28,6 +31,10 @@ const RECAP_MIN = 280;
 const RECAP_MAX = 620;
 const RECAP_DEFAULT = 360;
 const RECAP_KEY = "hearsay.recapWidth";
+
+// datalist of known people offered as autocomplete in the per-line reassign popover (distinct from
+// SpeakerPanel's own list id so the two don't collide when both are mounted).
+const REASSIGN_SUGGESTIONS_ID = "reassign-identity-suggestions";
 
 const clampRecap = (value: number) => Math.min(Math.max(value, RECAP_MIN), RECAP_MAX);
 
@@ -156,6 +163,9 @@ export function TranscriptView({ meeting, jumpTo }: Props) {
   const rediarize = useRediarize(meeting?.id ?? "");
   const reveal = useRevealMeeting();
   const editSegment = useEditSegment(meeting?.id ?? "");
+  const reassign = useReassignSpeaker(meeting?.id ?? "");
+  const speakers = useSpeakers(meeting?.id ?? null);
+  const identities = useIdentities();
   const folders = useFolders();
   const { lines, connection, preparing, inactivityPrompt, micSilent, dismissInactivityPrompt } =
     useTranscript(meeting);
@@ -204,6 +214,10 @@ export function TranscriptView({ meeting, jumpTo }: Props) {
   // Inline text edit: the id of the segment being edited plus its draft text.
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editText, setEditText] = useState("");
+  // Per-line speaker reassignment: the id of the segment whose popover is open plus the draft name
+  // for the "new speaker" field.
+  const [reassigningId, setReassigningId] = useState<string | null>(null);
+  const [reassignName, setReassignName] = useState("");
   // Confirm gate for a re-diarize that would discard manual edits to remote-speaker lines.
   const [confirmRefine, setConfirmRefine] = useState(false);
   // The line briefly highlighted after a search jump (cleared on a timer).
@@ -333,6 +347,24 @@ export function TranscriptView({ meeting, jumpTo }: Props) {
     const trimmed = editText.trim();
     if (!trimmed) return;
     editSegment.mutate({ segmentId: id, text: trimmed }, { onSuccess: cancelEdit });
+  };
+
+  const startReassign = (id: string) => {
+    setReassigningId(id);
+    setReassignName("");
+    reassign.reset();
+  };
+  const cancelReassign = () => {
+    setReassigningId(null);
+    setReassignName("");
+  };
+  const reassignToCluster = (segmentId: string, clusterId: string) => {
+    reassign.mutate({ segmentId, clusterId }, { onSuccess: cancelReassign });
+  };
+  const reassignToName = (segmentId: string) => {
+    const trimmed = reassignName.trim();
+    if (!trimmed) return;
+    reassign.mutate({ segmentId, displayName: trimmed }, { onSuccess: cancelReassign });
   };
 
   const onRefine = () => {
@@ -755,21 +787,111 @@ export function TranscriptView({ meeting, jumpTo }: Props) {
                     )}
                   </div>
                   {canEdit && !editing ? (
-                    <button
-                      type="button"
-                      className="line__edit-btn"
-                      aria-label="Edit this line"
-                      title="Edit this line"
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        if (line.id) startEdit(line.id, line.text);
+                    <div className="line__actions">
+                      <button
+                        type="button"
+                        className="line__edit-btn"
+                        aria-label="Edit this line"
+                        title="Edit this line"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          if (line.id) startEdit(line.id, line.text);
+                        }}
+                      >
+                        <span className="line__edit-icon" aria-hidden="true">
+                          ✎
+                        </span>
+                        <span className="line__edit-label">Edit</span>
+                      </button>
+                      {line.stream === "them" ? (
+                        <button
+                          type="button"
+                          className="line__edit-btn"
+                          aria-label="Reassign speaker"
+                          title="Reassign speaker"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            if (line.id) startReassign(line.id);
+                          }}
+                        >
+                          <span className="line__edit-icon" aria-hidden="true">
+                            ⇄
+                          </span>
+                          <span className="line__edit-label">Speaker</span>
+                        </button>
+                      ) : null}
+                    </div>
+                  ) : null}
+                  {reassigningId === line.id ? (
+                    <div
+                      className="line__reassign"
+                      onClick={(event) => event.stopPropagation()}
+                      onKeyDown={(event) => {
+                        if (event.key === "Escape") cancelReassign();
                       }}
                     >
-                      <span className="line__edit-icon" aria-hidden="true">
-                        ✎
-                      </span>
-                      <span className="line__edit-label">Edit</span>
-                    </button>
+                      <div className="line__reassign-title">Reassign to</div>
+                      <ul className="line__reassign-list">
+                        {(speakers.data?.items ?? []).map((speaker) => (
+                          <li key={speaker.id}>
+                            <button
+                              type="button"
+                              className="line__reassign-option"
+                              aria-current={speaker.id === line.cluster_id}
+                              disabled={reassign.isPending || speaker.id === line.cluster_id}
+                              onClick={() => {
+                                if (line.id) reassignToCluster(line.id, speaker.id);
+                              }}
+                            >
+                              {speaker.label}
+                              {speaker.id === line.cluster_id ? " (current)" : ""}
+                            </button>
+                          </li>
+                        ))}
+                      </ul>
+                      <form
+                        className="line__reassign-new"
+                        onSubmit={(event) => {
+                          event.preventDefault();
+                          if (line.id) reassignToName(line.id);
+                        }}
+                      >
+                        <input
+                          className="line__reassign-input"
+                          aria-label="New speaker name"
+                          placeholder="New speaker…"
+                          list={REASSIGN_SUGGESTIONS_ID}
+                          value={reassignName}
+                          disabled={reassign.isPending}
+                          onChange={(event) => setReassignName(event.target.value)}
+                        />
+                        <button
+                          type="submit"
+                          className="line__reassign-save"
+                          disabled={reassign.isPending || reassignName.trim() === ""}
+                        >
+                          {reassign.isPending ? "…" : "Add"}
+                        </button>
+                      </form>
+                      {reassign.isError ? (
+                        <div className="line__reassign-error">
+                          {(reassign.error as Error).message}
+                        </div>
+                      ) : null}
+                      <button
+                        type="button"
+                        className="line__reassign-cancel"
+                        disabled={reassign.isPending}
+                        onClick={cancelReassign}
+                      >
+                        Cancel
+                      </button>
+                      <datalist id={REASSIGN_SUGGESTIONS_ID}>
+                        {(identities.data?.items ?? []).map((identity) => (
+                          <option key={identity.id} value={identity.display_name} />
+                        ))}
+                      </datalist>
+                    </div>
                   ) : null}
                 </li>
               );
