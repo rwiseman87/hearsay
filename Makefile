@@ -9,7 +9,7 @@ RUST_DB := sqlite://$(CURDIR)/outputs/db/hearsay-rust.db
 RUST_PORT ?= 8799
 
 help: ## Show this help
-	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-16s\033[0m %s\n", $$1, $$2}'
+	@grep -E '^[a-zA-Z_ -]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-16s\033[0m %s\n", $$1, $$2}'
 
 HELPER_PRODUCTS := --product hearsay-helper --product hearsay-diarize --product hearsay-live --product hearsay-me
 swift-build: ## Build the Swift helper executables (explicit products skip FluidAudio's CLI, which has a type-check bug)
@@ -46,12 +46,12 @@ fmt: rust-fmt ## Format (rustfmt)
 
 codegen: ## Regenerate IPC fixtures + OpenAPI schema + web TS types (Rust is the source of truth)
 	cargo run --manifest-path $(RUST)/Cargo.toml -p hearsay-ipc --bin gen_fixtures
-	cargo run --manifest-path $(RUST)/Cargo.toml -p hearsay-core -- --dump-openapi > web/openapi.json
+	cargo run --manifest-path $(RUST)/Cargo.toml -p hearsay-core -- --dump-openapi > web/openapi.json.tmp && mv web/openapi.json.tmp web/openapi.json
 	cd web && npm run codegen
 
 codegen-check: ## Fail if the committed IPC fixtures / OpenAPI / web types drift from the Rust source
 	cargo run --manifest-path $(RUST)/Cargo.toml -p hearsay-ipc --bin gen_fixtures
-	cargo run --manifest-path $(RUST)/Cargo.toml -p hearsay-core -- --dump-openapi > web/openapi.json
+	cargo run --manifest-path $(RUST)/Cargo.toml -p hearsay-core -- --dump-openapi > web/openapi.json.tmp && mv web/openapi.json.tmp web/openapi.json
 	cd web && npm run codegen
 	git diff --exit-code -- $(FIXTURES) $(CONTROL_FIXTURES) web/openapi.json web/src/api/schema.ts
 
@@ -275,6 +275,7 @@ stage-sherpa-models: ## Stage the sherpa models into the Tauri bundle (Windows p
 	done
 
 stage-release: stage-model stage-fluid-models ## Build release binaries + web bundle and stage them for the Tauri bundle
+	@test "$$(uname -m)" = "arm64" || { echo "stage-release: Apple-Silicon (arm64) only (got $$(uname -m)); Intel packaging is not wired"; exit 1; }
 	cd web && npm run build
 	@for p in $(SIDECARS); do \
 		swift build -c release --package-path $(PKG) --product $$p; \

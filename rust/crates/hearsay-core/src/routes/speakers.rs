@@ -25,12 +25,13 @@ pub fn router() -> Router<AppState> {
 
 /// The speakers list is unpaginated (few per meeting); the envelope reports the full set.
 fn speaker_page(items: Vec<SpeakerRead>) -> Page<SpeakerRead> {
+    // The speakers list is unpaginated: one page holding the full set, so page_size mirrors total
+    // rather than a windowed limit the caller could page against.
     let total = items.len() as i64;
-    let page_size = items.len().max(1) as u32;
     Page {
         total,
         page: 1,
-        page_size,
+        page_size: total as u32,
         items,
     }
 }

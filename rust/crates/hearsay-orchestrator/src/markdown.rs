@@ -26,17 +26,23 @@ fn hhmmss(seconds: f64) -> String {
     )
 }
 
+/// Collapse newlines to spaces so a user-supplied title/label can't inject block-level Markdown (a
+/// heading, a list) into the rendered document — it stays a single line of text in its heading.
+fn single_line(s: &str) -> String {
+    s.replace(['\n', '\r'], " ")
+}
+
 /// Render the transcript: `# {title}`, then a `### HH:MM:SS — Speaker` header at each speaker change
 /// followed by that turn's text. Segments must already be ordered by `start_s`.
 fn render(title: &str, segments: &[Segment]) -> String {
-    let mut parts: Vec<String> = vec![format!("# {title}\n")];
+    let mut parts: Vec<String> = vec![format!("# {}\n", single_line(title))];
     let mut last_speaker: Option<&str> = None;
     for seg in segments {
         if last_speaker != Some(seg.speaker_label.as_str()) {
             parts.push(format!(
                 "\n### {} — {}\n",
                 hhmmss(seg.start_s),
-                seg.speaker_label
+                single_line(&seg.speaker_label)
             ));
             last_speaker = Some(&seg.speaker_label);
         }
@@ -55,7 +61,11 @@ pub fn render_transcript(title: &str, segments: &[Segment]) -> String {
 /// reply, which the prompt template shaped as Markdown). The content is used as-is — no structural
 /// summary/action-item scaffolding.
 fn render_notes(title: &str, notes: &NotesResult) -> String {
-    format!("# {title} — Notes\n\n{}\n", notes.content.trim())
+    format!(
+        "# {} — Notes\n\n{}\n",
+        single_line(title),
+        notes.content.trim()
+    )
 }
 
 /// Write `notes.md` (the model's verbatim Markdown notes) into `dir` atomically, mirroring
@@ -72,7 +82,11 @@ pub fn write_notes_md(
 
 /// Render the user-authored "My notes" body as `my-notes.md` (a heading + the raw body).
 fn render_user_notes(title: &str, body: &str) -> String {
-    format!("# {title} — My notes\n\n{}\n", body.trim_end())
+    format!(
+        "# {} — My notes\n\n{}\n",
+        single_line(title),
+        body.trim_end()
+    )
 }
 
 /// Write `my-notes.md` (the user-authored notes body) into `dir` atomically, mirroring

@@ -404,6 +404,10 @@ fn main() {
                         if let Ok(hs) = serde_json::from_slice::<Handshake>(&bytes) {
                             // One-shot: don't leave the token sitting on disk.
                             let _ = std::fs::remove_file(&handshake_path);
+                            // The session token is hex ([0-9a-f]), so it needs no percent-encoding
+                            // here and the core parses `?token=` without decoding (see security.rs
+                            // `query_token`). If the token alphabet ever changes, both ends must add
+                            // encode/decode together.
                             let url = format!("http://127.0.0.1:{}/?token={}", hs.port, hs.token);
                             let navigated = match (
                                 nav_handle.get_webview_window("main"),

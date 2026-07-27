@@ -870,12 +870,14 @@ fn unique_meeting_dir(output_root: &Path, base: &str) -> (String, PathBuf) {
     }
 }
 
-/// Lowercase, collapse every run of non-`[a-z0-9]` to a single `-`, trim `-`; empty -> `"meeting"`.
+/// Collapse every run of non-alphanumeric characters to a single `-`, trim `-`; empty -> `"meeting"`.
+/// Unicode letters/digits are kept (so a CJK/Cyrillic title stays legible on disk); only ASCII is
+/// case-folded to lowercase.
 fn slugify(title: &str) -> String {
     let mut out = String::with_capacity(title.len());
     let mut pending_dash = false;
     for ch in title.chars() {
-        if ch.is_ascii_alphanumeric() {
+        if ch.is_alphanumeric() {
             if pending_dash && !out.is_empty() {
                 out.push('-');
             }
@@ -912,7 +914,8 @@ mod tests {
         assert_eq!(slugify("Team--Sync"), "team-sync");
         assert_eq!(slugify("!!!"), "meeting");
         assert_eq!(slugify(""), "meeting");
-        assert_eq!(slugify("café"), "caf");
+        assert_eq!(slugify("café"), "café");
+        assert_eq!(slugify("проект"), "проект");
     }
 
     #[test]
