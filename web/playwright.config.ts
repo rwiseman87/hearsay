@@ -46,6 +46,11 @@ const coreEnv: Record<string, string> = {
   HEARSAY_NOTES_MODEL: NOTES_MODEL_STUB,
 };
 
+// DEMO=1 turns the run into a screen-recording pass: Playwright records the whole walkthrough to a
+// .webm and slows the interactions down so the capture is watchable. Unset (CI, normal `make e2e`) it
+// is a no-op — video stays retain-on-failure and there is no slowMo.
+const demo = !!process.env.DEMO;
+
 export default defineConfig({
   testDir: "./e2e",
   outputDir: path.join(E2E_OUTPUT_DIR, "test-results"),
@@ -67,7 +72,8 @@ export default defineConfig({
     // Triage artifacts on failure only (per docs/testing.md "Results & cleanup").
     trace: "retain-on-failure",
     screenshot: "only-on-failure",
-    video: "retain-on-failure",
+    video: demo ? { mode: "on", size: { width: 1280, height: 720 } } : "retain-on-failure",
+    launchOptions: { slowMo: demo ? 650 : 0 },
   },
   // Playwright starts (and stops) both servers around the run. `port` waits for a TCP accept — the
   // core gates every HTTP route on the token, so an HTTP-status readiness probe would 401; a TCP
