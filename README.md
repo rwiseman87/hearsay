@@ -11,6 +11,8 @@ refine that improves diarization and recognizes returning speakers by voiceprint
 transcript and notes editing, per-line speaker reassignment, nested meeting folders, and optional
 local-LLM meeting notes.
 
+![Recording a meeting, watching live captions stream in, reopening it from the library, renaming a speaker, reassigning a line, and generating notes](docs/demo.gif)
+
 ```mermaid
 flowchart LR
     Helper["Swift helper<br/>mic + system tap, 16 kHz PCM"]

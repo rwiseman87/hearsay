@@ -28,9 +28,15 @@ async function readToken(): Promise<string> {
 // runs (the config keeps its side-effects non-destructive — see playwright.config.ts).
 const TITLE = `E2E Meeting ${Date.now()}`;
 
+// DEMO=1 (the screen-recording pass, see playwright.config.ts) holds on each scene long enough to be
+// readable in the capture. Unset it is a no-op so CI / normal `make e2e` never wait.
+const DEMO = !!process.env.DEMO;
+
 test("record -> live transcript -> stop -> library -> rename speaker -> reassign line -> notes", async ({
   page,
 }) => {
+  const dwell = (ms: number) => (DEMO ? page.waitForTimeout(ms) : Promise.resolve());
+
   const token = await readToken();
   // Dev serves the app via vite; the token rides in the query param (token.ts falls back to it).
   await page.goto(`/?token=${token}`);
@@ -47,6 +53,7 @@ test("record -> live transcript -> stop -> library -> rename speaker -> reassign
   await expect(page.getByText("hi everyone, thanks for joining")).toBeVisible();
   // Them was diarized to a Speaker 1 cluster; Me is the local channel.
   await expect(page.getByText("Speaker 1").first()).toBeVisible();
+  await dwell(2200); // hold on the live transcript so the captions are readable
 
   // Stop (the live control is labeled "End"), then wait for the finalized detail view to appear (the
   // meeting re-renders as TranscriptView once its status flips to finalized).
@@ -55,6 +62,7 @@ test("record -> live transcript -> stop -> library -> rename speaker -> reassign
 
   // Find the finalized meeting in the Library and reopen it from there.
   await page.getByRole("button", { name: "Meetings" }).click();
+  await dwell(1400); // hold on the Library so the saved meeting is visible
   await page.locator("button.library__row-open").filter({ hasText: TITLE }).click();
 
   // Rename the diarized speaker via the inline chip editor.
@@ -64,6 +72,7 @@ test("record -> live transcript -> stop -> library -> rename speaker -> reassign
   // The chip (and the relabeled transcript lines) now read "Alice"; "Speaker 1" is gone.
   await expect(page.locator(".speaker-chip__name").filter({ hasText: "Alice" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Speaker 1", exact: true })).toHaveCount(0);
+  await dwell(1400); // hold on the renamed speaker
 
   // Reassign that one line to a brand-new speaker at the line level (distinct from the whole-cluster
   // rename above). Hovering the row reveals the per-line controls.
@@ -74,9 +83,11 @@ test("record -> live transcript -> stop -> library -> rename speaker -> reassign
   await page.getByRole("button", { name: "Add" }).click();
   // The line now carries the new per-line speaker.
   await expect(page.locator(".live-line__name").filter({ hasText: "Bob" })).toBeVisible();
+  await dwell(1400); // hold on the reassigned line
 
   // Generate notes: the button is enabled because a (stub) notes model resolves, and the scripted
   // summarizer returns a fixed summary.
   await page.getByRole("button", { name: "Generate notes" }).click();
   await expect(page.getByText("Scripted summary for the end-to-end test.")).toBeVisible();
+  await dwell(3500); // hold on the generated notes — the closing beat
 });
