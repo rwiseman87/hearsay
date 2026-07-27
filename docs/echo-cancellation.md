@@ -7,8 +7,7 @@ the remote party a second time, attributed to the local user. Acoustic echo canc
 removes that leakage from Me before it reaches live transcription.
 
 The implementation is `hearsay-orchestrator/src/aec.rs`, driven from the pipeline's `demux` task.
-For the surrounding audio flow see [pipeline.md](pipeline.md) and
-[audio-transcription.md](audio-transcription.md).
+For the surrounding audio flow see [pipeline.md](pipeline.md).
 
 ## The problem
 
@@ -286,4 +285,4 @@ MIT/BSD/Apache gate (`make licenses`).
 | Feature declaration | `rust/crates/hearsay-orchestrator/Cargo.toml`, `.../hearsay-backends/Cargo.toml`, `.../hearsay-core/Cargo.toml` |
 | Build wiring (`--features …,aec`) | `Makefile` (`rust-serve`, `dmg`) |
 | SpeexDSP binding (`AecConfig`, `cancel_echo`) | `aec-rs` 1.0.0 |
-| Related audio flow | [pipeline.md](pipeline.md), [audio-transcription.md](audio-transcription.md) |
+| Related audio flow | [pipeline.md](pipeline.md) |

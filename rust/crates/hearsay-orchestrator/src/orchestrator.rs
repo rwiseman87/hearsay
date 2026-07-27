@@ -1,6 +1,6 @@
-//! [`Orchestrator`]: the [`LiveEngine`] implementation. Owns the single active meeting (Phase 1
-//! records one at a time), serialized by an async op-lock; the sync accessors read the active
-//! session behind a std mutex.
+//! [`Orchestrator`]: the [`LiveEngine`] implementation. Owns the single active meeting (one at a
+//! time), serialized by an async op-lock; the sync accessors read the active session behind a std
+//! mutex.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;

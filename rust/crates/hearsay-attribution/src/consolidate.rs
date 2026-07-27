@@ -1,28 +1,15 @@
-//! Post-clustering speaker consolidation — fold a diarizer's over-split clusters back together.
-//!
-//! sherpa-onnx's pyannote-3.0 + agglomerative pipeline (the cross-platform/Windows diarizer)
-//! reliably over-splits: a known-2-speaker 6-minute recording came back as 6 clusters. Its
-//! clustering works on short per-window embeddings, so a speaker whose voice shifts across the
-//! meeting fragments. This pass runs *after* it, on the far more stable whole-speaker centroids
-//! (each averaged over all of that cluster's audio), where the same speaker's fragments sit at
-//! cosine ~0.9 and different speakers at ~0.2 — separable in a way the per-window vectors are not.
+//! Post-clustering speaker consolidation — fold the sherpa diarizer's over-split clusters back
+//! together on their whole-speaker centroids, and drop clusters that resemble no voice in the room.
+//! See `docs/voiceprints.md` for the full rationale (including why there is deliberately no
+//! duration-cutoff rule).
 //!
 //! Two rules, in order:
 //! 1. **Merge** the pair of clusters with the widest margin over the similarity their evidence
-//!    demands, until nothing clears its bar. The bar is not fixed: see [`attenuation`] — a centroid
-//!    averaged over two seconds is a noisier estimate of the same voice than one averaged over two
-//!    minutes, so holding both to the same cosine is simply the wrong test.
-//! 2. **Drop** clusters that resemble no voice in the room — centroid cosine at or below
-//!    `non_voice_ceiling` (0, i.e. orthogonal) against *every* other cluster. That is what
-//!    non-speech looks like: a notification chime or room noise the ASR puts words on. Real
-//!    speakers, however different, share the speech subspace and land well positive. Dropping loses
-//!    no transcript: with the cluster's turns gone, the caller's overlap attribution hands its text
-//!    to whoever was actually speaking around it.
-//!
-//! Deliberately absent: any "a cluster under N seconds cannot be a speaker" rule. It reads as a
-//! tidy denoiser and is really a cliff that deletes a real participant who happened to speak for
-//! N-minus-a-bit seconds, silently and with no signal that it happened. Duration belongs in this
-//! pass as *evidence* — how much to trust a centroid — never as a right to exist.
+//!    demands, until nothing clears its bar. The bar is scaled by [`attenuation`]: a centroid
+//!    averaged over two seconds is a noisier estimate than one averaged over two minutes.
+//! 2. **Drop** clusters whose centroid cosine is at or below `non_voice_ceiling` (0, orthogonal)
+//!    against *every* other cluster — what non-speech (a chime, room noise the ASR put words on)
+//!    looks like. Dropping loses no transcript: overlap attribution rehomes the text.
 //!
 //! Pure (no ML, no I/O): it maps ordinals to ordinals given centroids + speech durations, so it is
 //! unit-tested directly. Merged centroids are duration-weighted means of the L2-normalized inputs.

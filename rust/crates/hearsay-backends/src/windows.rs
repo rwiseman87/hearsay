@@ -1,5 +1,5 @@
 //! The Windows live-capture + offline-refine backend, assembled into an [`Orchestrator`] by
-//! [`build_engine`] — the "Windows floor" of `docs/windows-port.md`: WASAPI capture
+//! [`build_engine`]: WASAPI capture
 //! ([`WasapiSource`]), live captions on both streams via the sherpa streaming ASR
 //! ([`SherpaTranscriber`], speaker-less — the refine assigns speakers), and an offline refine of
 //! whisper + the sherpa pyannote diarizer ([`WindowsRefiner`]). Everything runs in-process: there
@@ -93,7 +93,7 @@ impl Refiner for WindowsRefiner {
         ] {
             if !model.is_file() {
                 return Err(OrchestratorError::Backend(format!(
-                    "{what} model not found at {} (see docs/windows-port.md)",
+                    "{what} model not found at {}",
                     model.display()
                 )));
             }
@@ -144,7 +144,7 @@ fn load_streaming_asr(models_dir: &Path) -> Result<StreamingAsr, String> {
     for file in [&encoder, &decoder, &joiner, &tokens] {
         if !file.is_file() {
             return Err(format!(
-                "streaming model file not found at {} (see docs/windows-port.md)",
+                "streaming model file not found at {}",
                 file.display()
             ));
         }

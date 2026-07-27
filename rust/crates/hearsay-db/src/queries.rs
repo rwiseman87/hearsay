@@ -616,7 +616,7 @@ pub async fn list_speaker_rows(
 }
 
 /// Rename a cluster to a person: get-or-create the identity, lock the binding, and relabel that
-/// speaker's already-saved segments — all in one transaction (mirrors `SpeakerService.bind_cluster`).
+/// speaker's already-saved segments — all in one transaction.
 /// Returns the updated speaker row, or `None` if the cluster does not exist.
 pub async fn rename_cluster(
     pool: &SqlitePool,
@@ -961,8 +961,7 @@ pub async fn latest_segment_update(
 }
 
 /// `(display_name, centroid bytes)` for every person named + locked in a *different* meeting with a
-/// stored voiceprint — the candidates a refine matches a returning speaker against. Port of
-/// `SpeakerService.known_voiceprints`.
+/// stored voiceprint — the candidates a refine matches a returning speaker against.
 pub async fn known_voiceprints(
     pool: &SqlitePool,
     exclude_meeting_id: Uuid,
@@ -977,7 +976,7 @@ pub async fn known_voiceprints(
 /// in prior meetings (cosine `>= threshold`, the effective `speakers.recognition_threshold`). A
 /// manual carry-forward (`manual`) wins, so those ordinals are skipped. Reads on the refine
 /// transaction; returns `ordinal -> recognized name` (bound but *not* locked — a manual rename can
-/// still override). Port of `refine.py::_recognize_speakers`.
+/// still override).
 async fn recognize_speakers(
     conn: &mut sqlx::SqliteConnection,
     meeting_id: Uuid,
@@ -1030,9 +1029,9 @@ async fn recognize_speakers(
 }
 
 /// Carry each prior *locked* manual name forward onto the new turn ordinal its old segments most
-/// overlap, so a re-diarize never drops a manual binding (one name <-> one ordinal). Port of
-/// `refine.py::_carry_forward_names`. Reads on `conn` (the refine transaction) before the old
-/// clusters are dropped; returns `new ordinal -> display_name`.
+/// overlap, so a re-diarize never drops a manual binding (one name <-> one ordinal). Reads on
+/// `conn` (the refine transaction) before the old clusters are dropped; returns
+/// `new ordinal -> display_name`.
 async fn carry_forward_locked_names(
     conn: &mut sqlx::SqliteConnection,
     meeting_id: Uuid,
@@ -1119,9 +1118,8 @@ async fn carry_forward_locked_names(
 ///
 /// Each ordinal's voiceprint (`result.centroids`) is stored on its cluster so a later meeting can
 /// recognize the speaker. `recognition_threshold` is the effective `speakers.recognition_threshold`
-/// (cosine cutoff for cross-meeting recognition). Mirrors `refine.py` +
-/// `SpeakerService.apply_turn_diarization`. A refine that produced no segments is a no-op — never
-/// wipe the transcript.
+/// (cosine cutoff for cross-meeting recognition). A refine that produced no segments is a no-op —
+/// never wipe the transcript.
 pub async fn replace_them_segments(
     pool: &SqlitePool,
     meeting_id: Uuid,

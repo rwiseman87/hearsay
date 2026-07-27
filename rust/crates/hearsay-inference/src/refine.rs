@@ -331,7 +331,7 @@ fn run_diarize(
 }
 
 /// L2-normalize each speaker's raw voiceprint into a stored centroid, keyed by its 1-based ordinal
-/// (empty embeddings are skipped). Port of `refine.py::_recognize_speakers`'s centroid step.
+/// (empty embeddings are skipped).
 fn build_centroids(embeddings: &HashMap<i64, Vec<f32>>) -> HashMap<i64, Vec<f32>> {
     let mut centroids = HashMap::new();
     for (&ord, embedding) in embeddings {

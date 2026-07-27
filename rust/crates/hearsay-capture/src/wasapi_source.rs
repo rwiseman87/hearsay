@@ -1,7 +1,7 @@
 //! Windows capture via WASAPI, in-process (no helper): Me = the default capture endpoint (mic),
 //! Them = system audio through one of two loopback paths selected by [`LoopbackMode`] (classic
-//! device loopback by default; process-loopback-exclude-self as the alternate — see
-//! `docs/windows-port.md` for why). One blocking capture thread per stream, each COM-initialized,
+//! device loopback by default; process-loopback-exclude-self as the alternate). One blocking
+//! capture thread per stream, each COM-initialized,
 //! both stamping chunks from the shared QPC clock (`IAudioCaptureClient` buffer timestamps,
 //! 100 ns units -> ns `host_ts`), so Me and Them align by timestamp exactly as on macOS.
 //!

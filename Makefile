@@ -163,7 +163,7 @@ FLUID_CACHE := $(HOME)/Library/Application Support/FluidAudio/Models
 FLUID_SRC := outputs/models/fluidaudio/Models
 FLUID_DST := web/src-tauri/models/fluidaudio/Models
 
-# Sherpa live/diarize models for the Windows backend (docs/windows-port.md): the streaming
+# Sherpa live/diarize models for the Windows backend: the streaming
 # zipformer + pyannote segmentation + TitaNet-small embedder, all from the sherpa-onnx model zoo
 # ("recongition" is the real upstream release-tag spelling). Fetch works from any host with
 # curl+tar; scripts/build-windows.ps1 does the same on the Windows machine.
@@ -256,7 +256,7 @@ stage-sherpa-models: ## Stage the sherpa models into the Tauri bundle (Windows p
 	@for m in $(SHERPA_STREAMING) $(SHERPA_SEGMENTATION) $(SHERPA_PUNCT) $(SHERPA_EMBEDDING); do \
 		if [ ! -e "$(SHERPA_SRC)/$$m" ]; then \
 			echo "ERROR: sherpa model '$$m' not in $(SHERPA_SRC)."; \
-			echo "Run 'make fetch-sherpa-models' first (see docs/windows-port.md)."; \
+			echo "Run 'make fetch-sherpa-models' first."; \
 			exit 1; \
 		fi; \
 	done

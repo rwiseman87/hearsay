@@ -869,7 +869,7 @@ async fn reads_settings_with_config_defaults_and_about() {
 }
 
 // Windows has no capture helper -- `win_permissions` returns `available: true` -- so this
-// helper-missing degradation is macOS-specific. See docs/windows-refine-crash.md §4.
+// helper-missing degradation is macOS-specific.
 #[cfg(target_os = "macos")]
 #[tokio::test]
 async fn permissions_probe_degrades_when_helper_missing() {

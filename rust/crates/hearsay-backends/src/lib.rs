@@ -3,9 +3,8 @@
 //!
 //! Each platform module exports a `build_engine(EngineConfig) -> Arc<dyn LiveEngine>` — all
 //! `hearsay-core`'s binary needs. macOS (`mac`) wires the Swift `hearsay-helper` capture + the
-//! FluidAudio live sidecars + the whisper offline refine; Windows (`windows`, in progress — see
-//! `docs/windows-port.md`) wires WASAPI capture + the sherpa live/diarize path. The HTTP crate
-//! keeps depending only on the neutral seam.
+//! FluidAudio live sidecars + the whisper offline refine; Windows (`windows`) wires WASAPI capture +
+//! the sherpa live/diarize path. The HTTP crate keeps depending only on the neutral seam.
 //!
 //! `SherpaTranscriber` (behind the `sherpa` feature) is the pure-Rust live `Transcriber` for the
 //! Windows path; it lives here because it needs both `hearsay-orchestrator` (the trait) and
@@ -37,7 +36,7 @@ mod windows;
 compile_error!("hearsay-backends supports macOS and Windows only");
 #[cfg(all(target_os = "windows", not(feature = "sherpa")))]
 compile_error!(
-    "the Windows backend needs the sherpa live/diarize path: build with --features sherpa (see docs/windows-port.md)"
+    "the Windows backend needs the sherpa live/diarize path: build with --features sherpa"
 );
 
 pub use hearsay_capture::{probe_permissions, LoopbackMode, PermissionsSnapshot};
