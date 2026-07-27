@@ -532,7 +532,10 @@ async fn stream_loop(
 
     loop {
         tokio::select! {
-            biased;
+            // No `biased`: a chunk-first bias lets a producer that outpaces wall-clock (e.g. an
+            // offline WAV replay) keep `chunk_rx` non-empty and starve `emit_rx`, which — with the
+            // sidecar's stdout backpressure — can wedge the loop in `feed().await`. Fair (random)
+            // polling gives the emit drain a turn even under a saturated chunk source.
             chunk = chunk_rx.recv(), if feeding => match chunk {
                 Some((t0_s, samples)) => {
                     let base = *offset.get_or_insert(t0_s);

@@ -204,7 +204,7 @@ fetch-fluid-models: ## Copy the FluidAudio live models from the local cache into
 		fi; \
 	done
 	@mkdir -p "$(FLUID_SRC)"
-	@for r in $(FLUID_REPOS); do \
+	@set -euo pipefail; for r in $(FLUID_REPOS); do \
 		echo "fetching FluidAudio model $$r..."; \
 		rm -rf "$(FLUID_SRC)/$$r"; \
 		cp -R "$(FLUID_CACHE)/$$r" "$(FLUID_SRC)/$$r"; \
@@ -222,7 +222,7 @@ stage-fluid-models: ## Stage the FluidAudio live models into the Tauri bundle
 		fi; \
 	done
 	@mkdir -p "$(FLUID_DST)"
-	@for r in $(FLUID_REPOS); do \
+	@set -euo pipefail; for r in $(FLUID_REPOS); do \
 		if [ ! -d "$(FLUID_DST)/$$r" ]; then \
 			echo "staging FluidAudio model $$r..."; \
 			cp -R "$(FLUID_SRC)/$$r" "$(FLUID_DST)/$$r"; \
@@ -233,7 +233,7 @@ stage-fluid-models: ## Stage the FluidAudio live models into the Tauri bundle
 
 fetch-sherpa-models: ## Download the sherpa live/diarize models (Windows backend) into outputs/
 	@mkdir -p "$(SHERPA_SRC)"
-	@for a in $(SHERPA_STREAMING) $(SHERPA_SEGMENTATION) $(SHERPA_PUNCT); do \
+	@set -euo pipefail; for a in $(SHERPA_STREAMING) $(SHERPA_SEGMENTATION) $(SHERPA_PUNCT); do \
 		if [ -d "$(SHERPA_SRC)/$$a" ]; then \
 			echo "sherpa model $$a already fetched"; \
 		else \
@@ -261,7 +261,7 @@ stage-sherpa-models: ## Stage the sherpa models into the Tauri bundle (Windows p
 		fi; \
 	done
 	@mkdir -p "$(SHERPA_DST)"
-	@for m in $(SHERPA_STREAMING) $(SHERPA_SEGMENTATION) $(SHERPA_PUNCT) $(SHERPA_EMBEDDING); do \
+	@set -euo pipefail; for m in $(SHERPA_STREAMING) $(SHERPA_SEGMENTATION) $(SHERPA_PUNCT) $(SHERPA_EMBEDDING); do \
 		if [ -e "$(SHERPA_DST)/$$m" ]; then \
 			echo "sherpa model $$m already staged"; \
 		elif [ "$$m" = "$(SHERPA_STREAMING)" ]; then \
@@ -287,7 +287,7 @@ stage-release: stage-model stage-fluid-models ## Build release binaries + web bu
 	@mkdir -p $(STAGE)
 	cp $(RUST)/target/release/hearsay-core $(STAGE)/hearsay-core-aarch64-apple-darwin
 	cp $(RUST)/target/release/hearsay-notes $(STAGE)/hearsay-notes-aarch64-apple-darwin
-	@for b in $(SIDECARS); do \
+	@set -euo pipefail; for b in $(SIDECARS); do \
 		cp $(PKG)/.build/arm64-apple-macosx/release/$$b $(STAGE)/$$b-aarch64-apple-darwin; \
 	done
 

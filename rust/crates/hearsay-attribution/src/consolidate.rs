@@ -79,7 +79,8 @@ impl Default for ConsolidateConfig {
 /// one. Fixed at 3 s from the measured operating point: the 2.2 s fragment that belongs to a real
 /// speaker scores 0.52 against them and must merge (needs `k >= 1.2`), while the two genuinely
 /// different speakers nearest each other score 0.56 across 13 s and 109 s and must not (needs
-/// `k <= 4.4`). Both applied to a pair, so the bar reflects the weaker of the two centroids.
+/// `k <= 4.4`). The weaker (smaller-attenuation) side of a pair sets its bar, so a pairing is only as
+/// trusted as its shorter-evidence centroid.
 pub fn attenuation(speech_s: f64, evidence_s: f64) -> f64 {
     if evidence_s <= 0.0 {
         return 1.0;
@@ -212,7 +213,7 @@ pub fn consolidate_speakers(
             for j in (i + 1)..groups.len() {
                 let required = config.merge_threshold
                     * attenuation(groups[i].weight, config.evidence_s)
-                    * attenuation(groups[j].weight, config.evidence_s);
+                        .min(attenuation(groups[j].weight, config.evidence_s));
                 let margin = cosine(&groups[i].centroid, &groups[j].centroid) - required;
                 if best.is_none_or(|(_, _, top)| margin > top) {
                     best = Some((i, j, margin));

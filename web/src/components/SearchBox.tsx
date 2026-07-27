@@ -2,21 +2,13 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 
 import { useSearch } from "../api/hooks";
 import type { SearchHit } from "../api/types";
+import { formatClock } from "../hooks/clock";
 
 // Sentinels the server's snippet() wraps around each match (private-use code points U+E000/U+E001,
 // so they never collide with transcript text). Split on them to render <mark> without any HTML in
 // the payload.
 const MARK_START = String.fromCharCode(0xe000);
 const MARK_END = String.fromCharCode(0xe001);
-
-function formatTime(seconds: number): string {
-  const whole = Math.max(0, Math.floor(seconds));
-  const minutes = Math.floor(whole / 60)
-    .toString()
-    .padStart(2, "0");
-  const secs = (whole % 60).toString().padStart(2, "0");
-  return `${minutes}:${secs}`;
-}
 
 // Turn a snippet with the sentinel-wrapped matches into React nodes, bolding the matched spans.
 function renderSnippet(snippet: string): ReactNode[] {
@@ -144,7 +136,7 @@ export function SearchBox({ onJump, onClose, autoFocus = false }: Props) {
                   {group.hits.map((hit) => (
                     <li key={hit.segment_id}>
                       <button type="button" className="search__hit" onClick={() => select(hit)}>
-                        <span className="search__hit-time">{formatTime(hit.start_s)}</span>
+                        <span className="search__hit-time">{formatClock(hit.start_s)}</span>
                         <span className="search__hit-speaker">{hit.speaker_label}</span>
                         <span className="search__hit-snippet">{renderSnippet(hit.snippet)}</span>
                       </button>

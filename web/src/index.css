@@ -13,6 +13,23 @@
   --gap: 12px;
   --rail-width: 62px;
 
+  /* Foreground for filled buttons (text/icon on an accent or danger fill). */
+  --on-accent: #0f1115;
+  --on-danger: #2a0b08;
+
+  /* Elevation. */
+  --shadow: 0 6px 20px rgba(0, 0, 0, 0.28);
+  --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.4);
+
+  /* Monospace stack (editable prompt / code-ish fields). */
+  --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  /* Stacking order, low -> high: in-content popover, dropdown, rail popover, modal. */
+  --z-raised: 5;
+  --z-dropdown: 30;
+  --z-popover: 40;
+  --z-modal: 60;
+
   /* Rotating speaker colors for the live view's avatars/dots (Me uses --me). */
   --spk-1: #2ecc9b;
   --spk-2: #c6b8ff;
@@ -284,7 +301,7 @@ button:not(:disabled):hover {
 .settings-overlay {
   position: fixed;
   inset: 0;
-  z-index: 20;
+  z-index: var(--z-modal);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -433,7 +450,7 @@ button:not(:disabled):hover {
   width: 100%;
   min-height: 120px;
   padding: 8px;
-  font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-family: var(--mono);
   font-size: var(--fs-sm);
   line-height: 1.5;
   resize: vertical;
@@ -673,7 +690,7 @@ button:not(:disabled):hover {
 .search-overlay {
   position: fixed;
   inset: 0;
-  z-index: 40;
+  z-index: var(--z-popover);
 }
 
 .search-overlay__panel {
@@ -688,7 +705,7 @@ button:not(:disabled):hover {
 .record-overlay {
   position: fixed;
   inset: 0;
-  z-index: 40;
+  z-index: var(--z-popover);
 }
 
 .record-overlay__panel {
@@ -707,7 +724,7 @@ button:not(:disabled):hover {
   border: 1px solid var(--border);
   border-radius: var(--radius);
   background: var(--surface);
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  box-shadow: var(--shadow-lg);
 }
 
 .record-menu__label {
@@ -734,7 +751,7 @@ button:not(:disabled):hover {
   border: none;
   border-radius: var(--radius);
   background: var(--danger);
-  color: #2a0b08;
+  color: var(--on-danger);
   font-weight: 700;
 }
 
@@ -750,7 +767,7 @@ button:not(:disabled):hover {
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  background: #2a0b08;
+  background: var(--on-danger);
 }
 
 /* Pulse while the models load so "Preparing models…" reads as working, not stuck. */
@@ -759,7 +776,10 @@ button:not(:disabled):hover {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .record-menu__start-dot.is-preparing {
+  .record-menu__start-dot.is-preparing,
+  .live__rec-dot,
+  .live-line__caret,
+  .line--jump {
     animation: none;
   }
 }
@@ -829,7 +849,7 @@ button:not(:disabled):hover {
 }
 
 .library__item[data-drop] {
-  background: rgba(91, 157, 255, 0.16);
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
   border-color: var(--accent);
 }
 
@@ -1140,7 +1160,7 @@ button:not(:disabled):hover {
 
 /* The rail popover floats over content, so lift its box; the inline dashboard bar stays flat. */
 .search-overlay__panel .search__input {
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  box-shadow: var(--shadow-lg);
 }
 
 .search__results {
@@ -1148,14 +1168,14 @@ button:not(:disabled):hover {
   top: calc(100% + 6px);
   left: 0;
   right: 0;
-  z-index: 30;
+  z-index: var(--z-dropdown);
   max-height: 60vh;
   overflow-y: auto;
   padding: 6px;
   border: 1px solid var(--border);
   border-radius: var(--radius);
   background: var(--surface);
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  box-shadow: var(--shadow-lg);
 }
 
 .search__state {
@@ -1292,13 +1312,13 @@ button:not(:disabled):hover {
 
 /* --- Transcript find/jump highlights --- */
 mark.find-hit {
-  background: rgba(91, 157, 255, 0.35);
+  background: color-mix(in srgb, var(--accent) 35%, transparent);
   color: var(--text);
   border-radius: 2px;
 }
 
 .line--match {
-  background: rgba(91, 157, 255, 0.08);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
 }
 
 .line--match-current {
@@ -1313,7 +1333,7 @@ mark.find-hit {
 @keyframes line-jump {
   0%,
   25% {
-    background: rgba(91, 157, 255, 0.28);
+    background: color-mix(in srgb, var(--accent) 28%, transparent);
   }
   100% {
     background: transparent;
@@ -1380,7 +1400,7 @@ mark.find-hit {
   position: absolute;
   top: 40px;
   right: 8px;
-  z-index: 5;
+  z-index: var(--z-raised);
   width: 220px;
   max-width: calc(100% - 16px);
   display: flex;
@@ -1390,7 +1410,7 @@ mark.find-hit {
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--surface);
-  box-shadow: var(--shadow, 0 6px 20px rgba(0, 0, 0, 0.28));
+  box-shadow: var(--shadow);
 }
 
 .line__reassign-title {
@@ -1458,7 +1478,7 @@ mark.find-hit {
 }
 
 .line__reassign-error {
-  color: var(--danger, #d33);
+  color: var(--danger);
   font-size: var(--fs-xs);
 }
 
@@ -1563,7 +1583,7 @@ mark.find-hit {
   border: 1px solid transparent;
   border-radius: 10px;
   background: var(--danger);
-  color: #2a0b08;
+  color: var(--on-danger);
 }
 
 .rail__record:not(:disabled):hover {
@@ -1595,7 +1615,7 @@ mark.find-hit {
 }
 
 .rail__btn.is-active {
-  background: rgba(91, 157, 255, 0.14);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
   color: var(--accent);
 }
 
@@ -1634,8 +1654,8 @@ mark.find-hit {
   gap: 8px;
   padding: 6px 12px;
   border-radius: 999px;
-  background: rgba(255, 107, 107, 0.12);
-  border: 1px solid rgba(255, 107, 107, 0.35);
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--danger) 35%, transparent);
 }
 
 .live__rec-dot {
@@ -1731,7 +1751,7 @@ mark.find-hit {
   border: none;
   border-radius: var(--radius);
   background: var(--danger);
-  color: #2a0b08;
+  color: var(--on-danger);
   font-size: var(--fs-sm);
   font-weight: 700;
 }
@@ -1843,7 +1863,7 @@ mark.find-hit {
 
 .live-line__text {
   max-width: 560px;
-  color: rgba(231, 235, 240, 0.8);
+  color: color-mix(in srgb, var(--text) 80%, transparent);
   font-size: var(--fs-md);
   line-height: 1.6;
 }
@@ -1934,7 +1954,8 @@ mark.find-hit {
 }
 
 .live__notes-editor:focus {
-  outline: none;
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
 }
 
 .live__notes-editor::placeholder {
@@ -2104,7 +2125,7 @@ mark.find-hit {
   border: none;
   border-radius: 50%;
   background: var(--accent);
-  color: #0f1115;
+  color: var(--on-accent);
 }
 
 .detail__play:not(:disabled):hover {
@@ -2254,7 +2275,7 @@ mark.find-hit {
 .recap__action--stale {
   border-color: var(--accent);
   background: var(--accent);
-  color: #0f1115;
+  color: var(--on-accent);
   font-weight: 600;
 }
 
@@ -2304,7 +2325,7 @@ mark.find-hit {
 
 .recap__summary {
   margin: 0;
-  color: rgba(231, 235, 240, 0.8);
+  color: color-mix(in srgb, var(--text) 80%, transparent);
   font-size: var(--fs-md);
   line-height: 1.65;
   white-space: pre-wrap;
