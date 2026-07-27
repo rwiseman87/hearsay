@@ -12,6 +12,8 @@ This document describes the product as built. Related references:
 | Document | Scope |
 |---|---|
 | [pipeline.md](pipeline.md) | The live transcription data flow, stage by stage. |
+| [echo-cancellation.md](echo-cancellation.md) | The AEC stage that cancels Them out of the live Me stream. |
+| [voiceprints.md](voiceprints.md) | Cross-meeting speaker recognition and voiceprint storage. |
 | [api.md](api.md) | REST and WebSocket reference. |
 | [../shared/protocol/ipc.md](../shared/protocol/ipc.md) | The helper/core IPC contract (byte-level source of truth). |
 | [packaging.md](packaging.md) | Building and installing the macOS bundle. |

@@ -8,12 +8,12 @@
 //!
 //! The two external backends are behind traits so the whole lifecycle is testable without real
 //! audio or model sidecars:
-//! - [`AudioSource`] — capture (per-OS: WASAPI loopback / Core Audio tap), provided later by
+//! - [`AudioSource`] — capture (per-OS: WASAPI loopback / Core Audio tap), provided by
 //!   `hearsay-capture`. [`WavFileSource`] is a file-backed source for offline / dev runs (replay a
 //!   recorded `audio.wav` through the pipeline without hardware).
-//! - [`Transcriber`] — a streaming VAD/diarization + ASR sidecar, provided later by
-//!   `hearsay-inference`. [`ProcessTranscriber`] is the real `tokio::process` implementation
-//!   (faithful to `live_base.py`); [`testing`] has scripted fakes.
+//! - [`Transcriber`] — a streaming VAD/diarization + ASR sidecar, provided by
+//!   `hearsay-inference`. [`ProcessTranscriber`] is the real `tokio::process` implementation;
+//!   [`testing`] has scripted fakes.
 //!
 //! The pipeline records one timeline-accurate stereo `audio.wav` per meeting (Me=L / Them=R) when
 //! recording is enabled, and writes `transcript.md` + `meeting.json` at stop. When a [`Refiner`] is

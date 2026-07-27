@@ -8,7 +8,7 @@
 //! the window at the loopback URL from its readiness handshake. On quit the core is asked to shut
 //! down gracefully on macOS (SIGTERM, then a SIGKILL backstop) so the active meeting is finalized
 //! and its Swift sidecars don't leak; on Windows there is no graceful signal yet, so quitting
-//! mid-meeting relies on the core's startup reconciliation (see `docs/windows-port.md`). If the
+//! mid-meeting relies on the core's startup reconciliation. If the
 //! core dies during boot, the splash is replaced with an error instead of spinning.
 
 use std::sync::atomic::{AtomicBool, Ordering};

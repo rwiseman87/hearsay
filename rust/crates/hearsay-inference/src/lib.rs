@@ -1,14 +1,11 @@
-//! Local-only inference for Hearsay.
+//! Local-only inference for Hearsay: the offline whisper ASR/refine and the cross-platform sherpa
+//! live/diarize path.
 //!
-//! Being built Mac-first, smallest-verifiable-first: the offline ASR path is
-//! implemented — [`WhisperAsr`] loads a GGML whisper model and transcribes 16 kHz mono audio into
-//! timestamped segments (whisper.cpp via `whisper-rs`; CPU by default, GPU accel — Metal / Vulkan /
-//! CUDA — is a `whisper-rs` Cargo feature). This is the accuracy-verification harness and the
-//! orchestrator's post-meeting refine.
-//!
-//! Still to come (see `docs/architecture.md`): offline
-//! diarization (Silero VAD + a speaker-embedding ONNX model) with WER/DER scoring, then the
-//! streaming `Transcriber` sidecar for live captions.
+//! [`WhisperAsr`] loads a GGML whisper model and transcribes 16 kHz mono audio into timestamped
+//! segments (whisper.cpp via `whisper-rs`; CPU by default, GPU accel — Metal / Vulkan / CUDA — is a
+//! `whisper-rs` Cargo feature); it backs the orchestrator's post-meeting refine. Behind the
+//! `sherpa` feature, [`StreamingAsr`] and [`SherpaDiarizer`] provide the pure-Rust live and offline
+//! diarization used by the Windows backend.
 
 mod asr;
 mod audio;

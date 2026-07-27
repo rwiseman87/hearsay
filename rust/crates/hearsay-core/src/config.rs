@@ -96,7 +96,7 @@ pub struct Settings {
     /// the bundled copy). Unused on macOS.
     pub sherpa_models_dir: PathBuf,
     /// Which WASAPI loopback path captures the Them stream on Windows (`HEARSAY_WIN_LOOPBACK`,
-    /// `device` | `process`, default `device` — see `docs/windows-port.md`). Unused on macOS.
+    /// `device` | `process`, default `device`). Unused on macOS.
     pub win_loopback_mode: LoopbackMode,
 }
 

@@ -353,7 +353,7 @@ const VALID_STATES: [&str; 3] = ["granted", "denied", "undetermined"];
 /// Briefly spawn the helper, read its `hello` (build version) + `check_permissions` reply, then
 /// shut it down. `check_permissions` reads TCC status side-effect-free (it never starts capture, so
 /// no permission prompt fires). Any failure degrades to an unavailable snapshot rather than raising,
-/// so the Permissions panel always renders. Port of `hearsay/services/permissions.py`.
+/// so the Permissions panel always renders.
 pub async fn probe_permissions(helper_path: PathBuf) -> PermissionsSnapshot {
     match probe_inner(&helper_path).await {
         Ok(snapshot) => snapshot,

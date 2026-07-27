@@ -4,7 +4,7 @@
 //! only process that touches the guarded Core Audio tap (Them) + mic (Me); the core pumps its
 //! socket traffic into `CaptureChunk`s (`shared/protocol/ipc.md`).
 //!
-//! **Windows (`WasapiSource`, in progress — see `docs/windows-port.md`):** in-process WASAPI
+//! **Windows (`WasapiSource`):** in-process WASAPI
 //! capture, no helper process. Me = the default capture endpoint; Them = system-audio loopback,
 //! [`LoopbackMode`] selecting classic device loopback (default) or process-loopback-exclude-self.
 //!
