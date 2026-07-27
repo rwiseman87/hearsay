@@ -1,6 +1,6 @@
 # Third-Party Notices
 
-Hearsay's own source is licensed under the PolyForm Noncommercial License 1.0.0 (see `LICENSE`). The
+Hearsay's own source is licensed under the Apache License 2.0 with the Commons Clause (see `LICENSE`). The
 packaged application bundles and/or downloads third-party machine-learning models and libraries that
 carry their **own** licenses; none of these weights are stored in this repository. Those licenses
 govern the models and library code, not Hearsay's source, and their obligations apply when Hearsay is

@@ -79,8 +79,10 @@ and the web gate (`tsc`, ESLint, vitest, `vite build`). Full conventions are in 
 
 ## License
 
-Hearsay is source-available under the [PolyForm Noncommercial License 1.0.0](LICENSE): you may use,
-modify, and share it for any noncommercial purpose. It is not an open-source license — commercial
-use requires a separate license, and the author reserves all commercial rights. The bundled
-machine-learning models and libraries keep their own licenses; see
-[THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
+Hearsay is source-available under the [Apache License 2.0 with the Commons Clause](LICENSE): you may
+use, modify, and share it freely — including for your own work and inside a business — but you may
+not Sell it. "Sell" means charging a third party for a product or service whose value derives
+substantially from Hearsay (reselling it, hosting it as a paid service, or charging for support or
+consulting built on it). It is not an open-source license; that use requires a separate commercial
+license, and the author reserves those rights. The bundled machine-learning models and libraries
+keep their own licenses; see [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
