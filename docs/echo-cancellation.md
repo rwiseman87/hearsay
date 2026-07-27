@@ -3,11 +3,14 @@
 Hearsay captures the microphone ("Me") and system audio ("Them") as two separate streams. When the
 user is on a speakerphone rather than a headset, the mic picks up the remote party coming out of the
 speakers, so that audio lands in **both** streams — and without correction, `hearsay-me` transcribes
-the remote party a second time, attributed to the local user. Acoustic echo cancellation (AEC)
-removes that leakage from Me before it reaches live transcription.
+the remote party a second time, attributed to the local user. Two layers remove that duplication:
+acoustic echo cancellation (AEC) subtracts the leakage from the Me signal before live transcription,
+and a text-level dedup backstop drops any residual echo that still reaches the transcript.
 
-The implementation is `hearsay-orchestrator/src/aec.rs`, driven from the pipeline's `demux` task.
-For the surrounding audio flow see [pipeline.md](pipeline.md).
+AEC is `hearsay-orchestrator/src/aec.rs`, driven from the pipeline's `demux` task; the dedup backstop
+is `hearsay-orchestrator/src/echo_dedup.rs`, driven from `handle` (see
+[Text-level dedup](#text-level-dedup-the-backstop)). For the surrounding audio flow see
+[pipeline.md](pipeline.md).
 
 ## The problem
 
@@ -227,6 +230,47 @@ frame gets the adaptive-filter subtraction *plus* a residual-echo/noise cleanup 
   is sized at 4800 and not the crate default — the echo path through a laptop chassis has a long
   reverb tail, and a 50 ms fit understates what is cancellable by ~10 dB.
 
+## Text-level dedup: the backstop
+
+A linear adaptive filter has a hard ceiling on speakers. Cheap laptop speakers distort nonlinearly
+(harmonic content, clipping, chassis resonance), the echo path drifts, and double-talk perturbs the
+filter — so `EchoCanceller` leaves a residual, and a loud remote party can still cross
+`hearsay-me`'s VAD and be transcribed a second time as the local user. `echo_dedup.rs` is the second
+layer that catches that residual, working on the *transcript* rather than the signal.
+
+The rule: drop a Me **final** whose text is an echo of concurrent Them speech. The Them stream task
+records each finalized Them segment (`record_them`) as a candidate; before a Me final is persisted
+or broadcast, the Me stream task checks it against the recorded window (`is_echo`). A single
+`EchoDedup` is shared between the two tasks behind the same `Arc<Mutex<…>>` pattern as the
+last-activity clock.
+
+Detection is deliberately conservative — it deletes transcript lines, so a false positive is worse
+than a miss:
+
+- **Length gate** — a final under `min_tokens` (4) is never dropped, so backchannels ("yeah",
+  "right") always survive.
+- **Concurrency gate** — only Them finals overlapping the Me final's window (`window_s` = 1.5 s of
+  slack each side) are candidates; echo is roughly concurrent with its reference.
+- **Coverage gate** — the concurrent Them finals are pooled, in time order, into one reference
+  sequence, and the drop fires only when the longest common subsequence covers `similarity` (0.8) of
+  the Me final's tokens. Normalizing by the *Me* length means a Me line is dropped only when it is
+  almost entirely echo: a real Me utterance that merely quotes a short Them phrase, or Me talking
+  over Them (double-talk), stays under threshold and is kept. Pooling handles Them being endpointed
+  into several finals across a span the Me echo covers as one.
+
+Two properties keep it safe alongside AEC:
+
+- **It only touches live Me finals.** Persist and broadcast are skipped for a dropped final; the
+  archive and the offline refine are untouched, exactly as with AEC. A Me *partial* still streams —
+  it is ephemeral and the next partial or final supersedes any echo that flashed live.
+- **It is pure and always on.** No C toolchain, no `aec` feature, no new dependency — it runs (and
+  is unit-tested) in the default build, and it helps even when AEC is not compiled in.
+
+It relies on Them finalizing before its Me echo, which the physics favors: Them is tapped
+*pre-speaker*, so its ASR runs earlier and on cleaner audio than the mic echo, which the playout +
+acoustic round trip delays. A Them final that lands *after* its Me echo is not caught — an accepted
+limitation of a streaming backstop.
+
 ## Guardrails and edge cases
 
 The pure `FrameAligner` is unit-tested against exactly the capture pathologies that would otherwise
@@ -281,7 +325,8 @@ MIT/BSD/Apache gate (`make licenses`).
 | Concern | Location |
 |---|---|
 | Aligner + canceller + tests | `rust/crates/hearsay-orchestrator/src/aec.rs` |
-| Driver (`demux`, raw-record-then-cancel) | `rust/crates/hearsay-orchestrator/src/pipeline.rs` |
+| Text-level dedup backstop + tests | `rust/crates/hearsay-orchestrator/src/echo_dedup.rs` |
+| Driver (`demux`, raw-record-then-cancel; Them-records / Me-drops in `handle`) | `rust/crates/hearsay-orchestrator/src/pipeline.rs` |
 | Feature declaration | `rust/crates/hearsay-orchestrator/Cargo.toml`, `.../hearsay-backends/Cargo.toml`, `.../hearsay-core/Cargo.toml` |
 | Build wiring (`--features …,aec`) | `Makefile` (`rust-serve`, `dmg`) |
 | SpeexDSP binding (`AecConfig`, `cancel_echo`) | `aec-rs` 1.0.0 |

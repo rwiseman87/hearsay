@@ -24,6 +24,7 @@ use uuid::Uuid;
 use hearsay_db::queries;
 
 use crate::aec::EchoCanceller;
+use crate::echo_dedup::{EchoDedup, EchoDedupConfig};
 use crate::error::OrchestratorError;
 use crate::lock::MutexExt;
 use crate::recorder::MeetingAudioRecorder;
@@ -321,6 +322,10 @@ pub(crate) async fn spawn(
     let (inactive_tx, inactive_rx) = oneshot::channel();
 
     let recorder = audio_path.map(MeetingAudioRecorder::new);
+    // Shared across both stream tasks: the Them task records finals as candidate echo sources; the
+    // Me task drops a final that matches one. A backstop behind the acoustic canceller (`aec`), it
+    // touches only live Me finals, never the archive or the refine.
+    let echo_dedup = Arc::new(Mutex::new(EchoDedup::new(EchoDedupConfig::default())));
     let intentional_stop = Arc::new(AtomicBool::new(false));
     // Pause gate (the "Pause" control): while set, demux drops chunks and elides the span so the
     // timeline stays contiguous, and the watchdog holds the silence clock. Shared with those tasks.
@@ -346,6 +351,7 @@ pub(crate) async fn spawn(
         broadcast_tx.clone(),
         ane_ready_rx.clone(),
         last_activity.clone(),
+        echo_dedup.clone(),
     ));
     let them_task = tokio::spawn(stream_loop(
         StreamRole::Them,
@@ -357,6 +363,7 @@ pub(crate) async fn spawn(
         broadcast_tx.clone(),
         ane_ready_rx,
         last_activity.clone(),
+        echo_dedup,
     ));
 
     // Spawn the inactivity watchdog only when a prompt or an auto-end is enabled; otherwise drop
@@ -512,6 +519,7 @@ async fn stream_loop(
     broadcast_tx: broadcast::Sender<String>,
     mut ane_ready: watch::Receiver<bool>,
     last_activity: Arc<Mutex<Instant>>,
+    echo_dedup: Arc<Mutex<EchoDedup>>,
 ) {
     // Serialize live inference against the offline refine on the shared ANE permit: wait until this
     // meeting holds it before feeding the sidecar. Recording is unaffected (demux records on its own
@@ -577,6 +585,7 @@ async fn stream_loop(
                         meeting_id,
                         &broadcast_tx,
                         &mut clusters,
+                        &echo_dedup,
                     )
                     .await;
                 }
@@ -932,6 +941,7 @@ async fn handle(
     meeting_id: Uuid,
     broadcast_tx: &broadcast::Sender<String>,
     clusters: &mut HashMap<i64, Uuid>,
+    echo_dedup: &Arc<Mutex<EchoDedup>>,
 ) {
     let start_s = seg.start_s + offset;
     let end_s = seg.end_s + offset;
@@ -939,6 +949,15 @@ async fn handle(
     match role {
         // Me is always the local speaker: broadcast partials + finals; persist only finals.
         StreamRole::Me => {
+            // Drop a final that is an echo of concurrent Them speech leaking through the mic (the
+            // text-level backstop behind acoustic AEC): no broadcast, no persist. Partials still
+            // stream — they are ephemeral and the next one supersedes any echo that flashed live.
+            if seg.kind == SegmentKind::Final
+                && echo_dedup.lock_recover().is_echo(start_s, end_s, &seg.text)
+            {
+                tracing::debug!(text = %seg.text, start_s, end_s, "dropping Me final as echo of Them");
+                return;
+            }
             publish(
                 broadcast_tx,
                 &TranscriptEvent {
@@ -1012,6 +1031,10 @@ async fn handle(
                     end_s,
                 },
             );
+            // Record as a candidate echo source for the Me dedup backstop above.
+            echo_dedup
+                .lock_recover()
+                .record_them(start_s, end_s, &seg.text);
         }
     }
 }
