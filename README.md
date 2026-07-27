@@ -1,6 +1,6 @@
 # hearsay
 
-Local-first meeting-note transcriber for macOS (Apple Silicon, macOS 14.4+; Windows planned).
+Local-first meeting-note transcriber for macOS (Apple Silicon, macOS 14.4+) and Windows (x86_64, Windows 10 2004+).
 Hearsay captures your microphone and the system audio as separate streams ("Me" and "Them"),
 transcribes both in real time, identifies the remote speakers, and writes Markdown notes.
 Transcription, diarization, and the optional notes LLM all run on-device; audio never leaves the
@@ -53,7 +53,7 @@ are in [docs/packaging.md](docs/packaging.md).
 
 | Document | Contents |
 |---|---|
-| [docs/architecture.md](docs/architecture.md) | The whole product: processes, crates, trait seams, runtime behavior, data model, security, and the Windows roadmap. |
+| [docs/architecture.md](docs/architecture.md) | The whole product: processes, crates, trait seams, runtime behavior, data model, security, and the cross-platform (macOS + Windows) architecture. |
 | [docs/pipeline.md](docs/pipeline.md) | The live transcription data flow, from audio frames to the finished transcript. |
 | [docs/api.md](docs/api.md) | REST and WebSocket reference: auth model, endpoints, examples. |
 | [docs/development.md](docs/development.md) | Build, run, test, configure, and troubleshoot from source. |

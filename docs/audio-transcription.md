@@ -869,10 +869,10 @@ DB preferences at each run, so a Settings change applies without a restart.
 | Stereo WAV recorder | Wired, gated by the `record` setting. |
 | whisper offline refine + `hearsay-diarize` | Wired, macOS. |
 | Notes (llama.cpp via `llama-cpp-2`) | Runs out-of-process in the `hearsay-notes` sidecar. |
-| `sherpa_diarize.rs` / `sherpa_streaming.rs` / `SherpaTranscriber` (sherpa-onnx) | Experimental cross-platform / Windows path, behind the `sherpa` feature — **not compiled into the macOS build**. |
+| `sherpa_diarize.rs` / `sherpa_streaming.rs` / `SherpaTranscriber` (sherpa-onnx) | The Windows live + refine path, behind the `sherpa` feature — **not compiled into the macOS build**. |
 | OCR / calendar-roster / active-speaker hint fusion | **Planned** — protocol fixtures exist, no consumer. |
 
-Windows is the remaining work: it reuses the same `demux` and refine seams with the sherpa transcriber
+The Windows build reuses the same `demux` and refine seams with the sherpa transcriber
 and diarizer in place of the FluidAudio sidecars, deferring Them diarization entirely to the offline
 refine.
 

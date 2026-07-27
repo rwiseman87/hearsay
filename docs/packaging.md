@@ -128,8 +128,7 @@ flowchart TD
 
 ## Windows installer
 
-The Windows bundle is an unsigned NSIS installer built on a Windows x86_64 machine (the port's
-plan and tracking state live in [windows-port.md](windows-port.md)):
+The Windows bundle is an unsigned NSIS installer built on a Windows x86_64 machine:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts\build-windows.ps1              # default: Vulkan (GPU) + AEC

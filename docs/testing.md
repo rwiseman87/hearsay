@@ -89,8 +89,7 @@ gitignored `outputs/`; `make clean-test` removes them.
 ## Platform parity (macOS / Windows)
 
 Hearsay is one codebase with per-OS edges: ~90% is shared and must behave identically; capture, live
-ASR/diarization, the refine GPU, and packaging differ by design (see
-[windows-port.md](windows-port.md)). The shared surface — core API, DB, orchestrator, attribution,
+ASR/diarization, the refine GPU, and packaging differ by design. The shared surface — core API, DB, orchestrator, attribution,
 notes-prompt, markdown, the full-stack HTTP/WS test, and the browser E2E — runs the **same tests on both
 OSes** and is the parity backbone. The real differences are asserted where they are real: capture
 (`SwiftHelperSource` vs `WasapiSource`), live ASR/diarization (FluidAudio/ANE vs `sherpa`), and the

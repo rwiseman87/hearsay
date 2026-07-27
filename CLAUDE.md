@@ -1,6 +1,6 @@
 # Hearsay
 
-Local-first meeting-note transcriber for macOS (Windows planned). Captures the local mic and system
+Local-first meeting-note transcriber for macOS and Windows. Captures the local mic and system
 audio as **separate** streams ("Me" vs "Them"), transcribes in real time, identifies the remote
 speakers, and streams Markdown notes. Transcription, diarization, and the notes LLM all run on-device;
 audio never leaves the machine.
@@ -11,7 +11,7 @@ Canonical architecture: `docs/architecture.md`. IPC contract: `shared/protocol/i
 
 ## Architecture
 
-Multi-process, local-only (Apple Silicon, macOS 14.4+; Windows is the remaining work):
+Multi-process, local-only (macOS on Apple Silicon 14.4+; Windows on x86_64, Win10 2004+):
 
 - **Swift capture helper** (`helper/`) — the ONLY process that touches guarded native APIs (Core Audio tap,
   AVAudioEngine, ScreenCaptureKit, Vision OCR, EventKit, Accessibility). A lean PCM streamer; streams PCM +
@@ -198,7 +198,7 @@ shared/protocol/ipc.md  IPC contract (source of truth)   ·   shared/fixtures/  
 - HEARSAY_FLUID_MODELS_DIR: bundled FluidAudio live models the core seeds into FluidAudio's cache on first launch (set by the desktop shell; unset in dev, where FluidAudio downloads them)
 - HEARSAY_DIARIZE_CLUSTER_THRESHOLD: overrides the macOS `hearsay-diarize` sidecar's agglomerative clustering threshold (default 0.7; tuned above FluidAudio's 0.6 default, which under-separates compressed meeting audio)
 - HEARSAY_SHERPA_MODELS_DIR: sherpa live/diarize models for the Windows backend (default `outputs/models/sherpa`; the desktop shell points it at the bundled copy). Conventional contents = the streaming zipformer dir + pyannote segmentation dir + TitaNet-small onnx (`make fetch-sherpa-models`)
-- HEARSAY_WIN_LOOPBACK: which WASAPI path captures Them on Windows — `device` (classic loopback, default; works with new Teams) | `process` (process-loopback-exclude-self; blocked by an open Teams bug — see docs/windows-port.md)
+- HEARSAY_WIN_LOOPBACK: which WASAPI path captures Them on Windows — `device` (classic loopback, default; works with new Teams) | `process` (process-loopback-exclude-self; blocked by an open Teams bug)
 - HEARSAY_NOTES_MODEL: default GGUF instruct model for the optional local-LLM notes step (Markdown notes, stored + rendered verbatim; the prompt template dictates the format); empty until one is downloaded/chosen. The Settings > Models panel overrides it per install; applies to the next generate, no restart. The notes step runs in the `hearsay-notes` sidecar (llama.cpp, spawned out-of-process so llama's `ggml` never co-links with the whisper refine's — a collision that slows the refine ~5x); `rust-serve` / `dmg` build + bundle it
 - HEARSAY_NOTES_PATH: path to the `hearsay-notes` sidecar (default a `hearsay-notes` sibling of the core executable — where the bundler stages it and where the cargo target dir puts it in dev)
 - HEARSAY_NOTES_PROMPT: default prompt template for the notes step (its `{transcript}` placeholder is filled with the finalized transcript; the transcript is appended if omitted). Defaults to the built-in template. The Settings > Models panel overrides it per install; applies to the next generate, no restart

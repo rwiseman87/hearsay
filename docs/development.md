@@ -146,8 +146,7 @@ error otherwise, so a misconfigured deploy fails fast instead of silently using 
 `HEARSAY_RECORD`, `HEARSAY_AUTO_REFINE`, `HEARSAY_RECOGNITION_THRESHOLD`, and the notes settings
 are the defaults for the editable Settings sections; a stored preference overrides them. The
 handshake and FluidAudio paths are injected by the desktop shell and normally unset in
-development. The sherpa and loopback settings apply only on Windows (see
-[windows-port.md](windows-port.md)).
+development. The sherpa and loopback settings apply only on Windows.
 
 **Audio recording and playback.** When recording is on (the default), each meeting records one
 timeline-accurate stereo `audio.wav` (Me on the left channel, Them on the right). This single file
@@ -163,8 +162,7 @@ above.
 
 ## Windows
 
-The Windows build targets `x86_64-pc-windows-msvc` only (no ARM); the port's plan and tracking
-state live in [windows-port.md](windows-port.md). There is no Swift on Windows: capture is
+The Windows build targets `x86_64-pc-windows-msvc` only (no ARM). There is no Swift on Windows: capture is
 in-process WASAPI and the live/refine models are the sherpa-onnx set.
 
 Prerequisites on the Windows machine:
