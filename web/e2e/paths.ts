@@ -15,8 +15,9 @@ export const HANDSHAKE_PATH = path.join(E2E_OUTPUT_DIR, "handshake.json");
 // here after creating it.
 export const NOTES_MODEL_STUB = path.join(E2E_OUTPUT_DIR, "notes-model.stub");
 
-// The throwaway SQLite DB the scripted core runs against (migrations apply on boot). Wiped at the
-// start of each run so a fixed meeting title stays unambiguous in the Library.
+// The throwaway SQLite DB the scripted core runs against (migrations apply on boot). Persists across
+// runs — playwright.config.ts deliberately does not wipe it (that would race the still-running core),
+// and the spec uses a per-run meeting title so a title never goes ambiguous in the Library.
 export const DB_PATH = path.join(E2E_OUTPUT_DIR, "e2e.db");
 
 // The core runs on the fixed dev port the vite proxy (vite.config.ts) already targets; vite serves

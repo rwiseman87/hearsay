@@ -31,7 +31,8 @@ import type {
 export function useMeetings(page = 1, pageSize = 50) {
   return useQuery({
     queryKey: queryKeys.meetings.list(page, pageSize),
-    queryFn: () => api.get<PageMeeting>(`/api/meetings?page=${page}&page_size=${pageSize}`),
+    queryFn: ({ signal }) =>
+      api.get<PageMeeting>(`/api/meetings?page=${page}&page_size=${pageSize}`, signal),
     refetchInterval: 5_000,
   });
 }
@@ -41,11 +42,15 @@ export function useMeetings(page = 1, pageSize = 50) {
 // the primary view.
 const SEGMENT_PAGE_SIZE = 200;
 
-async function fetchAllSegments(meetingId: string): Promise<SegmentRead[]> {
+async function fetchAllSegments(
+  meetingId: string,
+  signal?: AbortSignal,
+): Promise<SegmentRead[]> {
   const items: SegmentRead[] = [];
   for (let page = 1; ; page += 1) {
     const chunk = await api.get<PageSegment>(
       `/api/meetings/${meetingId}/segments?page=${page}&page_size=${SEGMENT_PAGE_SIZE}`,
+      signal,
     );
     items.push(...chunk.items);
     // Stop once we've collected the reported total; the empty-page guard bounds the loop even if
@@ -62,7 +67,7 @@ async function fetchAllSegments(meetingId: string): Promise<SegmentRead[]> {
 export function useStatus() {
   return useQuery({
     queryKey: queryKeys.status.all,
-    queryFn: () => api.get<StatusInfo>("/api/status"),
+    queryFn: ({ signal }) => api.get<StatusInfo>("/api/status", signal),
     refetchInterval: (query) => (query.state.data?.sidecars_ready ? 10_000 : 1_500),
   });
 }
@@ -70,7 +75,7 @@ export function useStatus() {
 export function useSegments(meetingId: string | null, isLive = false) {
   return useQuery({
     queryKey: queryKeys.meetings.segments(meetingId ?? "none"),
-    queryFn: () => fetchAllSegments(meetingId as string),
+    queryFn: ({ signal }) => fetchAllSegments(meetingId as string, signal),
     enabled: meetingId !== null,
     // While recording, poll as a belt-and-suspenders backfill: the primary recovery is the WS
     // resync/reconnect invalidation (useTranscript), but a modest refetch also catches any final a
@@ -217,7 +222,7 @@ export function useRenameMeeting() {
 export function useFolders() {
   return useQuery({
     queryKey: queryKeys.folders.list(1, 200),
-    queryFn: () => api.get<PageFolder>("/api/folders?page=1&page_size=200"),
+    queryFn: ({ signal }) => api.get<PageFolder>("/api/folders?page=1&page_size=200", signal),
   });
 }
 
@@ -277,7 +282,7 @@ export function useMoveMeeting() {
 export function useSpeakers(meetingId: string | null) {
   return useQuery({
     queryKey: queryKeys.meetings.speakers(meetingId ?? "none"),
-    queryFn: () => api.get<PageSpeaker>(`/api/meetings/${meetingId}/speakers`),
+    queryFn: ({ signal }) => api.get<PageSpeaker>(`/api/meetings/${meetingId}/speakers`, signal),
     enabled: meetingId !== null,
     refetchInterval: 5_000,
   });
@@ -286,7 +291,8 @@ export function useSpeakers(meetingId: string | null) {
 export function useIdentities(page = 1, pageSize = 50) {
   return useQuery({
     queryKey: queryKeys.identities.list(page, pageSize),
-    queryFn: () => api.get<PageIdentity>(`/api/identities?page=${page}&page_size=${pageSize}`),
+    queryFn: ({ signal }) =>
+      api.get<PageIdentity>(`/api/identities?page=${page}&page_size=${pageSize}`, signal),
   });
 }
 
@@ -327,7 +333,7 @@ export function useRediarize(meetingId: string) {
 export function useMeetingNotes(meetingId: string | null) {
   return useQuery({
     queryKey: queryKeys.meetings.notes(meetingId ?? "none"),
-    queryFn: () => api.get<MeetingNotesRead>(`/api/meetings/${meetingId}/notes`),
+    queryFn: ({ signal }) => api.get<MeetingNotesRead>(`/api/meetings/${meetingId}/notes`, signal),
     enabled: meetingId !== null,
     retry: false,
   });
@@ -367,7 +373,7 @@ export function useEditNotes(meetingId: string) {
 export function useUserNotes(meetingId: string | null) {
   return useQuery({
     queryKey: queryKeys.meetings.userNotes(meetingId ?? "none"),
-    queryFn: () => api.get<UserNotesRead>(`/api/meetings/${meetingId}/user-notes`),
+    queryFn: ({ signal }) => api.get<UserNotesRead>(`/api/meetings/${meetingId}/user-notes`, signal),
     enabled: meetingId !== null,
     retry: false,
   });
@@ -392,7 +398,8 @@ export function useSearch(query: string) {
   const q = query.trim();
   return useQuery({
     queryKey: queryKeys.search.query(q),
-    queryFn: () => api.get<PageSearchHit>(`/api/search?q=${encodeURIComponent(q)}&page=1&page_size=50`),
+    queryFn: ({ signal }) =>
+      api.get<PageSearchHit>(`/api/search?q=${encodeURIComponent(q)}&page=1&page_size=50`, signal),
     enabled: q.length > 0,
   });
 }
@@ -401,7 +408,7 @@ export function useSearch(query: string) {
 export function useModelCatalog() {
   return useQuery({
     queryKey: queryKeys.models.catalog,
-    queryFn: () => api.get<ModelCatalog>("/api/models/catalog"),
+    queryFn: ({ signal }) => api.get<ModelCatalog>("/api/models/catalog", signal),
   });
 }
 
@@ -410,7 +417,7 @@ export function useModelCatalog() {
 export function useDownloadStatus() {
   return useQuery({
     queryKey: queryKeys.models.download,
-    queryFn: () => api.get<DownloadState>("/api/models/download"),
+    queryFn: ({ signal }) => api.get<DownloadState>("/api/models/download", signal),
     refetchInterval: (query) => {
       const status = query.state.data?.status;
       return status === "downloading" || status === "verifying" ? 1_000 : false;
@@ -434,7 +441,7 @@ export function useStartDownload() {
 export function useSettings() {
   return useQuery({
     queryKey: queryKeys.settings.all,
-    queryFn: () => api.get<SettingsRead>("/api/settings"),
+    queryFn: ({ signal }) => api.get<SettingsRead>("/api/settings", signal),
   });
 }
 
@@ -443,7 +450,7 @@ export function useSettings() {
 export function usePermissions() {
   return useQuery({
     queryKey: queryKeys.settings.permissions,
-    queryFn: () => api.get<PermissionsInfo>("/api/settings/permissions"),
+    queryFn: ({ signal }) => api.get<PermissionsInfo>("/api/settings/permissions", signal),
     staleTime: Infinity,
     refetchOnWindowFocus: false,
   });

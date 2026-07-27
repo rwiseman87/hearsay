@@ -275,9 +275,18 @@ fn header_payload_len(header: &[u8; HEADER_SIZE]) -> Option<usize> {
 }
 
 /// Read exactly `buf.len()` bytes; `false` on EOF or error (end the pump). At a frame boundary EOF
-/// is the helper exiting cleanly; mid-frame it is a truncated final frame — both end capture.
+/// is the helper exiting cleanly; mid-frame it is a truncated final frame — both end capture quietly.
+/// A genuine socket error (not EOF) ends capture too, but is logged so it isn't mistaken for a clean
+/// exit.
 async fn fill<R: tokio::io::AsyncRead + Unpin>(reader: &mut R, buf: &mut [u8]) -> bool {
-    reader.read_exact(buf).await.is_ok()
+    match reader.read_exact(buf).await {
+        Ok(_) => true,
+        Err(err) if err.kind() == std::io::ErrorKind::UnexpectedEof => false,
+        Err(err) => {
+            tracing::warn!(error = %err, "media socket read error; ending capture");
+            false
+        }
+    }
 }
 
 /// Drain (and debug-log) control events after the handshake so the helper never blocks on a full

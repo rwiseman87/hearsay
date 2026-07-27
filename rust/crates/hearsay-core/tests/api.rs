@@ -151,7 +151,12 @@ async fn send(app: &Router, req: Request<Body>) -> (StatusCode, Value) {
     let json = if bytes.is_empty() {
         Value::Null
     } else {
-        serde_json::from_slice(&bytes).unwrap_or(Value::Null)
+        serde_json::from_slice(&bytes).unwrap_or_else(|e| {
+            panic!(
+                "response body was not valid JSON ({e}): {:?}",
+                String::from_utf8_lossy(&bytes)
+            )
+        })
     };
     (status, json)
 }

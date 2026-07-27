@@ -2,22 +2,9 @@ import { type CSSProperties, type FormEvent, useState } from "react";
 
 import { useIdentities, useRenameSpeaker, useSpeakers } from "../api/hooks";
 import type { SpeakerRead } from "../api/types";
+import { speakerColorVar } from "./speakerColors";
 
 const SUGGESTIONS_ID = "identity-suggestions";
-
-// Match the transcript's per-speaker colors (SpeakerLine hashes the label the same way), so a
-// speaker's chip dot is the color its lines carry.
-const SPEAKER_COLORS = ["--spk-1", "--spk-2", "--spk-3", "--spk-4"] as const;
-
-function hash(text: string): number {
-  let acc = 0;
-  for (let i = 0; i < text.length; i++) acc = (acc * 31 + text.charCodeAt(i)) >>> 0;
-  return acc;
-}
-
-function colorVar(label: string): string {
-  return SPEAKER_COLORS[hash(label) % SPEAKER_COLORS.length];
-}
 
 function SpeakerChip({ meetingId, speaker }: { meetingId: string; speaker: SpeakerRead }) {
   const rename = useRenameSpeaker(meetingId);
@@ -45,7 +32,7 @@ function SpeakerChip({ meetingId, speaker }: { meetingId: string; speaker: Speak
   return (
     <li
       className="speaker-chip"
-      style={{ ["--spk" as string]: `var(${colorVar(speaker.label)})` } as CSSProperties}
+      style={{ ["--spk" as string]: `var(${speakerColorVar(speaker.label)})` } as CSSProperties}
     >
       <span className="speaker-chip__dot" aria-hidden="true" />
       {editing ? (

@@ -9,7 +9,7 @@ RUST_DB := sqlite://$(CURDIR)/outputs/db/hearsay-rust.db
 RUST_PORT ?= 8799
 
 help: ## Show this help
-	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-16s\033[0m %s\n", $$1, $$2}'
+	@grep -E '^[a-zA-Z_ -]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-16s\033[0m %s\n", $$1, $$2}'
 
 HELPER_PRODUCTS := --product hearsay-helper --product hearsay-diarize --product hearsay-live --product hearsay-me
 swift-build: ## Build the Swift helper executables (explicit products skip FluidAudio's CLI, which has a type-check bug)
@@ -46,12 +46,12 @@ fmt: rust-fmt ## Format (rustfmt)
 
 codegen: ## Regenerate IPC fixtures + OpenAPI schema + web TS types (Rust is the source of truth)
 	cargo run --manifest-path $(RUST)/Cargo.toml -p hearsay-ipc --bin gen_fixtures
-	cargo run --manifest-path $(RUST)/Cargo.toml -p hearsay-core -- --dump-openapi > web/openapi.json
+	cargo run --manifest-path $(RUST)/Cargo.toml -p hearsay-core -- --dump-openapi > web/openapi.json.tmp && mv web/openapi.json.tmp web/openapi.json
 	cd web && npm run codegen
 
 codegen-check: ## Fail if the committed IPC fixtures / OpenAPI / web types drift from the Rust source
 	cargo run --manifest-path $(RUST)/Cargo.toml -p hearsay-ipc --bin gen_fixtures
-	cargo run --manifest-path $(RUST)/Cargo.toml -p hearsay-core -- --dump-openapi > web/openapi.json
+	cargo run --manifest-path $(RUST)/Cargo.toml -p hearsay-core -- --dump-openapi > web/openapi.json.tmp && mv web/openapi.json.tmp web/openapi.json
 	cd web && npm run codegen
 	git diff --exit-code -- $(FIXTURES) $(CONTROL_FIXTURES) web/openapi.json web/src/api/schema.ts
 
@@ -204,7 +204,7 @@ fetch-fluid-models: ## Copy the FluidAudio live models from the local cache into
 		fi; \
 	done
 	@mkdir -p "$(FLUID_SRC)"
-	@for r in $(FLUID_REPOS); do \
+	@set -euo pipefail; for r in $(FLUID_REPOS); do \
 		echo "fetching FluidAudio model $$r..."; \
 		rm -rf "$(FLUID_SRC)/$$r"; \
 		cp -R "$(FLUID_CACHE)/$$r" "$(FLUID_SRC)/$$r"; \
@@ -222,7 +222,7 @@ stage-fluid-models: ## Stage the FluidAudio live models into the Tauri bundle
 		fi; \
 	done
 	@mkdir -p "$(FLUID_DST)"
-	@for r in $(FLUID_REPOS); do \
+	@set -euo pipefail; for r in $(FLUID_REPOS); do \
 		if [ ! -d "$(FLUID_DST)/$$r" ]; then \
 			echo "staging FluidAudio model $$r..."; \
 			cp -R "$(FLUID_SRC)/$$r" "$(FLUID_DST)/$$r"; \
@@ -233,7 +233,7 @@ stage-fluid-models: ## Stage the FluidAudio live models into the Tauri bundle
 
 fetch-sherpa-models: ## Download the sherpa live/diarize models (Windows backend) into outputs/
 	@mkdir -p "$(SHERPA_SRC)"
-	@for a in $(SHERPA_STREAMING) $(SHERPA_SEGMENTATION) $(SHERPA_PUNCT); do \
+	@set -euo pipefail; for a in $(SHERPA_STREAMING) $(SHERPA_SEGMENTATION) $(SHERPA_PUNCT); do \
 		if [ -d "$(SHERPA_SRC)/$$a" ]; then \
 			echo "sherpa model $$a already fetched"; \
 		else \
@@ -261,7 +261,7 @@ stage-sherpa-models: ## Stage the sherpa models into the Tauri bundle (Windows p
 		fi; \
 	done
 	@mkdir -p "$(SHERPA_DST)"
-	@for m in $(SHERPA_STREAMING) $(SHERPA_SEGMENTATION) $(SHERPA_PUNCT) $(SHERPA_EMBEDDING); do \
+	@set -euo pipefail; for m in $(SHERPA_STREAMING) $(SHERPA_SEGMENTATION) $(SHERPA_PUNCT) $(SHERPA_EMBEDDING); do \
 		if [ -e "$(SHERPA_DST)/$$m" ]; then \
 			echo "sherpa model $$m already staged"; \
 		elif [ "$$m" = "$(SHERPA_STREAMING)" ]; then \
@@ -275,6 +275,7 @@ stage-sherpa-models: ## Stage the sherpa models into the Tauri bundle (Windows p
 	done
 
 stage-release: stage-model stage-fluid-models ## Build release binaries + web bundle and stage them for the Tauri bundle
+	@test "$$(uname -m)" = "arm64" || { echo "stage-release: Apple-Silicon (arm64) only (got $$(uname -m)); Intel packaging is not wired"; exit 1; }
 	cd web && npm run build
 	@for p in $(SIDECARS); do \
 		swift build -c release --package-path $(PKG) --product $$p; \
@@ -287,7 +288,7 @@ stage-release: stage-model stage-fluid-models ## Build release binaries + web bu
 	@mkdir -p $(STAGE)
 	cp $(RUST)/target/release/hearsay-core $(STAGE)/hearsay-core-aarch64-apple-darwin
 	cp $(RUST)/target/release/hearsay-notes $(STAGE)/hearsay-notes-aarch64-apple-darwin
-	@for b in $(SIDECARS); do \
+	@set -euo pipefail; for b in $(SIDECARS); do \
 		cp $(PKG)/.build/arm64-apple-macosx/release/$$b $(STAGE)/$$b-aarch64-apple-darwin; \
 	done
 

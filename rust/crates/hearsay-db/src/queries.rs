@@ -530,6 +530,13 @@ pub struct SearchHitRow {
     pub snippet: String,
 }
 
+// WARNING: `segments_fts` is an external-content FTS5 index keyed on `segments.rowid`, and
+// `segments`' primary key is a BLOB UUID (not an INTEGER PRIMARY KEY alias). SQLite reassigns such
+// implicit rowids on `VACUUM`, which would desync this index from the content table and make search
+// return the wrong rows. There is no `VACUUM` anywhere in the codebase today; if one is ever added
+// (e.g. to compact after the cascade deletes in `delete_meeting`), it MUST be followed by
+// `INSERT INTO segments_fts(segments_fts) VALUES('rebuild');` to rebuild the index.
+
 /// Total number of segments matching an FTS5 `MATCH` query (for the paginated list envelope).
 /// `match_query` is a bound parameter built by the caller from sanitized tokens.
 pub async fn count_search(pool: &SqlitePool, match_query: &str) -> Result<i64, sqlx::Error> {
@@ -796,24 +803,22 @@ async fn get_or_create_identity(
     name: &str,
     now: DateTime<Utc>,
 ) -> Result<Uuid, sqlx::Error> {
-    let existing: Option<Uuid> =
-        sqlx::query_scalar("SELECT id FROM identities WHERE display_name = ?")
-            .bind(name)
-            .fetch_optional(&mut *conn)
-            .await?;
-    if let Some(id) = existing {
-        return Ok(id);
-    }
-    let id = Uuid::new_v4();
-    sqlx::query(
+    // Atomic get-or-create: a plain SELECT-then-INSERT races a concurrent refine/rename through the
+    // `display_name` UNIQUE constraint, and the loser's INSERT would abort the whole transaction.
+    // `ON CONFLICT DO UPDATE ... RETURNING` reuses the existing row's id in one statement; the update
+    // writes `updated_at` back to its own current value, so a mere reuse never reorders
+    // `list_identities` (which sorts by `updated_at`).
+    let id: Uuid = sqlx::query_scalar(
         "INSERT INTO identities (id, display_name, email, created_at, updated_at) \
-         VALUES (?, ?, NULL, ?, ?)",
+         VALUES (?, ?, NULL, ?, ?) \
+         ON CONFLICT(display_name) DO UPDATE SET updated_at = identities.updated_at \
+         RETURNING id",
     )
-    .bind(id)
+    .bind(Uuid::new_v4())
     .bind(name)
     .bind(now)
     .bind(now)
-    .execute(&mut *conn)
+    .fetch_one(&mut *conn)
     .await?;
     Ok(id)
 }

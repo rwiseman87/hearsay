@@ -246,6 +246,9 @@ export function TranscriptView({ meeting, jumpTo }: Props) {
     return out;
   }, [lines, findQuery]);
 
+  // A set view of the matches for O(1) per-line membership tests in the render loop below.
+  const matchSet = useMemo(() => new Set(matchIndices), [matchIndices]);
+
   // Scroll a specific line (by its render index) into the middle of the list viewport.
   const scrollToLine = (index: number) => {
     linesRef.current
@@ -264,6 +267,10 @@ export function TranscriptView({ meeting, jumpTo }: Props) {
   useEffect(() => {
     setCurrentTime(0);
     setHasAudio(true);
+    // Swapping the <audio> src (no key/remount) stops playback but fires no `pause` event, so reset
+    // the transport state by hand; the new src re-reports duration via onLoadedMetadata.
+    setIsPlaying(false);
+    setDuration(0);
     setFindQuery("");
     setFindIndex(0);
     setEditingId(null);
@@ -716,7 +723,7 @@ export function TranscriptView({ meeting, jumpTo }: Props) {
                 (line.kind === "partial" ? " live-line--partial" : "") +
                 (active ? " line--active" : "") +
                 (index === jumpIndex ? " line--jump" : "") +
-                (matchIndices.includes(index) ? " line--match" : "") +
+                (matchSet.has(index) ? " line--match" : "") +
                 (index === currentMatch ? " line--match-current" : "");
               return (
                 <li

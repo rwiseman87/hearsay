@@ -47,7 +47,7 @@ export function NavRail({
         type="button"
         className={"rail__record" + (recordActive ? " is-active" : "")}
         aria-label="New recording"
-        aria-current={recordActive ? "true" : undefined}
+        aria-expanded={recordActive}
         title="New recording"
         onClick={onOpenRecord}
       >
@@ -76,7 +76,7 @@ export function NavRail({
         type="button"
         className={"rail__btn" + (searchActive ? " is-active" : "")}
         aria-label="Search transcripts"
-        aria-current={searchActive ? "page" : undefined}
+        aria-expanded={searchActive}
         title="Search transcripts"
         onClick={onOpenSearch}
       >

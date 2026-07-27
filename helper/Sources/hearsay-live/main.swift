@@ -102,6 +102,12 @@ var partialAnchor = 0  // sample index the current partial started at
 var partialFedTo = 0  // how much of `audio` has been handed to the streaming ASR
 var lastPartial = ""  // last emitted partial text, to suppress unchanged re-emits
 let marginSamples = 32_000  // 2 s cushion below partialAnchor before dropping
+// Backstop: a turn that never finalizes (a long uninterrupted monologue) leaves `partialAnchor`
+// pinned, so the `partialAnchor - margin` floor alone would let `audio` grow for the whole meeting
+// (~230 MB/hour). Cap the retained tail so the live path degrades to a truncated clip on such a turn
+// (the post-meeting refine re-transcribes the full audio from audio.wav) instead of growing without
+// bound. Mirrors `hearsay-me`'s `maxRetainSamples`.
+let maxRetainSamples = 9_600_000  // 10 min at 16 kHz
 
 @MainActor func audioEndAbs() -> Int { audioBase + audio.count }
 
@@ -112,7 +118,8 @@ let marginSamples = 32_000  // 2 s cushion below partialAnchor before dropping
 /// Drop everything before the last finalized boundary (minus a margin): those turns are emitted and
 /// never re-sliced. Un-finalized turn audio (>= partialAnchor) is retained until it finalizes.
 @MainActor func compactAudio() {
-    let keepFromAbs = max(audioBase, partialAnchor - marginSamples)
+    var keepFromAbs = max(audioBase, partialAnchor - marginSamples)
+    keepFromAbs = max(keepFromAbs, audioEndAbs() - maxRetainSamples)
     let drop = keepFromAbs - audioBase
     if drop > marginSamples {
         audio.removeFirst(drop)

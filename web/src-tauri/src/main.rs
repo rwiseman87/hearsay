@@ -142,16 +142,7 @@ fn erase_all_data(app: tauri::AppHandle, core: tauri::State<'_, CoreChild>) -> R
         app.path().app_cache_dir().ok(),
     ];
     for path in targets.into_iter().flatten() {
-        let result = if path.is_dir() {
-            std::fs::remove_dir_all(&path)
-        } else {
-            std::fs::remove_file(&path)
-        };
-        if let Err(err) = result {
-            if err.kind() != std::io::ErrorKind::NotFound {
-                eprintln!("erase: could not remove {}: {err}", path.display());
-            }
-        }
+        remove_path_with_retry(&path);
     }
 
     // Reset TCC grants for both bundles (the app and its embedded capture helper). `reset All`
@@ -163,6 +154,31 @@ fn erase_all_data(app: tauri::AppHandle, core: tauri::State<'_, CoreChild>) -> R
             .status();
     }
     Ok(())
+}
+
+/// Remove a file or directory tree, retrying briefly on a transient failure. `child.kill()`
+/// (TerminateProcess) is asynchronous on Windows — `stop_core_gracefully` only waits for the core to
+/// exit on Unix — so the core's SQLite handle can outlive the call by a few milliseconds and a first
+/// `remove_dir_all` then hits a sharing violation. Retrying with a short backoff lets the handle
+/// release. `NotFound` is success (nothing to remove); any other error after the last attempt is
+/// logged, never fatal — the wipe is best-effort.
+fn remove_path_with_retry(path: &std::path::Path) {
+    const ATTEMPTS: usize = 10;
+    for attempt in 0..ATTEMPTS {
+        let result = if path.is_dir() {
+            std::fs::remove_dir_all(path)
+        } else {
+            std::fs::remove_file(path)
+        };
+        match result {
+            Ok(()) => return,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return,
+            Err(err) if attempt + 1 == ATTEMPTS => {
+                eprintln!("erase: could not remove {}: {err}", path.display());
+            }
+            Err(_) => std::thread::sleep(Duration::from_millis(100)),
+        }
+    }
 }
 
 /// Quit the app. Called after `erase_all_data` so the user can then drag Hearsay to the Trash.
@@ -388,14 +404,27 @@ fn main() {
                         if let Ok(hs) = serde_json::from_slice::<Handshake>(&bytes) {
                             // One-shot: don't leave the token sitting on disk.
                             let _ = std::fs::remove_file(&handshake_path);
+                            // The session token is hex ([0-9a-f]), so it needs no percent-encoding
+                            // here and the core parses `?token=` without decoding (see security.rs
+                            // `query_token`). If the token alphabet ever changes, both ends must add
+                            // encode/decode together.
                             let url = format!("http://127.0.0.1:{}/?token={}", hs.port, hs.token);
-                            if let (Some(win), Ok(url)) = (
+                            let navigated = match (
                                 nav_handle.get_webview_window("main"),
                                 url.parse::<tauri::Url>(),
                             ) {
-                                if win.navigate(url).is_ok() {
-                                    nav_settled.store(true, Ordering::SeqCst);
-                                }
+                                (Some(win), Ok(url)) => win.navigate(url).is_ok(),
+                                _ => false,
+                            };
+                            if navigated {
+                                nav_settled.store(true, Ordering::SeqCst);
+                            } else if !nav_settled.swap(true, Ordering::SeqCst) {
+                                // The core is ready but the window/URL/navigate step failed; surface
+                                // it instead of returning into an eternal splash spinner.
+                                show_boot_error(
+                                    &nav_handle,
+                                    "Hearsay started but its window could not be opened.",
+                                );
                             }
                             return;
                         }
