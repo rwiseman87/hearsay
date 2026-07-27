@@ -77,6 +77,9 @@ export function SearchBox({ onJump, onClose, autoFocus = false }: Props) {
     return () => clearTimeout(t);
   }, [text]);
 
+  // Clear the pending blur-close timer on unmount so it can't fire setOpen on an unmounted component.
+  useEffect(() => () => window.clearTimeout(blurTimer.current), []);
+
   const search = useSearch(debounced);
   const groups = search.data ? groupByMeeting(search.data.items) : [];
   const showPanel = open && debounced.trim().length > 0;

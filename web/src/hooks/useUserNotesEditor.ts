@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { useSaveUserNotes, useUserNotes } from "../api/hooks";
 
@@ -32,6 +32,21 @@ export function useUserNotesEditor(meetingId: string): UserNotesEditor {
   draftRef.current = draft;
   const lastSavedRef = useRef(lastSaved);
   lastSavedRef.current = lastSaved;
+  // Monotonic save-request sequence: an out-of-order success (an earlier save landing after a later
+  // one) must not roll `lastSaved` back to a stale value and re-fire a redundant save.
+  const saveSeq = useRef(0);
+  const appliedSeq = useRef(0);
+  const persist = useCallback((value: string) => {
+    const seq = ++saveSeq.current;
+    saveRef.current.mutate(value, {
+      onSuccess: () => {
+        if (seq >= appliedSeq.current) {
+          appliedSeq.current = seq;
+          setLastSaved(value);
+        }
+      },
+    });
+  }, []);
 
   // Seed the draft once the read settles. A 404 (no notes yet) resolves to an empty body.
   useEffect(() => {
@@ -45,11 +60,9 @@ export function useUserNotesEditor(meetingId: string): UserNotesEditor {
   // Debounced autosave: persist once typing pauses and the draft differs from what was last saved.
   useEffect(() => {
     if (draft === null || draft === lastSaved) return;
-    const timer = setTimeout(() => {
-      saveRef.current.mutate(draft, { onSuccess: () => setLastSaved(draft) });
-    }, AUTOSAVE_DELAY_MS);
+    const timer = setTimeout(() => persist(draft), AUTOSAVE_DELAY_MS);
     return () => clearTimeout(timer);
-  }, [draft, lastSaved]);
+  }, [draft, lastSaved, persist]);
 
   // Flush any unsaved edits when the editor unmounts. A blur normally covers this, but the live view
   // can be torn down without one — e.g. the inactivity watchdog auto-ends the meeting (recording ->
@@ -67,7 +80,7 @@ export function useUserNotesEditor(meetingId: string): UserNotesEditor {
 
   const flush = () => {
     if (draft !== null && draft !== lastSaved && !save.isPending) {
-      saveRef.current.mutate(draft, { onSuccess: () => setLastSaved(draft) });
+      persist(draft);
     }
   };
 

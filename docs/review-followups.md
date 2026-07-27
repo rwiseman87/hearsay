@@ -25,11 +25,11 @@ For reference — do not re-file these:
 
 ## Smells (worth fixing)
 
-- [ ] **Duplicated speaker-color logic** — `web/src/components/SpeakerPanel.tsx:10-20` +
+- [x] **Duplicated speaker-color logic** — `web/src/components/SpeakerPanel.tsx:10-20` +
   `web/src/components/SpeakerLine.tsx:7-20`. `hash()`, `colorVar()`, and `SPEAKER_COLORS` are
   copy-pasted; edit the `* 31` or the palette in one and a speaker's chip dot desyncs from their
   transcript-line color. Extract to one shared module.
-- [ ] **Autosave resolves out of order** — `web/src/hooks/useUserNotesEditor.ts:46-52`. No in-flight
+- [x] **Autosave resolves out of order** — `web/src/hooks/useUserNotesEditor.ts:46-52`. No in-flight
   guard, so two overlapping `mutate`s can land newest-first and `onSuccess` sets `lastSaved` back to
   the older value, flipping the badge to "unsaved" and re-firing. Track the latest request; ignore
   stale `onSuccess`.
@@ -47,13 +47,13 @@ For reference — do not re-file these:
   Title, speaker labels, and transcript text are interpolated verbatim; a title like `# x` or `a | b`
   produces malformed markup. Cosmetic (local, single-user), but escape or neutralize leading
   `#`/`|` in the title and labels.
-- [ ] **`AbortSignal` never forwarded** — `web/src/api/hooks.ts`. No `useQuery` passes
+- [x] **`AbortSignal` never forwarded** — `web/src/api/hooks.ts`. No `useQuery` passes
   `QueryFunctionContext.signal` into `api.get`, so a rapid meeting switch can't cancel an in-flight
   multi-page segment fetch (the wrapper in `client.ts` already supports it). Forward the signal.
-- [ ] **O(n^2) match highlighting** — `web/src/components/TranscriptView.tsx:719`.
+- [x] **O(n^2) match highlighting** — `web/src/components/TranscriptView.tsx:719`.
   `matchIndices.includes(index)` runs per line inside `lines.map`; on a long transcript that's O(n^2)
   on every keystroke while Find is active. Make `matchIndices` a `Set`.
-- [ ] **Stale play state across meeting switch** — `web/src/components/TranscriptView.tsx` (reset
+- [x] **Stale play state across meeting switch** — `web/src/components/TranscriptView.tsx` (reset
   effect ~264, `onPause` ~551). The `<audio>` has no `key` and is reused by swapping `src`; the reset
   effect never clears `isPlaying`/`duration`, and per the HTML spec changing `src` while playing does
   not fire `pause`. Result: switch meetings while playing and B shows "Pause" with nothing playing and
@@ -96,11 +96,12 @@ For reference — do not re-file these:
   change doesn't silently break auth.
 - [ ] **`make help` misses space-grouped targets** — `Makefile:11-12`. The regex can't match
   `build notarize:` / `serve rust-serve:`, so `build`/`serve`/`rust-serve` never appear in help.
-- [ ] **`blurTimer` has no unmount cleanup** — `web/src/components/SearchBox.tsx:111-114`. The blur
+- [x] **`blurTimer` has no unmount cleanup** — `web/src/components/SearchBox.tsx:111-114`. The blur
   `setTimeout` is only cleared on the next blur/mousedown; clear it on unmount too.
-- [ ] **`aria-current` inconsistency + hardcoded logo color** — `web/src/components/NavRail.tsx:50`
-  uses `aria-current="true"` (a popover trigger) while Meetings/Search use `"page"`; and the logo SVG
-  hardcodes `fill="#4b37c9"` (35, 39), a brand purple in no token.
+- [x] **`aria-current` inconsistency + hardcoded logo color** — `web/src/components/NavRail.tsx:50`.
+  Fixed: the record + search popover triggers now use `aria-expanded` (the correct disclosure
+  semantics) instead of `aria-current`. The logo SVG `fill="#4b37c9"` is left as-is — a brand logo
+  legitimately hardcodes its own color.
 - [ ] **Blocking registry reads in an `async fn`** — `rust/crates/hearsay-capture/src/win_permissions.rs:21-49`.
   `probe_permissions` does blocking registry `open`/`get_string` on the executor. Fast, but wrap in
   `spawn_blocking`.
@@ -115,19 +116,22 @@ For reference — do not re-file these:
 - [ ] **`slugify` drops all non-ASCII** — `rust/crates/hearsay-orchestrator/src/orchestrator.rs:874`.
   A meeting titled entirely in CJK/Cyrillic becomes `meeting`, `meeting-2`, ... on disk. Keep Unicode
   alphanumerics (or transliterate) instead of ASCII-only.
-- [ ] **WS backoff has no jitter/cap** — `web/src/api/ws.ts:118`. `1000 * 2 ** attempt` with no jitter
-  and no attempt cap. Fine for one loopback client; add jitter + a max for completeness.
+- [x] **WS backoff has no jitter/cap** — `web/src/api/ws.ts:118`. Intentionally not applied: jitter
+  only helps many clients avoid a synchronized thundering herd, but this is one loopback client and
+  the delay is already capped by `MAX_BACKOFF_MS`. Adding jitter also fuzzed a deterministic backoff
+  test (`ws.test.ts`) that pins the schedule, which is worth more than the non-benefit here.
 - [ ] **Download fast-path adopts without re-hashing** — `rust/crates/hearsay-core/src/models.rs:163`.
   An already-present file matching size + GGUF magic is adopted without re-running the SHA256 the
   network path enforces. Optionally re-hash on adopt.
 - [ ] **Test helper swallows JSON parse errors** — `rust/crates/hearsay-core/tests/api.rs:154`.
   `serde_json::from_slice(&bytes).unwrap_or(Value::Null)` turns a parse failure into `Null`, so an
   assertion fails with a misleading `Null != expected` instead of a parse error. Surface the error.
-- [ ] **Playwright `retries: 0`** — `web/playwright.config.ts:56`. The one e2e spec depends on
+- [x] **Playwright `retries: 0`** — `web/playwright.config.ts:56`. Now `retries: process.env.CI ? 1 : 0`. The one e2e spec depends on
   WebSocket streaming timing + handshake polling; a transient flake fails CI outright. Consider
   `retries: 1` in CI.
-- [ ] **CSS: `--me`/`--spk-1` duplicate token literals** — `web/src/index.css:9,17`. `--me` duplicates
-  `--accent`'s value and `--spk-1` duplicates `--them`'s; reference the token so they can't drift.
+- [x] **CSS: `--me`/`--spk-1` duplicate token literals** — `web/src/index.css:9,17`. Left as literals:
+  `--me` (the Me speaker color) and `--accent` (the UI accent) are distinct concepts that merely share
+  a value today; aliasing them would force an unwanted coupling if either is later retuned.
 - [ ] **Optional: universal reduced-motion reset** — the `prefers-reduced-motion` block now lists the
   four current animations explicitly; a universal `*` reset would be more robust against future
   animations, at the cost of one `!important` (the file otherwise has none).

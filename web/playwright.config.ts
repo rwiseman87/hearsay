@@ -53,7 +53,9 @@ export default defineConfig({
   fullyParallel: false,
   workers: 1,
   forbidOnly: !!process.env.CI,
-  retries: 0,
+  // One retry in CI: the spec depends on WebSocket streaming + handshake-file timing, so a transient
+  // flake shouldn't fail the run outright. Locally, fail fast (no retry) to surface real breakage.
+  retries: process.env.CI ? 1 : 0,
   timeout: 60_000,
   expect: { timeout: 15_000 },
   reporter: [
