@@ -75,7 +75,9 @@ web-ci: web-install web-typecheck web-lint web-test web-build ## Web CI gate (in
 audit: ## Dependency CVE scan (cargo-audit over both Rust trees + npm audit)
 	cd $(RUST) && cargo audit
 	cd web/src-tauri && cargo audit
-	cd web && npm audit --audit-level=moderate
+	# --omit=dev: web dev deps (vite/eslint/vitest/openapi-typescript) are build-time only and never
+	# shipped in the Tauri app, so their advisories don't reach users; audit only the production deps.
+	cd web && npm audit --omit=dev --audit-level=moderate
 
 licenses: ## Fail the build on copyleft dependency licenses (cargo-deny; policy in rust/deny.toml)
 	cargo deny --manifest-path $(RUST)/Cargo.toml check licenses

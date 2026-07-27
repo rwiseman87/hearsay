@@ -23,6 +23,7 @@
 //! `docs/architecture.md`.
 
 mod aec;
+mod echo_dedup;
 mod error;
 mod lock;
 mod markdown;
