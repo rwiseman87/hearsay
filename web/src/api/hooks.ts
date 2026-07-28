@@ -279,12 +279,15 @@ export function useMoveMeeting() {
   });
 }
 
-export function useSpeakers(meetingId: string | null) {
+export function useSpeakers(meetingId: string | null, isLive = false) {
   return useQuery({
     queryKey: queryKeys.meetings.speakers(meetingId ?? "none"),
     queryFn: ({ signal }) => api.get<PageSpeaker>(`/api/meetings/${meetingId}/speakers`, signal),
     enabled: meetingId !== null,
-    refetchInterval: 5_000,
+    // Poll only while recording: new Them clusters appear server-side with no WS notification. Once
+    // finalized the speaker set only changes on rename/refine, both of which already invalidate, so a
+    // standing 5s poll for the life of the view is wasted.
+    refetchInterval: isLive ? 5_000 : false,
   });
 }
 
@@ -303,9 +306,14 @@ export function useRenameSpeaker(meetingId: string) {
       api.put<SpeakerRead>(`/api/meetings/${meetingId}/speakers/${clusterId}`, {
         display_name: displayName,
       }),
-    // Relabels segments server-side, so refresh the transcript + speakers + suggestions.
+    // Relabels this meeting's segments server-side (and the labels feed generated notes), so refresh
+    // just the affected meeting's transcript + speakers + notes + the identity suggestions — not the
+    // whole `["meetings"]` prefix (every meeting's list/segments/speakers/notes), which the sibling
+    // useReassignSpeaker already scopes correctly.
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: queryKeys.meetings.all });
+      qc.invalidateQueries({ queryKey: queryKeys.meetings.segments(meetingId) });
+      qc.invalidateQueries({ queryKey: queryKeys.meetings.speakers(meetingId) });
+      qc.invalidateQueries({ queryKey: queryKeys.meetings.notes(meetingId) });
       qc.invalidateQueries({ queryKey: queryKeys.identities.all });
     },
   });

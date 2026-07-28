@@ -626,11 +626,13 @@ pub async fn rename_cluster(
     let name = display_name.trim();
     let mut tx = pool.begin().await?;
 
-    let cluster = sqlx::query_as::<_, Cluster>("SELECT * FROM clusters WHERE id = ?")
+    // Only `ordinal` is needed for the returned row; selecting it (not `SELECT *`) skips decoding the
+    // per-cluster centroid BLOB.
+    let ordinal: Option<i64> = sqlx::query_scalar("SELECT ordinal FROM clusters WHERE id = ?")
         .bind(cluster_id)
         .fetch_optional(&mut *tx)
         .await?;
-    let Some(cluster) = cluster else {
+    let Some(ordinal) = ordinal else {
         return Ok(None);
     };
 
@@ -653,7 +655,7 @@ pub async fn rename_cluster(
 
     Ok(Some(SpeakerRow {
         id: cluster_id,
-        ordinal: cluster.ordinal,
+        ordinal,
         identity_id: Some(identity_id),
         locked: true,
         display_name: Some(name.to_string()),
@@ -710,17 +712,19 @@ pub async fn reassign_segment_speaker(
     let now = Utc::now();
     let (cluster_id, label) = match target {
         SpeakerTarget::Cluster(target_id) => {
-            let cluster = sqlx::query_as::<_, Cluster>(
-                "SELECT * FROM clusters WHERE id = ? AND meeting_id = ?",
+            // Only identity_id + ordinal are needed here; selecting them (not `SELECT *`) skips
+            // decoding the per-cluster centroid BLOB.
+            let cluster: Option<(Option<Uuid>, i64)> = sqlx::query_as(
+                "SELECT identity_id, ordinal FROM clusters WHERE id = ? AND meeting_id = ?",
             )
             .bind(target_id)
             .bind(meeting_id)
             .fetch_optional(&mut *tx)
             .await?;
-            let Some(cluster) = cluster else {
+            let Some((identity_id, ordinal)) = cluster else {
                 return Ok(ReassignOutcome::ClusterNotFound);
             };
-            let name: Option<String> = match cluster.identity_id {
+            let name: Option<String> = match identity_id {
                 Some(identity_id) => {
                     sqlx::query_scalar("SELECT display_name FROM identities WHERE id = ?")
                         .bind(identity_id)
@@ -729,7 +733,7 @@ pub async fn reassign_segment_speaker(
                 }
                 None => None,
             };
-            let label = name.unwrap_or_else(|| format!("Speaker {}", cluster.ordinal));
+            let label = name.unwrap_or_else(|| format!("Speaker {ordinal}"));
             (target_id, label)
         }
         SpeakerTarget::Name(name) => {

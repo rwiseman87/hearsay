@@ -10,7 +10,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use hearsay_attribution::{consolidate_speakers, order_speakers, ConsolidateConfig, SpeakerTurn};
+use hearsay_attribution::{consolidate_speakers, order_first_appearance, ConsolidateConfig};
 use sherpa_onnx::{
     FastClusteringConfig, OfflineSpeakerDiarization, OfflineSpeakerDiarizationConfig,
     OfflineSpeakerSegmentationModelConfig, OfflineSpeakerSegmentationPyannoteModelConfig,
@@ -209,23 +209,16 @@ impl Diarizer for SherpaDiarizer {
             .ok_or_else(|| InferenceError::Diarize("diarization produced no result".into()))?;
         let segments = result.sort_by_start_time();
 
-        // sherpa speaker index (0-based, arbitrary) -> our 1-based ordinal by first appearance via
-        // the canonical `order_speakers` (segments are already start-sorted).
-        let ordering: Vec<SpeakerTurn> = segments
-            .iter()
-            .map(|seg| SpeakerTurn {
-                speaker: seg.speaker.to_string(),
-                start_s: seg.start as f64,
-                end_s: seg.end as f64,
-            })
-            .collect();
-        let ordinals = order_speakers(&ordering);
+        // sherpa speaker index (0-based, arbitrary) -> our 1-based ordinal by first appearance,
+        // keyed on the integer index directly (segments are already start-sorted).
+        let ordinals =
+            order_first_appearance(segments.iter().map(|seg| (seg.speaker, seg.start as f64)));
 
         let mut turns = Vec::with_capacity(segments.len());
         let mut speaker_audio: HashMap<i64, Vec<f32>> = HashMap::new();
         let mut speech_s: HashMap<i64, f64> = HashMap::new();
         for seg in &segments {
-            let ord = i64::from(ordinals[&seg.speaker.to_string()]);
+            let ord = i64::from(ordinals[&seg.speaker]);
             turns.push(DiarTurn {
                 speaker: ord,
                 start_s: seg.start as f64,
@@ -262,25 +255,17 @@ impl Diarizer for SherpaDiarizer {
         }
 
         // Consolidation leaves gaps in the ordinals (and can merge two clusters whose first
-        // appearances straddle a third), so renumber the survivors 1..N by first appearance.
-        let renumber = order_speakers(
-            &turns
-                .iter()
-                .map(|t| SpeakerTurn {
-                    speaker: t.speaker.to_string(),
-                    start_s: t.start_s,
-                    end_s: t.end_s,
-                })
-                .collect::<Vec<_>>(),
-        );
+        // appearances straddle a third), so renumber the survivors 1..N by first appearance — keyed
+        // on the i64 speaker ordinal directly.
+        let renumber = order_first_appearance(turns.iter().map(|t| (t.speaker, t.start_s)));
         let mut final_embeddings = HashMap::new();
         for (ordinal, centroid) in merged.centroids {
-            if let Some(final_ordinal) = renumber.get(&ordinal.to_string()) {
+            if let Some(final_ordinal) = renumber.get(&ordinal) {
                 final_embeddings.insert(i64::from(*final_ordinal), centroid);
             }
         }
         for turn in &mut turns {
-            turn.speaker = i64::from(renumber[&turn.speaker.to_string()]);
+            turn.speaker = i64::from(renumber[&turn.speaker]);
         }
 
         Ok(Diarization {
