@@ -122,6 +122,30 @@ describe("useTranscript", () => {
     expect(result.current.lines.find((l) => l.stream === "me")?.text).toBe("seeded me");
   });
 
+  it("inserts a live partial in time order between finals (O(n) merge, not a resort)", () => {
+    // Two finals at t=0 and t=10; a partial at t=5 must land between them — guards the sorted-finals
+    // + binary-search partial merge that replaced the full re-sort on every event.
+    h.segments = {
+      data: [
+        seg({ stream: "them", start_s: 0, text: "first" }),
+        seg({ stream: "them", start_s: 10, text: "third" }),
+      ],
+    };
+    const { result } = renderTranscript(liveMeeting);
+
+    const partial: WsFrame = {
+      kind: "partial",
+      stream: "them",
+      start_s: 5,
+      end_s: 6,
+      speaker_label: "",
+      text: "second",
+    };
+    act(() => h.socket.onEvent!(partial));
+
+    expect(result.current.lines.map((l) => l.text)).toEqual(["first", "second", "third"]);
+  });
+
   it("tracks preparing / inactivity / mic-silent / paused flags and clears them on speech", () => {
     const { result } = renderTranscript(liveMeeting);
 

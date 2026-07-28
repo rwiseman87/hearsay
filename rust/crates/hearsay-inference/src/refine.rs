@@ -161,8 +161,25 @@ pub fn refine_them_with(
     diarizer: &dyn Diarizer,
     them_samples: &[f32],
 ) -> Result<RefineOutput, InferenceError> {
-    let diarization = diarizer.diarize(them_samples)?;
-    let asr_segments = asr.transcribe(them_samples)?;
+    // Diarize and transcribe are independent reads of the same immutable buffer, so overlap them:
+    // whisper runs on a scoped thread (its `WhisperContext` is `Sync`, and each `transcribe` builds a
+    // fresh `WhisperState`) while the diarizer runs on the calling thread. On macOS the diarizer is a
+    // sleep-polled subprocess and whisper is on Metal, so the diarize duration fills the GPU's
+    // otherwise-idle time instead of running before it. The diarizer stays on one thread (the sherpa
+    // path is not thread-safe). `thread::scope` blocks until whisper finishes, so both borrows of
+    // `them_samples` are safe.
+    let (diarization, asr_result) = thread::scope(|scope| {
+        let asr_handle = scope.spawn(|| asr.transcribe(them_samples));
+        let diarization = diarizer.diarize(them_samples);
+        (diarization, asr_handle.join())
+    });
+    // A diarizer `NoSpeech` / error still waited out the whole (now-discarded) transcription — the
+    // scope cannot cancel it mid-run. Propagate it as the no-op the callers expect.
+    let diarization = diarization?;
+    let asr_segments = match asr_result {
+        Ok(segments) => segments?,
+        Err(panic) => std::panic::resume_unwind(panic),
+    };
     let segments = assemble_refined_segments(&asr_segments, &diarization.turns);
 
     // Keep a voiceprint only for a speaker that actually appears in the refined segments. Whole-track

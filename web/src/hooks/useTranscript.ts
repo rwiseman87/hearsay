@@ -284,11 +284,37 @@ export function useTranscript(meeting: MeetingRead | null): TranscriptState {
     );
   }, [isLive, meetingId, queryClient]);
 
+  // Sort the finals once, re-sorting only when the finals map itself changes (a final arrived, a DB
+  // re-seed, or reset) — not on every interim partial (several per second). The non-line reducer
+  // cases (status/prompt/mic/pause) spread `state` but keep the same `finals`/`partials` Map
+  // references, so those events recompute neither this memo nor the merge below.
+  const sortedFinals = useMemo(() => {
+    const arr = [...state.finals.values()];
+    arr.sort((a, b) => a.start_s - b.start_s || a.stream.localeCompare(b.stream));
+    return arr;
+  }, [state.finals]);
+
+  // Merge the <=2 in-flight partials into the sorted finals by insertion (O(n) per partial via
+  // splice) instead of re-sorting the whole meeting on every partial (O(n log n)). Each partial is
+  // inserted after any element that compares equal, exactly reproducing the old full sort (finals
+  // were spread before partials, so an exact tie keeps the final first).
   const lines = useMemo(() => {
-    const merged = [...state.finals.values(), ...state.partials.values()];
-    merged.sort((a, b) => a.start_s - b.start_s || a.stream.localeCompare(b.stream));
+    if (state.partials.size === 0) return sortedFinals;
+    const merged = sortedFinals.slice();
+    for (const partial of state.partials.values()) {
+      let lo = 0;
+      let hi = merged.length;
+      while (lo < hi) {
+        const mid = (lo + hi) >> 1;
+        const other = merged[mid];
+        const cmp = partial.start_s - other.start_s || partial.stream.localeCompare(other.stream);
+        if (cmp < 0) hi = mid;
+        else lo = mid + 1;
+      }
+      merged.splice(lo, 0, partial);
+    }
     return merged;
-  }, [state]);
+  }, [sortedFinals, state.partials]);
 
   return {
     lines,

@@ -2,6 +2,7 @@
 //! speaker assignment by turn overlap.
 
 use std::collections::HashMap;
+use std::hash::Hash;
 
 /// One contiguous span attributed to a single speaker (seconds, track-relative).
 #[derive(Debug, Clone, PartialEq)]
@@ -11,19 +12,29 @@ pub struct SpeakerTurn {
     pub end_s: f64,
 }
 
-/// Map each diarizer speaker label to a 1-based "Speaker N" ordinal by first appearance
-/// (turns ordered by `start_s`).
-pub fn order_speakers(turns: &[SpeakerTurn]) -> HashMap<String, u32> {
-    let mut ordered: Vec<&SpeakerTurn> = turns.iter().collect();
-    ordered.sort_by(|a, b| a.start_s.total_cmp(&b.start_s));
-    let mut ordinal: HashMap<String, u32> = HashMap::new();
-    for turn in ordered {
-        if !ordinal.contains_key(&turn.speaker) {
+/// Assign each distinct key a 1-based ordinal by first appearance, where "first" is the smallest
+/// `start_s` (ties keep the input order). The generic core of [`order_speakers`]; a caller keying by
+/// something other than a `String` label — e.g. a diarizer's numeric speaker index — uses it directly
+/// to avoid round-tripping each key through a `String` just to order it.
+pub fn order_first_appearance<K: Eq + Hash>(
+    keyed_starts: impl IntoIterator<Item = (K, f64)>,
+) -> HashMap<K, u32> {
+    let mut ordered: Vec<(K, f64)> = keyed_starts.into_iter().collect();
+    ordered.sort_by(|a, b| a.1.total_cmp(&b.1));
+    let mut ordinal: HashMap<K, u32> = HashMap::new();
+    for (key, _) in ordered {
+        if !ordinal.contains_key(&key) {
             let next = ordinal.len() as u32 + 1;
-            ordinal.insert(turn.speaker.clone(), next);
+            ordinal.insert(key, next);
         }
     }
     ordinal
+}
+
+/// Map each diarizer speaker label to a 1-based "Speaker N" ordinal by first appearance
+/// (turns ordered by `start_s`).
+pub fn order_speakers(turns: &[SpeakerTurn]) -> HashMap<String, u32> {
+    order_first_appearance(turns.iter().map(|t| (t.speaker.clone(), t.start_s)))
 }
 
 /// Index of the turn most overlapping segment `[start_s, end_s]`, or `None` if none overlaps.
@@ -92,6 +103,35 @@ mod tests {
     #[test]
     fn order_speakers_empty() {
         assert!(order_speakers(&[]).is_empty());
+    }
+
+    #[test]
+    fn order_first_appearance_keys_integers_by_earliest_start() {
+        // The sherpa path keys by the integer speaker index directly (no stringify): ordinal is
+        // assigned by the smallest start_s a key appears at, ties keeping input order.
+        let ordinals = order_first_appearance([(7_i64, 5.0), (3, 0.0), (7, 8.0), (3, 2.0)]);
+        assert_eq!(ordinals.get(&3), Some(&1)); // 3 first appears at 0.0
+        assert_eq!(ordinals.get(&7), Some(&2)); // 7 first appears at 5.0
+        assert_eq!(ordinals.len(), 2);
+    }
+
+    #[test]
+    fn order_first_appearance_agrees_with_order_speakers() {
+        // order_speakers is the String-keyed specialization of order_first_appearance; both must
+        // assign identical ordinals for the same turns.
+        let turns = vec![
+            turn("B", 5.0, 6.0),
+            turn("A", 0.0, 1.0),
+            turn("B", 2.0, 3.0),
+        ];
+        let via_generic =
+            order_first_appearance(turns.iter().map(|t| (t.speaker.clone(), t.start_s)));
+        assert_eq!(via_generic, order_speakers(&turns));
+    }
+
+    #[test]
+    fn order_first_appearance_empty() {
+        assert!(order_first_appearance(std::iter::empty::<(i64, f64)>()).is_empty());
     }
 
     #[test]

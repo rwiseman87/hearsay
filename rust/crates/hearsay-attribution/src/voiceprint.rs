@@ -70,17 +70,47 @@ pub fn best_identity<'a>(
     known: &'a [(String, Vec<f32>)],
     threshold: f64,
 ) -> Option<(&'a str, f64)> {
+    // Hoist the query norm out of the per-voiceprint loop: `cosine` recomputes it for every stored
+    // voiceprint even though it is the same across all of them, and each candidate then folds its own
+    // norm and the dot product into a single pass. N (all locked speakers ever seen) grows over time,
+    // so the redundant passes compound. The per-candidate score is byte-for-byte what `cosine` returns.
+    let na = norm(centroid);
     let mut best: Option<(&'a str, f64)> = None;
     for (name, vector) in known {
         if vector.len() != centroid.len() {
             continue;
         }
-        let score = cosine(centroid, vector);
+        let (nb, dot) = norm_and_dot(centroid, vector);
+        let score = if na == 0.0 || nb == 0.0 {
+            0.0
+        } else {
+            dot / (na * nb)
+        };
         if score >= threshold && score > best.map_or(-1.0, |(_, s)| s) {
             best = Some((name.as_str(), score));
         }
     }
     best
+}
+
+/// L2 norm of a vector, computed in f64 (matches [`cosine`]'s convention).
+fn norm(v: &[f32]) -> f64 {
+    v.iter()
+        .map(|&x| f64::from(x) * f64::from(x))
+        .sum::<f64>()
+        .sqrt()
+}
+
+/// Single pass over two equal-length vectors yielding `(‖b‖, a·b)` in f64. The caller hoists `‖a‖`.
+fn norm_and_dot(a: &[f32], b: &[f32]) -> (f64, f64) {
+    let mut sum_sq_b = 0.0_f64;
+    let mut dot = 0.0_f64;
+    for (&x, &y) in a.iter().zip(b) {
+        let y = f64::from(y);
+        sum_sq_b += y * y;
+        dot += f64::from(x) * y;
+    }
+    (sum_sq_b.sqrt(), dot)
 }
 
 #[cfg(test)]
@@ -135,6 +165,23 @@ mod tests {
             match_identity(&[1.0, 0.0, 0.0], &known, 0.5),
             Some("right_dim")
         );
+    }
+
+    #[test]
+    fn best_identity_returns_the_winner_cosine_score() {
+        // Guards the hoisted-norm optimization: best_identity must return exactly what the untouched
+        // `cosine` computes for the winner, and pick the highest-scoring candidate.
+        let known = vec![
+            ("alice".to_string(), vec![1.0_f32, 0.0, 0.0]),
+            ("bob".to_string(), vec![0.2, 0.9, 0.1]),
+        ];
+        let query = vec![0.8_f32, 0.3, 0.1];
+        let (name, score) = best_identity(&query, &known, 0.0).unwrap();
+        let winner = &known.iter().find(|(n, _)| n == name).unwrap().1;
+        assert_eq!(score, cosine(&query, winner));
+        for (_, vector) in &known {
+            assert!(score >= cosine(&query, vector));
+        }
     }
 
     #[test]

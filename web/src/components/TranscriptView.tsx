@@ -1,4 +1,6 @@
 import {
+  memo,
+  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -7,6 +9,7 @@ import {
   type KeyboardEvent as ReactKeyboardEvent,
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
+  type Ref,
 } from "react";
 
 import {
@@ -21,7 +24,7 @@ import {
   useStopMeeting,
 } from "../api/hooks";
 import { getToken } from "../api/token";
-import type { FolderRead, MeetingRead } from "../api/types";
+import type { FolderRead, MeetingRead, PageIdentity, SpeakerRead } from "../api/types";
 import { useTranscript, type TranscriptLine } from "../hooks/useTranscript";
 import { NotesPanel } from "./NotesPanel";
 import { SpeakerPanel } from "./SpeakerPanel";
@@ -150,6 +153,263 @@ function highlightMatches(text: string, query: string): ReactNode {
   return out;
 }
 
+type IdentityItem = PageIdentity["items"][number];
+
+// Stable empty fallbacks so a row's `speakers`/`identities` props keep referential identity while the
+// underlying query has no data yet (a fresh `[]` each render would defeat the row memo).
+const NO_SPEAKERS: SpeakerRead[] = [];
+const NO_IDENTITIES: IdentityItem[] = [];
+
+interface TranscriptRowProps {
+  line: TranscriptLine;
+  index: number;
+  active: boolean;
+  isJump: boolean;
+  isMatch: boolean;
+  isCurrentMatch: boolean;
+  canEdit: boolean;
+  editing: boolean;
+  // Only meaningful while `editing` (else ""/false): the draft text + the save-in-flight flag for
+  // this row, scoped so a keystroke re-renders only the row being edited, not the whole transcript.
+  editText: string;
+  editPending: boolean;
+  reassignOpen: boolean;
+  reassignName: string;
+  reassignPending: boolean;
+  reassignError: string | null;
+  findQuery: string;
+  speakers: SpeakerRead[];
+  identities: IdentityItem[];
+  // Attached only to the active (currently-playing) row so the parent can scroll it into view.
+  rowRef?: Ref<HTMLLIElement>;
+  onSeek: (startS: number) => void;
+  onStartEdit: (id: string, text: string) => void;
+  onCancelEdit: () => void;
+  onSaveEdit: (id: string, text: string) => void;
+  onEditTextChange: (value: string) => void;
+  onStartReassign: (id: string) => void;
+  onCancelReassign: () => void;
+  onReassignToCluster: (segmentId: string, clusterId: string) => void;
+  onReassignToName: (segmentId: string, name: string) => void;
+  onReassignNameChange: (value: string) => void;
+}
+
+// One finalized-transcript row. Memoized so that during live recording (when find/playback/edit state
+// is all inert) only the <=2 changed rows re-render per WebSocket event rather than the whole meeting.
+// The parent hands it stable callbacks (useCallback) and scopes the edit/reassign draft state to the
+// active row so an unrelated row's props never change. Mirrors SpeakerLine's memoization for the live
+// view; the two together are finding #1's render-path fix.
+const TranscriptRow = memo(function TranscriptRow({
+  line,
+  index,
+  active,
+  isJump,
+  isMatch,
+  isCurrentMatch,
+  canEdit,
+  editing,
+  editText,
+  editPending,
+  reassignOpen,
+  reassignName,
+  reassignPending,
+  reassignError,
+  findQuery,
+  speakers,
+  identities,
+  rowRef,
+  onSeek,
+  onStartEdit,
+  onCancelEdit,
+  onSaveEdit,
+  onEditTextChange,
+  onStartReassign,
+  onCancelReassign,
+  onReassignToCluster,
+  onReassignToName,
+  onReassignNameChange,
+}: TranscriptRowProps) {
+  const className =
+    "live-line" +
+    (line.kind === "partial" ? " live-line--partial" : "") +
+    (active ? " line--active" : "") +
+    (isJump ? " line--jump" : "") +
+    (isMatch ? " line--match" : "") +
+    (isCurrentMatch ? " line--match-current" : "");
+  return (
+    <li
+      data-index={index}
+      ref={rowRef}
+      className={className}
+      style={{ ["--spk" as string]: `var(${colorVar(line)})` } as CSSProperties}
+      onClick={() => {
+        if (!editing) onSeek(line.start_s);
+      }}
+      title={editing ? undefined : "Jump to this moment"}
+    >
+      <span className="live-line__avatar" aria-hidden="true">
+        {initials(line.speaker_label)}
+      </span>
+      <div className="live-line__body">
+        <div className="live-line__head">
+          <span className="live-line__name">{line.speaker_label}</span>
+          <span className="live-line__time">{formatTime(line.start_s)}</span>
+        </div>
+        {editing ? (
+          <form
+            className="line__edit"
+            onClick={(event) => event.stopPropagation()}
+            onSubmit={(event) => {
+              event.preventDefault();
+              if (line.id) onSaveEdit(line.id, editText);
+            }}
+          >
+            <textarea
+              className="line__edit-input"
+              value={editText}
+              autoFocus
+              aria-label="Edit transcript line"
+              disabled={editPending}
+              onChange={(event) => onEditTextChange(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Escape") onCancelEdit();
+              }}
+            />
+            <div className="line__edit-actions">
+              <button
+                type="submit"
+                className="line__save"
+                disabled={editPending || editText.trim() === ""}
+              >
+                {editPending ? "Saving…" : "Save"}
+              </button>
+              <button
+                type="button"
+                className="line__cancel"
+                disabled={editPending}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  onCancelEdit();
+                }}
+              >
+                Cancel
+              </button>
+            </div>
+          </form>
+        ) : (
+          <div className="live-line__text">
+            {highlightMatches(line.text, findQuery)}
+            {line.edited ? <span className="line__edited-pill">edited</span> : null}
+          </div>
+        )}
+      </div>
+      {canEdit && !editing ? (
+        <div className="line__actions">
+          <button
+            type="button"
+            className="line__edit-btn"
+            aria-label="Edit this line"
+            title="Edit this line"
+            onClick={(event) => {
+              event.stopPropagation();
+              if (line.id) onStartEdit(line.id, line.text);
+            }}
+          >
+            <span className="line__edit-icon" aria-hidden="true">
+              ✎
+            </span>
+            <span className="line__edit-label">Edit</span>
+          </button>
+          {line.stream === "them" ? (
+            <button
+              type="button"
+              className="line__edit-btn"
+              aria-label="Reassign speaker"
+              title="Reassign speaker"
+              onClick={(event) => {
+                event.stopPropagation();
+                if (line.id) onStartReassign(line.id);
+              }}
+            >
+              <span className="line__edit-icon" aria-hidden="true">
+                ⇄
+              </span>
+              <span className="line__edit-label">Speaker</span>
+            </button>
+          ) : null}
+        </div>
+      ) : null}
+      {reassignOpen ? (
+        <div
+          className="line__reassign"
+          onClick={(event) => event.stopPropagation()}
+          onKeyDown={(event) => {
+            if (event.key === "Escape") onCancelReassign();
+          }}
+        >
+          <div className="line__reassign-title">Reassign to</div>
+          <ul className="line__reassign-list">
+            {speakers.map((speaker) => (
+              <li key={speaker.id}>
+                <button
+                  type="button"
+                  className="line__reassign-option"
+                  aria-current={speaker.id === line.cluster_id}
+                  disabled={reassignPending || speaker.id === line.cluster_id}
+                  onClick={() => {
+                    if (line.id) onReassignToCluster(line.id, speaker.id);
+                  }}
+                >
+                  {speaker.label}
+                  {speaker.id === line.cluster_id ? " (current)" : ""}
+                </button>
+              </li>
+            ))}
+          </ul>
+          <form
+            className="line__reassign-new"
+            onSubmit={(event) => {
+              event.preventDefault();
+              if (line.id) onReassignToName(line.id, reassignName);
+            }}
+          >
+            <input
+              className="line__reassign-input"
+              aria-label="New speaker name"
+              placeholder="New speaker…"
+              list={REASSIGN_SUGGESTIONS_ID}
+              value={reassignName}
+              disabled={reassignPending}
+              onChange={(event) => onReassignNameChange(event.target.value)}
+            />
+            <button
+              type="submit"
+              className="line__reassign-save"
+              disabled={reassignPending || reassignName.trim() === ""}
+            >
+              {reassignPending ? "…" : "Add"}
+            </button>
+          </form>
+          {reassignError ? <div className="line__reassign-error">{reassignError}</div> : null}
+          <button
+            type="button"
+            className="line__reassign-cancel"
+            disabled={reassignPending}
+            onClick={onCancelReassign}
+          >
+            Cancel
+          </button>
+          <datalist id={REASSIGN_SUGGESTIONS_ID}>
+            {identities.map((identity) => (
+              <option key={identity.id} value={identity.display_name} />
+            ))}
+          </datalist>
+        </div>
+      ) : null}
+    </li>
+  );
+});
+
 interface Props {
   meeting: MeetingRead | null;
   // A request to scroll to and highlight the line nearest `startS` (from a global search result).
@@ -164,7 +424,7 @@ export function TranscriptView({ meeting, jumpTo }: Props) {
   const reveal = useRevealMeeting();
   const editSegment = useEditSegment(meeting?.id ?? "");
   const reassign = useReassignSpeaker(meeting?.id ?? "");
-  const speakers = useSpeakers(meeting?.id ?? null);
+  const speakers = useSpeakers(meeting?.id ?? null, meeting?.status === "recording");
   const identities = useIdentities();
   const folders = useFolders();
   const { lines, connection, preparing, inactivityPrompt, micSilent, dismissInactivityPrompt } =
@@ -323,6 +583,96 @@ export function TranscriptView({ meeting, jumpTo }: Props) {
     scrollToLine(matchIndices[clamped]);
   }, [findIndex, matchIndices]);
 
+  // Row callbacks handed to every memoized TranscriptRow: kept referentially stable (the react-query
+  // mutate/reset handles and the state setters are all stable) so an unrelated row's props never
+  // change on a keystroke or a live event. Draft text lives in parent state and is threaded back in
+  // via the save/reassign args, so these never close over the changing editText/reassignName. Defined
+  // above the early return so the hook order is unconditional.
+  const editReset = editSegment.reset;
+  const editMutate = editSegment.mutate;
+  const reassignReset = reassign.reset;
+  const reassignMutate = reassign.mutate;
+
+  const onSeek = useCallback((seconds: number) => {
+    const audio = audioRef.current;
+    if (!audio) return;
+    audio.currentTime = seconds;
+    void audio.play();
+  }, []);
+  const onStartEdit = useCallback(
+    (id: string, text: string) => {
+      setEditingId(id);
+      setEditText(text);
+      editReset();
+    },
+    [editReset],
+  );
+  const onCancelEdit = useCallback(() => {
+    setEditingId(null);
+    setEditText("");
+  }, []);
+  const onSaveEdit = useCallback(
+    (id: string, text: string) => {
+      const trimmed = text.trim();
+      if (!trimmed) return;
+      editMutate(
+        { segmentId: id, text: trimmed },
+        {
+          onSuccess: () => {
+            setEditingId(null);
+            setEditText("");
+          },
+        },
+      );
+    },
+    [editMutate],
+  );
+  const onEditTextChange = useCallback((value: string) => setEditText(value), []);
+
+  const onStartReassign = useCallback(
+    (id: string) => {
+      setReassigningId(id);
+      setReassignName("");
+      reassignReset();
+    },
+    [reassignReset],
+  );
+  const onCancelReassign = useCallback(() => {
+    setReassigningId(null);
+    setReassignName("");
+  }, []);
+  const onReassignToCluster = useCallback(
+    (segmentId: string, clusterId: string) => {
+      reassignMutate(
+        { segmentId, clusterId },
+        {
+          onSuccess: () => {
+            setReassigningId(null);
+            setReassignName("");
+          },
+        },
+      );
+    },
+    [reassignMutate],
+  );
+  const onReassignToName = useCallback(
+    (segmentId: string, name: string) => {
+      const trimmed = name.trim();
+      if (!trimmed) return;
+      reassignMutate(
+        { segmentId, displayName: trimmed },
+        {
+          onSuccess: () => {
+            setReassigningId(null);
+            setReassignName("");
+          },
+        },
+      );
+    },
+    [reassignMutate],
+  );
+  const onReassignNameChange = useCallback((value: string) => setReassignName(value), []);
+
   if (!meeting) {
     return (
       <section className="transcript transcript--empty">
@@ -335,43 +685,14 @@ export function TranscriptView({ meeting, jumpTo }: Props) {
   const audioUrl = `/api/meetings/${meeting.id}/audio?token=${encodeURIComponent(getToken())}`;
   const editedThemCount = lines.filter((line) => line.stream === "them" && line.edited).length;
   const currentMatch = matchIndices.length > 0 ? matchIndices[Math.min(findIndex, matchIndices.length - 1)] : -1;
+  // Stable references (see NO_SPEAKERS/NO_IDENTITIES): react-query keeps `data` referentially stable
+  // across unchanged refetches, so passing these to every row does not bust the row memo.
+  const speakerItems = speakers.data?.items ?? NO_SPEAKERS;
+  const identityItems = identities.data?.items ?? NO_IDENTITIES;
 
   const stepMatch = (delta: number) => {
     if (matchIndices.length === 0) return;
     setFindIndex((prev) => (prev + delta + matchIndices.length) % matchIndices.length);
-  };
-
-  const startEdit = (id: string, text: string) => {
-    setEditingId(id);
-    setEditText(text);
-    editSegment.reset();
-  };
-  const cancelEdit = () => {
-    setEditingId(null);
-    setEditText("");
-  };
-  const saveEdit = (id: string) => {
-    const trimmed = editText.trim();
-    if (!trimmed) return;
-    editSegment.mutate({ segmentId: id, text: trimmed }, { onSuccess: cancelEdit });
-  };
-
-  const startReassign = (id: string) => {
-    setReassigningId(id);
-    setReassignName("");
-    reassign.reset();
-  };
-  const cancelReassign = () => {
-    setReassigningId(null);
-    setReassignName("");
-  };
-  const reassignToCluster = (segmentId: string, clusterId: string) => {
-    reassign.mutate({ segmentId, clusterId }, { onSuccess: cancelReassign });
-  };
-  const reassignToName = (segmentId: string) => {
-    const trimmed = reassignName.trim();
-    if (!trimmed) return;
-    reassign.mutate({ segmentId, displayName: trimmed }, { onSuccess: cancelReassign });
   };
 
   const onRefine = () => {
@@ -380,13 +701,6 @@ export function TranscriptView({ meeting, jumpTo }: Props) {
       return;
     }
     rediarize.mutate();
-  };
-
-  const seekTo = (seconds: number) => {
-    const audio = audioRef.current;
-    if (!audio) return;
-    audio.currentTime = seconds;
-    void audio.play();
   };
 
   // Route the element through a Web Audio gain node so the slider can boost past 100% (native
@@ -619,7 +933,7 @@ export function TranscriptView({ meeting, jumpTo }: Props) {
           </span>
         </div>
       ) : null}
-      <SpeakerPanel meetingId={meeting.id} />
+      <SpeakerPanel meetingId={meeting.id} live={recording} />
       {recording && connection && connection !== "open" ? (
         <p className="transcript__status" role="status">
           {connection === "reconnecting"
@@ -717,190 +1031,41 @@ export function TranscriptView({ meeting, jumpTo }: Props) {
             {lines.map((line, index) => {
               const active = index === activeIndex;
               const editing = editingId != null && line.id === editingId;
-              const canEdit = !recording && !!line.id;
-              const className =
-                "live-line" +
-                (line.kind === "partial" ? " live-line--partial" : "") +
-                (active ? " line--active" : "") +
-                (index === jumpIndex ? " line--jump" : "") +
-                (matchSet.has(index) ? " line--match" : "") +
-                (index === currentMatch ? " line--match-current" : "");
+              const reassignOpen = reassigningId != null && line.id === reassigningId;
               return (
-                <li
+                <TranscriptRow
                   key={`${line.stream}:${line.start_s}:${line.kind}`}
-                  data-index={index}
-                  ref={active ? activeRef : null}
-                  className={className}
-                  style={{ ["--spk" as string]: `var(${colorVar(line)})` } as CSSProperties}
-                  onClick={() => {
-                    if (!editing) seekTo(line.start_s);
-                  }}
-                  title={editing ? undefined : "Jump to this moment"}
-                >
-                  <span className="live-line__avatar" aria-hidden="true">
-                    {initials(line.speaker_label)}
-                  </span>
-                  <div className="live-line__body">
-                    <div className="live-line__head">
-                      <span className="live-line__name">{line.speaker_label}</span>
-                      <span className="live-line__time">{formatTime(line.start_s)}</span>
-                    </div>
-                    {editing ? (
-                      <form
-                        className="line__edit"
-                        onClick={(event) => event.stopPropagation()}
-                        onSubmit={(event) => {
-                          event.preventDefault();
-                          if (line.id) saveEdit(line.id);
-                        }}
-                      >
-                        <textarea
-                          className="line__edit-input"
-                          value={editText}
-                          autoFocus
-                          aria-label="Edit transcript line"
-                          disabled={editSegment.isPending}
-                          onChange={(event) => setEditText(event.target.value)}
-                          onKeyDown={(event) => {
-                            if (event.key === "Escape") cancelEdit();
-                          }}
-                        />
-                        <div className="line__edit-actions">
-                          <button
-                            type="submit"
-                            className="line__save"
-                            disabled={editSegment.isPending || editText.trim() === ""}
-                          >
-                            {editSegment.isPending ? "Saving…" : "Save"}
-                          </button>
-                          <button
-                            type="button"
-                            className="line__cancel"
-                            disabled={editSegment.isPending}
-                            onClick={(event) => {
-                              event.stopPropagation();
-                              cancelEdit();
-                            }}
-                          >
-                            Cancel
-                          </button>
-                        </div>
-                      </form>
-                    ) : (
-                      <div className="live-line__text">
-                        {highlightMatches(line.text, findQuery)}
-                        {line.edited ? <span className="line__edited-pill">edited</span> : null}
-                      </div>
-                    )}
-                  </div>
-                  {canEdit && !editing ? (
-                    <div className="line__actions">
-                      <button
-                        type="button"
-                        className="line__edit-btn"
-                        aria-label="Edit this line"
-                        title="Edit this line"
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          if (line.id) startEdit(line.id, line.text);
-                        }}
-                      >
-                        <span className="line__edit-icon" aria-hidden="true">
-                          ✎
-                        </span>
-                        <span className="line__edit-label">Edit</span>
-                      </button>
-                      {line.stream === "them" ? (
-                        <button
-                          type="button"
-                          className="line__edit-btn"
-                          aria-label="Reassign speaker"
-                          title="Reassign speaker"
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            if (line.id) startReassign(line.id);
-                          }}
-                        >
-                          <span className="line__edit-icon" aria-hidden="true">
-                            ⇄
-                          </span>
-                          <span className="line__edit-label">Speaker</span>
-                        </button>
-                      ) : null}
-                    </div>
-                  ) : null}
-                  {reassigningId === line.id ? (
-                    <div
-                      className="line__reassign"
-                      onClick={(event) => event.stopPropagation()}
-                      onKeyDown={(event) => {
-                        if (event.key === "Escape") cancelReassign();
-                      }}
-                    >
-                      <div className="line__reassign-title">Reassign to</div>
-                      <ul className="line__reassign-list">
-                        {(speakers.data?.items ?? []).map((speaker) => (
-                          <li key={speaker.id}>
-                            <button
-                              type="button"
-                              className="line__reassign-option"
-                              aria-current={speaker.id === line.cluster_id}
-                              disabled={reassign.isPending || speaker.id === line.cluster_id}
-                              onClick={() => {
-                                if (line.id) reassignToCluster(line.id, speaker.id);
-                              }}
-                            >
-                              {speaker.label}
-                              {speaker.id === line.cluster_id ? " (current)" : ""}
-                            </button>
-                          </li>
-                        ))}
-                      </ul>
-                      <form
-                        className="line__reassign-new"
-                        onSubmit={(event) => {
-                          event.preventDefault();
-                          if (line.id) reassignToName(line.id);
-                        }}
-                      >
-                        <input
-                          className="line__reassign-input"
-                          aria-label="New speaker name"
-                          placeholder="New speaker…"
-                          list={REASSIGN_SUGGESTIONS_ID}
-                          value={reassignName}
-                          disabled={reassign.isPending}
-                          onChange={(event) => setReassignName(event.target.value)}
-                        />
-                        <button
-                          type="submit"
-                          className="line__reassign-save"
-                          disabled={reassign.isPending || reassignName.trim() === ""}
-                        >
-                          {reassign.isPending ? "…" : "Add"}
-                        </button>
-                      </form>
-                      {reassign.isError ? (
-                        <div className="line__reassign-error">
-                          {(reassign.error as Error).message}
-                        </div>
-                      ) : null}
-                      <button
-                        type="button"
-                        className="line__reassign-cancel"
-                        disabled={reassign.isPending}
-                        onClick={cancelReassign}
-                      >
-                        Cancel
-                      </button>
-                      <datalist id={REASSIGN_SUGGESTIONS_ID}>
-                        {(identities.data?.items ?? []).map((identity) => (
-                          <option key={identity.id} value={identity.display_name} />
-                        ))}
-                      </datalist>
-                    </div>
-                  ) : null}
-                </li>
+                  line={line}
+                  index={index}
+                  active={active}
+                  isJump={index === jumpIndex}
+                  isMatch={matchSet.has(index)}
+                  isCurrentMatch={index === currentMatch}
+                  canEdit={!recording && !!line.id}
+                  editing={editing}
+                  editText={editing ? editText : ""}
+                  editPending={editing ? editSegment.isPending : false}
+                  reassignOpen={reassignOpen}
+                  reassignName={reassignOpen ? reassignName : ""}
+                  reassignPending={reassignOpen ? reassign.isPending : false}
+                  reassignError={
+                    reassignOpen && reassign.isError ? (reassign.error as Error).message : null
+                  }
+                  findQuery={findQuery}
+                  speakers={speakerItems}
+                  identities={identityItems}
+                  rowRef={active ? activeRef : undefined}
+                  onSeek={onSeek}
+                  onStartEdit={onStartEdit}
+                  onCancelEdit={onCancelEdit}
+                  onSaveEdit={onSaveEdit}
+                  onEditTextChange={onEditTextChange}
+                  onStartReassign={onStartReassign}
+                  onCancelReassign={onCancelReassign}
+                  onReassignToCluster={onReassignToCluster}
+                  onReassignToName={onReassignToName}
+                  onReassignNameChange={onReassignNameChange}
+                />
               );
             })}
             {lines.length === 0 ? (

@@ -1,3 +1,5 @@
+import { memo } from "react";
+
 import type { TranscriptLine } from "../hooks/useTranscript";
 import { formatClock } from "../hooks/clock";
 import { speakerColorVar } from "./speakerColors";
@@ -26,7 +28,11 @@ interface Props {
 
 // One transcript row in the live view: a colored initials avatar, a header (name +
 // meeting-relative timestamp), and the body. The newest line ends in a blinking caret.
-export function SpeakerLine({ line, newest }: Props) {
+//
+// Memoized: the reducer preserves each unchanged final's object identity across events, so on a live
+// partial only the <=2 changed rows (the partial itself and the row losing/gaining `newest`) re-render
+// instead of reconciling the whole meeting. Load-bearing for long-meeting live-transcript performance.
+export const SpeakerLine = memo(function SpeakerLine({ line, newest }: Props) {
   const className =
     "live-line" +
     (line.kind === "partial" ? " live-line--partial" : "") +
@@ -48,4 +54,4 @@ export function SpeakerLine({ line, newest }: Props) {
       </div>
     </li>
   );
-}
+});

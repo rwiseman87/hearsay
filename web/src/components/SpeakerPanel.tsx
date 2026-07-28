@@ -75,8 +75,8 @@ function SpeakerChip({ meetingId, speaker }: { meetingId: string; speaker: Speak
 // A readable, editable speaker strip above the transcript: one pill per diarized Them speaker (a
 // color-matched dot + the current label). Clicking a label renames that speaker, which relabels their
 // transcript lines and pre-seeds the name for the next meeting.
-export function SpeakerPanel({ meetingId }: { meetingId: string }) {
-  const speakers = useSpeakers(meetingId);
+export function SpeakerPanel({ meetingId, live }: { meetingId: string; live: boolean }) {
+  const speakers = useSpeakers(meetingId, live);
   const identities = useIdentities();
   const items = speakers.data?.items ?? [];
 

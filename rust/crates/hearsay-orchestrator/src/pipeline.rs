@@ -40,8 +40,18 @@ const BROADCAST_CAPACITY: usize = 256;
 /// than stalling the recorder and the other stream (head-of-line).
 const PCM_CHANNEL_CAPACITY: usize = 128;
 
+/// Capacity of the demux -> recorder hand-off channel. The recorder runs on its own blocking thread,
+/// so demux only ever `try_send`s here (never blocks on disk); this queue absorbs a transient disk
+/// stall. ~50 s of 100 ms chunks — far past any real write hiccup, and only a few MB of buffered PCM.
+/// On sustained overflow demux drops-with-log for the archive (a silent gap the recorder re-anchors
+/// over), leaving live transcription untouched.
+const REC_CHANNEL_CAPACITY: usize = 512;
+
 /// Contract-fixed capture sample rate (Hz).
 const SAMPLE_RATE: f64 = 16_000.0;
+
+/// One raw capture chunk handed to the recorder task: `(samples, t0_s, stream)`.
+type RecordChunk = (Vec<f32>, f64, Stream);
 
 /// Re-anchor a sidecar's sample-count timeline to the chunk's `t0_s` only once they diverge past
 /// this — a real delivery gap (dropped frames, a tap rebuild, a wedged-then-recovered stream), not
@@ -107,10 +117,14 @@ pub(crate) struct Pipeline {
     /// Set true by [`close`](Self::close) before stopping the source, so demux can tell an
     /// intentional stop from an unexpected capture death (helper crash / socket EOF).
     intentional_stop: Arc<AtomicBool>,
-    /// Reads capture, records `audio.wav`, and fans PCM to the stream tasks. Awaited unbounded on
-    /// close so a long final WAV encode is never truncated (it cannot block — it drops-with-log on a
-    /// full stream queue).
+    /// Reads capture, echo-cancels Me, hands raw chunks to the recorder task, and fans PCM to the
+    /// stream tasks. Cannot block — it drops-with-log on a full stream/recorder queue — so it finishes
+    /// promptly once capture ends.
     demux: JoinHandle<()>,
+    /// The `audio.wav` writer task (a dedicated blocking thread fed by demux), or `None` when
+    /// recording is disabled. Awaited unbounded on close so the final WAV encode + finalize completes
+    /// before stop returns (the refine that follows reads the finished file).
+    recorder: Option<JoinHandle<()>>,
     /// The per-stream feed+persist tasks. Bounded on close (a wedged sidecar can block one in
     /// `feed`), then aborted.
     streams: Vec<JoinHandle<()>>,
@@ -198,9 +212,14 @@ impl Pipeline {
             watchdog.abort();
         }
         self.source.stop().await;
-        // Demux never blocks (it drops-with-log on a full stream queue), so it finishes promptly
-        // after capture closes; await it unbounded so its final `audio.wav` encode completes.
+        // Demux never blocks (it drops-with-log on a full stream/recorder queue), so it finishes
+        // promptly after capture closes. Await it, which drops its recorder sender.
         let _ = self.demux.await;
+        // The recorder task then drains its queue, writes the tail, and finalizes `audio.wav`; await
+        // it unbounded so the encode completes before stop returns (the refine reads the file).
+        if let Some(recorder) = self.recorder.take() {
+            let _ = recorder.await;
+        }
         // A wedged sidecar can leave its stream task blocked in `feed`; bound the join and abort so
         // stop cannot hang. Abort drops the transcriber, whose `kill_on_drop` reaps the child.
         for task in self.streams.drain(..) {
@@ -321,7 +340,18 @@ pub(crate) async fn spawn(
     // the receiver resolves `Err` and the orchestrator's supervisor no-ops.
     let (inactive_tx, inactive_rx) = oneshot::channel();
 
-    let recorder = audio_path.map(MeetingAudioRecorder::new);
+    // Record audio.wav on its own blocking thread fed by a dedicated queue, so no disk write ever
+    // runs on the never-block demux path. `None` when recording is disabled.
+    let (rec_tx, recorder) = match audio_path {
+        Some(path) => {
+            let (tx, rx) = mpsc::channel::<RecordChunk>(REC_CHANNEL_CAPACITY);
+            let task = tokio::task::spawn_blocking(move || {
+                recorder_loop(rx, MeetingAudioRecorder::new(path))
+            });
+            (Some(tx), Some(task))
+        }
+        None => (None, None),
+    };
     // Shared across both stream tasks: the Them task records finals as candidate echo sources; the
     // Me task drops a final that matches one. A backstop behind the acoustic canceller (`aec`), it
     // touches only live Me finals, never the archive or the refine.
@@ -335,7 +365,7 @@ pub(crate) async fn spawn(
         capture_rx,
         me_tx,
         them_tx,
-        recorder,
+        rec_tx,
         EchoCanceller::new(),
         intentional_stop.clone(),
         paused.clone(),
@@ -392,6 +422,7 @@ pub(crate) async fn spawn(
             source,
             intentional_stop,
             demux,
+            recorder,
             streams: vec![me_task, them_task],
             ane_holder,
             ready_watchers,
@@ -420,17 +451,31 @@ fn forward(sender: &mpsc::Sender<(f64, Vec<f32>)>, t0_s: f64, samples: Vec<f32>,
     }
 }
 
-/// Read capture, anchor the shared epoch on the first chunk, record the stereo `audio.wav` (if
-/// enabled), and forward each chunk to its stream's task as meeting-relative `(t0_s, samples)`. Both
-/// streams anchor to the same epoch so their timelines align (alignment is by timestamp, never
-/// sample index). Me is echo-cancelled against the Them tap before it reaches transcription; the
-/// recording stays raw. The recorder is finalized once capture ends.
+/// The recorder task body: drain raw chunks from demux and write them to `audio.wav`, then finalize
+/// on channel close (demux's sender dropped). Runs on a dedicated blocking thread (`spawn_blocking`),
+/// so its buffered disk writes never touch the async runtime or the never-block demux path.
+/// Best-effort — a write/finalize failure is logged, never fails the meeting stop.
+fn recorder_loop(mut rx: mpsc::Receiver<RecordChunk>, mut recorder: MeetingAudioRecorder) {
+    while let Some((samples, t0_s, stream)) = rx.blocking_recv() {
+        recorder.write(&samples, t0_s, stream);
+    }
+    if let Err(err) = recorder.close() {
+        tracing::error!(error = %err, "failed to finalize meeting audio.wav");
+    }
+}
+
+/// Read capture, anchor the shared epoch on the first chunk, hand the stereo `audio.wav` chunks to the
+/// recorder task (if enabled), and forward each chunk to its stream's task as meeting-relative
+/// `(t0_s, samples)`. Both streams anchor to the same epoch so their timelines align (alignment is by
+/// timestamp, never sample index). Me is echo-cancelled against the Them tap before it reaches
+/// transcription; the recording stays raw. The recorder task finalizes once this returns (its sender
+/// drops).
 #[allow(clippy::too_many_arguments)]
 async fn demux(
     mut capture_rx: mpsc::Receiver<CaptureChunk>,
     me_tx: mpsc::Sender<(f64, Vec<f32>)>,
     them_tx: mpsc::Sender<(f64, Vec<f32>)>,
-    mut recorder: Option<MeetingAudioRecorder>,
+    rec_tx: Option<mpsc::Sender<RecordChunk>>,
     mut canceller: EchoCanceller,
     intentional_stop: Arc<AtomicBool>,
     paused: Arc<AtomicBool>,
@@ -462,11 +507,20 @@ async fn demux(
             / 1e9;
         let stream = cap.stream;
         let samples = cap.chunk.samples;
-        // Record first, on this always-drained path, so `audio.wav` captures every *raw* chunk even
-        // when a stream's transcriber is wedged/behind. AEC applies only to what live transcription
-        // sees — the archive stays raw, and the offline refine reads only the Them channel.
-        if let Some(rec) = recorder.as_mut() {
-            rec.write(&samples, t0_s, stream);
+        // Hand the raw chunk to the recorder task first, on this always-drained path, so `audio.wav`
+        // captures every *raw* chunk even when a stream's transcriber is wedged/behind. AEC applies
+        // only to what live transcription sees — the archive stays raw, and the offline refine reads
+        // only the Them channel. `try_send` never blocks demux; on a full recorder queue (a sustained
+        // disk stall) drop-with-log — the recorder re-anchors on `t0_s`, so the drop is a silent gap,
+        // not a desync.
+        if let Some(tx) = rec_tx.as_ref() {
+            match tx.try_send((samples.clone(), t0_s, stream)) {
+                Ok(()) => {}
+                Err(TrySendError::Full(_)) => {
+                    tracing::debug!("recorder queue full; dropping chunk")
+                }
+                Err(TrySendError::Closed(_)) => {}
+            }
         }
         // Me is echo-cancelled against the Them tap; Them forwards unchanged and doubles as the
         // canceller's far-end reference. A Me chunk may not clean immediately (it briefly awaits the
@@ -487,15 +541,8 @@ async fn demux(
             }
         }
     }
-    // Capture ended: write the WAV. Best-effort — a failure never fails the meeting stop. The encode
-    // walks every sample of the meeting, so run it off the async worker.
-    if let Some(rec) = recorder.take() {
-        match tokio::task::spawn_blocking(move || rec.close()).await {
-            Ok(Err(err)) => tracing::error!(error = %err, "failed to write meeting audio.wav"),
-            Err(err) => tracing::error!(error = %err, "meeting audio.wav writer panicked"),
-            Ok(Ok(())) => {}
-        }
-    }
+    // Capture ended: `rec_tx` drops as this task returns, so the recorder task drains its queue,
+    // writes the tail, and finalizes `audio.wav` (awaited by `Pipeline::close`).
     // If capture ended without an intentional `close()` (the helper crashed / the media socket
     // EOF'd), signal it so the orchestrator finalizes the meeting rather than leaving it live with a
     // dead pipeline. On an intentional stop, `died_tx` drops here instead (Err on the receiver).
@@ -614,6 +661,11 @@ struct TranscriptEvent<'a> {
 }
 
 fn publish(broadcast_tx: &broadcast::Sender<String>, event: &TranscriptEvent<'_>) {
+    // Skip the serialize entirely with no live subscribers (background recording, no view open). The
+    // finals this drops are still persisted by `handle`, and a reconnecting client re-seeds from the DB.
+    if broadcast_tx.receiver_count() == 0 {
+        return;
+    }
     if let Ok(line) = serde_json::to_string(event) {
         // Err just means no live subscribers, which is fine.
         let _ = broadcast_tx.send(line);
@@ -631,6 +683,9 @@ struct StatusEvent<'a> {
 }
 
 fn publish_status(broadcast_tx: &broadcast::Sender<String>, state: &str) {
+    if broadcast_tx.receiver_count() == 0 {
+        return;
+    }
     if let Ok(line) = serde_json::to_string(&StatusEvent {
         kind: "status",
         state,
@@ -685,6 +740,9 @@ struct CaptureHealthEvent<'a> {
 }
 
 fn publish_capture_health(broadcast_tx: &broadcast::Sender<String>, state: &str) {
+    if broadcast_tx.receiver_count() == 0 {
+        return;
+    }
     if let Ok(line) = serde_json::to_string(&CaptureHealthEvent {
         kind: "capture_health",
         stream: "me",
@@ -704,6 +762,9 @@ struct CaptureStateEvent<'a> {
 }
 
 fn publish_capture_state(broadcast_tx: &broadcast::Sender<String>, state: &str) {
+    if broadcast_tx.receiver_count() == 0 {
+        return;
+    }
     if let Ok(line) = serde_json::to_string(&CaptureStateEvent {
         kind: "capture_state",
         state,
@@ -722,6 +783,9 @@ struct LevelEvent<'a> {
 }
 
 fn publish_level(broadcast_tx: &broadcast::Sender<String>, role: StreamRole, rms: f32) {
+    if broadcast_tx.receiver_count() == 0 {
+        return;
+    }
     let stream = match role {
         StreamRole::Me => "me",
         StreamRole::Them => "them",
@@ -825,6 +889,9 @@ impl DeadMicMonitor {
 }
 
 fn publish_prompt(broadcast_tx: &broadcast::Sender<String>, silent_seconds: u64) {
+    if broadcast_tx.receiver_count() == 0 {
+        return;
+    }
     if let Ok(line) = serde_json::to_string(&PromptEvent {
         kind: "prompt",
         silent_seconds,
@@ -1171,6 +1238,47 @@ mod tests {
             (t0 - 0.2).abs() < 1e-9,
             "resumed timeline should be contiguous (0.2), got {t0}"
         );
+
+        drop(cap_tx);
+        let _ = handle.await;
+    }
+
+    #[tokio::test]
+    async fn demux_forwards_raw_chunks_to_the_recorder() {
+        // With a recorder channel present, demux hands each raw chunk to it as (samples, t0_s, stream)
+        // on the always-drained path (finding #4: audio.wav I/O moved off the demux thread).
+        let (cap_tx, cap_rx) = tokio::sync::mpsc::channel::<CaptureChunk>(64);
+        let (me_tx, _me_rx) = tokio::sync::mpsc::channel::<(f64, Vec<f32>)>(64);
+        let (them_tx, _them_rx) = tokio::sync::mpsc::channel::<(f64, Vec<f32>)>(64);
+        let (rec_tx, mut rec_rx) = tokio::sync::mpsc::channel::<(Vec<f32>, f64, Stream)>(64);
+        let (died_tx, _died_rx) = tokio::sync::oneshot::channel();
+        let handle = tokio::spawn(demux(
+            cap_rx,
+            me_tx,
+            them_tx,
+            Some(rec_tx),
+            EchoCanceller::new(),
+            Arc::new(AtomicBool::new(true)), // intentional_stop: suppress the death report on close
+            Arc::new(AtomicBool::new(false)),
+            died_tx,
+        ));
+
+        // A Them chunk anchors the epoch at t0_s=0 and is recorded raw (Them is never echo-cancelled).
+        cap_tx
+            .send(CaptureChunk {
+                stream: Stream::Them,
+                chunk: AudioChunk {
+                    host_ts: 0,
+                    samples: vec![0.25_f32; 1600],
+                },
+            })
+            .await
+            .unwrap();
+
+        let (samples, t0_s, stream) = rec_rx.recv().await.unwrap();
+        assert!(matches!(stream, Stream::Them));
+        assert!((t0_s - 0.0).abs() < 1e-9);
+        assert_eq!(samples, vec![0.25_f32; 1600]);
 
         drop(cap_tx);
         let _ = handle.await;
