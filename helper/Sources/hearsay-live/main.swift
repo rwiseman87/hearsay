@@ -118,7 +118,11 @@ let maxRetainSamples = 9_600_000  // 10 min at 16 kHz
 /// Drop everything before the last finalized boundary (minus a margin): those turns are emitted and
 /// never re-sliced. Un-finalized turn audio (>= partialAnchor) is retained until it finalizes.
 @MainActor func compactAudio() {
-    var keepFromAbs = max(audioBase, partialAnchor - marginSamples)
+    // Clamp the anchor to the retained-audio end before subtracting the margin: a finalized diarizer
+    // segment can report an `endTime` past the audio fed so far, so `reanchorPartial` can push
+    // `partialAnchor` beyond `audioEndAbs()`. Without the clamp `drop` exceeds `audio.count` and
+    // `removeFirst` traps (SIGTRAP). Mirrors hearsay-me's `min(fedUpTo, audioEndAbs())` clamp.
+    var keepFromAbs = max(audioBase, min(partialAnchor, audioEndAbs()) - marginSamples)
     keepFromAbs = max(keepFromAbs, audioEndAbs() - maxRetainSamples)
     let drop = keepFromAbs - audioBase
     if drop > marginSamples {
