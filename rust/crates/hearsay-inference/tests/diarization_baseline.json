@@ -1,0 +1,16 @@
+{
+  "references": {
+    "ami-ES2004a-mixheadset": {
+      "count_abs_error": 0,
+      "der": 0.14404180920203793
+    },
+    "ami-ES2004a-sdm": {
+      "count_abs_error": 0,
+      "der": 0.19387026746399538
+    }
+  },
+  "aggregate": {
+    "mean_count_abs_error": 0.0,
+    "mean_der": 0.16895603833301664
+  }
+}

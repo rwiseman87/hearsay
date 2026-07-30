@@ -32,6 +32,7 @@ This document maps the targets to what they test and the suite to where it lives
 | `web-test` | `vitest` (jsdom) | the client layer + hooks + MSW-mocked components (also folded into `web-ci`) | no |
 | **`make e2e`** | build the core, then Playwright/Chromium vs the scripted core + `vite dev` | the real React app → real core → real pipeline over a live WebSocket | no (Chromium once) |
 | **`make probes`** | `cargo test -- --ignored` on `hearsay-inference` (metal), `hearsay-notes` (metal), `hearsay-backends`, `hearsay-capture` | the ML paths: whisper refine + diarize, the notes LLM, the live pipeline, capture | **yes** |
+| **`make diarize-eval`** | `swift-build`, then the `diarization_accuracy` gate over the local labeled corpus | `hearsay-diarize` speaker-count + DER vs the committed baseline (AMI + your own recordings; audio stays local). The same test self-skips inside `make ci`; re-baseline an intentional change with `HEARSAY_UPDATE_DIAR_BASELINE=1` | **yes** |
 | `make coverage` | `cargo-llvm-cov` + vitest v8 → `outputs/coverage/` | report-only; the "what's untested" view | no |
 | **`make test-all`** | `ci` + `probes` + `e2e` | everything, on a fully-equipped box | yes |
 | `make clean-test` | `rm -rf outputs/coverage outputs/e2e` | (removes report dirs; test *data* auto-cleans via tempdirs) | no |

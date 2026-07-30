@@ -71,7 +71,9 @@ shared/protocol/ipc.md  IPC contract (source of truth)   ·   shared/fixtures/  
 
 - **cargo** for Rust, **npm** for the web UI. The **Makefile** is the task runner.
 - Targets: `make rust-build`, `make test` (Swift selftest + cargo test), `make lint` (clippy + rustfmt),
-  `make fmt`, `make codegen`, `make codegen-check`, `make web-ci`, `make audit`, `make licenses`, `make ci`.
+  `make fmt`, `make codegen`, `make codegen-check`, `make web-ci`, `make audit`, `make licenses`, `make ci`,
+  `make diarize-eval` (offline diarization accuracy gate: speaker-count + DER vs a committed baseline over a
+  local labeled corpus; self-skips inside `make ci` when the audio/sidecar are absent).
 - `make ci` is the gate and must stay green (`ci: lint test tauri-test codegen-check version-check audit
   licenses web-ci`): `clippy -D warnings` + `rustfmt --check` + Swift `selftest` + `cargo test` + the Tauri
   shell's clippy/tests + codegen-drift check + app-version drift check + `cargo audit` + `cargo deny`
