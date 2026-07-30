@@ -5,10 +5,12 @@
 //! See `docs/architecture.md`.
 
 pub mod consolidate;
+pub mod eval;
 pub mod mapping;
 pub mod voiceprint;
 
 pub use consolidate::{consolidate_speakers, ConsolidateConfig, Consolidation};
+pub use eval::{count_error, der, speaker_count, DerBreakdown};
 pub use mapping::{
     assign_segment_speaker, max_overlap_turn, order_first_appearance, order_speakers, SpeakerTurn,
 };

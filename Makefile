@@ -1,4 +1,4 @@
-.PHONY: help swift-build swift-test rust-build rust-test rust-lint tauri-lint tauri-test rust-fmt test lint fmt codegen codegen-check web-install web-typecheck web-lint web-test web-build web-ci audit licenses version-check ci probes coverage e2e test-all clean-test build package notarize clean serve rust-serve stage-model fetch-fluid-models stage-fluid-models fetch-sherpa-models stage-sherpa-models stage-release mac-app dmg
+.PHONY: help swift-build swift-test rust-build rust-test rust-lint tauri-lint tauri-test rust-fmt test lint fmt codegen codegen-check web-install web-typecheck web-lint web-test web-build web-ci audit licenses version-check ci probes diarize-eval coverage e2e test-all clean-test build package notarize clean serve rust-serve stage-model fetch-fluid-models stage-fluid-models fetch-sherpa-models stage-sherpa-models stage-release mac-app dmg
 
 PKG := helper
 RUST := rust
@@ -105,6 +105,9 @@ probes: ## Model/hardware tests (the #[ignore]d refine/notes/live probes). Needs
 	cargo test --manifest-path $(RUST)/Cargo.toml -p hearsay-notes --features metal -- --ignored
 	cargo test --manifest-path $(RUST)/Cargo.toml -p hearsay-backends -- --ignored
 	cargo test --manifest-path $(RUST)/Cargo.toml -p hearsay-capture -- --ignored
+
+diarize-eval: swift-build ## Diarization accuracy gate: run hearsay-diarize over the local labeled corpus and check speaker-count + DER vs the committed baseline. Self-skips (never fails) when the audio/sidecar are absent, so the same test is safe in `make ci`; here it builds the sidecar and runs it for real with output. Point at a private recording with HEARSAY_DIARIZE_CORPUS + HEARSAY_DIARIZE_BASELINE; re-baseline an intentional change with HEARSAY_UPDATE_DIAR_BASELINE=1.
+	cargo test --manifest-path $(RUST)/Cargo.toml -p hearsay-inference --test diarization_accuracy diarization_accuracy_gate -- --nocapture
 
 coverage: ## Coverage report (cargo-llvm-cov + vitest v8) into outputs/coverage/ (report-only)
 	@command -v cargo-llvm-cov >/dev/null 2>&1 || { echo "cargo-llvm-cov not installed: run 'cargo install cargo-llvm-cov'"; exit 1; }
