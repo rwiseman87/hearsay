@@ -7,7 +7,7 @@
 //! the Permissions panel.
 
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader, Lines};
@@ -35,6 +35,11 @@ const MAX_FRAME_PAYLOAD_BYTES: usize = SAMPLE_RATE as usize * 4;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// The first `start_capture` blocks on the macOS TCC permission prompts, so allow ample time.
 const START_CAPTURE_TIMEOUT: Duration = Duration::from_secs(120);
+/// How often [`media_pump`] logs per-stream capture telemetry. Instrumentation for the silent
+/// mid-meeting stream death the producer-side watchdogs miss: from the receiving end it separates a
+/// tap stuck delivering silence (audio frames keep arriving at `peak` 0) from a stalled producer
+/// (audio frames stop while heartbeats continue) from a wedged uplink (both frame kinds stop).
+const TELEMETRY_INTERVAL: Duration = Duration::from_secs(5);
 
 fn backend(msg: impl Into<String>) -> OrchestratorError {
     OrchestratorError::Backend(msg.into())
@@ -183,7 +188,15 @@ async fn media_pump(conn: UnixStream, tx: mpsc::Sender<CaptureChunk>) {
     // Last `seq` seen per stream (index = wire stream code). ipc.md: `seq` is per-stream monotonic;
     // a gap means the helper dropped frames.
     let mut last_seq: [Option<u32>; 2] = [None, None];
+    let mut telemetry: [StreamTelemetry; 2] = Default::default();
+    // Emit is throttled inside the frame loop, not driven by a `select!` timer: `next_frame` wraps a
+    // non-cancellation-safe `read_exact`, so racing it against a timer would drop partially-read bytes
+    // every tick and desync the stream — manufacturing the very gap this is meant to catch. Heartbeats
+    // keep frames arriving per stream even in silence, so the throttle still fires ~every interval; a
+    // full uplink wedge stops all frames, and the telemetry line simply ceasing is itself the signal.
+    let mut last_emit = Instant::now();
     while let Some(frame) = next_frame(&mut reader).await {
+        let now = Instant::now();
         let idx = frame.stream.to_code() as usize;
         if let Some(dropped) = seq_gap(last_seq.get(idx).copied().flatten(), frame.seq) {
             tracing::warn!(
@@ -197,19 +210,103 @@ async fn media_pump(conn: UnixStream, tx: mpsc::Sender<CaptureChunk>) {
             *slot = Some(frame.seq);
         }
 
-        if frame.frame_type == FrameType::Audio {
-            let chunk = CaptureChunk {
-                stream: map_stream(frame.stream),
-                chunk: AudioChunk {
-                    host_ts: frame.host_ts,
-                    samples: samples_f32(&frame),
-                },
-            };
-            if tx.send(chunk).await.is_err() {
-                break; // the orchestrator dropped the receiver
+        match frame.frame_type {
+            FrameType::Audio => {
+                let samples = samples_f32(&frame);
+                if let Some(t) = telemetry.get_mut(idx) {
+                    t.note_audio(&samples, now);
+                }
+                let chunk = CaptureChunk {
+                    stream: map_stream(frame.stream),
+                    chunk: AudioChunk {
+                        host_ts: frame.host_ts,
+                        samples,
+                    },
+                };
+                if tx.send(chunk).await.is_err() {
+                    break; // the orchestrator dropped the receiver
+                }
+            }
+            FrameType::Heartbeat => {
+                if let Some(t) = telemetry.get_mut(idx) {
+                    t.heartbeats += 1;
+                }
+            }
+            _ => {}
+        }
+
+        if now.duration_since(last_emit) >= TELEMETRY_INTERVAL {
+            for (idx, t) in telemetry.iter_mut().enumerate() {
+                t.emit_and_reset(stream_name(idx), now);
+            }
+            last_emit = now;
+        }
+    }
+}
+
+/// Per-stream capture liveness [`media_pump`] accumulates between [`TELEMETRY_INTERVAL`] emits.
+/// Separates the two silent-death modes each producer-side watchdog misses: an audio frame carrying
+/// only zeros (the tap's cadence watchdog can't see it) vs. audio frames ceasing while heartbeats
+/// continue (the mic's amplitude watchdog can't see it). `last_audio` / `last_nonzero` persist across
+/// resets so a stalled or silent stream shows an ever-growing age.
+#[derive(Default)]
+struct StreamTelemetry {
+    audio_frames: u64,
+    heartbeats: u64,
+    samples: u64,
+    peak: f32,
+    last_audio: Option<Instant>,
+    last_nonzero: Option<Instant>,
+    active: bool,
+}
+
+impl StreamTelemetry {
+    fn note_audio(&mut self, samples: &[f32], now: Instant) {
+        self.active = true;
+        self.audio_frames += 1;
+        self.samples += samples.len() as u64;
+        self.last_audio = Some(now);
+        for &s in samples {
+            let mag = s.abs();
+            if mag > self.peak {
+                self.peak = mag;
+            }
+            if s != 0.0 {
+                self.last_nonzero = Some(now);
             }
         }
     }
+
+    /// Log one line if the stream has ever carried audio, then reset the interval counters (keeping
+    /// the persistent `last_*` / `active` state). `since_*` is `-1` before the first such event.
+    fn emit_and_reset(&mut self, stream: &str, now: Instant) {
+        if !self.active {
+            return;
+        }
+        let age = |at: Option<Instant>| at.map_or(-1.0, |i| now.duration_since(i).as_secs_f32());
+        tracing::info!(
+            target: "hearsay_capture::telemetry",
+            stream,
+            audio_frames = self.audio_frames,
+            heartbeats = self.heartbeats,
+            samples = self.samples,
+            peak = self.peak,
+            since_audio_s = age(self.last_audio),
+            since_nonzero_s = age(self.last_nonzero),
+            "capture telemetry"
+        );
+        self.audio_frames = 0;
+        self.heartbeats = 0;
+        self.samples = 0;
+        self.peak = 0.0;
+    }
+}
+
+/// Wire stream name for a telemetry index (= [`IpcStream::to_code`]).
+fn stream_name(idx: usize) -> &'static str {
+    IpcStream::from_code(idx as u8)
+        .map(|s| s.as_str())
+        .unwrap_or("?")
 }
 
 /// Dropped-frame count implied by a `seq` gap: `None` when contiguous (or first-seen), else how
@@ -294,7 +391,15 @@ async fn fill<R: tokio::io::AsyncRead + Unpin>(reader: &mut R, buf: &mut [u8]) -
 async fn drain_control(mut lines: Lines<BufReader<OwnedReadHalf>>) {
     while let Ok(Some(line)) = lines.next_line().await {
         if let Ok(Inbound::Event(event)) = parse_message(line.as_bytes()) {
-            tracing::debug!(event = %event.event, "helper event");
+            match event.event.as_str() {
+                // Capture-health transitions are rare and load-bearing for diagnosing a silent stream
+                // death (a stuck tap / dead mic), so surface them + their payload at INFO. The
+                // high-rate `level` (and anything else) stay at DEBUG so they don't flood the log.
+                "tap_health" | "mic_health" | "status" => {
+                    tracing::info!(event = %event.event, data = ?event.data, "helper health event");
+                }
+                _ => tracing::debug!(event = %event.event, "helper event"),
+            }
         }
     }
 }
@@ -522,6 +627,38 @@ mod tests {
         assert_eq!(seq_gap(Some(4), 5), None); // contiguous
         assert_eq!(seq_gap(Some(4), 7), Some(2)); // two frames dropped
         assert_eq!(seq_gap(Some(u32::MAX), 0), None); // wrap is contiguous
+    }
+
+    #[test]
+    fn stream_telemetry_separates_real_audio_from_silence_and_resets() {
+        let t0 = Instant::now();
+        let mut t = StreamTelemetry::default();
+
+        // Real audio: `peak` tracks the loudest magnitude and `last_nonzero` advances.
+        t.note_audio(&[0.0, 0.5, -0.9], t0);
+        assert!(t.active);
+        assert_eq!(t.audio_frames, 1);
+        assert_eq!(t.samples, 3);
+        assert!((t.peak - 0.9).abs() < 1e-6);
+        assert_eq!(t.last_nonzero, Some(t0));
+
+        // An all-zero audio frame (a tap stuck delivering silence) still counts and advances
+        // `last_audio`, but never `last_nonzero` — the distinction the tap's watchdog can't draw.
+        let t1 = t0 + Duration::from_secs(1);
+        t.note_audio(&[0.0, 0.0], t1);
+        assert_eq!(t.audio_frames, 2);
+        assert_eq!(t.last_audio, Some(t1));
+        assert_eq!(t.last_nonzero, Some(t0));
+
+        // Reset clears the interval counters but keeps the persistent liveness stamps, so a stalled
+        // stream reports an ever-growing age across intervals.
+        t.heartbeats += 1;
+        t.emit_and_reset("them", t1 + Duration::from_secs(5));
+        assert_eq!((t.audio_frames, t.heartbeats, t.samples), (0, 0, 0));
+        assert_eq!(t.peak, 0.0);
+        assert!(t.active);
+        assert_eq!(t.last_audio, Some(t1));
+        assert_eq!(t.last_nonzero, Some(t0));
     }
 
     #[test]

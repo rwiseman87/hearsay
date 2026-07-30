@@ -34,6 +34,13 @@ final class MicCapture: AudioSource, @unchecked Sendable {
     private let silence = SilenceMonitor()
     private var silenceTimer: DispatchSourceTimer?
     private var micSilent = false  // edge-trigger state for `mic_health`
+    // Callback-cadence monitor. The tap block fires on every buffer even during silence, so a mic that
+    // stops *delivering* buffers (engine wedged, no config-change) is invisible to the amplitude-based
+    // `silence` watchdog above (which sees no zeros, only absence). Stamped per buffer, surfaced by the
+    // telemetry line, so that stall mode is diagnosable rather than silent.
+    private let callback: FlowMonitor
+    private var lastTelemetryNs: UInt64 = 0
+    private let telemetryThrottleNs: UInt64 = 5_000_000_000  // one telemetry line every 5 s
     // Below this, a sample counts as silence; a live mic's noise floor sits well above it, so only a
     // truly dead input (exact zeros) trips the watchdog — not a quiet user.
     private let silenceFloor: Float = 1e-6
@@ -47,6 +54,7 @@ final class MicCapture: AudioSource, @unchecked Sendable {
         self.ring = ring
         self.onHealth = onHealth
         self.log = log
+        self.callback = FlowMonitor(nowNs: clock.nowNs())
     }
 
     func start() throws {
@@ -100,7 +108,9 @@ final class MicCapture: AudioSource, @unchecked Sendable {
                 nonZero = true
                 break
             }
-            self.silence.record(nonZero: nonZero, nowNs: self.clock.nowNs())
+            let nowNs = self.clock.nowNs()
+            self.callback.noteFlow(nowNs: nowNs)  // cadence: a buffer arrived, regardless of content
+            self.silence.record(nonZero: nonZero, nowNs: nowNs)
             self.ring.write(samples)
         }
         engine.prepare()
@@ -121,9 +131,12 @@ final class MicCapture: AudioSource, @unchecked Sendable {
     /// Emit `mic_health` edge-triggered: `degraded` once the mic has delivered only silence past the
     /// threshold, `recovered` once audio flows again.
     private func checkSilence() {
-        let silentNs = silence.silentForNs(nowNs: clock.nowNs())
+        let now = clock.nowNs()
+        let silentNs = silence.silentForNs(nowNs: now)
+        let callbackAgeNs = now &- callback.lastFlowNs
         lock.lock()
         var emit: String?
+        var logTelemetry = false
         if running {
             if silentNs >= silenceThresholdNs {
                 if !micSilent {
@@ -134,9 +147,21 @@ final class MicCapture: AudioSource, @unchecked Sendable {
                 micSilent = false
                 emit = "recovered"
             }
+            if now &- lastTelemetryNs >= telemetryThrottleNs {
+                lastTelemetryNs = now
+                logTelemetry = true
+            }
         }
         lock.unlock()
         if let state = emit { onHealth(state, nil) }
+        // Both liveness axes on one line: `silent_ms` (amplitude) rises when the mic delivers zeros;
+        // `callback_age_ms` (cadence) rises when it stops delivering buffers at all — the stall the
+        // silence watchdog can't see. Emitted outside the lock so a slow log never blocks the timer.
+        if logTelemetry {
+            log(
+                "mic telemetry: callback_age_ms=\(callbackAgeNs / 1_000_000) "
+                    + "silent_ms=\(silentNs / 1_000_000)")
+        }
     }
 
     /// Rebuild after AVAudioEngine stopped on an audio-config change (the new input
