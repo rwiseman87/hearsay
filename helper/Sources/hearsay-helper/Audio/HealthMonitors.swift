@@ -52,6 +52,30 @@ final class FlowMonitor: @unchecked Sendable {
     }
 }
 
+/// The tap watchdog's trip / recovery rules, kept pure so they can be checked without a live Core
+/// Audio graph. Two independent failure axes: *stuck* (no samples reach the ring at all) and
+/// *stranded* (samples arrive at full cadence but every one is an exact zero while something is
+/// playing) — a tap can die either way, and cadence alone only sees the first.
+struct TapLivenessPolicy {
+    let stuckThresholdNs: UInt64
+    let strandedThresholdNs: UInt64
+
+    /// `graphAgeNs` gives a freshly rebuilt graph a grace window before its silence counts against
+    /// it, so a rebuild cannot immediately re-trip on the silence that triggered it.
+    func isBroken(idleNs: UInt64, silentNs: UInt64, graphAgeNs: UInt64, outputRunning: Bool) -> Bool
+    {
+        if idleNs >= stuckThresholdNs { return true }
+        return silentNs >= strandedThresholdNs && graphAgeNs >= strandedThresholdNs && outputRunning
+    }
+
+    /// Recovery needs both axes healthy: audio flowed on the current graph, and some of it was
+    /// non-zero — so a tap rebuilt straight back into the same stranded state cannot report itself
+    /// recovered on cadence alone.
+    func isRecovered(flowedSinceStart: Bool, silentNs: UInt64) -> Bool {
+        flowedSinceStart && silentNs < strandedThresholdNs
+    }
+}
+
 /// A one-way stop flag: set once by the owner, polled by a worker thread to know when to exit. Used to
 /// tear down the tap's drain worker without the worker ever touching the tap's build lock (so teardown
 /// can hold that lock while joining the worker).

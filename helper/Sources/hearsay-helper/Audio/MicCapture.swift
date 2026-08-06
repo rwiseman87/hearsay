@@ -10,11 +10,12 @@ import AVFoundation
 /// and restarts the engine — the mic-side counterpart to ``SystemAudioTap``'s
 /// watchdog — emitting `mic_health` so a device change never silently kills "Me".
 ///
-/// Unlike the tap, the mic's other failure mode is a revoked TCC grant: `engine.start()`
-/// still succeeds but delivers *digital silence* (exact zeros), so "Me" is silently empty.
-/// A silence watchdog detects a sustained run of exact-zero buffers (a live mic always carries
-/// a noise floor above the tiny threshold) and emits `mic_health degraded` / `recovered`
-/// edge-triggered, so a dead-input capture surfaces instead of vanishing.
+/// Unlike the tap, the mic's other failure mode is a revoked TCC grant or a stranded input endpoint:
+/// `engine.start()` still succeeds but delivers *digital silence* (exact zeros), so "Me" is silently
+/// empty. A silence watchdog detects a sustained run of exact-zero buffers (a live mic always carries
+/// a noise floor above the tiny threshold), emits `mic_health degraded` / `recovered` edge-triggered,
+/// and restarts the engine with backoff — the endpoint can strand without ever posting a configuration
+/// change, so reporting alone would leave "Me" dead for the rest of the meeting.
 final class MicCapture: AudioSource, @unchecked Sendable {
     private let ring: RingBuffer
     private let onHealth: (_ state: String, _ action: String?) -> Void
@@ -45,6 +46,13 @@ final class MicCapture: AudioSource, @unchecked Sendable {
     // truly dead input (exact zeros) trips the watchdog — not a quiet user.
     private let silenceFloor: Float = 1e-6
     private let silenceThresholdNs: UInt64 = 8_000_000_000  // 8 s of continuous silence
+    // A stranded input endpoint delivers zeros indefinitely without ever posting a configuration
+    // change, so the config-change observer never fires and the engine would stay dead for the rest of
+    // the meeting. The silence watchdog restarts it itself, backing off so a mic that is legitimately
+    // muted at the hardware level does not churn the engine once per second.
+    private var restartBackoffNs: UInt64 = 0
+    private var nextRestartAtNs: UInt64 = 0
+    private let maxRestartBackoffNs: UInt64 = 30_000_000_000
 
     init(
         ring: RingBuffer,
@@ -129,7 +137,8 @@ final class MicCapture: AudioSource, @unchecked Sendable {
     }
 
     /// Emit `mic_health` edge-triggered: `degraded` once the mic has delivered only silence past the
-    /// threshold, `recovered` once audio flows again.
+    /// threshold, `recovered` once audio flows again — and restart the engine, backoff-paced, for as
+    /// long as the silence lasts.
     private func checkSilence() {
         let now = clock.nowNs()
         let silentNs = silence.silentForNs(nowNs: now)
@@ -137,14 +146,25 @@ final class MicCapture: AudioSource, @unchecked Sendable {
         lock.lock()
         var emit: String?
         var logTelemetry = false
+        var wantRestart = false
         if running {
             if silentNs >= silenceThresholdNs {
                 if !micSilent {
                     micSilent = true
                     emit = "degraded"
+                    nextRestartAtNs = 0  // restart immediately on first detection
+                }
+                if now >= nextRestartAtNs {
+                    wantRestart = true
+                    restartBackoffNs =
+                        restartBackoffNs == 0
+                        ? 1_000_000_000 : min(restartBackoffNs * 2, maxRestartBackoffNs)
+                    nextRestartAtNs = now &+ restartBackoffNs
                 }
             } else if micSilent {
                 micSilent = false
+                restartBackoffNs = 0
+                nextRestartAtNs = 0
                 emit = "recovered"
             }
             if now &- lastTelemetryNs >= telemetryThrottleNs {
@@ -154,6 +174,7 @@ final class MicCapture: AudioSource, @unchecked Sendable {
         }
         lock.unlock()
         if let state = emit { onHealth(state, nil) }
+        if wantRestart { restartSilentEngine() }
         // Both liveness axes on one line: `silent_ms` (amplitude) rises when the mic delivers zeros;
         // `callback_age_ms` (cadence) rises when it stops delivering buffers at all — the stall the
         // silence watchdog can't see. Emitted outside the lock so a slow log never blocks the timer.
@@ -181,6 +202,26 @@ final class MicCapture: AudioSource, @unchecked Sendable {
         } catch {
             onHealth("degraded", nil)
             log("mic restart failed: \(error)")
+        }
+    }
+
+    /// Restart the engine after a sustained run of digital silence. Runs on `configQueue`, so it
+    /// serializes with ``handleConfigChange``.
+    ///
+    /// Deliberately does *not* reset the silence monitor: the restart is a repair attempt, not
+    /// evidence of one. Carrying the silence forward keeps `recovered` meaning "real audio came back"
+    /// and lets the backoff keep retrying if this restart landed on the same dead endpoint.
+    private func restartSilentEngine() {
+        lock.lock()
+        defer { lock.unlock() }
+        guard running else { return }  // a concurrent stop() won the race
+        log("mic delivering digital silence -> restarting engine")
+        engine.inputNode.removeTap(onBus: 0)
+        engine.stop()
+        do {
+            try startEngineLocked()
+        } catch {
+            log("mic silence restart failed: \(error)")
         }
     }
 }

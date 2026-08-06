@@ -137,8 +137,13 @@ shared/protocol/ipc.md  IPC contract (source of truth)   ·   shared/fixtures/  
   per-process-silent bug; also covers browser meeting apps).
 - Resample both sources to **16 kHz mono**; stamp both with ONE monotonic clock (`host_ts`). Cross-stream
   alignment is by timestamp, never by sample index.
-- Zero-buffer watchdog: on sustained all-zero buffers, rebuild BOTH the tap and the aggregate device; emit
-  `tap_health`. The mic is always "Me" and is never diarized.
+- Both capture streams die two ways, and a watchdog must cover BOTH axes: *cadence* (buffers stop
+  arriving) and *amplitude* (buffers keep arriving at full rate carrying only exact zeros). Amplitude
+  alone cannot tell a dead tap from quiet system audio — gate it on
+  `outputDeviceIsRunningSomewhere()`, and prefer a needless rebuild over a missed one. On a sustained
+  zero run, rebuild BOTH the tap and the aggregate device and emit `tap_health`; the mic restarts its
+  `AVAudioEngine` and emits `mic_health`. Detection without a recovery action is not a watchdog.
+- The mic is always "Me" and is never diarized.
 - Echo cancellation (`aec` feature, built into `rust-serve` + the bundle): SpeexDSP (`aec-rs`) cancels the
   Them playback out of the live Me stream. The recorder and offline refine read the RAW pre-AEC audio; only
   live captions see the cancelled Me stream. See `docs/echo-cancellation.md`.

@@ -74,3 +74,20 @@ func defaultOutputDevice() -> AudioObjectID? {
         AudioObjectID(kAudioObjectSystemObject),
         kAudioHardwarePropertyDefaultOutputDevice)
 }
+
+/// Whether any process currently has IO running on the default output device
+/// (`kAudioDevicePropertyDeviceIsRunningSomewhere`: 1 = running in at least one process).
+///
+/// This is what makes amplitude readable for the tap watchdog: exact-zero samples mean "stranded"
+/// only while something is actually playing. With nothing playing, zeros are the correct answer.
+func outputDeviceIsRunningSomewhere() -> Bool {
+    guard let device = defaultOutputDevice() else { return false }
+    var addr = AudioObjectPropertyAddress(
+        mSelector: kAudioDevicePropertyDeviceIsRunningSomewhere,
+        mScope: kAudioObjectPropertyScopeGlobal,
+        mElement: kAudioObjectPropertyElementMain)
+    var value: UInt32 = 0
+    var size = UInt32(MemoryLayout<UInt32>.size)
+    let st = AudioObjectGetPropertyData(device, &addr, 0, nil, &size, &value)
+    return st == noErr && value != 0
+}

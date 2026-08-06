@@ -181,10 +181,58 @@ private func spscRingChecks() -> Bool {
     return ok
 }
 
+/// The tap watchdog's trip / recovery rules. The regression these pin: a tap that keeps delivering
+/// buffers at full cadence but only exact zeros is dead, and cadence alone reports it healthy.
+private func tapLivenessChecks() -> Bool {
+    var ok = true
+    func check(_ cond: Bool, _ what: String) {
+        if !cond {
+            ok = false
+            warn("  tap liveness: \(what)")
+        }
+    }
+    let s = UInt64(1_000_000_000)
+    let policy = TapLivenessPolicy(stuckThresholdNs: 5 * s, strandedThresholdNs: 60 * s)
+
+    // Stuck: no samples reach the ring at all.
+    check(
+        policy.isBroken(idleNs: 6 * s, silentNs: 0, graphAgeNs: 600 * s, outputRunning: false),
+        "idle past the stuck threshold is broken")
+    check(
+        !policy.isBroken(idleNs: 4 * s, silentNs: 0, graphAgeNs: 600 * s, outputRunning: false),
+        "brief idle is not broken")
+
+    // Stranded: full cadence, all exact zeros, something playing.
+    check(
+        policy.isBroken(idleNs: 0, silentNs: 90 * s, graphAgeNs: 600 * s, outputRunning: true),
+        "sustained zeros while output runs is broken")
+    check(
+        !policy.isBroken(idleNs: 0, silentNs: 90 * s, graphAgeNs: 600 * s, outputRunning: false),
+        "sustained zeros with nothing playing is legitimately quiet")
+    check(
+        !policy.isBroken(idleNs: 0, silentNs: 30 * s, graphAgeNs: 600 * s, outputRunning: true),
+        "short silence is not broken")
+    // A fresh graph carries the silence that triggered its rebuild; the grace window covers it.
+    check(
+        !policy.isBroken(idleNs: 0, silentNs: 90 * s, graphAgeNs: 10 * s, outputRunning: true),
+        "young graph is inside its grace window")
+
+    check(policy.isRecovered(flowedSinceStart: true, silentNs: 0), "non-zero audio recovers")
+    check(
+        !policy.isRecovered(flowedSinceStart: false, silentNs: 0),
+        "no flow on this graph is not recovered")
+    check(
+        !policy.isRecovered(flowedSinceStart: true, silentNs: 90 * s),
+        "cadence alone does not recover a stranded tap")
+    return ok
+}
+
 /// Internal round-trip checks plus decoding + re-encoding every committed golden
 /// fixture. This is the Swift side of the cross-language IPC contract check.
 private func runSelfTest(path: String) -> Bool {
-    var ok = internalRoundTripChecks() && controlRoundTripChecks() && spscRingChecks()
+    var ok =
+        internalRoundTripChecks() && controlRoundTripChecks() && spscRingChecks()
+        && tapLivenessChecks()
     // control.jsonl is the NDJSON golden; it sits beside the frames fixtures passed in `path`.
     let controlDir = (path as NSString).deletingLastPathComponent
     let controlPath = (controlDir as NSString).appendingPathComponent("control.jsonl")
@@ -234,7 +282,8 @@ private func runSelfTest(path: String) -> Bool {
         }
     }
     print(
-        "swift self-test: internal + control + spsc checks + \(count) fixtures, \(ok ? "PASS" : "FAIL")"
+        "swift self-test: internal + control + spsc + tap-liveness checks + \(count) fixtures, "
+            + "\(ok ? "PASS" : "FAIL")"
     )
     return ok
 }
