@@ -31,9 +31,15 @@ private final class TapIOEngine: @unchecked Sendable {
 /// worker thread drains that ring, resamples to 16 kHz off the RT thread, and writes into the shared
 /// output ``RingBuffer`` the uplink reads. A watchdog listens for the default-output-device and
 /// nominal-sample-rate changes that strand a tap on zero buffers and rebuilds both tap and aggregate;
-/// it also detects a *stuck* tap by audio-flow cadence (no samples reaching the ring, not amplitude —
-/// which cannot tell a broken tap from legitimately quiet system audio) and rebuilds with backoff,
-/// emitting `tap_health` on each state transition (edge-triggered, so no per-tick event spam).
+/// it also rebuilds, with backoff, on either of the two ways a tap dies, emitting `tap_health` on each
+/// state transition (edge-triggered, so no per-tick event spam):
+///
+/// - *stuck*: the IOProc stops firing, so no samples reach the ring at all (audio-flow cadence).
+/// - *stranded*: the IOProc keeps firing at full cadence but delivers only exact zeros, so cadence
+///   looks perfectly healthy while no system audio is captured. Amplitude alone cannot tell this from
+///   legitimately quiet system audio — ``outputDeviceIsRunningSomewhere()`` is what disambiguates it,
+///   by asking whether anything is playing at all. A needless rebuild during real silence costs a
+///   sub-second gap of nothing; a missed one costs the rest of the meeting.
 final class SystemAudioTap: AudioSource, @unchecked Sendable {
     private let ring: RingBuffer  // output ring (16 kHz), read by the uplink
     private let onHealth: (_ state: String, _ action: String?) -> Void
@@ -56,6 +62,7 @@ final class SystemAudioTap: AudioSource, @unchecked Sendable {
 
     // Watchdog.
     private let flow: FlowMonitor
+    private let silence = SilenceMonitor()
     private let watchdogQueue = DispatchQueue(label: "hearsay.tap.watchdog")
     private var watchedDevice = AudioObjectID(kAudioObjectUnknown)
     private var defaultDeviceListener: AudioObjectPropertyListenerBlock?
@@ -66,7 +73,11 @@ final class SystemAudioTap: AudioSource, @unchecked Sendable {
     private var graphStartNs: UInt64 = 0  // when the current graph started (grace window baseline)
     private var rebuildBackoffNs: UInt64 = 0  // grows per failed rebuild, reset on recovery
     private var nextRebuildAtNs: UInt64 = 0
-    private let brokenThresholdNs: UInt64 = 5_000_000_000  // no audio for 5 s -> stuck
+    // Only exact zeros count as silence: any real playback, however quiet, carries a non-zero sample,
+    // so the stranded axis trips on a dead tap rather than on a quiet one. Held well above the stuck
+    // threshold because a live meeting can legitimately go a while without far-side audio.
+    private let liveness = TapLivenessPolicy(
+        stuckThresholdNs: 5_000_000_000, strandedThresholdNs: 60_000_000_000)
     private let maxBackoffNs: UInt64 = 30_000_000_000
     private let workerTick = 0.01  // 10 ms drain period
 
@@ -88,6 +99,7 @@ final class SystemAudioTap: AudioSource, @unchecked Sendable {
         try buildGraphLocked()
         running = true
         broken = false
+        silence.reset()
         rebuildBackoffNs = 0
         nextRebuildAtNs = 0
         installDeviceListenersLocked()
@@ -211,6 +223,7 @@ final class SystemAudioTap: AudioSource, @unchecked Sendable {
         workerDone = done
         let output = ring
         let flow = self.flow
+        let silence = self.silence
         let clock = self.clock
         let tick = workerTick
         let logDrops = log
@@ -219,18 +232,31 @@ final class SystemAudioTap: AudioSource, @unchecked Sendable {
             var lastDropped: UInt64 = 0
             while !stop.isSet {
                 var flowed = false
+                var nonZero = false
                 while true {
                     let n = scratch.withUnsafeMutableBufferPointer {
                         raw.read(into: $0.baseAddress!, max: $0.count)
                     }
                     if n == 0 { break }
                     flowed = true  // the tap produced audio; flow is about tap liveness, not ASR output
+                    if !nonZero {
+                        for i in 0..<n where scratch[i] != 0 {
+                            nonZero = true
+                            break
+                        }
+                    }
                     let out = scratch.withUnsafeBufferPointer {
                         resampler.resample($0.baseAddress!, count: n)
                     }
                     if !out.isEmpty { output.write(out) }
                 }
-                if flowed { flow.noteFlow(nowNs: clock.nowNs()) }
+                // Both liveness axes, stamped only when the tap actually delivered: `flow` is cadence
+                // (did anything arrive), `silence` is amplitude (was any of it non-zero).
+                if flowed {
+                    let nowNs = clock.nowNs()
+                    flow.noteFlow(nowNs: nowNs)
+                    silence.record(nonZero: nonZero, nowNs: nowNs)
+                }
                 let dropped = raw.droppedSamples
                 if dropped > lastDropped {
                     logDrops("tap resample ring overrun: dropped \(dropped - lastDropped) samples")
@@ -338,24 +364,34 @@ final class SystemAudioTap: AudioSource, @unchecked Sendable {
         listeningDevices = false
     }
 
-    /// Once-per-second flow check. Decides under `lock`, then emits / rebuilds after unlocking (so no
-    /// health callback or rebuild runs while holding it). Edge-triggered: `zero_buffers` once on the
-    /// transition to stuck, `recovered` once real audio flows again, and a backoff-paced rebuild in
+    /// Once-per-second liveness check. Decides under `lock`, then emits / rebuilds after unlocking (so
+    /// no health callback or rebuild runs while holding it). Edge-triggered: `zero_buffers` once on the
+    /// transition to broken, `recovered` once real audio flows again, and a backoff-paced rebuild in
     /// between. `idle` is measured from the later of "audio last flowed" and "this graph started", so a
-    /// freshly rebuilt tap gets a full grace window and cannot flap a premature `recovered`.
+    /// freshly rebuilt tap gets a full grace window and cannot flap a premature `recovered`; the
+    /// stranded check applies the same grace via the graph's age.
     private func watchdogTick() {
         let now = clock.nowNs()
         let lastFlow = flow.lastFlowNs
+        let silentNs = silence.silentForNs(nowNs: now)
+        // Queried only while already past the silence threshold (so at most once per second, and never
+        // in the common case) and never while holding `lock`, since it is a synchronous HAL call.
+        let outputRunning =
+            silentNs >= liveness.strandedThresholdNs ? outputDeviceIsRunningSomewhere() : false
 
         lock.lock()
         let base = max(lastFlow, graphStartNs)
         let idle = now > base ? now &- base : 0
         let flowedSinceStart = lastFlow >= graphStartNs
+        let graphAge = now > graphStartNs ? now &- graphStartNs : 0
         var emitBroken = false
         var emitRecovered = false
         var wantRebuild = false
         if running {
-            if idle >= brokenThresholdNs {
+            if liveness.isBroken(
+                idleNs: idle, silentNs: silentNs, graphAgeNs: graphAge,
+                outputRunning: outputRunning)
+            {
                 if !broken {
                     broken = true
                     emitBroken = true
@@ -368,9 +404,9 @@ final class SystemAudioTap: AudioSource, @unchecked Sendable {
                         ? 1_000_000_000 : min(rebuildBackoffNs * 2, maxBackoffNs)
                     nextRebuildAtNs = now + rebuildBackoffNs
                 }
-            } else if broken && flowedSinceStart {
-                // Only clear once audio has actually flowed on the current graph, not merely because
-                // a fresh graph reset the grace window.
+            } else if broken
+                && liveness.isRecovered(flowedSinceStart: flowedSinceStart, silentNs: silentNs)
+            {
                 broken = false
                 rebuildBackoffNs = 0
                 nextRebuildAtNs = 0
