@@ -464,6 +464,21 @@ pub struct StorageSettings {
     pub compress_after_days: u32,
 }
 
+/// Progress of the audio-archival pass, whether started by the Settings button or the periodic
+/// sweep. Polled by the UI while `running`; the counters describe the current pass, or the last one
+/// once it has finished. Read-only.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct ArchiveState {
+    pub running: bool,
+    /// Meetings this pass will process.
+    pub total: u32,
+    /// Meetings processed so far.
+    pub done: u32,
+    pub compressed: u32,
+    pub failed: u32,
+    pub reclaimed_bytes: i64,
+}
+
 /// Read-only storage facts shown alongside the editable storage section.
 #[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct StorageInfo {

@@ -422,6 +422,11 @@ resolver tolerates and the next sweep cleans up. The sweep only considers `final
 never races the recorder or the post-stop refine, and it defers entirely while a meeting is
 recording — encoding is CPU work and a live meeting owns the machine.
 
+The Settings > Storage "Compress now" button runs the same pass on demand through
+`start_background_pass`, which resolves the work list before responding (so the UI gets a real total
+and can poll immediately) and shares one `Sweeper` with the ticker, so the two can never sweep the
+same folders at once.
+
 A deferred pass re-checks in 5 minutes rather than waiting out the hour, and a pass cut short by a
 meeting starting mid-sweep does the same. That distinction matters more than it looks: the app is
 normally opened *in order to* record, so the post-launch sweep routinely lands inside a meeting, and

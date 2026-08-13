@@ -396,6 +396,23 @@ panel uses to show what archiving would reclaim.
 }
 ```
 
+### `GET` / `POST /api/settings/storage/compress` (archive audio on demand)
+
+Runs the same archival pass as the periodic sweep, without waiting for it. `POST` answers `202` with
+the opening snapshot — the work list is counted before it returns, so `total` is real and `running`
+is already true — and does the encoding in the background, since a backlog takes far longer than a
+request should hold. `409` while a meeting is recording (encoding must not compete with live
+capture) or while a pass is already running. `GET` returns the same snapshot for polling:
+
+```json
+// 200 OK
+{ "running": true, "total": 3, "done": 1, "compressed": 1, "failed": 0, "reclaimed_bytes": 33833586 }
+```
+
+It honors the effective age threshold, so it never archives a meeting the `compress_after_days`
+setting says is still too recent. It does not require the automatic sweep to be enabled — pressing
+the button is an explicit instruction.
+
 ### `PUT /api/settings/{recording,speakers,storage,models}` (update one section)
 
 Each takes that section's body and returns it. Every PUT full-replaces its section, so a body must

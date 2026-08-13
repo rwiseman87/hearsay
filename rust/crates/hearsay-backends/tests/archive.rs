@@ -27,6 +27,10 @@ async fn memory_pool() -> SqlitePool {
     pool
 }
 
+fn sweeper() -> std::sync::Arc<Sweeper> {
+    std::sync::Arc::new(Sweeper::new())
+}
+
 fn never_busy() -> Box<dyn Fn() -> bool + Send + Sync> {
     Box::new(|| false)
 }
@@ -76,7 +80,7 @@ async fn archives_an_aged_meeting_losslessly() {
     let samples = write_recording(&dir, FRAMES);
     let wav_bytes = std::fs::metadata(dir.join("audio.wav")).unwrap().len();
 
-    let stats = sweep_once(&pool, tmp.path(), true, 7, &Sweeper::new(), &never_busy()).await;
+    let stats = sweep_once(&pool, tmp.path(), true, 7, &sweeper(), &never_busy()).await;
 
     assert_eq!(stats.compressed, 1);
     assert_eq!(stats.failed, 0);
@@ -108,7 +112,7 @@ async fn leaves_meetings_that_are_not_yet_old_enough() {
     let dir = tmp.path().join("fresh");
     write_recording(&dir, FRAMES);
 
-    let stats = sweep_once(&pool, tmp.path(), true, 7, &Sweeper::new(), &never_busy()).await;
+    let stats = sweep_once(&pool, tmp.path(), true, 7, &sweeper(), &never_busy()).await;
 
     assert_eq!(stats.compressed, 0);
     assert!(dir.join("audio.wav").is_file());
@@ -128,7 +132,7 @@ async fn never_touches_a_meeting_that_is_not_finalized() {
         .unwrap();
     write_recording(&dir, FRAMES);
 
-    let stats = sweep_once(&pool, tmp.path(), true, 7, &Sweeper::new(), &never_busy()).await;
+    let stats = sweep_once(&pool, tmp.path(), true, 7, &sweeper(), &never_busy()).await;
 
     assert_eq!(stats.compressed, 0);
     assert!(dir.join("audio.wav").is_file());
@@ -142,7 +146,7 @@ async fn does_nothing_when_disabled() {
     let dir = tmp.path().join("old");
     write_recording(&dir, FRAMES);
 
-    let stats = sweep_once(&pool, tmp.path(), false, 7, &Sweeper::new(), &never_busy()).await;
+    let stats = sweep_once(&pool, tmp.path(), false, 7, &sweeper(), &never_busy()).await;
 
     assert_eq!(stats, Default::default());
     assert!(dir.join("audio.wav").is_file());
@@ -161,7 +165,7 @@ async fn yields_entirely_while_a_meeting_is_recording() {
         tmp.path(),
         true,
         7,
-        &Sweeper::new(),
+        &sweeper(),
         &Box::new(|| true) as &(dyn Fn() -> bool + Send + Sync),
     )
     .await;
@@ -193,7 +197,7 @@ async fn stops_the_pass_when_a_meeting_starts_mid_sweep() {
         tmp.path(),
         true,
         7,
-        &Sweeper::new(),
+        &sweeper(),
         &busy as &(dyn Fn() -> bool + Send + Sync),
     )
     .await;
@@ -215,7 +219,7 @@ async fn skips_meetings_with_no_recording_and_folders_that_vanished() {
     // Folder deleted out from under the row.
     aged_meeting(&pool, tmp.path(), "gone", OLD_DAYS).await;
 
-    let stats = sweep_once(&pool, tmp.path(), true, 7, &Sweeper::new(), &never_busy()).await;
+    let stats = sweep_once(&pool, tmp.path(), true, 7, &sweeper(), &never_busy()).await;
 
     assert_eq!(stats, Default::default());
 }
@@ -228,9 +232,9 @@ async fn an_already_archived_meeting_is_left_alone() {
     let dir = tmp.path().join("old");
     write_recording(&dir, FRAMES);
 
-    sweep_once(&pool, tmp.path(), true, 7, &Sweeper::new(), &never_busy()).await;
+    sweep_once(&pool, tmp.path(), true, 7, &sweeper(), &never_busy()).await;
     let first = std::fs::read(dir.join("audio.flac")).unwrap();
-    let stats = sweep_once(&pool, tmp.path(), true, 7, &Sweeper::new(), &never_busy()).await;
+    let stats = sweep_once(&pool, tmp.path(), true, 7, &sweeper(), &never_busy()).await;
 
     assert_eq!(stats.compressed, 0, "a second pass should be a no-op");
     assert_eq!(std::fs::read(dir.join("audio.flac")).unwrap(), first);
@@ -247,7 +251,7 @@ async fn a_meeting_that_fails_is_not_retried_in_the_same_process() {
     // sweep would re-attempt it on every tick forever.
     std::fs::write(dir.join("audio.wav"), b"not a wav").unwrap();
 
-    let sweeper = Sweeper::new();
+    let sweeper = sweeper();
     let first = sweep_once(&pool, tmp.path(), true, 7, &sweeper, &never_busy()).await;
     assert_eq!(first.failed, 1);
     // The audio it could not read is still exactly where it was.
@@ -274,7 +278,7 @@ async fn a_meeting_finalized_without_an_end_time_still_ages_in() {
         .unwrap();
     write_recording(&dir, FRAMES);
 
-    let stats = sweep_once(&pool, tmp.path(), true, 7, &Sweeper::new(), &never_busy()).await;
+    let stats = sweep_once(&pool, tmp.path(), true, 7, &sweeper(), &never_busy()).await;
 
     assert_eq!(stats.compressed, 1);
     assert!(!stats.deferred);
@@ -299,7 +303,7 @@ async fn a_transient_io_failure_is_retried_on_the_next_pass() {
     let original = std::fs::metadata(&dir).unwrap().permissions();
     std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o500)).unwrap();
 
-    let sweeper = Sweeper::new();
+    let sweeper = sweeper();
     let first = sweep_once(&pool, tmp.path(), true, 7, &sweeper, &never_busy()).await;
     assert_eq!(first.failed, 1);
     assert_eq!(first.compressed, 0);
@@ -334,7 +338,7 @@ async fn a_meeting_running_at_the_first_tick_only_defers_the_pass() {
         tmp.path(),
         true,
         7,
-        &Sweeper::new(),
+        &sweeper(),
         &busy as &(dyn Fn() -> bool + Send + Sync),
     )
     .await;
@@ -343,7 +347,7 @@ async fn a_meeting_running_at_the_first_tick_only_defers_the_pass() {
     assert!(dir.join("audio.wav").is_file());
 
     // The meeting ends; the very next pass does the work.
-    let second = sweep_once(&pool, tmp.path(), true, 7, &Sweeper::new(), &never_busy()).await;
+    let second = sweep_once(&pool, tmp.path(), true, 7, &sweeper(), &never_busy()).await;
     assert_eq!(second.compressed, 1);
     assert!(!second.deferred);
     assert!(dir.join("audio.flac").is_file());

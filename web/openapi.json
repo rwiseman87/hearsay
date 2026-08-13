@@ -1596,6 +1596,49 @@
         }
       }
     },
+    "/api/settings/storage/compress": {
+      "get": {
+        "tags": [
+          "settings"
+        ],
+        "operationId": "read_archive",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ArchiveState"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "settings"
+        ],
+        "summary": "Run the archival pass now instead of waiting for the periodic sweep.",
+        "description": "Returns immediately with the starting snapshot and does the work in the background -- a backlog\ncan take a minute of CPU, far longer than a request should hold. The UI polls the GET above.\nHonors the effective age threshold, so pressing the button never archives a meeting the user's\nown setting says is still too recent; it does not require the automatic sweep to be enabled,\nsince pressing it is an explicit instruction.",
+        "operationId": "start_archive",
+        "responses": {
+          "202": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ArchiveState"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": ""
+          }
+        }
+      }
+    },
     "/api/status": {
       "get": {
         "tags": [
@@ -1710,6 +1753,49 @@
           "protocol_version": {
             "type": "integer",
             "format": "int32",
+            "minimum": 0
+          }
+        }
+      },
+      "ArchiveState": {
+        "type": "object",
+        "description": "Progress of the audio-archival pass, whether started by the Settings button or the periodic\nsweep. Polled by the UI while `running`; the counters describe the current pass, or the last one\nonce it has finished. Read-only.",
+        "required": [
+          "running",
+          "total",
+          "done",
+          "compressed",
+          "failed",
+          "reclaimed_bytes"
+        ],
+        "properties": {
+          "compressed": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "done": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Meetings processed so far.",
+            "minimum": 0
+          },
+          "failed": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "reclaimed_bytes": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "running": {
+            "type": "boolean"
+          },
+          "total": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Meetings this pass will process.",
             "minimum": 0
           }
         }

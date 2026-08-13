@@ -167,7 +167,9 @@ samples, so `make diarize-eval` scores the same either way. The WAV is deleted o
 file has been decoded back and compared to it sample for sample, so a failed encode costs disk space,
 never audio. The sweep never touches a meeting that is not `finalized`, and it defers while a meeting is
 recording, re-checking every 5 minutes rather than waiting out the hour. Turn it off in Settings >
-Storage or with `HEARSAY_COMPRESS_AUDIO=false`.
+Storage or with `HEARSAY_COMPRESS_AUDIO=false`. Settings > Storage also has a **Compress now**
+button that runs the same pass immediately, reporting progress and the reclaimed total; it is
+refused while a meeting is recording.
 
 Note for development: the dev output dir (`outputs/recordings`) is swept too, so an old corpus
 recording there may become `audio.flac`. Everything that reads a recording accepts either form.

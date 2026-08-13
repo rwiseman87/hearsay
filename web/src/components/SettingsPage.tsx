@@ -17,6 +17,8 @@ import {
   useUpdateRecording,
   useUpdateSpeakers,
   useUpdateStorage,
+  useArchiveStatus,
+  useCompressNow,
   useVoiceprints,
 } from "../api/hooks";
 import { queryKeys } from "../api/queryKeys";
@@ -803,8 +805,11 @@ function ModelsPanel() {
 }
 
 function StoragePanel() {
+  const qc = useQueryClient();
   const settings = useSettings();
   const update = useUpdateStorage();
+  const archive = useArchiveStatus();
+  const compressNow = useCompressNow();
   const storage = settings.data?.storage;
   const info = settings.data?.storage_info;
   const [dir, setDir] = useState("");
@@ -821,6 +826,17 @@ function StoragePanel() {
     if (afterDays !== undefined) setDays(afterDays);
   }, [afterDays]);
 
+  // A finished pass changed what is on disk, so refresh the usage figures. Fires on the running ->
+  // idle edge, which also covers a pass the periodic sweep started while this panel was open.
+  const passRunning = archive.data?.running ?? false;
+  const wasRunning = useRef(false);
+  useEffect(() => {
+    if (wasRunning.current && !passRunning) {
+      void qc.invalidateQueries({ queryKey: queryKeys.settings.all });
+    }
+    wasRunning.current = passRunning;
+  }, [passRunning, qc]);
+
   if (settings.isLoading || !storage || !info) return <p className="muted">Loading…</p>;
 
   // The server full-replaces the section, so every field goes on every write — sending a partial
@@ -832,6 +848,9 @@ function StoragePanel() {
     if (trimmed) commit({ output_dir: trimmed });
   };
   const compressOn = storage.compress_audio;
+  const pass = archive.data;
+  const running = pass?.running ?? false;
+  const nothingToDo = info.uncompressed_bytes === 0;
 
   return (
     <div className="settings__panel">
@@ -895,6 +914,35 @@ function StoragePanel() {
           onChange={(event) => setDays(event.currentTarget.valueAsNumber || 0)}
           onBlur={() => commit({ compress_after_days: days })}
         />
+      </div>
+      <div className="settings__field settings__field--sub">
+        <div className="settings__inline">
+          <button
+            type="button"
+            onClick={() => compressNow.mutate()}
+            disabled={running || nothingToDo}
+          >
+            {running ? "Compressing…" : "Compress now"}
+          </button>
+          <span className="settings__row-hint muted">
+            {running
+              ? `${pass?.done ?? 0} of ${pass?.total ?? 0} meetings`
+              : nothingToDo
+                ? "Everything old enough is already compressed."
+                : "Runs the same pass as the background sweep, without waiting for it."}
+          </span>
+        </div>
+        {compressNow.isError ? (
+          <p className="settings__error" role="alert">
+            {(compressNow.error as Error).message}
+          </p>
+        ) : null}
+        {!running && (pass?.compressed ?? 0) > 0 ? (
+          <span className="settings__row-hint muted">
+            Compressed {pass?.compressed} {pass?.compressed === 1 ? "meeting" : "meetings"},
+            reclaiming {formatBytes(pass?.reclaimed_bytes ?? 0)}.
+          </span>
+        ) : null}
       </div>
       <dl className="settings__facts">
         <div>

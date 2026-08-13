@@ -18,8 +18,8 @@ use crate::config::Settings;
 use crate::error::{ApiError, ApiResult};
 use crate::extract::Json;
 use crate::schema::{
-    AboutInfo, ModelSettings, ModelsInfo, PermissionsInfo, RecordingSettings, SettingsRead,
-    SpeakerSettings, StorageInfo, StorageSettings,
+    AboutInfo, ArchiveState, ModelSettings, ModelsInfo, PermissionsInfo, RecordingSettings,
+    SettingsRead, SpeakerSettings, StorageInfo, StorageSettings,
 };
 use crate::state::AppState;
 
@@ -36,6 +36,10 @@ pub fn router() -> Router<AppState> {
         .route("/settings/recording", put(update_recording))
         .route("/settings/speakers", put(update_speakers))
         .route("/settings/storage", put(update_storage))
+        .route(
+            "/settings/storage/compress",
+            get(read_archive).post(start_archive),
+        )
         .route("/settings/models", put(update_models).delete(reset_models))
         .route("/settings/reveal", post(reveal_output_dir))
 }
@@ -468,6 +472,70 @@ async fn store_section<T: serde::Serialize>(
 
 /// Resolve `input` to an absolute, existing, writable directory or a 422:
 /// expand `~`, require absolute, resolve, is-dir, write-probe.
+fn archive_state(sweeper: &hearsay_backends::archive::Sweeper) -> ArchiveState {
+    progress_to_state(sweeper.progress())
+}
+
+fn progress_to_state(p: hearsay_backends::archive::SweepProgress) -> ArchiveState {
+    ArchiveState {
+        running: p.running,
+        total: p.total as u32,
+        done: p.done as u32,
+        compressed: p.compressed as u32,
+        failed: p.failed as u32,
+        reclaimed_bytes: p.reclaimed_bytes as i64,
+    }
+}
+
+#[utoipa::path(
+    get, path = "/api/settings/storage/compress", tag = "settings",
+    responses((status = 200, body = ArchiveState)),
+)]
+pub(crate) async fn read_archive(State(state): State<AppState>) -> Json<ArchiveState> {
+    Json(archive_state(&state.archive))
+}
+
+/// Run the archival pass now instead of waiting for the periodic sweep.
+///
+/// Returns immediately with the starting snapshot and does the work in the background -- a backlog
+/// can take a minute of CPU, far longer than a request should hold. The UI polls the GET above.
+/// Honors the effective age threshold, so pressing the button never archives a meeting the user's
+/// own setting says is still too recent; it does not require the automatic sweep to be enabled,
+/// since pressing it is an explicit instruction.
+#[utoipa::path(
+    post, path = "/api/settings/storage/compress", tag = "settings",
+    responses((status = 202, body = ArchiveState), (status = 409)),
+)]
+pub(crate) async fn start_archive(
+    State(state): State<AppState>,
+) -> ApiResult<(StatusCode, Json<ArchiveState>)> {
+    if state.engine.active_meeting().is_some() {
+        return Err(ApiError::Conflict(
+            "a meeting is recording; archiving would compete with it".into(),
+        ));
+    }
+    if state.archive.is_running() {
+        return Err(ApiError::Conflict("archiving is already running".into()));
+    }
+    let (_enabled, days) = queries::effective_compression(
+        &state.pool,
+        state.settings.compress_audio,
+        state.settings.compress_after_days,
+    )
+    .await?;
+
+    let started = hearsay_backends::archive::start_background_pass(
+        state.pool.clone(),
+        state.settings.output_dir.clone(),
+        days,
+        state.archive.clone(),
+        state.engine.clone(),
+    )
+    .await
+    .ok_or_else(|| ApiError::Conflict("archiving is already running".into()))?;
+    Ok((StatusCode::ACCEPTED, Json(progress_to_state(started))))
+}
+
 /// Bound the archival threshold at the boundary so a bad value never reaches the sweep. Like the
 /// inactivity thresholds, the value is only checked when the feature is on — a disabled threshold is
 /// inert. Zero is rejected even so: archiving the instant a meeting finalizes would race the

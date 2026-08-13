@@ -575,6 +575,13 @@ button:not(:disabled):hover {
   font-size: var(--fs-sm);
 }
 
+/* Buttons keep their label on one line: only the neighbouring input or hint text may flex, or a long
+   hint squeezes the button until its label wraps. */
+.settings__inline button {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
 /* A subsection break within a panel (e.g. the notes controls below the refine model). */
 .settings__field--divided {
   margin-top: 8px;

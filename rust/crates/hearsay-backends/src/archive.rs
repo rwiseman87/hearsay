@@ -55,12 +55,34 @@ pub struct SweepStats {
     pub deferred: bool,
 }
 
-/// Meetings whose archival has already failed this process, so a permanently unreadable recording is
-/// not re-encoded on every tick. Deliberately in-process: the state resets on restart, which is the
-/// right behavior after an upgrade fixes whatever broke, and it needs no schema change.
+/// Live progress of the current or most recent pass, for the Settings panel to poll.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SweepProgress {
+    /// A pass is in flight.
+    pub running: bool,
+    /// Meetings this pass will process.
+    pub total: usize,
+    /// Meetings processed so far.
+    pub done: usize,
+    /// Meetings archived so far.
+    pub compressed: usize,
+    /// Meetings this pass could not archive.
+    pub failed: usize,
+    /// Bytes reclaimed so far.
+    pub reclaimed_bytes: u64,
+}
+
+/// Shared archival state: which meetings have already failed this process, and how the current pass
+/// is going.
+///
+/// The failure memo is deliberately in-process -- it resets on restart, which is the right behavior
+/// after an upgrade fixes whatever broke, and it needs no schema change. The progress snapshot also
+/// serves as the re-entrancy guard, so the Settings button and the periodic ticker cannot run two
+/// passes over the same folders at once.
 #[derive(Debug, Default)]
 pub struct Sweeper {
     failed: Mutex<HashSet<Uuid>>,
+    progress: Mutex<SweepProgress>,
 }
 
 impl Sweeper {
@@ -77,6 +99,96 @@ impl Sweeper {
             set.insert(id);
         }
     }
+
+    /// The current pass snapshot (or the last one, once it has finished).
+    pub fn progress(&self) -> SweepProgress {
+        self.progress
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    /// True when a pass is in flight.
+    pub fn is_running(&self) -> bool {
+        self.progress().running
+    }
+
+    /// Claim the sweeper for a pass over `total` meetings, or `None` when one is already running.
+    /// The returned guard clears `running` on drop, so an early return or a dropped task cannot
+    /// wedge it.
+    fn begin(self: &Arc<Self>, total: usize) -> Option<PassGuard> {
+        let mut progress = self.progress.lock().unwrap_or_else(|e| e.into_inner());
+        if progress.running {
+            return None;
+        }
+        *progress = SweepProgress {
+            running: true,
+            total,
+            ..SweepProgress::default()
+        };
+        drop(progress);
+        Some(PassGuard {
+            sweeper: Arc::clone(self),
+        })
+    }
+
+    /// Record one processed meeting.
+    fn step(&self, compressed: bool, reclaimed: u64) {
+        let mut progress = self.progress.lock().unwrap_or_else(|e| e.into_inner());
+        progress.done += 1;
+        if compressed {
+            progress.compressed += 1;
+            progress.reclaimed_bytes += reclaimed;
+        } else {
+            progress.failed += 1;
+        }
+    }
+}
+
+/// Clears the running flag when a pass ends, however it ends. Owns its `Arc` so a pass handed to a
+/// background task keeps the reservation for as long as the task lives.
+struct PassGuard {
+    sweeper: Arc<Sweeper>,
+}
+
+impl Drop for PassGuard {
+    fn drop(&mut self) {
+        let mut progress = self
+            .sweeper
+            .progress
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        progress.running = false;
+    }
+}
+
+/// The meetings a pass would actually touch: aged out, not already failed this process, and still
+/// holding an uncompressed recording. Resolved up front so the reported total is real work rather
+/// than every aged row -- one `stat()` each. Nothing to do when a meeting was never recorded, was
+/// already archived, or its folder is gone.
+pub async fn plan(
+    pool: &SqlitePool,
+    output_dir: &Path,
+    after_days: u64,
+    sweeper: &Sweeper,
+) -> Vec<hearsay_db::models::Meeting> {
+    let cutoff = Utc::now() - chrono::Duration::days(after_days as i64);
+    let candidates = match hearsay_db::queries::list_finalized_before(pool, cutoff).await {
+        Ok(candidates) => candidates,
+        Err(err) => {
+            tracing::warn!(error = %err, "archive sweep: could not list meetings");
+            return Vec::new();
+        }
+    };
+    candidates
+        .into_iter()
+        .filter(|m| !sweeper.has_failed(m.id))
+        .filter(|m| {
+            m.dir_path(output_dir)
+                .join(hearsay_audio::AUDIO_WAV)
+                .is_file()
+        })
+        .collect()
 }
 
 /// Run one archival pass over every finalized meeting older than `after_days`.
@@ -89,7 +201,7 @@ pub async fn sweep_once(
     output_dir: &Path,
     enabled: bool,
     after_days: u64,
-    sweeper: &Sweeper,
+    sweeper: &Arc<Sweeper>,
     busy: &(dyn Fn() -> bool + Send + Sync),
 ) -> SweepStats {
     let mut stats = SweepStats::default();
@@ -100,31 +212,35 @@ pub async fn sweep_once(
         stats.deferred = true;
         return stats;
     }
-    let cutoff = Utc::now() - chrono::Duration::days(after_days as i64);
-    let candidates = match hearsay_db::queries::list_finalized_before(pool, cutoff).await {
-        Ok(candidates) => candidates,
-        Err(err) => {
-            tracing::warn!(error = %err, "archive sweep: could not list meetings");
-            return stats;
-        }
+    let work = plan(pool, output_dir, after_days, sweeper).await;
+    if work.is_empty() {
+        return stats;
+    }
+    // Also the re-entrancy guard: the Settings button and the ticker must not sweep at once.
+    let Some(_pass) = sweeper.begin(work.len()) else {
+        tracing::debug!("archive sweep: a pass is already running");
+        stats.deferred = true;
+        return stats;
     };
+    run_pass(work, output_dir, sweeper, busy).await
+}
 
-    for meeting in candidates {
+/// Archive each meeting in `work`, stopping early if a meeting starts recording. The caller owns the
+/// pass reservation, so this is shared by the periodic sweep and the on-demand one.
+async fn run_pass(
+    work: Vec<hearsay_db::models::Meeting>,
+    output_dir: &Path,
+    sweeper: &Arc<Sweeper>,
+    busy: &(dyn Fn() -> bool + Send + Sync),
+) -> SweepStats {
+    let mut stats = SweepStats::default();
+    for meeting in work {
         if busy() {
             tracing::debug!("archive sweep: a meeting started; stopping this pass");
             stats.deferred = true;
             break;
         }
-        if sweeper.has_failed(meeting.id) {
-            continue;
-        }
         let dir = meeting.dir_path(output_dir);
-        // Nothing to do when the meeting was never recorded, was already archived, or its folder is
-        // gone. Checked before spawning so the common case costs one stat().
-        if !dir.join(hearsay_audio::AUDIO_WAV).is_file() {
-            continue;
-        }
-
         let id = meeting.id;
         let job_dir = dir.clone();
         let result =
@@ -132,8 +248,10 @@ pub async fn sweep_once(
                 .await;
         match result {
             Ok(Ok(out)) => {
+                let reclaimed = out.wav_bytes.saturating_sub(out.flac_bytes);
                 stats.compressed += 1;
-                stats.reclaimed_bytes += out.wav_bytes.saturating_sub(out.flac_bytes);
+                stats.reclaimed_bytes += reclaimed;
+                sweeper.step(true, reclaimed);
                 tracing::info!(
                     meeting = %id,
                     wav_bytes = out.wav_bytes,
@@ -143,6 +261,7 @@ pub async fn sweep_once(
             }
             Ok(Err(err)) => {
                 stats.failed += 1;
+                sweeper.step(false, 0);
                 // Only remember failures that will fail again. A bad or unreadable recording is
                 // deterministic, so retrying it hourly forever is pure waste. An I/O failure is not:
                 // a manual re-diarize on an old meeting holds the wav open (Windows refuses to
@@ -159,12 +278,46 @@ pub async fn sweep_once(
             }
             Err(err) => {
                 stats.failed += 1;
+                sweeper.step(false, 0);
                 sweeper.mark_failed(id);
                 tracing::warn!(meeting = %id, error = %err, "archive task panicked");
             }
         }
     }
     stats
+}
+
+/// Start a pass in the background and return its opening snapshot, with the work list already
+/// counted. `None` when a pass is already running.
+///
+/// The plan is resolved before returning so the caller's response reports a real `total` and a
+/// `running` flag that is already true -- a UI that polls on `running` would otherwise miss the
+/// start of its own request. The pass itself is spawned, because a backlog takes far longer than a
+/// request should hold.
+pub async fn start_background_pass(
+    pool: SqlitePool,
+    output_dir: PathBuf,
+    after_days: u64,
+    sweeper: Arc<Sweeper>,
+    engine: Arc<dyn LiveEngine>,
+) -> Option<SweepProgress> {
+    let work = plan(&pool, &output_dir, after_days, &sweeper).await;
+    let pass = sweeper.begin(work.len())?;
+    let snapshot = sweeper.progress();
+    tokio::spawn(async move {
+        let stats = run_pass(work, &output_dir, &sweeper, &|| {
+            engine.active_meeting().is_some()
+        })
+        .await;
+        drop(pass);
+        tracing::info!(
+            compressed = stats.compressed,
+            failed = stats.failed,
+            reclaimed_bytes = stats.reclaimed_bytes,
+            "archive pass finished (requested from settings)"
+        );
+    });
+    Some(snapshot)
 }
 
 /// Spawn the periodic archival sweep.

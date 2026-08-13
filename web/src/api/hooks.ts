@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "./client";
 import { queryKeys } from "./queryKeys";
 import type {
+  ArchiveState,
   DownloadState,
   FolderCreate,
   FolderRead,
@@ -609,6 +610,30 @@ export function useResetModels() {
         old ? { ...old, models } : old,
       );
       qc.invalidateQueries({ queryKey: queryKeys.settings.all });
+    },
+  });
+}
+
+// Progress of the audio-archival pass, whether started by the button below or by the periodic
+// sweep. Polls while a pass is running and stops once it finishes, mirroring useDownloadStatus.
+export function useArchiveStatus() {
+  return useQuery({
+    queryKey: queryKeys.settings.archive,
+    queryFn: ({ signal }) => api.get<ArchiveState>("/api/settings/storage/compress", signal),
+    refetchInterval: (query) => (query.state.data?.running ? 1_000 : false),
+  });
+}
+
+// Run the archival pass now rather than waiting for the periodic sweep. The server answers 202 and
+// works in the background (409 while a meeting is recording, or if a pass is already running), so
+// seed the cache with the returned snapshot to start the poll immediately, and refresh the settings
+// once it finishes so the reclaimed bytes are reflected.
+export function useCompressNow() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => api.post<ArchiveState>("/api/settings/storage/compress", {}),
+    onSuccess: (state) => {
+      qc.setQueryData<ArchiveState>(queryKeys.settings.archive, state);
     },
   });
 }

@@ -37,6 +37,7 @@ export const queryKeys = {
   settings: {
     all: ["settings"] as const,
     permissions: ["settings", "permissions"] as const,
+    archive: ["settings", "archive"] as const,
   },
   status: {
     all: ["status"] as const,

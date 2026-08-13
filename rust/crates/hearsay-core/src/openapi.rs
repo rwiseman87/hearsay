@@ -4,10 +4,10 @@
 use utoipa::OpenApi;
 
 use crate::schema::{
-    AboutInfo, CaptureHealthEvent, CaptureStateEvent, CatalogEntry, DownloadRequest, DownloadState,
-    DownloadStatus, FolderCreate, FolderRead, FolderReparent, FolderUpdate, IdentityRead,
-    IdentityRename, LevelEvent, MeetingCreate, MeetingFolderAssign, MeetingNotesRead, MeetingRead,
-    MeetingStatus, MeetingUpdate, ModelCatalog, ModelSettings, ModelsInfo, NotesEdit,
+    AboutInfo, ArchiveState, CaptureHealthEvent, CaptureStateEvent, CatalogEntry, DownloadRequest,
+    DownloadState, DownloadStatus, FolderCreate, FolderRead, FolderReparent, FolderUpdate,
+    IdentityRead, IdentityRename, LevelEvent, MeetingCreate, MeetingFolderAssign, MeetingNotesRead,
+    MeetingRead, MeetingStatus, MeetingUpdate, ModelCatalog, ModelSettings, ModelsInfo, NotesEdit,
     PermissionsInfo, PromptEvent, RecordingSettings, ResyncEvent, SearchHit, SegmentEdit,
     SegmentRead, SegmentSpeakerAssign, SettingsRead, SpeakerMerge, SpeakerRead, SpeakerRename,
     SpeakerSettings, StatusEvent, StatusInfo, StorageInfo, StorageSettings, Stream,
@@ -61,6 +61,8 @@ use crate::schema::{
         crate::routes::settings::update_recording,
         crate::routes::settings::update_speakers,
         crate::routes::settings::update_storage,
+        crate::routes::settings::read_archive,
+        crate::routes::settings::start_archive,
         crate::routes::settings::update_models,
         crate::routes::settings::reset_models,
         crate::routes::settings::reveal_output_dir,
@@ -92,6 +94,7 @@ use crate::schema::{
         SpeakerSettings,
         StorageSettings,
         StorageInfo,
+        ArchiveState,
         ModelSettings,
         ModelsInfo,
         MeetingNotesRead,

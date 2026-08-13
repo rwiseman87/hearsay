@@ -69,3 +69,31 @@ test("storage panel round-trips the archival policy without clobbering the folde
   await page.getByLabel("Compress after days").blur();
   await expect(page.getByLabel("Compress after days")).toHaveValue("7");
 });
+
+test("the storage panel can run an archival pass on demand", async ({ page, request }) => {
+  const token = await readToken();
+  await page.goto(`/?token=${token}`);
+  await page.getByRole("button", { name: "Settings" }).click();
+  await page.getByRole("button", { name: "Storage" }).click();
+
+  // The control is present and explains itself. The scripted meetings are minutes old, so there is
+  // nothing eligible and the button says so rather than pretending it will do something.
+  const button = page.getByRole("button", { name: /Compress now|Compressing/ });
+  await expect(button).toBeVisible();
+
+  // The endpoint behind it answers with a real snapshot, and a pass is safe to request even when it
+  // finds no work.
+  const before = await request.get("/api/settings/storage/compress", {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  expect(before.ok()).toBe(true);
+  expect(await before.json()).toMatchObject({ running: false });
+
+  const started = await request.post("/api/settings/storage/compress", {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  expect(started.status()).toBe(202);
+  const snapshot = (await started.json()) as { total: number; reclaimed_bytes: number };
+  expect(typeof snapshot.total).toBe("number");
+  expect(typeof snapshot.reclaimed_bytes).toBe("number");
+});

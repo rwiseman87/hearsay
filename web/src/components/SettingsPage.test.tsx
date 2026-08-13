@@ -281,3 +281,91 @@ describe("SettingsPage storage", () => {
     );
   });
 });
+
+describe("SettingsPage compress now", () => {
+  it("starts a pass and shows progress, then the result", async () => {
+    const user = userEvent.setup();
+    let started = false;
+    server.use(
+      http.get("/api/settings/storage/compress", () =>
+        HttpResponse.json(
+          started
+            ? { running: true, total: 4, done: 1, compressed: 1, failed: 0, reclaimed_bytes: 1024 }
+            : { running: false, total: 0, done: 0, compressed: 0, failed: 0, reclaimed_bytes: 0 },
+        ),
+      ),
+      http.post("/api/settings/storage/compress", () => {
+        started = true;
+        return HttpResponse.json(
+          { running: true, total: 4, done: 0, compressed: 0, failed: 0, reclaimed_bytes: 0 },
+          { status: 202 },
+        );
+      }),
+    );
+    renderSettings();
+    await user.click(await screen.findByRole("button", { name: "Storage" }));
+
+    await user.click(await screen.findByRole("button", { name: "Compress now" }));
+
+    // The button reflects the in-flight pass rather than looking idle while work happens.
+    const busy = (await screen.findByRole("button", { name: "Compressing…" })) as HTMLButtonElement;
+    expect(busy.disabled).toBe(true);
+    expect(await screen.findByText(/of 4 meetings/)).toBeTruthy();
+  });
+
+  it("surfaces the server's refusal while a meeting is recording", async () => {
+    const user = userEvent.setup();
+    server.use(
+      http.get("/api/settings/storage/compress", () =>
+        HttpResponse.json({
+          running: false,
+          total: 0,
+          done: 0,
+          compressed: 0,
+          failed: 0,
+          reclaimed_bytes: 0,
+        }),
+      ),
+      http.post("/api/settings/storage/compress", () =>
+        HttpResponse.json(
+          { detail: "a meeting is recording; archiving would compete with it" },
+          { status: 409 },
+        ),
+      ),
+    );
+    renderSettings();
+    await user.click(await screen.findByRole("button", { name: "Storage" }));
+    await user.click(await screen.findByRole("button", { name: "Compress now" }));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toMatch(/a meeting is recording/);
+  });
+
+  it("offers nothing to do when everything is already compressed", async () => {
+    const user = userEvent.setup();
+    server.use(
+      http.get("/api/settings", () =>
+        HttpResponse.json({
+          ...settingsFixture,
+          storage_info: { ...settingsFixture.storage_info, uncompressed_bytes: 0 },
+        }),
+      ),
+      http.get("/api/settings/storage/compress", () =>
+        HttpResponse.json({
+          running: false,
+          total: 0,
+          done: 0,
+          compressed: 0,
+          failed: 0,
+          reclaimed_bytes: 0,
+        }),
+      ),
+    );
+    renderSettings();
+    await user.click(await screen.findByRole("button", { name: "Storage" }));
+
+    const button = (await screen.findByRole("button", { name: "Compress now" })) as HTMLButtonElement;
+    expect(button.disabled).toBe(true);
+    expect(await screen.findByText(/already compressed/)).toBeTruthy();
+  });
+});

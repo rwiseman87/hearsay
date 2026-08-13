@@ -87,6 +87,7 @@ async fn setup() -> (Router, SqlitePool, tempfile::TempDir) {
         settings,
         TOKEN.to_string(),
         Arc::new(DisabledEngine),
+        Default::default(),
     );
     (create_app(state), pool, tmp)
 }
@@ -191,7 +192,13 @@ async fn index_gates_the_token_and_pins_the_ws_host() {
     )
     .unwrap();
     let settings = test_settings(tmp.path().to_path_buf(), web);
-    let state = AppState::new(pool, settings, TOKEN.to_string(), Arc::new(DisabledEngine));
+    let state = AppState::new(
+        pool,
+        settings,
+        TOKEN.to_string(),
+        Arc::new(DisabledEngine),
+        Default::default(),
+    );
     let app = create_app(state);
 
     let index_req = |uri: &str| {
@@ -1330,6 +1337,7 @@ async fn serve_ws() -> (String, tempfile::TempDir) {
         settings,
         TOKEN.to_string(),
         Arc::new(DisabledEngine),
+        Default::default(),
     );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let authority = format!("127.0.0.1:{}", listener.local_addr().unwrap().port());
@@ -1482,7 +1490,13 @@ async fn full_stack_meeting_drives_events_and_persistence() {
     let engine: Arc<dyn LiveEngine> =
         Orchestrator::new(pool.clone(), tmp.path().to_path_buf(), backend).into_arc();
     let settings = test_settings(tmp.path().to_path_buf(), tmp.path().join("no-web"));
-    let state = AppState::new(pool.clone(), settings, TOKEN.to_string(), engine);
+    let state = AppState::new(
+        pool.clone(),
+        settings,
+        TOKEN.to_string(),
+        engine,
+        Default::default(),
+    );
 
     let app = create_app(state.clone());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1522,6 +1536,13 @@ async fn full_stack_meeting_drives_events_and_persistence() {
     )
     .await;
     assert_eq!(status, StatusCode::CONFLICT);
+
+    // And archiving on demand: encoding is CPU work, so it must never compete with live capture.
+    let (status, body) = send(&app, post("/api/settings/storage/compress", "")).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert!(body["detail"]
+        .as_str()
+        .is_some_and(|d| d.contains("recording")));
 
     // Pause so the WS connect yields a deterministic paused snapshot — our subscribe barrier.
     let (status, _) = send(&app, post(&format!("/api/meetings/{id}/pause"), "")).await;
@@ -1608,7 +1629,13 @@ async fn full_stack_refine_replaces_them_segments_on_read_back() {
         .with_refiner(refiner)
         .into_arc();
     let settings = test_settings(tmp.path().to_path_buf(), tmp.path().join("no-web"));
-    let state = AppState::new(pool.clone(), settings, TOKEN.to_string(), orch.clone());
+    let state = AppState::new(
+        pool.clone(),
+        settings,
+        TOKEN.to_string(),
+        orch.clone(),
+        Default::default(),
+    );
     let app = create_app(state);
 
     // Start over HTTP, then drop a placeholder audio.wav into the meeting folder — the refiner ignores
@@ -1784,6 +1811,24 @@ async fn rejects_out_of_range_recognition_threshold() {
 /// the section as a struct would resolve the absent keys to their type defaults (`false` / `0`),
 /// shipping archival disabled on precisely the installs with the most audio to reclaim. Guard that
 /// each field falls back to its config default instead.
+#[tokio::test]
+async fn compress_now_starts_a_pass_and_reports_progress() {
+    let (app, _pool, _tmp) = setup().await;
+
+    // Idle before anything is asked for.
+    let (status, body) = send(&app, get("/api/settings/storage/compress")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["running"], false);
+    assert_eq!(body["compressed"], 0);
+
+    // The button hands the work to the background and answers immediately -- a backlog takes far
+    // longer than a request should hold.
+    let (status, body) = send(&app, post("/api/settings/storage/compress", "")).await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    assert!(body["total"].is_number());
+    assert!(body["reclaimed_bytes"].is_i64());
+}
+
 #[tokio::test]
 async fn settings_survive_a_legacy_storage_preference() {
     let (app, pool, _tmp) = setup().await;
