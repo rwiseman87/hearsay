@@ -9,7 +9,7 @@ use utoipa::ToSchema;
 use uuid::Uuid;
 
 use hearsay_db::models::{Folder, Identity, Meeting, MeetingNotes, Segment, UserNotes};
-use hearsay_db::queries::{SearchHitRow, SpeakerRow};
+use hearsay_db::queries::{SearchHitRow, SpeakerRow, VoiceprintPerson, VoiceprintSample};
 
 /// Lifecycle state of a meeting (lowercase on the wire): `recording` while live, `refining` while the
 /// post-stop refine + transcript write run in the background, then `finalized`.
@@ -280,6 +280,70 @@ impl From<SpeakerRow> for SpeakerRead {
     }
 }
 
+/// One stored voiceprint: the voice embedding kept on a single meeting's cluster.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct VoiceprintSampleRead {
+    /// The cluster carrying the embedding — a voiceprint has no id of its own.
+    pub id: Uuid,
+    pub meeting_id: Uuid,
+    pub meeting_title: String,
+    pub started_at: DateTime<Utc>,
+    /// Whether the name on this cluster was set by hand. Only locked samples are recognition
+    /// candidates in later meetings.
+    pub locked: bool,
+    /// Embedding length: 256 on macOS (FluidAudio), 192 on Windows (sherpa). Samples of different
+    /// lengths never match each other.
+    pub dimension: i64,
+}
+
+impl From<VoiceprintSample> for VoiceprintSampleRead {
+    fn from(s: VoiceprintSample) -> Self {
+        VoiceprintSampleRead {
+            id: s.cluster_id,
+            meeting_id: s.meeting_id,
+            meeting_title: s.meeting_title,
+            started_at: s.started_at,
+            locked: s.locked,
+            dimension: s.dimension,
+        }
+    }
+}
+
+/// A person in the stored-voiceprint roster, with every voice sample kept for them (newest meeting
+/// first). Only people who actually have an embedding appear, so `sample_count` is always >= 1;
+/// clearing someone's last sample drops them from the roster.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct VoiceprintRead {
+    pub identity_id: Uuid,
+    pub display_name: String,
+    pub email: Option<String>,
+    /// Stored samples, whether or not they are recognition candidates.
+    pub sample_count: i64,
+    /// The subset that recognition actually uses (locked, with an embedding).
+    pub active_count: i64,
+    /// Start of the most recent meeting a sample came from.
+    pub last_heard: Option<DateTime<Utc>>,
+    pub samples: Vec<VoiceprintSampleRead>,
+}
+
+impl From<VoiceprintPerson> for VoiceprintRead {
+    fn from(p: VoiceprintPerson) -> Self {
+        let sample_count = p.samples.len() as i64;
+        let active_count = p.samples.iter().filter(|s| s.locked).count() as i64;
+        // `list_voiceprints` orders a person's samples newest meeting first.
+        let last_heard = p.samples.first().map(|s| s.started_at);
+        VoiceprintRead {
+            identity_id: p.identity_id,
+            display_name: p.display_name,
+            email: p.email,
+            sample_count,
+            active_count,
+            last_heard,
+            samples: p.samples.into_iter().map(Into::into).collect(),
+        }
+    }
+}
+
 /// A known cross-meeting person (offered as a rename suggestion).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
 pub struct IdentityRead {
@@ -347,6 +411,19 @@ pub struct FolderReparent {
 /// Rename a cluster to a person (binds + locks; relabels that speaker's segments).
 #[derive(Debug, Clone, Deserialize, ToSchema)]
 pub struct SpeakerRename {
+    pub display_name: String,
+}
+
+/// Combine two of a meeting's speakers: the cluster in the path is folded into `into`.
+#[derive(Debug, Clone, Deserialize, ToSchema)]
+pub struct SpeakerMerge {
+    /// The surviving cluster, in the same meeting.
+    pub into: Uuid,
+}
+
+/// Rename a person everywhere they appear.
+#[derive(Debug, Clone, Deserialize, ToSchema)]
+pub struct IdentityRename {
     pub display_name: String,
 }
 

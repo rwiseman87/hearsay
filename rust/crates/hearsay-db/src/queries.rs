@@ -616,10 +616,12 @@ pub async fn list_speaker_rows(
 }
 
 /// Rename a cluster to a person: get-or-create the identity, lock the binding, and relabel that
-/// speaker's already-saved segments — all in one transaction.
-/// Returns the updated speaker row, or `None` if the cluster does not exist.
+/// speaker's already-saved segments — all in one transaction. Scoped by `meeting_id` so a cluster id
+/// from another meeting cannot be touched through this meeting's route.
+/// Returns the updated speaker row, or `None` if the cluster is not in that meeting.
 pub async fn rename_cluster(
     pool: &SqlitePool,
+    meeting_id: Uuid,
     cluster_id: Uuid,
     display_name: &str,
 ) -> Result<Option<SpeakerRow>, sqlx::Error> {
@@ -628,10 +630,12 @@ pub async fn rename_cluster(
 
     // Only `ordinal` is needed for the returned row; selecting it (not `SELECT *`) skips decoding the
     // per-cluster centroid BLOB.
-    let ordinal: Option<i64> = sqlx::query_scalar("SELECT ordinal FROM clusters WHERE id = ?")
-        .bind(cluster_id)
-        .fetch_optional(&mut *tx)
-        .await?;
+    let ordinal: Option<i64> =
+        sqlx::query_scalar("SELECT ordinal FROM clusters WHERE id = ? AND meeting_id = ?")
+            .bind(cluster_id)
+            .bind(meeting_id)
+            .fetch_optional(&mut *tx)
+            .await?;
     let Some(ordinal) = ordinal else {
         return Ok(None);
     };
@@ -645,12 +649,16 @@ pub async fn rename_cluster(
         .bind(cluster_id)
         .execute(&mut *tx)
         .await?;
-    sqlx::query("UPDATE segments SET speaker_label = ?, updated_at = ? WHERE cluster_id = ?")
-        .bind(name)
-        .bind(now)
-        .bind(cluster_id)
-        .execute(&mut *tx)
-        .await?;
+    sqlx::query(
+        "UPDATE segments SET speaker_label = ?, updated_at = ? \
+         WHERE cluster_id = ? AND meeting_id = ?",
+    )
+    .bind(name)
+    .bind(now)
+    .bind(cluster_id)
+    .bind(meeting_id)
+    .execute(&mut *tx)
+    .await?;
     tx.commit().await?;
 
     Ok(Some(SpeakerRow {
@@ -712,28 +720,9 @@ pub async fn reassign_segment_speaker(
     let now = Utc::now();
     let (cluster_id, label) = match target {
         SpeakerTarget::Cluster(target_id) => {
-            // Only identity_id + ordinal are needed here; selecting them (not `SELECT *`) skips
-            // decoding the per-cluster centroid BLOB.
-            let cluster: Option<(Option<Uuid>, i64)> = sqlx::query_as(
-                "SELECT identity_id, ordinal FROM clusters WHERE id = ? AND meeting_id = ?",
-            )
-            .bind(target_id)
-            .bind(meeting_id)
-            .fetch_optional(&mut *tx)
-            .await?;
-            let Some((identity_id, ordinal)) = cluster else {
+            let Some(label) = resolve_cluster_label(&mut tx, meeting_id, target_id).await? else {
                 return Ok(ReassignOutcome::ClusterNotFound);
             };
-            let name: Option<String> = match identity_id {
-                Some(identity_id) => {
-                    sqlx::query_scalar("SELECT display_name FROM identities WHERE id = ?")
-                        .bind(identity_id)
-                        .fetch_optional(&mut *tx)
-                        .await?
-                }
-                None => None,
-            };
-            let label = name.unwrap_or_else(|| format!("Speaker {ordinal}"));
             (target_id, label)
         }
         SpeakerTarget::Name(name) => {
@@ -797,6 +786,111 @@ pub async fn reassign_segment_speaker(
         updated_at: now,
         ..segment
     }))
+}
+
+/// A cluster's resolved label — its bound identity's name, else `"Speaker {ordinal}"` — or `None`
+/// when the cluster is not in `meeting_id`. Shared by the single-line reassign and the whole-cluster
+/// merge so the two manual-correction paths cannot drift. Takes the transaction connection so
+/// callers stay atomic. Only `identity_id` + `ordinal` are selected (not `SELECT *`), which skips
+/// decoding the per-cluster centroid BLOB.
+async fn resolve_cluster_label(
+    conn: &mut sqlx::SqliteConnection,
+    meeting_id: Uuid,
+    cluster_id: Uuid,
+) -> Result<Option<String>, sqlx::Error> {
+    let cluster: Option<(Option<Uuid>, i64)> =
+        sqlx::query_as("SELECT identity_id, ordinal FROM clusters WHERE id = ? AND meeting_id = ?")
+            .bind(cluster_id)
+            .bind(meeting_id)
+            .fetch_optional(&mut *conn)
+            .await?;
+    let Some((identity_id, ordinal)) = cluster else {
+        return Ok(None);
+    };
+    let name: Option<String> = match identity_id {
+        Some(identity_id) => {
+            sqlx::query_scalar("SELECT display_name FROM identities WHERE id = ?")
+                .bind(identity_id)
+                .fetch_optional(&mut *conn)
+                .await?
+        }
+        None => None,
+    };
+    Ok(Some(name.unwrap_or_else(|| format!("Speaker {ordinal}"))))
+}
+
+/// Outcome of [`merge_clusters`], mapped by the route to 200/404/422.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MergeOutcome {
+    /// The source's lines moved onto the target and the source cluster is gone.
+    Merged,
+    /// No cluster with that id exists in the meeting.
+    SourceNotFound,
+    /// The target cluster does not exist in this meeting.
+    TargetNotFound,
+    /// Source and target are the same cluster.
+    SameCluster,
+}
+
+/// Combine two of a meeting's speakers: move every one of `source_id`'s lines onto `target_id`,
+/// relabel them to the target's resolved name, mark them `edited` (a merge is a bulk reassignment),
+/// and delete the now-empty source cluster. All in one transaction, scoped by `meeting_id`.
+///
+/// Meeting-scoped by design: the target's centroid, `locked` flag, and identity binding are left
+/// exactly as they were, and no other meeting is touched. Deleting the source does discard its
+/// centroid, which removes that one sample from cross-meeting recognition — intended, since a
+/// spurious split should not teach the recognizer, but it is why the UI confirms first.
+///
+/// The source's ordinal is *not* reclaimed: the surviving speakers keep their labels (a gap reads
+/// "Speaker 1, Speaker 3"). Renumbering would silently rename unrelated people whose segments still
+/// carry the old `speaker_label` text.
+pub async fn merge_clusters(
+    pool: &SqlitePool,
+    meeting_id: Uuid,
+    source_id: Uuid,
+    target_id: Uuid,
+) -> Result<MergeOutcome, sqlx::Error> {
+    if source_id == target_id {
+        return Ok(MergeOutcome::SameCluster);
+    }
+    let mut tx = pool.begin().await?;
+
+    let source: Option<i64> =
+        sqlx::query_scalar("SELECT ordinal FROM clusters WHERE id = ? AND meeting_id = ?")
+            .bind(source_id)
+            .bind(meeting_id)
+            .fetch_optional(&mut *tx)
+            .await?;
+    if source.is_none() {
+        return Ok(MergeOutcome::SourceNotFound);
+    }
+    let Some(label) = resolve_cluster_label(&mut tx, meeting_id, target_id).await? else {
+        return Ok(MergeOutcome::TargetNotFound);
+    };
+
+    let now = Utc::now();
+    // Repoint the segments BEFORE dropping the source. `segments.cluster_id` is
+    // `ON DELETE SET NULL` with foreign keys on, so deleting first would silently orphan every one
+    // of these lines to a NULL cluster carrying a stale label, with no way back.
+    sqlx::query(
+        "UPDATE segments SET cluster_id = ?, speaker_label = ?, edited = 1, updated_at = ? \
+         WHERE cluster_id = ? AND meeting_id = ?",
+    )
+    .bind(target_id)
+    .bind(&label)
+    .bind(now)
+    .bind(source_id)
+    .bind(meeting_id)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query("DELETE FROM clusters WHERE id = ? AND meeting_id = ?")
+        .bind(source_id)
+        .bind(meeting_id)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+
+    Ok(MergeOutcome::Merged)
 }
 
 /// Get an identity id by display name, creating the identity if it does not exist. Runs on a
@@ -1237,18 +1331,276 @@ pub async fn count_identities(pool: &SqlitePool) -> Result<i64, sqlx::Error> {
 }
 
 /// One page of known people, most-recently-updated first (rename suggestions).
+///
+/// The `id` tiebreaker is load-bearing, not tidiness: `updated_at` is not unique, so ordering by it
+/// alone leaves the row order undefined and a paged walk can repeat one person while dropping
+/// another. It also keeps the sort off `ix_identities_updated_at`, whose backward index scan has
+/// been observed returning the wrong window for an `OFFSET` on this shape. Every paged query
+/// ordered by a non-unique column needs the same treatment.
 pub async fn list_identities(
     pool: &SqlitePool,
     limit: i64,
     offset: i64,
 ) -> Result<Vec<Identity>, sqlx::Error> {
     sqlx::query_as::<_, Identity>(
-        "SELECT * FROM identities ORDER BY updated_at DESC LIMIT ? OFFSET ?",
+        "SELECT * FROM identities ORDER BY updated_at DESC, id LIMIT ? OFFSET ?",
     )
     .bind(limit)
     .bind(offset)
     .fetch_all(pool)
     .await
+}
+
+/// A person joined to one of their stored voiceprints.
+#[derive(Debug, Clone, PartialEq, Eq, FromRow)]
+struct VoiceprintJoinRow {
+    identity_id: Uuid,
+    display_name: String,
+    email: Option<String>,
+    cluster_id: Uuid,
+    locked: bool,
+    meeting_id: Uuid,
+    meeting_title: String,
+    started_at: DateTime<Utc>,
+    dim: i64,
+}
+
+// The roster is gated on `EXISTS (... centroid IS NOT NULL)`: someone merely *named* — a manual
+// label on a meeting that was never refined — has no embedding and is not a voiceprint. The same
+// predicate appears in `count_voiceprint_people` and `list_voiceprints` and they must stay in step,
+// or the page envelope's total will not match the rows it describes. It is written out in both
+// rather than interpolated in, so each query stays a single static string.
+
+/// One stored voiceprint: the centroid on a single meeting's cluster. `locked` is what decides
+/// whether it is actually a recognition candidate (see `KNOWN_VOICEPRINTS_SQL`); `dimension` is the
+/// embedding length, which differs per platform (256 macOS / FluidAudio, 192 Windows / sherpa) and
+/// never cross-matches, since `cosine` returns 0.0 on a length mismatch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VoiceprintSample {
+    pub cluster_id: Uuid,
+    pub meeting_id: Uuid,
+    pub meeting_title: String,
+    pub started_at: DateTime<Utc>,
+    pub locked: bool,
+    pub dimension: i64,
+}
+
+/// A person in the voiceprint roster with every voice sample stored for them, newest meeting first.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VoiceprintPerson {
+    pub identity_id: Uuid,
+    pub display_name: String,
+    pub email: Option<String>,
+    pub samples: Vec<VoiceprintSample>,
+}
+
+/// How many people have at least one stored voiceprint — the total for [`list_voiceprints`]'s page
+/// envelope. Deliberately not `count_identities`: the roster is voiceprints, not names.
+pub async fn count_voiceprint_people(pool: &SqlitePool) -> Result<i64, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT COUNT(*) FROM identities \
+         WHERE EXISTS ( \
+             SELECT 1 FROM clusters WHERE identity_id = identities.id AND centroid IS NOT NULL \
+         )",
+    )
+    .fetch_one(pool)
+    .await
+}
+
+/// One page of people who have a stored voiceprint, most-recently-updated first, each with all of
+/// their samples (newest meeting first). Paginates over *people* via the subquery, then attaches
+/// their samples, so the envelope counts people — `count_voiceprint_people` is the matching total.
+///
+/// Only people with an embedding appear. Clearing someone's last sample therefore drops them from
+/// the roster entirely, which is the point: this list is the set of voices recognition can match
+/// against, so a row that cannot match has nothing to say and no way to be acted on.
+///
+/// `LENGTH(c.centroid) / 4` yields the embedding dimension without ever selecting the BLOB itself.
+pub async fn list_voiceprints(
+    pool: &SqlitePool,
+    limit: i64,
+    offset: i64,
+) -> Result<Vec<VoiceprintPerson>, sqlx::Error> {
+    let rows = sqlx::query_as::<_, VoiceprintJoinRow>(
+        "SELECT i.id AS identity_id, i.display_name, i.email, \
+                c.id AS cluster_id, c.locked AS locked, \
+                m.id AS meeting_id, m.title AS meeting_title, m.started_at AS started_at, \
+                LENGTH(c.centroid) / 4 AS dim \
+         FROM identities i \
+         JOIN clusters c ON c.identity_id = i.id AND c.centroid IS NOT NULL \
+         JOIN meetings m ON m.id = c.meeting_id \
+         WHERE i.id IN ( \
+             SELECT id FROM identities \
+             WHERE EXISTS ( \
+                 SELECT 1 FROM clusters WHERE identity_id = identities.id AND centroid IS NOT NULL \
+             ) \
+             ORDER BY updated_at DESC, id LIMIT ? OFFSET ? \
+         ) \
+         ORDER BY i.updated_at DESC, i.id, m.started_at DESC",
+    )
+    .bind(limit)
+    .bind(offset)
+    .fetch_all(pool)
+    .await?;
+
+    // The ORDER BY keeps one person's rows contiguous, so a single pass groups them without a map.
+    let mut people: Vec<VoiceprintPerson> = Vec::new();
+    for row in rows {
+        if people.last().map(|p| p.identity_id) != Some(row.identity_id) {
+            people.push(VoiceprintPerson {
+                identity_id: row.identity_id,
+                display_name: row.display_name,
+                email: row.email,
+                samples: Vec::new(),
+            });
+        }
+        let person = people.last_mut().expect("pushed above");
+        person.samples.push(VoiceprintSample {
+            cluster_id: row.cluster_id,
+            meeting_id: row.meeting_id,
+            meeting_title: row.meeting_title,
+            started_at: row.started_at,
+            locked: row.locked,
+            dimension: row.dim,
+        });
+    }
+    Ok(people)
+}
+
+/// Outcome of [`rename_identity`], mapped by the route to 200/404/409.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RenameIdentityOutcome {
+    /// Renamed; carries the updated row and the meetings whose transcripts now need re-exporting.
+    Renamed {
+        identity: Identity,
+        meeting_ids: Vec<Uuid>,
+    },
+    /// No identity with that id.
+    NotFound,
+    /// Another person already holds that name (`identities.display_name` is UNIQUE).
+    NameTaken,
+}
+
+/// Rename a person everywhere: the identity row plus the `speaker_label` of every segment in every
+/// cluster bound to them, in one transaction. Returns the affected meeting ids so the caller can
+/// re-export their transcripts.
+///
+/// Segments are matched by cluster, never by their old label text — a label sweep would also catch
+/// segments that merely happen to share the string, and there is no upside since a cluster is the
+/// only thing that binds a line to a person.
+///
+/// The `display_name` UNIQUE constraint is pre-checked inside the transaction rather than left to
+/// the driver, so a collision is a clean [`RenameIdentityOutcome::NameTaken`] (409) instead of a
+/// database error surfacing as a 500. Renaming to the name already held is a no-op.
+pub async fn rename_identity(
+    pool: &SqlitePool,
+    identity_id: Uuid,
+    display_name: &str,
+) -> Result<RenameIdentityOutcome, sqlx::Error> {
+    let name = display_name.trim();
+    let mut tx = pool.begin().await?;
+
+    let existing = sqlx::query_as::<_, Identity>("SELECT * FROM identities WHERE id = ?")
+        .bind(identity_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+    let Some(existing) = existing else {
+        return Ok(RenameIdentityOutcome::NotFound);
+    };
+    if existing.display_name == name {
+        return Ok(RenameIdentityOutcome::Renamed {
+            identity: existing,
+            meeting_ids: Vec::new(),
+        });
+    }
+
+    let taken: Option<Uuid> =
+        sqlx::query_scalar("SELECT id FROM identities WHERE display_name = ? AND id != ?")
+            .bind(name)
+            .bind(identity_id)
+            .fetch_optional(&mut *tx)
+            .await?;
+    if taken.is_some() {
+        return Ok(RenameIdentityOutcome::NameTaken);
+    }
+
+    let meeting_ids: Vec<Uuid> =
+        sqlx::query_scalar("SELECT DISTINCT meeting_id FROM clusters WHERE identity_id = ?")
+            .bind(identity_id)
+            .fetch_all(&mut *tx)
+            .await?;
+
+    let now = Utc::now();
+    sqlx::query(
+        "UPDATE segments SET speaker_label = ?, updated_at = ? \
+         WHERE cluster_id IN (SELECT id FROM clusters WHERE identity_id = ?)",
+    )
+    .bind(name)
+    .bind(now)
+    .bind(identity_id)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query("UPDATE identities SET display_name = ?, updated_at = ? WHERE id = ?")
+        .bind(name)
+        .bind(now)
+        .bind(identity_id)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+
+    Ok(RenameIdentityOutcome::Renamed {
+        identity: Identity {
+            display_name: name.to_string(),
+            updated_at: now,
+            ..existing
+        },
+        meeting_ids,
+    })
+}
+
+/// Forget one stored voiceprint: clear that cluster's centroid so it stops being a cross-meeting
+/// recognition candidate. The cluster, its identity binding, its `locked` flag, and its segments all
+/// survive — past transcripts keep the person's name. Returns whether the cluster exists.
+///
+/// The `WHERE` deliberately does not require a non-NULL centroid, so repeating the call stays an
+/// idempotent success rather than becoming a 404.
+pub async fn clear_cluster_centroid(
+    pool: &SqlitePool,
+    cluster_id: Uuid,
+) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query("UPDATE clusters SET centroid = NULL, updated_at = ? WHERE id = ?")
+        .bind(Utc::now())
+        .bind(cluster_id)
+        .execute(pool)
+        .await?;
+    Ok(result.rows_affected() > 0)
+}
+
+/// Forget every voiceprint stored for a person, leaving their name on every past transcript.
+/// Returns `false` when no such identity exists.
+///
+/// Clears *all* their centroids, not only the `locked` ones: an unlocked recognition-bound cluster's
+/// centroid would otherwise survive and re-enter the candidate set the moment anyone renamed that
+/// cluster.
+pub async fn forget_identity_voice(
+    pool: &SqlitePool,
+    identity_id: Uuid,
+) -> Result<bool, sqlx::Error> {
+    let mut tx = pool.begin().await?;
+    let exists: Option<Uuid> = sqlx::query_scalar("SELECT id FROM identities WHERE id = ?")
+        .bind(identity_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+    if exists.is_none() {
+        return Ok(false);
+    }
+    sqlx::query("UPDATE clusters SET centroid = NULL, updated_at = ? WHERE identity_id = ?")
+        .bind(Utc::now())
+        .bind(identity_id)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(true)
 }
 
 /// The stored JSON for a settings `section`, or `None` when unset (the caller uses the config

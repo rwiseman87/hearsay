@@ -414,6 +414,434 @@ async fn renames_a_speaker_and_404s_on_unknown_cluster() {
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
+/// A meeting with two Them clusters (one line each) plus a Me line, for the merge tests.
+async fn seed_two_speakers(pool: &SqlitePool) -> (Uuid, Uuid, Uuid) {
+    let meeting = queries::create_meeting(pool, "M", "f", "", chrono::Utc::now())
+        .await
+        .unwrap();
+    let c1 = queries::create_cluster(pool, meeting.id, 1, false, None)
+        .await
+        .unwrap();
+    let c2 = queries::create_cluster(pool, meeting.id, 2, false, None)
+        .await
+        .unwrap();
+    queries::insert_segment(
+        pool,
+        meeting.id,
+        Stream::Them,
+        "Speaker 1",
+        "one",
+        0.0,
+        1.0,
+        Some(c1.id),
+    )
+    .await
+    .unwrap();
+    queries::insert_segment(
+        pool,
+        meeting.id,
+        Stream::Them,
+        "Speaker 2",
+        "two",
+        1.0,
+        2.0,
+        Some(c2.id),
+    )
+    .await
+    .unwrap();
+    queries::insert_segment(pool, meeting.id, Stream::Me, "Me", "mine", 2.0, 3.0, None)
+        .await
+        .unwrap();
+    (meeting.id, c1.id, c2.id)
+}
+
+#[tokio::test]
+async fn merges_two_speakers_within_a_meeting() {
+    let (app, pool, _tmp) = setup().await;
+    let (meeting_id, c1, c2) = seed_two_speakers(&pool).await;
+    queries::rename_cluster(&pool, meeting_id, c2, "Alice")
+        .await
+        .unwrap();
+
+    let (status, body) = send(
+        &app,
+        post(
+            &format!("/api/meetings/{meeting_id}/speakers/{c1}/merge"),
+            &format!("{{\"into\":\"{c2}\"}}"),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    // The source chip is gone and the survivor keeps its own ordinal — the gap left behind is
+    // deliberate, since renumbering would relabel unrelated speakers.
+    assert_eq!(body["total"], 1);
+    assert_eq!(body["items"][0]["label"], "Alice");
+    assert_eq!(body["items"][0]["ordinal"], 2);
+
+    let (status, segments) = send(&app, get(&format!("/api/meetings/{meeting_id}/segments"))).await;
+    assert_eq!(status, StatusCode::OK);
+    let them: Vec<&Value> = segments["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|s| s["stream"] == "them")
+        .collect();
+    assert_eq!(them.len(), 2);
+    for segment in &them {
+        assert_eq!(segment["cluster_id"], c2.to_string());
+        assert_eq!(segment["speaker_label"], "Alice");
+    }
+    // Only the lines that actually moved are flagged: a merge is a bulk reassignment of the source,
+    // and the target's own lines were never reassigned.
+    let moved = them.iter().find(|s| s["text"] == "one").unwrap();
+    let kept = them.iter().find(|s| s["text"] == "two").unwrap();
+    assert_eq!(moved["edited"], true);
+    assert_eq!(kept["edited"], false);
+    // Me is not diarized, so a merge must not touch it.
+    let me = segments["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["stream"] == "me")
+        .unwrap();
+    assert_eq!(me["speaker_label"], "Me");
+    assert_eq!(me["edited"], false);
+    assert!(me["cluster_id"].is_null());
+}
+
+#[tokio::test]
+async fn merge_rejects_self_target_and_foreign_clusters() {
+    let (app, pool, _tmp) = setup().await;
+    let (meeting_id, c1, _c2) = seed_two_speakers(&pool).await;
+    let (other_meeting, other_cluster, _) = seed_two_speakers(&pool).await;
+
+    let cases = [
+        // Merging a speaker into itself is meaningless input, not a missing resource.
+        (
+            format!("/api/meetings/{meeting_id}/speakers/{c1}/merge"),
+            format!("{{\"into\":\"{c1}\"}}"),
+            StatusCode::UNPROCESSABLE_ENTITY,
+        ),
+        // The target comes from the body, so a target outside this meeting is a 422 ...
+        (
+            format!("/api/meetings/{meeting_id}/speakers/{c1}/merge"),
+            format!("{{\"into\":\"{other_cluster}\"}}"),
+            StatusCode::UNPROCESSABLE_ENTITY,
+        ),
+        (
+            format!("/api/meetings/{meeting_id}/speakers/{c1}/merge"),
+            format!("{{\"into\":\"{}\"}}", Uuid::new_v4()),
+            StatusCode::UNPROCESSABLE_ENTITY,
+        ),
+        // ... while the source comes from the path, so it is a 404.
+        (
+            format!(
+                "/api/meetings/{meeting_id}/speakers/{}/merge",
+                Uuid::new_v4()
+            ),
+            format!("{{\"into\":\"{c1}\"}}"),
+            StatusCode::NOT_FOUND,
+        ),
+        (
+            format!("/api/meetings/{meeting_id}/speakers/{other_cluster}/merge"),
+            format!("{{\"into\":\"{c1}\"}}"),
+            StatusCode::NOT_FOUND,
+        ),
+    ];
+    for (uri, body, want) in cases {
+        let (status, _) = send(&app, post(&uri, &body)).await;
+        assert_eq!(status, want, "{uri} {body}");
+    }
+
+    // Nothing was moved by any of the rejections.
+    let (_, speakers) = send(&app, get(&format!("/api/meetings/{meeting_id}/speakers"))).await;
+    assert_eq!(speakers["total"], 2);
+    let (_, other) = send(
+        &app,
+        get(&format!("/api/meetings/{other_meeting}/speakers")),
+    )
+    .await;
+    assert_eq!(other["total"], 2);
+}
+
+#[tokio::test]
+async fn merges_a_speaker_that_has_no_lines() {
+    let (app, pool, _tmp) = setup().await;
+    let (meeting_id, c1, _c2) = seed_two_speakers(&pool).await;
+    let empty = queries::create_cluster(&pool, meeting_id, 3, false, None)
+        .await
+        .unwrap();
+
+    let (status, body) = send(
+        &app,
+        post(
+            &format!("/api/meetings/{meeting_id}/speakers/{}/merge", empty.id),
+            &format!("{{\"into\":\"{c1}\"}}"),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["total"], 2, "the ghost cluster is cleaned up");
+
+    let (_, segments) = send(&app, get(&format!("/api/meetings/{meeting_id}/segments"))).await;
+    assert_eq!(segments["total"], 3, "no line was touched");
+}
+
+#[tokio::test]
+async fn renames_an_identity_across_every_meeting() {
+    let (app, pool, _tmp) = setup().await;
+    let (first, c1, _) = seed_two_speakers(&pool).await;
+    let (second, c2, _) = seed_two_speakers(&pool).await;
+    queries::rename_cluster(&pool, first, c1, "Alice")
+        .await
+        .unwrap();
+    queries::rename_cluster(&pool, second, c2, "Alice")
+        .await
+        .unwrap();
+
+    // Via /api/identities, not /api/voiceprints: these clusters have no centroid, so Alice is a
+    // known person but not part of the voiceprint roster. Renaming must work for her all the same.
+    let (_, identities) = send(&app, get("/api/identities")).await;
+    let identity_id = identities["items"][0]["id"].as_str().unwrap();
+
+    let (status, body) = send(
+        &app,
+        patch(
+            &format!("/api/identities/{identity_id}"),
+            "{\"display_name\":\"  Alicia  \"}",
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["display_name"], "Alicia");
+
+    // Both meetings' stored labels follow, not just the one that was open.
+    for meeting_id in [first, second] {
+        let (_, segments) = send(&app, get(&format!("/api/meetings/{meeting_id}/segments"))).await;
+        let labels: Vec<&str> = segments["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| s["speaker_label"].as_str().unwrap())
+            .collect();
+        assert!(labels.contains(&"Alicia"), "{meeting_id}: {labels:?}");
+        assert!(!labels.contains(&"Alice"), "{meeting_id}: {labels:?}");
+    }
+    // One person, renamed — not a second identity.
+    let (_, identities) = send(&app, get("/api/identities")).await;
+    assert_eq!(identities["total"], 1);
+}
+
+#[tokio::test]
+async fn identity_rename_conflicts_and_validates() {
+    let (app, pool, _tmp) = setup().await;
+    let (meeting_id, c1, c2) = seed_two_speakers(&pool).await;
+    queries::rename_cluster(&pool, meeting_id, c1, "Alice")
+        .await
+        .unwrap();
+    queries::rename_cluster(&pool, meeting_id, c2, "Bob")
+        .await
+        .unwrap();
+
+    let (_, identities) = send(&app, get("/api/identities")).await;
+    let by_name = |name: &str| -> String {
+        identities["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|i| i["display_name"] == name)
+            .unwrap()["id"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+    let alice = by_name("Alice");
+
+    // Taking a name already held by someone else is a conflict, never a silent identity merge.
+    let (status, _) = send(
+        &app,
+        patch(
+            &format!("/api/identities/{alice}"),
+            "{\"display_name\":\"Bob\"}",
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+
+    // Re-applying the name they already have is a no-op success.
+    let (status, body) = send(
+        &app,
+        patch(
+            &format!("/api/identities/{alice}"),
+            "{\"display_name\":\"Alice\"}",
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["display_name"], "Alice");
+
+    for bad in ["{\"display_name\":\"\"}", "{\"display_name\":\"   \"}"] {
+        let (status, _) = send(&app, patch(&format!("/api/identities/{alice}"), bad)).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{bad}");
+    }
+    let (status, _) = send(
+        &app,
+        patch(
+            &format!("/api/identities/{}", Uuid::new_v4()),
+            "{\"display_name\":\"Zed\"}",
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn lists_voiceprints_with_their_samples() {
+    let (app, pool, _tmp) = setup().await;
+    let meeting = queries::create_meeting(&pool, "Standup", "f", "", chrono::Utc::now())
+        .await
+        .unwrap();
+    let centroid = hearsay_attribution::centroid_to_bytes(&[0.6, 0.8]);
+    let bound = queries::create_cluster(&pool, meeting.id, 1, false, Some(centroid))
+        .await
+        .unwrap();
+    queries::rename_cluster(&pool, meeting.id, bound.id, "Alice")
+        .await
+        .unwrap();
+    // A person named in a meeting that was never refined has no centroid. They are a known identity
+    // but not a voiceprint, so the roster must leave them out — a row with nothing to match on can
+    // neither be explained nor acted on.
+    let unrefined = queries::create_cluster(&pool, meeting.id, 2, false, None)
+        .await
+        .unwrap();
+    queries::rename_cluster(&pool, meeting.id, unrefined.id, "Bob")
+        .await
+        .unwrap();
+
+    let (status, body) = send(&app, get("/api/voiceprints")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["total"], 1);
+    let people = body["items"].as_array().unwrap();
+    assert_eq!(people.len(), 1);
+    let alice = &people[0];
+    assert_eq!(alice["display_name"], "Alice");
+    assert_eq!(alice["sample_count"], 1);
+    assert_eq!(alice["active_count"], 1);
+    assert!(alice["last_heard"].is_string());
+    assert_eq!(alice["samples"][0]["meeting_title"], "Standup");
+    assert_eq!(alice["samples"][0]["dimension"], 2);
+    assert_eq!(alice["samples"][0]["locked"], true);
+
+    // Bob is still a known person for the rename autocomplete; he just has no voice on file.
+    let (_, identities) = send(&app, get("/api/identities")).await;
+    assert_eq!(identities["total"], 2);
+}
+
+#[tokio::test]
+async fn deleting_a_sample_stops_recognition_but_keeps_the_transcript() {
+    let (app, pool, _tmp) = setup().await;
+    let meeting = queries::create_meeting(&pool, "M", "f", "", chrono::Utc::now())
+        .await
+        .unwrap();
+    let centroid = hearsay_attribution::centroid_to_bytes(&[0.6, 0.8]);
+    let cluster = queries::create_cluster(&pool, meeting.id, 1, false, Some(centroid))
+        .await
+        .unwrap();
+    queries::insert_segment(
+        &pool,
+        meeting.id,
+        Stream::Them,
+        "Speaker 1",
+        "hello",
+        0.0,
+        1.0,
+        Some(cluster.id),
+    )
+    .await
+    .unwrap();
+    queries::rename_cluster(&pool, meeting.id, cluster.id, "Alice")
+        .await
+        .unwrap();
+    // Recognition sees her from any other meeting.
+    assert_eq!(
+        queries::known_voiceprints(&pool, Uuid::new_v4())
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+
+    let (status, _) = send(&app, del(&format!("/api/voiceprints/{}", cluster.id))).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    // The whole point: the voice stops matching ...
+    assert!(queries::known_voiceprints(&pool, Uuid::new_v4())
+        .await
+        .unwrap()
+        .is_empty());
+    // ... while the name stays on the transcript and the binding stays locked.
+    let (_, speakers) = send(&app, get(&format!("/api/meetings/{}/speakers", meeting.id))).await;
+    assert_eq!(speakers["items"][0]["label"], "Alice");
+    assert_eq!(speakers["items"][0]["locked"], true);
+    let (_, segments) = send(&app, get(&format!("/api/meetings/{}/segments", meeting.id))).await;
+    assert_eq!(segments["items"][0]["speaker_label"], "Alice");
+
+    // Clearing an already-cleared voiceprint is idempotent, not a 404.
+    let (status, _) = send(&app, del(&format!("/api/voiceprints/{}", cluster.id))).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (status, _) = send(&app, del(&format!("/api/voiceprints/{}", Uuid::new_v4()))).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn forgetting_a_voice_clears_every_sample() {
+    let (app, pool, _tmp) = setup().await;
+    let centroid = hearsay_attribution::centroid_to_bytes(&[0.6, 0.8]);
+    for name in ["one", "two"] {
+        let meeting = queries::create_meeting(&pool, name, name, "", chrono::Utc::now())
+            .await
+            .unwrap();
+        let cluster = queries::create_cluster(&pool, meeting.id, 1, false, Some(centroid.clone()))
+            .await
+            .unwrap();
+        queries::rename_cluster(&pool, meeting.id, cluster.id, "Alice")
+            .await
+            .unwrap();
+    }
+    let (_, body) = send(&app, get("/api/voiceprints")).await;
+    assert_eq!(body["items"][0]["sample_count"], 2);
+    let identity_id = body["items"][0]["identity_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let (status, _) = send(
+        &app,
+        del(&format!("/api/identities/{identity_id}/voiceprint")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+
+    // With no embedding left she drops off the roster entirely — otherwise the panel would keep a
+    // row that matches nothing and offers nothing to remove.
+    let (_, body) = send(&app, get("/api/voiceprints")).await;
+    assert_eq!(body["total"], 0);
+    assert!(body["items"].as_array().unwrap().is_empty());
+    assert!(queries::known_voiceprints(&pool, Uuid::new_v4())
+        .await
+        .unwrap()
+        .is_empty());
+    // She is not deleted, though: her name still labels every past transcript line.
+    let (_, identities) = send(&app, get("/api/identities")).await;
+    assert_eq!(identities["items"][0]["display_name"], "Alice");
+
+    let (status, _) = send(
+        &app,
+        del(&format!("/api/identities/{}/voiceprint", Uuid::new_v4())),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
 #[tokio::test]
 async fn unbound_speaker_falls_back_to_ordinal_label() {
     let (app, pool, _tmp) = setup().await;
@@ -439,7 +867,7 @@ async fn lists_identities_after_a_rename() {
     let cluster = queries::create_cluster(&pool, meeting.id, 1, false, None)
         .await
         .unwrap();
-    queries::rename_cluster(&pool, cluster.id, "Carol")
+    queries::rename_cluster(&pool, cluster.meeting_id, cluster.id, "Carol")
         .await
         .unwrap();
 
@@ -1081,6 +1509,18 @@ async fn full_stack_meeting_drives_events_and_persistence() {
     .await;
     assert_eq!(status, StatusCode::CONFLICT);
 
+    // Same for a speaker merge: the diarizer is still creating and dropping clusters, so folding two
+    // together mid-meeting would race it. Also guarded before any lookup.
+    let (status, _) = send(
+        &app,
+        post(
+            &format!("/api/meetings/{id}/speakers/{}/merge", Uuid::new_v4()),
+            &format!("{{\"into\":\"{}\"}}", Uuid::new_v4()),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+
     // Pause so the WS connect yields a deterministic paused snapshot — our subscribe barrier.
     let (status, _) = send(&app, post(&format!("/api/meetings/{id}/pause"), "")).await;
     assert_eq!(status, StatusCode::NO_CONTENT);
@@ -1237,6 +1677,46 @@ async fn full_stack_refine_replaces_them_segments_on_read_back() {
     assert!(
         labels.contains(&"Speaker 1") && labels.contains(&"Speaker 2"),
         "both refined speakers read back: {labels:?}"
+    );
+
+    // Manual speaker corrections must reach the exported transcript, not just the DB. This is the
+    // only test with a real Orchestrator writing into a real output dir — every other one runs on
+    // DisabledEngine, whose export is a no-op — so it is the only place the re-export can be caught.
+    let transcript = tmp.path().join(&folder).join("transcript.md");
+    let cluster_id = speakers["items"][0]["id"].as_str().unwrap();
+    let (status, _) = send(
+        &app,
+        put(
+            &format!("/api/meetings/{id}/speakers/{cluster_id}"),
+            r#"{"display_name":"Dana"}"#,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let written = std::fs::read_to_string(&transcript).unwrap();
+    assert!(
+        written.contains("Dana"),
+        "renaming a speaker rewrites transcript.md: {written}"
+    );
+
+    // Likewise for a merge, which relabels every line of the folded-in speaker.
+    let (status, after) = send(
+        &app,
+        post(
+            &format!(
+                "/api/meetings/{id}/speakers/{}/merge",
+                speakers["items"][1]["id"].as_str().unwrap()
+            ),
+            &format!("{{\"into\":\"{cluster_id}\"}}"),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(after["total"], 1);
+    let written = std::fs::read_to_string(&transcript).unwrap();
+    assert!(
+        !written.contains("Speaker 2"),
+        "the merged-away speaker is gone from transcript.md: {written}"
     );
 }
 

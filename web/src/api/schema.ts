@@ -68,6 +68,38 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/identities/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch: operations["rename_identity"];
+        trace?: never;
+    };
+    "/api/identities/{id}/voiceprint": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete: operations["forget_voice"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/meetings": {
         parameters: {
             query?: never;
@@ -314,6 +346,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/meetings/{id}/speakers/{cluster_id}/merge": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["merge_speakers"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/meetings/{id}/stop": {
         parameters: {
             query?: never;
@@ -529,6 +577,38 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/voiceprints": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["list_voiceprints"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/voiceprints/{cluster_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete: operations["delete_voiceprint"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -659,6 +739,10 @@ export interface components {
             email?: string | null;
             /** Format: uuid */
             id: string;
+        };
+        /** @description Rename a person everywhere they appear. */
+        IdentityRename: {
+            display_name: string;
         };
         /**
          * @description An audio-level frame (not a transcript line): the recent RMS amplitude of a capture stream,
@@ -938,6 +1022,37 @@ export interface components {
             /** Format: int64 */
             total: number;
         };
+        /** @description Paginated list envelope used by every list endpoint (`{ total, page, page_size, items }`). */
+        Page_VoiceprintRead: {
+            items: {
+                /**
+                 * Format: int64
+                 * @description The subset that recognition actually uses (locked, with an embedding).
+                 */
+                active_count: number;
+                display_name: string;
+                email?: string | null;
+                /** Format: uuid */
+                identity_id: string;
+                /**
+                 * Format: date-time
+                 * @description Start of the most recent meeting a sample came from.
+                 */
+                last_heard?: string | null;
+                /**
+                 * Format: int64
+                 * @description Stored samples, whether or not they are recognition candidates.
+                 */
+                sample_count: number;
+                samples: components["schemas"]["VoiceprintSampleRead"][];
+            }[];
+            /** Format: int32 */
+            page: number;
+            /** Format: int32 */
+            page_size: number;
+            /** Format: int64 */
+            total: number;
+        };
         /**
          * @description Live TCC permission status probed from the capture helper (not a stored preference). Each field
          *     is `granted` / `denied` / `undetermined`, or `unknown` when the helper is unavailable.
@@ -1064,6 +1179,14 @@ export interface components {
             storage: components["schemas"]["StorageSettings"];
             storage_info: components["schemas"]["StorageInfo"];
         };
+        /** @description Combine two of a meeting's speakers: the cluster in the path is folded into `into`. */
+        SpeakerMerge: {
+            /**
+             * Format: uuid
+             * @description The surviving cluster, in the same meeting.
+             */
+            into: string;
+        };
         /** @description A diarization cluster within a meeting, with its resolved display label. */
         SpeakerRead: {
             /**
@@ -1171,6 +1294,57 @@ export interface components {
          */
         UserNotesWrite: {
             body: string;
+        };
+        /**
+         * @description A person in the stored-voiceprint roster, with every voice sample kept for them (newest meeting
+         *     first). Only people who actually have an embedding appear, so `sample_count` is always >= 1;
+         *     clearing someone's last sample drops them from the roster.
+         */
+        VoiceprintRead: {
+            /**
+             * Format: int64
+             * @description The subset that recognition actually uses (locked, with an embedding).
+             */
+            active_count: number;
+            display_name: string;
+            email?: string | null;
+            /** Format: uuid */
+            identity_id: string;
+            /**
+             * Format: date-time
+             * @description Start of the most recent meeting a sample came from.
+             */
+            last_heard?: string | null;
+            /**
+             * Format: int64
+             * @description Stored samples, whether or not they are recognition candidates.
+             */
+            sample_count: number;
+            samples: components["schemas"]["VoiceprintSampleRead"][];
+        };
+        /** @description One stored voiceprint: the voice embedding kept on a single meeting's cluster. */
+        VoiceprintSampleRead: {
+            /**
+             * Format: int64
+             * @description Embedding length: 256 on macOS (FluidAudio), 192 on Windows (sherpa). Samples of different
+             *     lengths never match each other.
+             */
+            dimension: number;
+            /**
+             * Format: uuid
+             * @description The cluster carrying the embedding — a voiceprint has no id of its own.
+             */
+            id: string;
+            /**
+             * @description Whether the name on this cluster was set by hand. Only locked samples are recognition
+             *     candidates in later meetings.
+             */
+            locked: boolean;
+            /** Format: uuid */
+            meeting_id: string;
+            meeting_title: string;
+            /** Format: date-time */
+            started_at: string;
         };
     };
     responses: never;
@@ -1350,6 +1524,74 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["Page_IdentityRead"];
                 };
+            };
+        };
+    };
+    rename_identity: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["IdentityRename"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IdentityRead"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    forget_voice: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };
@@ -1979,6 +2221,50 @@ export interface operations {
             };
         };
     };
+    merge_speakers: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                cluster_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SpeakerMerge"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Page_SpeakerRead"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     stop_meeting: {
         parameters: {
             query?: never;
@@ -2390,6 +2676,53 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["StatusInfo"];
                 };
+            };
+        };
+    };
+    list_voiceprints: {
+        parameters: {
+            query?: {
+                page?: number;
+                page_size?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Page_VoiceprintRead"];
+                };
+            };
+        };
+    };
+    delete_voiceprint: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                cluster_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };

@@ -224,7 +224,7 @@ async fn rename_cluster_binds_relabels_and_joins() {
         .await
         .unwrap();
 
-    let renamed = queries::rename_cluster(&pool, cluster.id, "  Zed  ")
+    let renamed = queries::rename_cluster(&pool, cluster.meeting_id, cluster.id, "  Zed  ")
         .await
         .unwrap()
         .expect("cluster exists");
@@ -238,10 +238,390 @@ async fn rename_cluster_binds_relabels_and_joins() {
     assert_eq!(segments[0].speaker_label, "Zed");
     assert_eq!(queries::count_identities(&pool).await.unwrap(), 1);
 
-    assert!(queries::rename_cluster(&pool, uuid::Uuid::new_v4(), "X")
+    assert!(
+        queries::rename_cluster(&pool, cluster.meeting_id, uuid::Uuid::new_v4(), "X")
+            .await
+            .unwrap()
+            .is_none()
+    );
+}
+
+/// A named + locked cluster carrying a centroid in its own meeting — one stored voiceprint.
+async fn seed_voiceprint(pool: &SqlitePool, meeting: &str, person: &str, dims: usize) {
+    let m = queries::create_meeting(pool, meeting, meeting, "", chrono::Utc::now())
+        .await
+        .unwrap();
+    let centroid = centroid_to_bytes(&vec![0.5f32; dims]);
+    let cluster = queries::create_cluster(pool, m.id, 1, false, Some(centroid))
+        .await
+        .unwrap();
+    queries::rename_cluster(pool, m.id, cluster.id, person)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn list_voiceprints_covers_only_people_with_an_embedding() {
+    let pool = memory_pool().await;
+    seed_voiceprint(&pool, "one", "Alice", 4).await;
+    seed_voiceprint(&pool, "two", "Alice", 4).await;
+    seed_voiceprint(&pool, "three", "Bob", 8).await;
+    // Named, but the meeting was never refined: an identity with no embedding.
+    let bare = queries::create_meeting(&pool, "bare", "bare", "", chrono::Utc::now())
+        .await
+        .unwrap();
+    let unbound = queries::create_cluster(&pool, bare.id, 1, false, None)
+        .await
+        .unwrap();
+    queries::rename_cluster(&pool, bare.id, unbound.id, "Carol")
+        .await
+        .unwrap();
+
+    let people = queries::list_voiceprints(&pool, 50, 0).await.unwrap();
+    let names: Vec<&str> = people.iter().map(|p| p.display_name.as_str()).collect();
+    assert!(
+        !names.contains(&"Carol"),
+        "no embedding, no roster row: {names:?}"
+    );
+    assert_eq!(
+        queries::count_voiceprint_people(&pool).await.unwrap(),
+        people.len() as i64,
+        "the envelope total must describe the rows the list returns"
+    );
+
+    let alice = people.iter().find(|p| p.display_name == "Alice").unwrap();
+    assert_eq!(alice.samples.len(), 2);
+    // Newest meeting first, so the caller can take `samples[0]` as "last heard".
+    assert!(alice.samples[0].started_at >= alice.samples[1].started_at);
+    // The dimension is derived from the blob length, never by decoding it.
+    assert!(alice.samples.iter().all(|s| s.dimension == 4));
+    assert!(alice.samples.iter().all(|s| s.locked));
+    let bob = people.iter().find(|p| p.display_name == "Bob").unwrap();
+    assert_eq!(bob.samples[0].dimension, 8);
+}
+
+#[tokio::test]
+async fn list_voiceprints_pages_over_people_not_samples() {
+    let pool = memory_pool().await;
+    for person in ["Alice", "Bob", "Carol"] {
+        seed_voiceprint(&pool, &format!("{person}-1"), person, 4).await;
+        seed_voiceprint(&pool, &format!("{person}-2"), person, 4).await;
+    }
+    assert_eq!(queries::count_voiceprint_people(&pool).await.unwrap(), 3);
+
+    // A page of 2 must be two *people* with both their samples, not two sample rows.
+    let page = queries::list_voiceprints(&pool, 2, 0).await.unwrap();
+    assert_eq!(page.len(), 2);
+    assert!(page.iter().all(|p| p.samples.len() == 2));
+
+    let rest = queries::list_voiceprints(&pool, 2, 2).await.unwrap();
+    assert_eq!(rest.len(), 1);
+    // No one appears on both pages.
+    for person in &page {
+        assert_ne!(person.identity_id, rest[0].identity_id);
+    }
+}
+
+#[tokio::test]
+async fn paging_people_never_repeats_or_drops_anyone() {
+    let pool = memory_pool().await;
+    // Enough people, created back to back, that any instability in the ordering shows up. They are
+    // created in a tight loop, so several share an `updated_at` to the microsecond — which is
+    // exactly the case that makes ordering by it alone undefined.
+    let names: Vec<String> = (0..7).map(|i| format!("Person {i}")).collect();
+    for name in &names {
+        // Two samples each: the roster's join fans out per sample, and it is that shape — not a
+        // one-row-per-person one — that exposes an unstable page window.
+        seed_voiceprint(&pool, &format!("{name}-a"), name, 4).await;
+        seed_voiceprint(&pool, &format!("{name}-b"), name, 4).await;
+    }
+
+    // Walk both rosters two at a time and confirm the union is every person, exactly once. Ordering
+    // by a non-unique column without a tiebreaker silently repeats one row and loses another here.
+    let mut seen_people = Vec::new();
+    let mut seen_identities = Vec::new();
+    for offset in (0..8).step_by(2) {
+        for person in queries::list_voiceprints(&pool, 2, offset).await.unwrap() {
+            seen_people.push(person.display_name);
+        }
+        for identity in queries::list_identities(&pool, 2, offset).await.unwrap() {
+            seen_identities.push(identity.display_name);
+        }
+    }
+    for (label, mut seen) in [
+        ("voiceprints", seen_people),
+        ("identities", seen_identities),
+    ] {
+        let total = seen.len();
+        seen.sort();
+        seen.dedup();
+        assert_eq!(seen.len(), total, "{label}: a person appeared on two pages");
+        assert_eq!(
+            seen, names,
+            "{label}: paging did not cover everyone exactly once"
+        );
+    }
+}
+
+#[tokio::test]
+async fn rename_identity_reports_conflicts_and_leaves_the_row_alone() {
+    let pool = memory_pool().await;
+    seed_voiceprint(&pool, "one", "Alice", 4).await;
+    seed_voiceprint(&pool, "two", "Bob", 4).await;
+    let people = queries::list_voiceprints(&pool, 50, 0).await.unwrap();
+    let alice = people
+        .iter()
+        .find(|p| p.display_name == "Alice")
+        .unwrap()
+        .identity_id;
+
+    // Taking a name someone else holds is refused rather than silently folding the two together.
+    assert_eq!(
+        queries::rename_identity(&pool, alice, "Bob").await.unwrap(),
+        queries::RenameIdentityOutcome::NameTaken
+    );
+    assert_eq!(
+        queries::rename_identity(&pool, uuid::Uuid::new_v4(), "Zed")
+            .await
+            .unwrap(),
+        queries::RenameIdentityOutcome::NotFound
+    );
+
+    // Re-applying the current name writes nothing, so there is nothing to re-export.
+    match queries::rename_identity(&pool, alice, "Alice")
+        .await
+        .unwrap()
+    {
+        queries::RenameIdentityOutcome::Renamed { meeting_ids, .. } => {
+            assert!(meeting_ids.is_empty(), "a no-op rename touches no meeting")
+        }
+        other => panic!("expected Renamed, got {other:?}"),
+    }
+
+    // The refused rename left both names intact.
+    let after = queries::list_voiceprints(&pool, 50, 0).await.unwrap();
+    let mut names: Vec<&str> = after.iter().map(|p| p.display_name.as_str()).collect();
+    names.sort_unstable();
+    assert_eq!(names, ["Alice", "Bob"]);
+}
+
+#[tokio::test]
+async fn forgetting_a_voice_clears_unlocked_centroids_too() {
+    let pool = memory_pool().await;
+    let meeting = queries::create_meeting(&pool, "m", "m", "", chrono::Utc::now())
+        .await
+        .unwrap();
+    let centroid = centroid_to_bytes(&[0.6, 0.8]);
+    let locked = queries::create_cluster(&pool, meeting.id, 1, false, Some(centroid.clone()))
+        .await
+        .unwrap();
+    queries::rename_cluster(&pool, meeting.id, locked.id, "Alice")
+        .await
+        .unwrap();
+    let identity = queries::list_speaker_rows(&pool, meeting.id).await.unwrap()[0]
+        .identity_id
+        .unwrap();
+    // A second meeting where Alice was auto-recognized: bound to her, centroid stored, but never
+    // confirmed by hand so `locked` is 0.
+    let other = queries::create_meeting(&pool, "o", "o", "", chrono::Utc::now())
+        .await
+        .unwrap();
+    let recognized = queries::create_cluster(&pool, other.id, 1, false, Some(centroid))
+        .await
+        .unwrap();
+    sqlx::query("UPDATE clusters SET identity_id = ? WHERE id = ?")
+        .bind(identity)
+        .bind(recognized.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    assert!(queries::forget_identity_voice(&pool, identity)
+        .await
+        .unwrap());
+
+    // Both are cleared. Leaving the unlocked one would let it re-enter the candidate set the moment
+    // anyone renamed that cluster, quietly undoing the "forget".
+    let remaining: Vec<Option<Vec<u8>>> =
+        sqlx::query_scalar("SELECT centroid FROM clusters WHERE identity_id = ?")
+            .bind(identity)
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+    assert_eq!(remaining.len(), 2);
+    assert!(remaining.iter().all(|c| c.is_none()));
+    // She is gone from the roster but still a known person labelling her past lines.
+    assert!(queries::list_voiceprints(&pool, 50, 0)
+        .await
+        .unwrap()
+        .is_empty());
+    assert_eq!(queries::count_identities(&pool).await.unwrap(), 1);
+}
+
+#[tokio::test]
+async fn clearing_one_centroid_is_idempotent() {
+    let pool = memory_pool().await;
+    let meeting = queries::create_meeting(&pool, "m", "m", "", chrono::Utc::now())
+        .await
+        .unwrap();
+    let cluster = queries::create_cluster(
+        &pool,
+        meeting.id,
+        1,
+        true,
+        Some(centroid_to_bytes(&[1.0, 0.0])),
+    )
+    .await
+    .unwrap();
+
+    // Repeating the call stays a success: the route maps `false` to a 404, and a second delete of
+    // something already gone should not look like a missing resource.
+    assert!(queries::clear_cluster_centroid(&pool, cluster.id)
+        .await
+        .unwrap());
+    assert!(queries::clear_cluster_centroid(&pool, cluster.id)
+        .await
+        .unwrap());
+    assert!(
+        !queries::clear_cluster_centroid(&pool, uuid::Uuid::new_v4())
+            .await
+            .unwrap()
+    );
+
+    // The cluster itself, and its lock, survive.
+    let rows = queries::list_speaker_rows(&pool, meeting.id).await.unwrap();
+    assert_eq!(rows.len(), 1);
+    assert!(rows[0].locked);
+}
+
+#[tokio::test]
+async fn merge_clusters_repoints_lines_and_drops_the_source() {
+    let pool = memory_pool().await;
+    let meeting = queries::create_meeting(&pool, "t", "f", "", chrono::Utc::now())
+        .await
+        .unwrap();
+    let source = queries::create_cluster(&pool, meeting.id, 1, false, None)
+        .await
+        .unwrap();
+    let target = queries::create_cluster(&pool, meeting.id, 2, false, None)
+        .await
+        .unwrap();
+    queries::rename_cluster(&pool, meeting.id, target.id, "Alice")
+        .await
+        .unwrap();
+    queries::insert_segment(
+        &pool,
+        meeting.id,
+        Stream::Them,
+        "Speaker 1",
+        "alpha",
+        0.0,
+        1.0,
+        Some(source.id),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(
+        queries::merge_clusters(&pool, meeting.id, source.id, target.id)
+            .await
+            .unwrap(),
+        queries::MergeOutcome::Merged
+    );
+
+    // The line survives on the target — `segments.cluster_id` is ON DELETE SET NULL, so a merge that
+    // dropped the cluster before repointing would silently orphan it instead.
+    let segments = queries::list_segments(&pool, meeting.id).await.unwrap();
+    assert_eq!(segments.len(), 1);
+    assert_eq!(segments[0].cluster_id, Some(target.id));
+    assert_eq!(segments[0].speaker_label, "Alice");
+    assert!(segments[0].edited);
+
+    let speakers = queries::list_speaker_rows(&pool, meeting.id).await.unwrap();
+    assert_eq!(speakers.len(), 1);
+    assert_eq!(speakers[0].id, target.id);
+    assert_eq!(speakers[0].ordinal, 2, "the source's ordinal is not reused");
+}
+
+#[tokio::test]
+async fn merge_clusters_reports_bad_targets_without_touching_anything() {
+    let pool = memory_pool().await;
+    let meeting = queries::create_meeting(&pool, "t", "f", "", chrono::Utc::now())
+        .await
+        .unwrap();
+    let other = queries::create_meeting(&pool, "o", "o", "", chrono::Utc::now())
+        .await
+        .unwrap();
+    let a = queries::create_cluster(&pool, meeting.id, 1, false, None)
+        .await
+        .unwrap();
+    let b = queries::create_cluster(&pool, meeting.id, 2, false, None)
+        .await
+        .unwrap();
+    let foreign = queries::create_cluster(&pool, other.id, 1, false, None)
+        .await
+        .unwrap();
+
+    let cases = [
+        (a.id, a.id, queries::MergeOutcome::SameCluster),
+        (
+            uuid::Uuid::new_v4(),
+            b.id,
+            queries::MergeOutcome::SourceNotFound,
+        ),
+        (foreign.id, b.id, queries::MergeOutcome::SourceNotFound),
+        (
+            a.id,
+            uuid::Uuid::new_v4(),
+            queries::MergeOutcome::TargetNotFound,
+        ),
+        (a.id, foreign.id, queries::MergeOutcome::TargetNotFound),
+    ];
+    for (source, target, want) in cases {
+        assert_eq!(
+            queries::merge_clusters(&pool, meeting.id, source, target)
+                .await
+                .unwrap(),
+            want,
+            "{source} -> {target}"
+        );
+    }
+    assert_eq!(
+        queries::list_speaker_rows(&pool, meeting.id)
+            .await
+            .unwrap()
+            .len(),
+        2
+    );
+    assert_eq!(
+        queries::list_speaker_rows(&pool, other.id)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn rename_cluster_is_scoped_to_its_meeting() {
+    let pool = memory_pool().await;
+    let mine = queries::create_meeting(&pool, "mine", "m", "", chrono::Utc::now())
+        .await
+        .unwrap();
+    let theirs = queries::create_meeting(&pool, "theirs", "t", "", chrono::Utc::now())
+        .await
+        .unwrap();
+    let cluster = queries::create_cluster(&pool, theirs.id, 1, false, None)
+        .await
+        .unwrap();
+
+    // A cluster id from another meeting must not be renameable through this meeting's route.
+    assert!(queries::rename_cluster(&pool, mine.id, cluster.id, "Alice")
         .await
         .unwrap()
         .is_none());
+    let speakers = queries::list_speaker_rows(&pool, theirs.id).await.unwrap();
+    assert_eq!(speakers[0].display_name, None);
 }
 
 #[tokio::test]
@@ -347,7 +727,7 @@ async fn reassign_segment_speaker_moves_line_and_creates_named_speaker() {
 
     // Reassigning to a cluster that is *bound* to an identity resolves the label from that identity
     // (not the ordinal). Bind c2 to "Cara", then move seg_a onto c2.
-    queries::rename_cluster(&pool, c2.id, "Cara")
+    queries::rename_cluster(&pool, c2.meeting_id, c2.id, "Cara")
         .await
         .unwrap()
         .expect("cluster exists");
@@ -536,7 +916,7 @@ async fn replace_them_segments_carries_forward_locked_names() {
     )
     .await
     .unwrap();
-    queries::rename_cluster(&pool, old.id, "Alice")
+    queries::rename_cluster(&pool, old.meeting_id, old.id, "Alice")
         .await
         .unwrap()
         .expect("cluster exists");
@@ -638,7 +1018,7 @@ async fn replace_them_segments_stores_and_recognizes_voiceprints() {
     )
     .await
     .unwrap();
-    queries::rename_cluster(&pool, ac.id, "Alice")
+    queries::rename_cluster(&pool, ac.meeting_id, ac.id, "Alice")
         .await
         .unwrap()
         .expect("cluster exists");
@@ -708,14 +1088,14 @@ async fn known_voiceprints_excludes_current_and_requires_locked_centroid() {
         queries::create_cluster(&pool, m1.id, 1, false, Some(centroid_to_bytes(&[1.0, 0.0])))
             .await
             .unwrap();
-    queries::rename_cluster(&pool, alice.id, "Alice")
+    queries::rename_cluster(&pool, alice.meeting_id, alice.id, "Alice")
         .await
         .unwrap()
         .unwrap();
     let bob = queries::create_cluster(&pool, m1.id, 2, false, None)
         .await
         .unwrap();
-    queries::rename_cluster(&pool, bob.id, "Bob")
+    queries::rename_cluster(&pool, bob.meeting_id, bob.id, "Bob")
         .await
         .unwrap()
         .unwrap();
@@ -725,7 +1105,7 @@ async fn known_voiceprints_excludes_current_and_requires_locked_centroid() {
         queries::create_cluster(&pool, m2.id, 1, false, Some(centroid_to_bytes(&[0.0, 1.0])))
             .await
             .unwrap();
-    queries::rename_cluster(&pool, carol.id, "Carol")
+    queries::rename_cluster(&pool, carol.meeting_id, carol.id, "Carol")
         .await
         .unwrap()
         .unwrap();
@@ -850,7 +1230,7 @@ async fn recognition_threshold_gates_cross_meeting_match() {
     )
     .await
     .unwrap();
-    queries::rename_cluster(&pool, ac.id, "Alice")
+    queries::rename_cluster(&pool, ac.meeting_id, ac.id, "Alice")
         .await
         .unwrap()
         .expect("cluster exists");

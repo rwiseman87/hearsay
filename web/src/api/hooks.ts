@@ -6,6 +6,7 @@ import type {
   DownloadState,
   FolderCreate,
   FolderRead,
+  IdentityRead,
   MeetingCreate,
   MeetingNotesRead,
   MeetingRead,
@@ -17,6 +18,7 @@ import type {
   PageSearchHit,
   PageSegment,
   PageSpeaker,
+  PageVoiceprint,
   PermissionsInfo,
   RecordingSettings,
   SegmentRead,
@@ -316,6 +318,72 @@ export function useRenameSpeaker(meetingId: string) {
       qc.invalidateQueries({ queryKey: queryKeys.meetings.notes(meetingId) });
       qc.invalidateQueries({ queryKey: queryKeys.identities.all });
     },
+  });
+}
+
+// Fold one of a meeting's speakers into another: the source's lines move onto the target and the
+// source cluster is deleted. Scoped to this meeting, so — unlike a rename — no identity is created
+// or renamed and `identities` stays valid.
+export function useMergeSpeakers(meetingId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ clusterId, into }: { clusterId: string; into: string }) =>
+      api.post<PageSpeaker>(`/api/meetings/${meetingId}/speakers/${clusterId}/merge`, {
+        into,
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: queryKeys.meetings.segments(meetingId) });
+      qc.invalidateQueries({ queryKey: queryKeys.meetings.speakers(meetingId) });
+      qc.invalidateQueries({ queryKey: queryKeys.meetings.notes(meetingId) });
+      // A merge discards the source cluster's stored voice sample.
+      qc.invalidateQueries({ queryKey: queryKeys.voiceprints.all });
+    },
+  });
+}
+
+// The stored-voiceprint roster: every known person with the per-meeting voice samples recognition
+// matches against. People named but never refined appear with no samples.
+export function useVoiceprints(page = 1, pageSize = 50) {
+  return useQuery({
+    queryKey: queryKeys.voiceprints.list(page, pageSize),
+    queryFn: ({ signal }) =>
+      api.get<PageVoiceprint>(`/api/voiceprints?page=${page}&page_size=${pageSize}`, signal),
+  });
+}
+
+// Rename a person everywhere they appear. Unlike useRenameSpeaker, this rewrites speaker labels
+// across every meeting that person is in, so the narrow per-meeting scoping is wrong here — the
+// whole `["meetings"]` tree is stale.
+export function useRenameIdentity() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ identityId, displayName }: { identityId: string; displayName: string }) =>
+      api.patch<IdentityRead>(`/api/identities/${identityId}`, { display_name: displayName }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: queryKeys.voiceprints.all });
+      qc.invalidateQueries({ queryKey: queryKeys.identities.all });
+      qc.invalidateQueries({ queryKey: queryKeys.meetings.all });
+    },
+  });
+}
+
+// Forget one stored voice sample. Only `clusters.centroid` is cleared, so names, labels and past
+// transcripts are untouched and no meeting query goes stale.
+export function useDeleteVoiceprint() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (clusterId: string) => api.delete<void>(`/api/voiceprints/${clusterId}`),
+    onSuccess: () => qc.invalidateQueries({ queryKey: queryKeys.voiceprints.all }),
+  });
+}
+
+// Forget every voice sample stored for a person; their name stays on every past transcript.
+export function useForgetVoice() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (identityId: string) =>
+      api.delete<void>(`/api/identities/${identityId}/voiceprint`),
+    onSuccess: () => qc.invalidateQueries({ queryKey: queryKeys.voiceprints.all }),
   });
 }
 

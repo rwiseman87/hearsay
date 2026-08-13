@@ -27,6 +27,11 @@ describe("queryKeys factory", () => {
     expect(queryKeys.folders.list(1, 200)).toEqual(["folders", "list", 1, 200]);
     expect(queryKeys.models.download).toEqual(["models", "download"]);
     expect(queryKeys.identities.list(1, 50)).toEqual(["identities", "list", 1, 50]);
+    expect(queryKeys.voiceprints.all).toEqual(["voiceprints"]);
+    expect(queryKeys.voiceprints.list(1, 50)).toEqual(["voiceprints", "list", 1, 50]);
+    // Voiceprints are their own prefix, not a sub-key of identities: forgetting a voice must not
+    // invalidate the identity list (the person is still known), and vice versa.
+    expect(queryKeys.voiceprints.list(1, 50)[0]).not.toBe(queryKeys.identities.all[0]);
     expect(queryKeys.settings.permissions).toEqual(["settings", "permissions"]);
     expect(queryKeys.status.all).toEqual(["status"]);
     // The search key preserves the (already-trimmed) query verbatim.

@@ -25,6 +25,11 @@ export const queryKeys = {
     all: ["identities"] as const,
     list: (page: number, pageSize: number) => ["identities", "list", page, pageSize] as const,
   },
+  // The stored-voiceprint roster (people + the per-meeting voice samples recognition draws on).
+  voiceprints: {
+    all: ["voiceprints"] as const,
+    list: (page: number, pageSize: number) => ["voiceprints", "list", page, pageSize] as const,
+  },
   // Full-text transcript search, keyed by the (trimmed) query string.
   search: {
     query: (q: string) => ["search", q] as const,

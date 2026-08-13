@@ -65,8 +65,10 @@ test("record -> live transcript -> stop -> library -> rename speaker -> reassign
   await dwell(1400); // hold on the Library so the saved meeting is visible
   await page.locator("button.library__row-open").filter({ hasText: TITLE }).click();
 
-  // Rename the diarized speaker via the inline chip editor.
-  await page.getByRole("button", { name: "Speaker 1", exact: true }).click();
+  // Rename the diarized speaker via the chip's actions menu (the chip body itself now toggles the
+  // speaker filter, so renaming lives one level in).
+  await page.getByRole("button", { name: "Speaker actions for Speaker 1" }).click();
+  await page.getByRole("button", { name: "Rename" }).click();
   await page.getByLabel("Rename Speaker 1").fill("Alice");
   await page.locator("button.speaker-chip__save").click();
   // The chip (and the relabeled transcript lines) now read "Alice"; "Speaker 1" is gone.
@@ -84,6 +86,25 @@ test("record -> live transcript -> stop -> library -> rename speaker -> reassign
   // The line now carries the new per-line speaker.
   await expect(page.locator(".live-line__name").filter({ hasText: "Bob" })).toBeVisible();
   await dwell(1400); // hold on the reassigned line
+
+  // Filter the transcript to one speaker: their chip presses in, and every other line — including
+  // the Me channel — drops out.
+  const bobChip = page.getByRole("button", { name: "Bob", exact: true });
+  await bobChip.click();
+  await expect(bobChip).toHaveAttribute("aria-pressed", "true");
+  await expect(page.locator(".live-line__name").filter({ hasText: "Bob" })).toBeVisible();
+  await expect(page.getByText("hello there")).toHaveCount(0);
+  await dwell(1400); // hold on the filtered transcript
+  await page.locator("button.speakers-bar__clear").click();
+  await expect(page.getByText("hello there")).toBeVisible();
+
+  // Alice's cluster was emptied by the reassign above, so filtering to her is the empty case: it
+  // must explain itself and offer a way back, not render a blank pane.
+  await page.getByRole("button", { name: "Alice", exact: true }).click();
+  await expect(page.getByText("No lines from the selected speakers.")).toBeVisible();
+  await page.getByRole("button", { name: "Show all lines" }).click();
+  await expect(page.locator(".live-line__name").filter({ hasText: "Bob" })).toBeVisible();
+  await dwell(1400); // hold on the restored transcript
 
   // Generate notes: the button is enabled because a (stub) notes model resolves, and the scripted
   // summarizer returns a fixed summary.

@@ -154,8 +154,16 @@ shared/protocol/ipc.md  IPC contract (source of truth)   ·   shared/fixtures/  
   labels. Cross-meeting recognition matches a cluster's voiceprint centroid to prior locked speakers by
   cosine similarity above a threshold.
 - Manual labels lock a binding (recognition cannot override a locked name). Manual correction works at
-  two granularities: renaming a whole cluster (locks the binding) and reassigning a single line to
-  another/new speaker (segment-level `cluster_id` override, flagged `edited`).
+  three granularities: renaming a whole cluster (locks the binding), reassigning a single line to
+  another/new speaker (segment-level `cluster_id` override, flagged `edited`), and merging one cluster
+  into another (bulk reassign + drop the source, flagged `edited`, meeting-scoped, freed ordinal never
+  reused).
+- Stored voiceprints are user-manageable (Settings > Voices): list them per person with their
+  per-meeting samples, rename a person everywhere (`409` on a name collision — never a silent identity
+  merge), and forget one sample or all of them. Forgetting sets `centroid = NULL` and nothing else, so
+  names, `locked`, and past transcripts survive and only future recognition stops. The roster lists
+  people who HAVE an embedding, not every known name — a name with no centroid never appears, and
+  clearing someone's last sample drops them from it.
 - Degrade gracefully to "Speaker N" + manual labeling when no name is known.
 - Planned (Phase 3, not yet implemented — today these exist only as IPC protocol fixtures with no
   consumer): calendar roster; active-speaker hints, OCR-primary (ScreenCaptureKit + Vision) with opt-in

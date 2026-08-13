@@ -250,6 +250,7 @@ button:not(:disabled):hover {
 }
 
 .speaker-chip {
+  position: relative;
   display: inline-flex;
   align-items: center;
   gap: 8px;
@@ -296,6 +297,88 @@ button:not(:disabled):hover {
 .speaker-chip__save {
   padding: 3px 10px;
   font-size: var(--fs-sm);
+}
+
+/* Filter toggle: the whole dot+name area is the control, so its accessible name stays exactly the
+   speaker's label and the pressed state is carried by aria-pressed. */
+.speaker-chip__toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+}
+
+.speaker-chip__toggle:hover .speaker-chip__name,
+.speaker-chip__toggle[aria-pressed="true"] .speaker-chip__name {
+  color: var(--accent);
+}
+
+.speaker-chip.is-active {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 18%, var(--surface-2));
+}
+
+.speaker-chip__more {
+  padding: 0 4px;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  line-height: 1;
+  cursor: pointer;
+}
+
+.speaker-chip__more:hover {
+  color: var(--text);
+}
+
+/* Mirrors .line__reassign, but anchored under the chip rather than the transcript row. */
+.speaker-chip__pop {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: var(--z-popover);
+  width: 220px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+  text-align: left;
+}
+
+.speaker-chip__warn {
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--fs-sm);
+  line-height: 1.4;
+}
+
+.speaker-chip__confirm {
+  display: flex;
+  gap: 6px;
+}
+
+.speaker-chip__error {
+  margin: 0;
+  color: var(--danger);
+  font-size: var(--fs-sm);
+}
+
+.speakers-bar__count {
+  color: var(--muted);
+  font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums;
+}
+
+.speakers-bar__clear {
+  padding: 2px 8px;
+  font-size: var(--fs-xs);
 }
 
 .settings-overlay {
@@ -645,6 +728,118 @@ button:not(:disabled):hover {
   margin-top: 8px;
   padding-top: 20px;
   border-top: 1px solid var(--border);
+}
+
+.voices__list,
+.voices__samples {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.voices__row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.voices__row:last-child {
+  border-bottom: none;
+}
+
+/* Name left, badges hard right — so "last heard" lines up down the column instead of drifting with
+   each name's length. */
+.voices__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.voices__expand {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--text);
+  font-size: var(--fs-md);
+  text-align: left;
+  cursor: pointer;
+}
+
+.voices__caret {
+  width: 11px;
+  color: var(--muted);
+}
+
+.voices__name {
+  font-weight: 600;
+}
+
+.voices__badges {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.voices__meta {
+  font-size: var(--fs-xs);
+}
+
+/* Indented to the name column (caret + gap), so the actions read as belonging to the row above. */
+.voices__actions,
+.voices__rename,
+.voices__samples {
+  padding-left: 17px;
+}
+
+.voices__actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.voices__actions .settings__link-btn {
+  margin-left: 0;
+}
+
+.voices__forget {
+  color: var(--danger);
+}
+
+.voices__confirm {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: var(--fs-sm);
+}
+
+.voices__rename input {
+  max-width: 260px;
+}
+
+.voices__samples {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 2px;
+}
+
+.voices__sample {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: var(--fs-sm);
+}
+
+.voices__sample-title {
+  min-width: 140px;
 }
 
 .settings__danger-btn {
