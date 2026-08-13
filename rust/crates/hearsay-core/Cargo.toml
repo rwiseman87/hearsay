@@ -50,3 +50,6 @@ tokio-tungstenite = "0.29.0"
 futures-util = "0.3.32"
 # The scripted Orchestrator fakes (pub mod testing) for the full-stack test's model-free engine.
 hearsay-orchestrator = { path = "../hearsay-orchestrator" }
+# Voiceprint byte encoding, so the voiceprint tests seed centroids the way the refine really does
+# rather than hand-rolling the little-endian f32 layout.
+hearsay-attribution = { path = "../hearsay-attribution" }

@@ -243,6 +243,83 @@
         }
       }
     },
+    "/api/identities/{id}": {
+      "patch": {
+        "tags": [
+          "voiceprints"
+        ],
+        "operationId": "rename_identity",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/IdentityRename"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityRead"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          },
+          "422": {
+            "description": ""
+          }
+        }
+      }
+    },
+    "/api/identities/{id}/voiceprint": {
+      "delete": {
+        "tags": [
+          "voiceprints"
+        ],
+        "operationId": "forget_voice",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          }
+        }
+      }
+    },
     "/api/meetings": {
       "get": {
         "tags": [
@@ -1010,6 +1087,65 @@
         }
       }
     },
+    "/api/meetings/{id}/speakers/{cluster_id}/merge": {
+      "post": {
+        "tags": [
+          "speakers"
+        ],
+        "operationId": "merge_speakers",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "cluster_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SpeakerMerge"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_SpeakerRead"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": ""
+          },
+          "409": {
+            "description": ""
+          },
+          "422": {
+            "description": ""
+          }
+        }
+      }
+    },
     "/api/meetings/{id}/stop": {
       "post": {
         "tags": [
@@ -1479,6 +1615,75 @@
           }
         }
       }
+    },
+    "/api/voiceprints": {
+      "get": {
+        "tags": [
+          "voiceprints"
+        ],
+        "operationId": "list_voiceprints",
+        "parameters": [
+          {
+            "name": "page",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "page_size",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_VoiceprintRead"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/voiceprints/{cluster_id}": {
+      "delete": {
+        "tags": [
+          "voiceprints"
+        ],
+        "operationId": "delete_voiceprint",
+        "parameters": [
+          {
+            "name": "cluster_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": ""
+          },
+          "404": {
+            "description": ""
+          }
+        }
+      }
     }
   },
   "components": {
@@ -1763,6 +1968,18 @@
           "id": {
             "type": "string",
             "format": "uuid"
+          }
+        }
+      },
+      "IdentityRename": {
+        "type": "object",
+        "description": "Rename a person everywhere they appear.",
+        "required": [
+          "display_name"
+        ],
+        "properties": {
+          "display_name": {
+            "type": "string"
           }
         }
       },
@@ -2432,6 +2649,85 @@
           }
         }
       },
+      "Page_VoiceprintRead": {
+        "type": "object",
+        "description": "Paginated list envelope used by every list endpoint (`{ total, page, page_size, items }`).",
+        "required": [
+          "total",
+          "page",
+          "page_size",
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "A person in the stored-voiceprint roster, with every voice sample kept for them (newest meeting\nfirst). Only people who actually have an embedding appear, so `sample_count` is always >= 1;\nclearing someone's last sample drops them from the roster.",
+              "required": [
+                "identity_id",
+                "display_name",
+                "sample_count",
+                "active_count",
+                "samples"
+              ],
+              "properties": {
+                "active_count": {
+                  "type": "integer",
+                  "format": "int64",
+                  "description": "The subset that recognition actually uses (locked, with an embedding)."
+                },
+                "display_name": {
+                  "type": "string"
+                },
+                "email": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "identity_id": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "last_heard": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "date-time",
+                  "description": "Start of the most recent meeting a sample came from."
+                },
+                "sample_count": {
+                  "type": "integer",
+                  "format": "int64",
+                  "description": "Stored samples, whether or not they are recognition candidates."
+                },
+                "samples": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/VoiceprintSampleRead"
+                  }
+                }
+              }
+            }
+          },
+          "page": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "page_size": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "total": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
       "PermissionsInfo": {
         "type": "object",
         "description": "Live TCC permission status probed from the capture helper (not a stored preference). Each field\nis `granted` / `denied` / `undetermined`, or `unknown` when the helper is unavailable.\n`helper_version` is the connected helper's build (`None` when unavailable).",
@@ -2702,6 +2998,20 @@
           }
         }
       },
+      "SpeakerMerge": {
+        "type": "object",
+        "description": "Combine two of a meeting's speakers: the cluster in the path is folded into `into`.",
+        "required": [
+          "into"
+        ],
+        "properties": {
+          "into": {
+            "type": "string",
+            "format": "uuid",
+            "description": "The surviving cluster, in the same meeting."
+          }
+        }
+      },
       "SpeakerRead": {
         "type": "object",
         "description": "A diarization cluster within a meeting, with its resolved display label.",
@@ -2914,6 +3224,95 @@
         "properties": {
           "body": {
             "type": "string"
+          }
+        }
+      },
+      "VoiceprintRead": {
+        "type": "object",
+        "description": "A person in the stored-voiceprint roster, with every voice sample kept for them (newest meeting\nfirst). Only people who actually have an embedding appear, so `sample_count` is always >= 1;\nclearing someone's last sample drops them from the roster.",
+        "required": [
+          "identity_id",
+          "display_name",
+          "sample_count",
+          "active_count",
+          "samples"
+        ],
+        "properties": {
+          "active_count": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The subset that recognition actually uses (locked, with an embedding)."
+          },
+          "display_name": {
+            "type": "string"
+          },
+          "email": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "identity_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "last_heard": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "Start of the most recent meeting a sample came from."
+          },
+          "sample_count": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Stored samples, whether or not they are recognition candidates."
+          },
+          "samples": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VoiceprintSampleRead"
+            }
+          }
+        }
+      },
+      "VoiceprintSampleRead": {
+        "type": "object",
+        "description": "One stored voiceprint: the voice embedding kept on a single meeting's cluster.",
+        "required": [
+          "id",
+          "meeting_id",
+          "meeting_title",
+          "started_at",
+          "locked",
+          "dimension"
+        ],
+        "properties": {
+          "dimension": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Embedding length: 256 on macOS (FluidAudio), 192 on Windows (sherpa). Samples of different\nlengths never match each other."
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "The cluster carrying the embedding — a voiceprint has no id of its own."
+          },
+          "locked": {
+            "type": "boolean",
+            "description": "Whether the name on this cluster was set by hand. Only locked samples are recognition\ncandidates in later meetings."
+          },
+          "meeting_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "meeting_title": {
+            "type": "string"
+          },
+          "started_at": {
+            "type": "string",
+            "format": "date-time"
           }
         }
       }

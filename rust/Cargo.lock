@@ -879,6 +879,7 @@ dependencies = [
  "axum",
  "chrono",
  "futures-util",
+ "hearsay-attribution",
  "hearsay-backends",
  "hearsay-db",
  "hearsay-engine",

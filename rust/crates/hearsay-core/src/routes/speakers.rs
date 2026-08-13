@@ -11,7 +11,7 @@ use hearsay_engine::LiveError;
 use crate::error::{ApiError, ApiResult};
 use crate::extract::{Json, Path, Query};
 use crate::routes::Pagination;
-use crate::schema::{IdentityRead, Page, SpeakerRead, SpeakerRename};
+use crate::schema::{IdentityRead, Page, SpeakerMerge, SpeakerRead, SpeakerRename};
 use crate::state::AppState;
 
 /// Routes served under the `/api` prefix (token-gated by the caller).
@@ -19,6 +19,10 @@ pub fn router() -> Router<AppState> {
     Router::new()
         .route("/meetings/{id}/speakers", get(list_speakers))
         .route("/meetings/{id}/speakers/{cluster_id}", put(rename_speaker))
+        .route(
+            "/meetings/{id}/speakers/{cluster_id}/merge",
+            axum::routing::post(merge_speakers),
+        )
         .route("/meetings/{id}/rediarize", axum::routing::post(rediarize))
         .route("/identities", get(list_identities))
 }
@@ -58,7 +62,7 @@ pub(crate) async fn list_speakers(
 )]
 pub(crate) async fn rename_speaker(
     State(state): State<AppState>,
-    Path((_meeting_id, cluster_id)): Path<(Uuid, Uuid)>,
+    Path((meeting_id, cluster_id)): Path<(Uuid, Uuid)>,
     Json(body): Json<SpeakerRename>,
 ) -> ApiResult<Json<SpeakerRead>> {
     let name = body.display_name.trim();
@@ -67,10 +71,59 @@ pub(crate) async fn rename_speaker(
             "display_name must be 1..=255 characters".into(),
         ));
     }
-    let row = queries::rename_cluster(&state.pool, cluster_id, name)
+    let row = queries::rename_cluster(&state.pool, meeting_id, cluster_id, name)
         .await?
         .ok_or(ApiError::NotFound("speaker not found"))?;
+    // Keep transcript.md in step with the new label (best-effort; the DB is the source of truth).
+    if let Err(err) = state.engine.export_meeting(meeting_id).await {
+        tracing::warn!(error = ?err, meeting_id = %meeting_id, "speaker rename: re-export failed");
+    }
     Ok(Json(row.into()))
+}
+
+#[utoipa::path(
+    post, path = "/api/meetings/{id}/speakers/{cluster_id}/merge", tag = "speakers",
+    params(("id" = Uuid, Path), ("cluster_id" = Uuid, Path)),
+    request_body = SpeakerMerge,
+    responses((status = 200, body = Page<SpeakerRead>), (status = 404), (status = 409), (status = 422)),
+)]
+pub(crate) async fn merge_speakers(
+    State(state): State<AppState>,
+    Path((meeting_id, cluster_id)): Path<(Uuid, Uuid)>,
+    Json(body): Json<SpeakerMerge>,
+) -> ApiResult<Json<Page<SpeakerRead>>> {
+    // Merging is finalized-only, like reassigning: while recording, the live pipeline is still
+    // creating clusters and writing segments underneath us.
+    if state.engine.active_meeting() == Some(meeting_id) {
+        return Err(ApiError::Conflict(
+            "cannot merge speakers while the meeting is recording".into(),
+        ));
+    }
+    match queries::merge_clusters(&state.pool, meeting_id, cluster_id, body.into).await? {
+        queries::MergeOutcome::Merged => {}
+        queries::MergeOutcome::SourceNotFound => {
+            return Err(ApiError::NotFound("speaker not found"))
+        }
+        // The target comes from the body, so a bad one is invalid input rather than a missing
+        // resource — matching how a bad reassign target is reported.
+        queries::MergeOutcome::TargetNotFound => {
+            return Err(ApiError::Unprocessable(
+                "into must be another speaker in this meeting".into(),
+            ))
+        }
+        queries::MergeOutcome::SameCluster => {
+            return Err(ApiError::Unprocessable(
+                "cannot merge a speaker into itself".into(),
+            ))
+        }
+    }
+    if let Err(err) = state.engine.export_meeting(meeting_id).await {
+        tracing::warn!(error = ?err, meeting_id = %meeting_id, "speaker merge: re-export failed");
+    }
+    let speakers = queries::list_speaker_rows(&state.pool, meeting_id).await?;
+    Ok(Json(speaker_page(
+        speakers.into_iter().map(SpeakerRead::from).collect(),
+    )))
 }
 
 #[utoipa::path(

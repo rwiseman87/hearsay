@@ -4,9 +4,12 @@ import { invoke } from "@tauri-apps/api/core";
 
 import { api } from "../api/client";
 import {
+  useDeleteVoiceprint,
   useDownloadStatus,
+  useForgetVoice,
   useModelCatalog,
   usePermissions,
+  useRenameIdentity,
   useResetModels,
   useSettings,
   useStartDownload,
@@ -14,9 +17,15 @@ import {
   useUpdateRecording,
   useUpdateSpeakers,
   useUpdateStorage,
+  useVoiceprints,
 } from "../api/hooks";
 import { queryKeys } from "../api/queryKeys";
-import type { ModelSettings, RecordingSettings, SpeakerSettings } from "../api/types";
+import type {
+  ModelSettings,
+  RecordingSettings,
+  SpeakerSettings,
+  VoiceprintRead,
+} from "../api/types";
 
 // The Danger Zone's erase/quit actions are Tauri IPC (desktop shell), not the loopback HTTP API, so
 // they only exist in the packaged app. In a plain browser (dev) the shell isn't there.
@@ -30,6 +39,7 @@ interface Props {
 const PANELS = [
   { id: "recording", label: "Recording & Privacy" },
   { id: "speakers", label: "Speakers" },
+  { id: "voices", label: "Voices" },
   { id: "models", label: "Models" },
   { id: "storage", label: "Storage" },
   { id: "permissions", label: "Permissions" },
@@ -256,12 +266,224 @@ function SpeakersPanel() {
         </div>
         <span className="settings__row-hint muted">
           How similar a voice must be to auto-match someone named in a past meeting. Higher is
-          stricter.
+          stricter. See Voices for who is currently known.
         </span>
       </div>
       {update.isError ? (
         <p className="settings__error" role="alert">
           {(update.error as Error).message}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+function voiceDate(iso: string): string {
+  return new Date(iso).toLocaleDateString(undefined, {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+  });
+}
+
+// What the roster chip says about a person. Everyone listed has at least one stored sample, but a
+// sample only feeds recognition once its name was set by hand (locked) — so "saved but not matching
+// anything" is a real, distinct state worth showing.
+function voiceStatus(person: VoiceprintRead): { text: string; modifier: string } {
+  if (person.active_count === 0) return { text: "Not in use", modifier: "undetermined" };
+  return {
+    text: `${person.active_count} voice${person.active_count === 1 ? "" : "s"}`,
+    modifier: "granted",
+  };
+}
+
+function VoicePersonRow({ person }: { person: VoiceprintRead }) {
+  const rename = useRenameIdentity();
+  const removeSample = useDeleteVoiceprint();
+  const forget = useForgetVoice();
+  const [expanded, setExpanded] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [name, setName] = useState(person.display_name);
+  const [confirmForget, setConfirmForget] = useState(false);
+
+  // Re-sync the draft when the stored name changes (a rename elsewhere, or a refetch). Depend on the
+  // primitive we actually read, not the person object (a fresh reference on every fetch).
+  const displayName = person.display_name;
+  useEffect(() => setName(displayName), [displayName]);
+
+  const status = voiceStatus(person);
+  const dirty = name.trim() !== "" && name.trim() !== person.display_name;
+
+  const save = () => {
+    if (!dirty) return;
+    rename.mutate(
+      { identityId: person.identity_id, displayName: name.trim() },
+      { onSuccess: () => setEditing(false) },
+    );
+  };
+  const cancelEdit = () => {
+    setName(person.display_name);
+    rename.reset();
+    setEditing(false);
+  };
+
+  return (
+    <li className="voices__row">
+      <div className="voices__head">
+        <button
+          type="button"
+          className="voices__expand"
+          aria-expanded={expanded}
+          onClick={() => setExpanded((prev) => !prev)}
+        >
+          <span className="voices__caret" aria-hidden="true">
+            {expanded ? "▾" : "▸"}
+          </span>
+          <span className="voices__name">{person.display_name}</span>
+        </button>
+        <span className="voices__badges">
+          <span className={`settings__status settings__status--${status.modifier}`}>
+            {status.text}
+          </span>
+          {person.last_heard ? (
+            <span className="voices__meta muted">last heard {voiceDate(person.last_heard)}</span>
+          ) : null}
+        </span>
+      </div>
+
+      {editing ? (
+        <div className="settings__inline voices__rename">
+          <input
+            aria-label={`Rename ${person.display_name}`}
+            autoFocus
+            value={name}
+            disabled={rename.isPending}
+            onChange={(event) => setName(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") save();
+              if (event.key === "Escape") cancelEdit();
+            }}
+          />
+          <button type="button" disabled={!dirty || rename.isPending} onClick={save}>
+            {rename.isPending ? "Saving…" : "Save"}
+          </button>
+          <button type="button" disabled={rename.isPending} onClick={cancelEdit}>
+            Cancel
+          </button>
+        </div>
+      ) : (
+        <div className="voices__actions">
+          <button type="button" className="settings__link-btn" onClick={() => setEditing(true)}>
+            Rename
+          </button>
+          {confirmForget ? (
+            <span className="voices__confirm">
+              Forget this voice?
+              <button
+                type="button"
+                className="settings__link-btn voices__forget"
+                disabled={forget.isPending}
+                onClick={() =>
+                  forget.mutate(person.identity_id, {
+                    onSuccess: () => setConfirmForget(false),
+                  })
+                }
+              >
+                {forget.isPending ? "Forgetting…" : "Confirm"}
+              </button>
+              <button
+                type="button"
+                className="settings__link-btn"
+                disabled={forget.isPending}
+                onClick={() => setConfirmForget(false)}
+              >
+                Cancel
+              </button>
+            </span>
+          ) : (
+            <button
+              type="button"
+              className="settings__link-btn voices__forget"
+              onClick={() => setConfirmForget(true)}
+            >
+              Forget voice
+            </button>
+          )}
+        </div>
+      )}
+
+      {rename.isError ? (
+        <p className="settings__error" role="alert">
+          {(rename.error as Error).message}
+        </p>
+      ) : null}
+      {forget.isError ? (
+        <p className="settings__error" role="alert">
+          {(forget.error as Error).message}
+        </p>
+      ) : null}
+
+      {expanded ? (
+        <ul className="voices__samples">
+          {person.samples.map((sample) => (
+            <li key={sample.id} className="voices__sample">
+              <span className="voices__sample-title">{sample.meeting_title}</span>
+              <span className="voices__meta muted">
+                {voiceDate(sample.started_at)} · {sample.dimension}-d
+                {sample.locked ? "" : " · not in use"}
+              </span>
+              <button
+                type="button"
+                className="settings__link-btn"
+                disabled={removeSample.isPending}
+                onClick={() => removeSample.mutate(sample.id)}
+              >
+                Remove
+              </button>
+            </li>
+          ))}
+          {removeSample.isError ? (
+            <li className="settings__error" role="alert">
+              {(removeSample.error as Error).message}
+            </li>
+          ) : null}
+        </ul>
+      ) : null}
+    </li>
+  );
+}
+
+function VoicesPanel() {
+  const voiceprints = useVoiceprints();
+  const people = voiceprints.data?.items ?? [];
+
+  if (voiceprints.isLoading) return <p className="muted">Loading…</p>;
+
+  return (
+    <div className="settings__panel">
+      <h3 className="settings__panel-title">Voices</h3>
+      <p className="settings__row-hint muted">
+        Naming a speaker after a meeting is refined saves a sample of their voice, which is how
+        they are recognized in later meetings. Removing a sample stops that matching — names already
+        written into past transcripts are kept either way, and someone whose last sample goes leaves
+        this list. Samples recorded on a different platform have a different length and never match
+        each other.
+      </p>
+      {people.length === 0 ? (
+        <p className="muted">
+          No voices saved yet. Name a speaker in a meeting that has been refined and they will
+          appear here.
+        </p>
+      ) : (
+        <ul className="voices__list">
+          {people.map((person) => (
+            <VoicePersonRow key={person.identity_id} person={person} />
+          ))}
+        </ul>
+      )}
+      {voiceprints.isError ? (
+        <p className="settings__error" role="alert">
+          {(voiceprints.error as Error).message}
         </p>
       ) : null}
     </div>
@@ -924,6 +1146,7 @@ export default function SettingsPage({ onClose }: Props) {
           <div className="settings__content">
             {active === "recording" ? <RecordingPanel /> : null}
             {active === "speakers" ? <SpeakersPanel /> : null}
+            {active === "voices" ? <VoicesPanel /> : null}
             {active === "models" ? <ModelsPanel /> : null}
             {active === "storage" ? <StoragePanel /> : null}
             {active === "permissions" ? <PermissionsPanel /> : null}

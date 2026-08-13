@@ -56,11 +56,26 @@ flowchart TB
         match["recognize_speakers -> best_identity<br/>cosine >= threshold, one name per ordinal"]
         known --> match
     end
+    subgraph forget["5. Forget (Settings > Voices)"]
+        clear["clear_cluster_centroid / forget_identity_voice<br/>centroid = NULL, name + locked kept"]
+    end
     norm --> rep
     col --> rename
     rename --> known
     col --> match
+    col --> clear
 ```
+
+Step 5 is the only way a voiceprint leaves the candidate set without the meeting itself being
+deleted. It clears the embedding and nothing else: the cluster row, its identity binding, its
+`locked` flag, and every transcript line already labelled with that name all survive. Merging two
+speakers also drops a sample, since it deletes the source cluster the embedding lived on.
+
+The Voices roster is the set of people with a stored embedding — not the set of known names. A
+person named on a meeting that was never refined has no centroid and does not appear, and clearing
+someone's last sample removes them from the list (they remain an `identities` row, so past
+transcripts keep their name and the rename autocomplete still offers it). Keeping such a row would
+mean showing an entry that matches nothing and has nothing left to remove.
 
 ## 1. Where voiceprints come from (production)
 
@@ -449,8 +464,15 @@ merged voiceprint is still a unit vector suitable for cosine matching.
 - **No "a cluster under N seconds cannot be a speaker" rule.** That reads as a tidy denoiser but is
   really a cliff that silently deletes a real participant who spoke briefly. Duration enters
   consolidation as evidence (`attenuation`), never as a hard cutoff.
-- **No manual centroid editing.** A user names and locks a cluster; the centroid itself is never
-  hand-edited.
+- **No manual centroid editing.** A user names and locks a cluster, and can remove a stored
+  voiceprint outright (Settings > Voices), but the embedding itself is never hand-edited — there is
+  no "adjust this vector" or "re-record my voice" path.
+- **No identity merging.** Renaming a person to a name someone else already holds is a `409`, not a
+  silent fold of two identities into one. Combining speakers is a per-meeting cluster operation; it
+  never rewrites another meeting.
+- **No re-recognition of past meetings.** Removing a voiceprint stops future matching; it does not
+  revisit meetings already labelled from it. Those names stay until edited by hand or replaced by a
+  re-diarize.
 
 ## Testing
 

@@ -74,3 +74,132 @@ describe("SettingsPage models validation", () => {
     expect(await screen.findByText("refine model not found: /bad/path")).toBeTruthy();
   });
 });
+
+describe("SettingsPage voices panel", () => {
+  const alice = {
+    identity_id: "i1",
+    display_name: "Alice",
+    email: null,
+    sample_count: 2,
+    active_count: 2,
+    last_heard: "2026-08-01T10:00:00Z",
+    samples: [
+      {
+        id: "c1",
+        meeting_id: "m1",
+        meeting_title: "Weekly Sync",
+        started_at: "2026-08-01T10:00:00Z",
+        locked: true,
+        dimension: 256,
+      },
+      {
+        id: "c2",
+        meeting_id: "m2",
+        meeting_title: "Kickoff",
+        started_at: "2026-07-02T10:00:00Z",
+        locked: true,
+        dimension: 256,
+      },
+    ],
+  };
+  // A sample exists but was never manually confirmed, so it is not a recognition candidate.
+  const bob = {
+    identity_id: "i2",
+    display_name: "Bob",
+    email: null,
+    sample_count: 1,
+    active_count: 0,
+    last_heard: "2026-07-02T10:00:00Z",
+    samples: [
+      {
+        id: "c3",
+        meeting_id: "m2",
+        meeting_title: "Design review",
+        started_at: "2026-07-02T10:00:00Z",
+        locked: false,
+        dimension: 256,
+      },
+    ],
+  };
+
+  const voiceprints = (...items: unknown[]) =>
+    http.get("/api/voiceprints", () =>
+      HttpResponse.json({ total: items.length, page: 1, page_size: 50, items }),
+    );
+
+  it("lists people and expands to their stored samples", async () => {
+    const user = userEvent.setup();
+    server.use(voiceprints(alice, bob));
+    renderSettings();
+
+    await user.click(screen.getByRole("button", { name: "Voices" }));
+    expect(await screen.findByText("2 voices")).toBeTruthy();
+    // Stored but unconfirmed, so it matches nothing yet — a distinct state from having no sample.
+    expect(screen.getByText("Not in use")).toBeTruthy();
+
+    // Samples load with the roster, so expanding is instant and needs no second endpoint.
+    expect(screen.queryByText("Weekly Sync")).toBeNull();
+    await user.click(screen.getByRole("button", { name: /Alice/ }));
+    expect(screen.getByText("Weekly Sync")).toBeTruthy();
+    expect(screen.getByText("Kickoff")).toBeTruthy();
+  });
+
+  it("removes a single sample without touching the person", async () => {
+    const user = userEvent.setup();
+    let deleted: string | null = null;
+    server.use(
+      voiceprints(alice),
+      http.delete("/api/voiceprints/:clusterId", ({ params }) => {
+        deleted = String(params.clusterId);
+        return new HttpResponse(null, { status: 204 });
+      }),
+    );
+    renderSettings();
+
+    await user.click(screen.getByRole("button", { name: "Voices" }));
+    await user.click(await screen.findByRole("button", { name: /Alice/ }));
+    await user.click(screen.getAllByRole("button", { name: "Remove" })[0]);
+
+    expect(deleted).toBe("c1");
+  });
+
+  it("forgets a whole voice behind a confirm step", async () => {
+    const user = userEvent.setup();
+    let forgot: string | null = null;
+    server.use(
+      voiceprints(alice),
+      http.delete("/api/identities/:id/voiceprint", ({ params }) => {
+        forgot = String(params.id);
+        return new HttpResponse(null, { status: 204 });
+      }),
+    );
+    renderSettings();
+
+    await user.click(screen.getByRole("button", { name: "Voices" }));
+    await user.click(await screen.findByRole("button", { name: "Forget voice" }));
+    expect(forgot).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Confirm" }));
+
+    expect(forgot).toBe("i1");
+  });
+
+  it("surfaces a name collision from the rename", async () => {
+    const user = userEvent.setup();
+    server.use(
+      voiceprints(alice, bob),
+      http.patch("/api/identities/:id", () =>
+        HttpResponse.json({ detail: "another person already uses that name" }, { status: 409 }),
+      ),
+    );
+    renderSettings();
+
+    await user.click(screen.getByRole("button", { name: "Voices" }));
+    // The field is revealed by Rename rather than sitting on every row; Alice is the first person.
+    await user.click((await screen.findAllByRole("button", { name: "Rename" }))[0]);
+    const input = screen.getByRole("textbox", { name: "Rename Alice" });
+    await user.clear(input);
+    await user.type(input, "Bob{Enter}");
+
+    expect(await screen.findByText("another person already uses that name")).toBeTruthy();
+  });
+});

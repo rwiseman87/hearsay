@@ -9,13 +9,23 @@ vi.mock("./client", () => ({
 }));
 
 import { api } from "./client";
-import { useReassignSpeaker, useSegments, useUpdateRecording } from "./hooks";
+import {
+  useDeleteVoiceprint,
+  useForgetVoice,
+  useMergeSpeakers,
+  useReassignSpeaker,
+  useRenameIdentity,
+  useSegments,
+  useUpdateRecording,
+} from "./hooks";
 import { queryKeys } from "./queryKeys";
 import type { RecordingSettings, SegmentRead, SettingsRead } from "./types";
 
 const apiGet = api.get as unknown as Mock;
 const apiPut = api.put as unknown as Mock;
 const apiPatch = api.patch as unknown as Mock;
+const apiPost = api.post as unknown as Mock;
+const apiDelete = api.delete as unknown as Mock;
 
 function makeClient() {
   return new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -111,5 +121,73 @@ describe("useReassignSpeaker", () => {
       cluster_id: undefined,
       display_name: "Dana",
     });
+  });
+});
+
+describe("useMergeSpeakers", () => {
+  it("POSTs the merge and refreshes the transcript, speakers and voiceprint roster", async () => {
+    const client = makeClient();
+    const invalidate = vi.spyOn(client, "invalidateQueries");
+    apiPost.mockResolvedValue({ total: 1, page: 1, page_size: 1, items: [] });
+
+    const { result } = renderHook(() => useMergeSpeakers("m1"), { wrapper: wrapperFor(client) });
+    act(() => {
+      result.current.mutate({ clusterId: "c1", into: "c2" });
+    });
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+
+    expect(apiPost).toHaveBeenCalledWith("/api/meetings/m1/speakers/c1/merge", { into: "c2" });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.meetings.segments("m1") });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.meetings.speakers("m1") });
+    // A merge deletes the source cluster, taking its stored voice sample with it.
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.voiceprints.all });
+    // But it neither creates nor renames a person, so the identity list is still good.
+    expect(invalidate).not.toHaveBeenCalledWith({ queryKey: queryKeys.identities.all });
+  });
+});
+
+describe("voiceprint mutations", () => {
+  it("useRenameIdentity invalidates every meeting, since the label changed in all of them", async () => {
+    const client = makeClient();
+    const invalidate = vi.spyOn(client, "invalidateQueries");
+    apiPatch.mockResolvedValue({ id: "i1", display_name: "Alicia", email: null });
+
+    const { result } = renderHook(() => useRenameIdentity(), { wrapper: wrapperFor(client) });
+    act(() => {
+      result.current.mutate({ identityId: "i1", displayName: "Alicia" });
+    });
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+
+    expect(apiPatch).toHaveBeenCalledWith("/api/identities/i1", { display_name: "Alicia" });
+    // The broad prefix on purpose: unlike a per-meeting speaker rename, this rewrote speaker_label
+    // across every meeting the person appears in, so no cached meeting query is still correct.
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.meetings.all });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.voiceprints.all });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.identities.all });
+  });
+
+  it("forgetting a voice touches only the roster, since no label or transcript changes", async () => {
+    const client = makeClient();
+    const invalidate = vi.spyOn(client, "invalidateQueries");
+    apiDelete.mockResolvedValue(undefined);
+
+    const sample = renderHook(() => useDeleteVoiceprint(), { wrapper: wrapperFor(client) });
+    act(() => {
+      sample.result.current.mutate("c1");
+    });
+    await waitFor(() => expect(sample.result.current.isSuccess).toBe(true));
+    expect(apiDelete).toHaveBeenCalledWith("/api/voiceprints/c1");
+
+    const person = renderHook(() => useForgetVoice(), { wrapper: wrapperFor(client) });
+    act(() => {
+      person.result.current.mutate("i1");
+    });
+    await waitFor(() => expect(person.result.current.isSuccess).toBe(true));
+    expect(apiDelete).toHaveBeenLastCalledWith("/api/identities/i1/voiceprint");
+
+    // Only `clusters.centroid` moved, so meetings and identities stay valid.
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.voiceprints.all });
+    expect(invalidate).not.toHaveBeenCalledWith({ queryKey: queryKeys.meetings.all });
+    expect(invalidate).not.toHaveBeenCalledWith({ queryKey: queryKeys.identities.all });
   });
 });

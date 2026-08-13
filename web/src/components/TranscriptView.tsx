@@ -27,7 +27,8 @@ import { getToken } from "../api/token";
 import type { FolderRead, MeetingRead, PageIdentity, SpeakerRead } from "../api/types";
 import { useTranscript, type TranscriptLine } from "../hooks/useTranscript";
 import { NotesPanel } from "./NotesPanel";
-import { SpeakerPanel } from "./SpeakerPanel";
+import { ME_FILTER_KEY, SpeakerPanel } from "./SpeakerPanel";
+import { speakerColorVar } from "./speakerColors";
 import { UserNotesSection } from "./UserNotesSection";
 
 const RECAP_MIN = 280;
@@ -70,19 +71,11 @@ function folderChain(folderId: string | null | undefined, folders: FolderRead[])
   return names;
 }
 
-// Per-speaker avatar color, matching SpeakerLine so a speaker keeps one color across the live and
-// finalized views: Me is fixed; each Them speaker rotates deterministically by a hash of its label.
-const SPEAKER_COLORS = ["--spk-1", "--spk-2", "--spk-3", "--spk-4"] as const;
-
-function hashLabel(text: string): number {
-  let acc = 0;
-  for (let i = 0; i < text.length; i++) acc = (acc * 31 + text.charCodeAt(i)) >>> 0;
-  return acc;
-}
-
+// Per-speaker avatar color, matching SpeakerLine and the speaker chips so a speaker keeps one color
+// across the live and finalized views: Me is fixed, every Them speaker comes from the shared map.
 function colorVar(line: TranscriptLine): string {
   if (line.stream === "me") return "--me";
-  return SPEAKER_COLORS[hashLabel(line.speaker_label) % SPEAKER_COLORS.length];
+  return speakerColorVar(line.speaker_label);
 }
 
 // Up to two initials from a speaker label ("Dana Reyes" -> "DR", "Speaker 1" -> "S1", "Me" -> "M").
@@ -159,6 +152,9 @@ type IdentityItem = PageIdentity["items"][number];
 // underlying query has no data yet (a fresh `[]` each render would defeat the row memo).
 const NO_SPEAKERS: SpeakerRead[] = [];
 const NO_IDENTITIES: IdentityItem[] = [];
+
+// The "no speaker filter" set, hoisted so clearing the filter restores a stable reference.
+const NO_FILTER: ReadonlySet<string> = new Set();
 
 interface TranscriptRowProps {
   line: TranscriptLine;
@@ -471,6 +467,8 @@ export function TranscriptView({ meeting, jumpTo }: Props) {
   // In-meeting find (client-side over the loaded lines).
   const [findQuery, setFindQuery] = useState("");
   const [findIndex, setFindIndex] = useState(0);
+  // Speaker filter: cluster ids (plus ME_FILTER_KEY) to show. Empty = show everything.
+  const [speakerFilter, setSpeakerFilter] = useState<ReadonlySet<string>>(NO_FILTER);
   // Inline text edit: the id of the segment being edited plus its draft text.
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editText, setEditText] = useState("");
@@ -484,30 +482,78 @@ export function TranscriptView({ meeting, jumpTo }: Props) {
   const [jumpIndex, setJumpIndex] = useState<number | null>(null);
   const handledJump = useRef(0);
 
+  // The lines actually rendered. Everything index-based below — playback highlighting, find, the
+  // search jump, `data-index` — is computed over THIS list, so there is one index space rather than
+  // a visible/underlying pair to keep in step. With no filter this returns `lines` itself, so the
+  // live render path is unchanged by reference as well as by value.
+  //
+  // A Them line with no cluster cannot belong to any chip, so it drops out while filtering. In a
+  // finalized meeting every Them line has one (the refine re-creates them, and the live pipeline
+  // creates them as it goes), so this only bites on unusual rows.
+  const visibleLines = useMemo(() => {
+    if (speakerFilter.size === 0) return lines;
+    return lines.filter((line) =>
+      line.stream === "me"
+        ? speakerFilter.has(ME_FILTER_KEY)
+        : line.cluster_id != null && speakerFilter.has(line.cluster_id),
+    );
+  }, [lines, speakerFilter]);
+
   // The audio.wav timeline is meeting-relative (sample N = second N), so the currently-playing
   // line is the last one whose start time has passed.
   const activeIndex = useMemo(() => {
     if (currentTime <= 0) return -1;
     let index = -1;
-    for (let i = 0; i < lines.length; i++) {
-      if (lines[i].start_s <= currentTime) index = i;
+    for (let i = 0; i < visibleLines.length; i++) {
+      if (visibleLines[i].start_s <= currentTime) index = i;
     }
     return index;
-  }, [lines, currentTime]);
+  }, [visibleLines, currentTime]);
 
-  // Indices of lines matching the find query, in document order.
+  // Indices of lines matching the find query, in document order. Over the visible lines, so the
+  // "3/12" counter and the ↑/↓ navigation scope themselves to the filter for free.
   const matchIndices = useMemo(() => {
     const q = findQuery.trim().toLowerCase();
     if (!q) return [] as number[];
     const out: number[] = [];
-    for (let i = 0; i < lines.length; i++) {
-      if (lines[i].text.toLowerCase().includes(q)) out.push(i);
+    for (let i = 0; i < visibleLines.length; i++) {
+      if (visibleLines[i].text.toLowerCase().includes(q)) out.push(i);
     }
     return out;
-  }, [lines, findQuery]);
+  }, [visibleLines, findQuery]);
 
   // A set view of the matches for O(1) per-line membership tests in the render loop below.
   const matchSet = useMemo(() => new Set(matchIndices), [matchIndices]);
+
+  // Stable references (see NO_SPEAKERS/NO_IDENTITIES): react-query keeps `data` referentially stable
+  // across unchanged refetches, so passing these to every row does not bust the row memo. Declared
+  // above the early return so the prune effect below can be an unconditional hook.
+  const speakerItems = speakers.data?.items ?? NO_SPEAKERS;
+  const identityItems = identities.data?.items ?? NO_IDENTITIES;
+
+  // Drop filter entries whose cluster no longer exists — after a merge (the source cluster is
+  // deleted) or a re-diarize (every cluster is replaced). Without this the filter stays non-empty
+  // while matching nothing, and the transcript silently empties with no visible cause. Returning the
+  // previous set unchanged when nothing was pruned is what keeps this from looping.
+  useEffect(() => {
+    setSpeakerFilter((prev) => {
+      if (prev.size === 0) return prev;
+      const valid = new Set(speakerItems.map((speaker) => speaker.id));
+      valid.add(ME_FILTER_KEY);
+      const next = new Set([...prev].filter((key) => valid.has(key)));
+      return next.size === prev.size ? prev : next;
+    });
+  }, [speakerItems]);
+
+  const onToggleSpeaker = useCallback((key: string) => {
+    setSpeakerFilter((prev) => {
+      const next = new Set(prev);
+      if (!next.delete(key)) next.add(key);
+      return next;
+    });
+  }, []);
+
+  const onClearSpeakerFilter = useCallback(() => setSpeakerFilter(NO_FILTER), []);
 
   // Scroll a specific line (by its render index) into the middle of the list viewport.
   const scrollToLine = (index: number) => {
@@ -533,6 +579,7 @@ export function TranscriptView({ meeting, jumpTo }: Props) {
     setDuration(0);
     setFindQuery("");
     setFindIndex(0);
+    setSpeakerFilter(NO_FILTER);
     setEditingId(null);
     setConfirmRefine(false);
     setJumpIndex(null);
@@ -557,9 +604,12 @@ export function TranscriptView({ meeting, jumpTo }: Props) {
 
   // A search jump: once the transcript has loaded, scroll to and highlight the line nearest the
   // target moment. Keyed on the jump nonce so it fires once per request.
+  // A jump comes from cross-meeting search and must always land on its line, so it clears any
+  // speaker filter first — otherwise the target may not be on screen at all.
   useEffect(() => {
     if (!jumpTo || jumpTo.nonce === handledJump.current || lines.length === 0) return;
     handledJump.current = jumpTo.nonce;
+    setSpeakerFilter(NO_FILTER);
     let target = 0;
     for (let i = 0; i < lines.length; i++) {
       if (lines[i].start_s <= jumpTo.startS) target = i;
@@ -685,10 +735,7 @@ export function TranscriptView({ meeting, jumpTo }: Props) {
   const audioUrl = `/api/meetings/${meeting.id}/audio?token=${encodeURIComponent(getToken())}`;
   const editedThemCount = lines.filter((line) => line.stream === "them" && line.edited).length;
   const currentMatch = matchIndices.length > 0 ? matchIndices[Math.min(findIndex, matchIndices.length - 1)] : -1;
-  // Stable references (see NO_SPEAKERS/NO_IDENTITIES): react-query keeps `data` referentially stable
-  // across unchanged refetches, so passing these to every row does not bust the row memo.
-  const speakerItems = speakers.data?.items ?? NO_SPEAKERS;
-  const identityItems = identities.data?.items ?? NO_IDENTITIES;
+  const hasMe = lines.some((line) => line.stream === "me");
 
   const stepMatch = (delta: number) => {
     if (matchIndices.length === 0) return;
@@ -933,7 +980,16 @@ export function TranscriptView({ meeting, jumpTo }: Props) {
           </span>
         </div>
       ) : null}
-      <SpeakerPanel meetingId={meeting.id} live={recording} />
+      <SpeakerPanel
+        meetingId={meeting.id}
+        live={recording}
+        selected={speakerFilter}
+        hasMe={hasMe}
+        onToggle={onToggleSpeaker}
+        onClear={onClearSpeakerFilter}
+        visibleCount={visibleLines.length}
+        totalCount={lines.length}
+      />
       {recording && connection && connection !== "open" ? (
         <p className="transcript__status" role="status">
           {connection === "reconnecting"
@@ -1028,7 +1084,7 @@ export function TranscriptView({ meeting, jumpTo }: Props) {
               pinnedToBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 48;
             }}
           >
-            {lines.map((line, index) => {
+            {visibleLines.map((line, index) => {
               const active = index === activeIndex;
               const editing = editingId != null && line.id === editingId;
               const reassignOpen = reassigningId != null && line.id === reassigningId;
@@ -1068,13 +1124,31 @@ export function TranscriptView({ meeting, jumpTo }: Props) {
                 />
               );
             })}
-            {lines.length === 0 ? (
+            {visibleLines.length === 0 ? (
               <li className="muted">
-                {recording
-                  ? preparing
-                    ? "Preparing transcription (loading models)…"
-                    : "Listening…"
-                  : "No transcript."}
+                {lines.length > 0 ? (
+                  <>
+                    No lines from the selected speakers.{" "}
+                    {/* Worded differently from the strip's "Clear filter" on purpose: both are on
+                        screen at once here, and two controls sharing an accessible name is
+                        ambiguous to screen readers and to anything selecting by name. */}
+                    <button
+                      type="button"
+                      className="settings__link-btn"
+                      onClick={onClearSpeakerFilter}
+                    >
+                      Show all lines
+                    </button>
+                  </>
+                ) : recording ? (
+                  preparing ? (
+                    "Preparing transcription (loading models)…"
+                  ) : (
+                    "Listening…"
+                  )
+                ) : (
+                  "No transcript."
+                )}
               </li>
             ) : null}
           </ol>
