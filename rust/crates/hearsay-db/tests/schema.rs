@@ -6,6 +6,7 @@
 use std::borrow::Cow;
 use std::collections::HashMap;
 
+use chrono::Utc;
 use hearsay_attribution::{centroid_from_bytes, centroid_to_bytes};
 use hearsay_db::models::{MeetingStatus, Stream};
 use hearsay_db::queries::{NotesResult, RefineResult, RefinedThemSegment};
@@ -1183,6 +1184,114 @@ async fn effective_settings_tolerate_corrupt_or_partial_rows() {
             .await
             .unwrap(),
         (false, 0.55)
+    );
+}
+
+#[tokio::test]
+async fn effective_compression_defaults_and_overrides() {
+    let pool = memory_pool().await;
+
+    // No stored row: the config defaults stand.
+    assert_eq!(
+        queries::effective_compression(&pool, true, 7)
+            .await
+            .unwrap(),
+        (true, 7)
+    );
+
+    // A storage row written before archival existed carries only `output_dir`. Each field must fall
+    // back independently — otherwise the feature would arrive disabled (or at 0 days) on every
+    // install that had ever set a recordings folder.
+    queries::set_preference(
+        &pool,
+        queries::SECTION_STORAGE,
+        r#"{"output_dir":"/custom/rec"}"#,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        queries::effective_compression(&pool, true, 7)
+            .await
+            .unwrap(),
+        (true, 7)
+    );
+
+    // A full row wins.
+    queries::set_preference(
+        &pool,
+        queries::SECTION_STORAGE,
+        r#"{"output_dir":"/custom/rec","compress_audio":false,"compress_after_days":30}"#,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        queries::effective_compression(&pool, true, 7)
+            .await
+            .unwrap(),
+        (false, 30)
+    );
+
+    // A corrupt row degrades to the defaults rather than failing the sweep.
+    queries::set_preference(&pool, queries::SECTION_STORAGE, "not json")
+        .await
+        .unwrap();
+    assert_eq!(
+        queries::effective_compression(&pool, false, 14)
+            .await
+            .unwrap(),
+        (false, 14)
+    );
+}
+
+#[tokio::test]
+async fn list_finalized_before_selects_only_aged_finalized_meetings() {
+    let pool = memory_pool().await;
+    let now = Utc::now();
+    let old = now - chrono::Duration::days(30);
+
+    // Finalized and old: eligible.
+    let aged = queries::create_meeting(&pool, "aged", "aged", "/tmp/aged", old)
+        .await
+        .unwrap();
+    queries::finalize_meeting(&pool, aged.id, old, MeetingStatus::Finalized)
+        .await
+        .unwrap();
+
+    // Finalized but recent: not yet.
+    let fresh = queries::create_meeting(&pool, "fresh", "fresh", "/tmp/fresh", now)
+        .await
+        .unwrap();
+    queries::finalize_meeting(&pool, fresh.id, now, MeetingStatus::Finalized)
+        .await
+        .unwrap();
+
+    // Old but still recording: never a candidate, however old it looks.
+    let live = queries::create_meeting(&pool, "live", "live", "/tmp/live", old)
+        .await
+        .unwrap();
+
+    // Finalized by the startup reconcile after a hard exit, so `ended_at` was never stamped: the
+    // age must fall back to `started_at`, or this meeting is archived never.
+    let no_end = queries::create_meeting(&pool, "no-end", "no-end", "/tmp/no-end", old)
+        .await
+        .unwrap();
+    queries::set_meeting_finalized(&pool, no_end.id)
+        .await
+        .unwrap();
+
+    let cutoff = now - chrono::Duration::days(7);
+    let found = queries::list_finalized_before(&pool, cutoff).await.unwrap();
+    let ids: Vec<_> = found.iter().map(|m| m.id).collect();
+
+    assert!(ids.contains(&aged.id), "aged meeting should be eligible");
+    assert!(
+        ids.contains(&no_end.id),
+        "null ended_at should use started_at"
+    );
+    assert!(!ids.contains(&fresh.id), "recent meeting should be skipped");
+    assert!(
+        !ids.contains(&live.id),
+        "recording meeting should be skipped"
     );
 }
 

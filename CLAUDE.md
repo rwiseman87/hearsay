@@ -49,6 +49,7 @@ rust/crates/
   hearsay-notes/        the local-LLM notes sidecar (llama-cpp-2); spawned by the core, kept out of its binary
   hearsay-notes-prompt/ dependency-free prompt build + reply parse, shared by the core default + the notes sidecar
   hearsay-attribution/  speaker clustering / voiceprint match / segment-speaker assignment (pure logic)
+  hearsay-audio/        lossless FLAC archival of the recorded meeting wav (encode + decode + byte-exact verify)
   hearsay-ipc/          binary frame codec + NDJSON control codec (source of truth for the IPC contract) + gen_fixtures bin
 helper/                 SwiftPM: hearsay-{helper,live,me,diarize} executables + HearsayIPC + SidecarIO libraries
 web/                    React + TS frontend; web/src-tauri/ is the Tauri desktop shell
@@ -218,5 +219,6 @@ shared/protocol/ipc.md  IPC contract (source of truth)   ·   shared/fixtures/  
 - HEARSAY_NOTES_PATH: path to the `hearsay-notes` sidecar (default a `hearsay-notes` sibling of the core executable — where the bundler stages it and where the cargo target dir puts it in dev)
 - HEARSAY_NOTES_PROMPT: default prompt template for the notes step (its `{transcript}` placeholder is filled with the finalized transcript; the transcript is appended if omitted). Defaults to the built-in template. The Settings > Models panel overrides it per install; applies to the next generate, no restart
 - HEARSAY_MODELS_DIR: root the download manager writes notes models into and references them from (default `outputs/models`; the desktop shell points it at a persistent app-data dir so downloads survive reinstall)
+- HEARSAY_COMPRESS_AUDIO / HEARSAY_COMPRESS_AFTER_DAYS: defaults for audio archival — re-encode a finalized meeting's `audio.wav` as lossless FLAC (~3x smaller, bit-identical) once it is this many days old (default on, 7 days; the `storage` settings section overrides both). A background sweep runs hourly, skips any meeting that is not `finalized`, and yields entirely while a meeting is recording
 - HEARSAY_AUTO_REFINE / HEARSAY_RECORD / HEARSAY_RECOGNITION_THRESHOLD / HEARSAY_NOTES: defaults for the editable settings sections (`HEARSAY_NOTES` toggles the notes step, default off)
 - HEARSAY_INACTIVITY_PROMPT / HEARSAY_INACTIVITY_AUTO_END / HEARSAY_INACTIVITY_PROMPT_MINUTES / HEARSAY_INACTIVITY_END_MINUTES: defaults for the inactivity watchdog (the `recording` settings section overrides them). Independent toggles for the in-app "still recording?" prompt and the silence auto-end (both default on), minutes of continuous silence before the prompt (default 5), and minutes before the meeting auto-ends with a logged transcript marker (default 10; must exceed the prompt threshold when both are on)

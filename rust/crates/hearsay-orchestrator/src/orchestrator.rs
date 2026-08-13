@@ -281,7 +281,7 @@ impl Orchestrator {
         inactivity: InactivityConfig,
     ) -> Result<(), OrchestratorError> {
         tokio::fs::create_dir_all(dir).await?;
-        let audio_path = record.then(|| dir.join("audio.wav"));
+        let audio_path = record.then(|| dir.join(hearsay_audio::AUDIO_WAV));
         let (pipeline, died_rx, inactive_rx) = pipeline::spawn(
             self.backend.build(),
             self.pool.clone(),
@@ -331,7 +331,7 @@ impl Orchestrator {
 
     /// Resolve whether a stop should auto-refine this meeting (the auto-refine gate):
     /// a [`Refiner`] must be wired, the effective `auto_refine` setting on, and a recorded
-    /// `audio.wav` present. Returns the refiner + the effective recognition threshold when it
+    /// a recorded audio file present (wav or archived flac). Returns the refiner + the effective recognition threshold when it
     /// should; `None` (with the reason logged) when the live finals should stand as the transcript.
     /// Read at stop so a UI toggle takes effect on the next meeting.
     async fn should_auto_refine(&self, meeting: &Meeting) -> Option<(Arc<dyn Refiner>, f64)> {
@@ -353,8 +353,7 @@ impl Orchestrator {
             tracing::debug!(meeting = %meeting.id, "auto-refine disabled by settings; keeping live segments");
             return None;
         }
-        let audio = meeting.dir_path(&self.output_dir).join("audio.wav");
-        if !audio.exists() {
+        if hearsay_audio::resolve_recorded_audio(&meeting.dir_path(&self.output_dir)).is_none() {
             tracing::debug!(meeting = %meeting.id, "auto-refine skipped: no recorded audio");
             return None;
         }
@@ -388,7 +387,10 @@ async fn run_auto_refine(
     threshold: f64,
     meeting: &Meeting,
 ) {
-    let audio = meeting.dir_path(output_dir).join("audio.wav");
+    let Some(audio) = hearsay_audio::resolve_recorded_audio(&meeting.dir_path(output_dir)) else {
+        tracing::warn!(meeting = %meeting.id, "auto-refine skipped: recorded audio vanished");
+        return;
+    };
     match refiner.refine(&audio).await {
         Ok(result) => {
             let count = result.segments.len();
@@ -731,10 +733,8 @@ impl LiveEngine for Orchestrator {
             .await
             .map_err(OrchestratorError::from)?
             .ok_or(LiveError::Unavailable)?;
-        let audio = meeting.dir_path(&self.output_dir).join("audio.wav");
-        if !audio.exists() {
-            return Err(LiveError::Unavailable);
-        }
+        let audio = hearsay_audio::resolve_recorded_audio(&meeting.dir_path(&self.output_dir))
+            .ok_or(LiveError::Unavailable)?;
         // The effective recognition threshold (stored `speakers` override else the config default),
         // read fresh so a Settings change applies to the next re-diarize — matching the auto-refine.
         let (_auto_refine, threshold) = queries::effective_speakers(

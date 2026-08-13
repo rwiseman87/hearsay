@@ -11,6 +11,7 @@ members = [
     "crates/hearsay-ipc",
     "crates/hearsay-db",
     "crates/hearsay-attribution",
+    "crates/hearsay-audio",
     "crates/hearsay-engine",
     "crates/hearsay-orchestrator",
     "crates/hearsay-capture",

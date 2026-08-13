@@ -9,6 +9,7 @@ hearsay-db = { path = "../hearsay-db" }
 hearsay-engine = { path = "../hearsay-engine" }
 hearsay-backends = { path = "../hearsay-backends" }
 hearsay-ipc = { path = "../hearsay-ipc" }
+hearsay-audio = { path = "../hearsay-audio" }
 axum = { version = "0.8.9", features = ["ws", "macros"] }
 tower-http = { version = "0.7.0", features = ["fs", "set-header", "trace", "request-id"] }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net", "signal", "fs", "sync", "time", "io-std", "io-util"] }

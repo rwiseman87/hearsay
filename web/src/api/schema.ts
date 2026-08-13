@@ -1250,9 +1250,30 @@ export interface components {
             output_dir: string;
             /** Format: int64 */
             tracked_bytes: number;
+            /**
+             * Format: int64
+             * @description Bytes still held in uncompressed `audio.wav` files — what archiving would shrink ~3x.
+             */
+            uncompressed_bytes: number;
         };
-        /** @description The default root new meetings are written under (existing meetings keep their stamped location). */
+        /**
+         * @description Storage: the default root new meetings are written under (existing meetings keep their stamped
+         *     location), plus the audio-archival policy — once a finalized meeting is `compress_after_days`
+         *     old, its `audio.wav` is re-encoded as lossless FLAC (~3x smaller, bit-identical, so playback and
+         *     re-diarization are unaffected). Editable section; a request body and part of [`SettingsRead`].
+         */
         StorageSettings: {
+            /**
+             * Format: int32
+             * @description Days after a meeting ends before its audio is archived.
+             */
+            compress_after_days: number;
+            /**
+             * @description Archive finalized meetings' audio as lossless FLAC. Deliberately NOT `#[serde(default)]`:
+             *     the PUT full-replaces the section, so a body omitting this would silently switch archival
+             *     off rather than leave it alone. Required means a partial write is a 422 instead.
+             */
+            compress_audio: boolean;
             output_dir: string;
         };
         /**

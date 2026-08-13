@@ -1,4 +1,8 @@
-//! Meeting audio playback: serve the mixed WAV so the UI can replay a meeting.
+//! Meeting audio playback: serve the mixed recording so the UI can replay a meeting.
+//!
+//! The file is the uncompressed `audio.wav` until the storage sweep archives it, then the lossless
+//! `audio.flac`; `ServeFile` derives the content type from the extension, and both WKWebView and
+//! WebView2 decode FLAC natively.
 //!
 //! Auth accepts the per-session token either as the `?token=` query param (an `<audio>` element
 //! cannot set an Authorization header, so the browser passes it in the URL, mirroring the
@@ -66,16 +70,14 @@ async fn get_meeting_audio(
         }
     };
 
-    let audio_path = meeting
-        .dir_path(&state.settings.output_dir)
-        .join("audio.wav");
-    if !audio_path.is_file() {
+    let dir = meeting.dir_path(&state.settings.output_dir);
+    let Some(audio_path) = hearsay_audio::resolve_recorded_audio(&dir) else {
         return (
             StatusCode::NOT_FOUND,
             Json(json!({ "detail": "no audio recorded for this meeting" })),
         )
             .into_response();
-    }
+    };
 
     match ServeFile::new(audio_path).oneshot(request).await {
         Ok(response) => response.into_response(),

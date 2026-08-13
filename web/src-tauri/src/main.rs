@@ -156,6 +156,83 @@ fn erase_all_data(app: tauri::AppHandle, core: tauri::State<'_, CoreChild>) -> R
     Ok(())
 }
 
+/// Cap for the mirrored core log. Two generations are kept, so the logs occupy at most twice this.
+const CORE_LOG_MAX_BYTES: u64 = 8 * 1024 * 1024;
+
+/// Size-capped log file for the core's mirrored stdout/stderr.
+///
+/// The core logs every request, so an append-only file grows without bound — it reached tens of
+/// megabytes in normal use. Rotation keeps at most two generations (`core.log` + `core.log.1`), so
+/// the logs can never become the storage problem while still retaining enough history to explain a
+/// crash that happened before the relaunch.
+struct RotatingLog {
+    path: std::path::PathBuf,
+    file: Option<std::fs::File>,
+    /// Bytes in the current file, tracked as we write. Calling `metadata()` per line would put a
+    /// syscall in front of every log record.
+    written: u64,
+    max_bytes: u64,
+}
+
+impl RotatingLog {
+    /// Open (creating/appending to) `path`, rotating immediately if it is already over the cap —
+    /// which is what clears a file that grew unbounded before this existed.
+    fn open(path: std::path::PathBuf, max_bytes: u64) -> Self {
+        let mut log = RotatingLog {
+            path,
+            file: None,
+            written: 0,
+            max_bytes,
+        };
+        log.reopen();
+        if log.written >= log.max_bytes {
+            log.rotate();
+        }
+        log
+    }
+
+    fn reopen(&mut self) {
+        self.file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.path)
+            .ok();
+        self.written = self
+            .file
+            .as_ref()
+            .and_then(|f| f.metadata().ok())
+            .map_or(0, |m| m.len());
+    }
+
+    /// Move the current file aside and start a fresh one, keeping one previous generation.
+    fn rotate(&mut self) {
+        // Drop the handle before renaming: Windows will not rename an open file.
+        self.file = None;
+        let previous = self.path.with_extension("log.1");
+        if std::fs::rename(&self.path, &previous).is_err() {
+            // Rotation is best-effort; if it fails, keep appending rather than losing the output.
+            self.reopen();
+            return;
+        }
+        self.reopen();
+    }
+
+    fn write(&mut self, text: &str) {
+        use std::io::Write;
+        if let Some(file) = self.file.as_mut() {
+            let _ = write!(file, "{text}");
+            self.written = self.written.saturating_add(text.len() as u64);
+        }
+        if self.written >= self.max_bytes {
+            self.rotate();
+        }
+    }
+
+    fn writeln(&mut self, text: &str) {
+        self.write(&format!("{text}\n"));
+    }
+}
+
 /// Remove a file or directory tree, retrying briefly on a transient failure. `child.kill()`
 /// (TerminateProcess) is asynchronous on Windows — `stop_core_gracefully` only waits for the core to
 /// exit on Unix — so the core's SQLite handle can outlive the call by a few milliseconds and a first
@@ -339,40 +416,27 @@ fn main() {
             // show why instead of leaving the splash spinning forever.
             let drain_handle = app.handle().clone();
             let drain_settled = boot_settled.clone();
-            // Mirror the core's output into a log file. The Windows shell is a GUI binary with no
+            // Mirror the core.s output into a log file. The Windows shell is a GUI binary with no
             // console, so `eprint!` alone goes nowhere: a panic in the core would leave no trace and
-            // present only as every request failing. Appended, so a crash survives the relaunch that
-            // follows it.
+            // present only as every request failing. Appended (so a crash survives the relaunch that
+            // follows it) but size-capped, so it cannot grow without bound.
             let log_path = core_log_path.clone();
             tauri::async_runtime::spawn(async move {
-                let mut log = std::fs::OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(&log_path)
-                    .ok();
-                if let Some(file) = log.as_mut() {
-                    use std::io::Write;
-                    let _ = writeln!(file, "--- core started ---");
-                }
+                let mut log = RotatingLog::open(log_path.clone(), CORE_LOG_MAX_BYTES);
+                log.writeln("--- core started ---");
                 while let Some(event) = rx.recv().await {
                     match event {
                         CommandEvent::Stdout(bytes) | CommandEvent::Stderr(bytes) => {
                             let text = String::from_utf8_lossy(&bytes);
                             eprint!("{text}");
-                            if let Some(file) = log.as_mut() {
-                                use std::io::Write;
-                                let _ = write!(file, "{text}");
-                            }
+                            log.write(&text);
                         }
                         CommandEvent::Terminated(payload) => {
                             let detail = format!(
                                 "hearsay-core exited (code {:?}, signal {:?}).",
                                 payload.code, payload.signal
                             );
-                            if let Some(file) = log.as_mut() {
-                                use std::io::Write;
-                                let _ = writeln!(file, "--- {detail} ---");
-                            }
+                            log.writeln(&format!("--- {detail} ---"));
                             // Surface it whether it died during boot or mid-session: without the
                             // core every request fails, so silently leaving the UI up makes the app
                             // look broken in a dozen unrelated ways instead of one obvious one.
@@ -455,7 +519,66 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::html_escape;
+    use super::{html_escape, RotatingLog};
+
+    #[test]
+    fn rotating_log_caps_the_file_and_keeps_one_previous_generation() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("core.log");
+        let previous = tmp.path().join("core.log.1");
+
+        let mut log = RotatingLog::open(path.clone(), 64);
+        log.write(&"a".repeat(40));
+        assert!(!previous.exists(), "should not rotate below the cap");
+
+        // Crossing the cap moves the current file aside and starts fresh.
+        log.write(&"b".repeat(40));
+        assert!(previous.is_file(), "should have rotated");
+        assert_eq!(std::fs::metadata(&path).unwrap().len(), 0);
+        assert_eq!(std::fs::read_to_string(&previous).unwrap().len(), 80);
+
+        // Writing continues into the new file, and a second rotation overwrites the previous
+        // generation rather than accumulating .2, .3, ...
+        log.write(&"c".repeat(70));
+        assert!(std::fs::read_to_string(&previous).unwrap().starts_with('c'));
+        assert!(!tmp.path().join("core.log.2").exists());
+    }
+
+    #[test]
+    fn rotating_log_clears_a_file_that_grew_before_the_cap_existed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("core.log");
+        std::fs::write(&path, "x".repeat(500)).unwrap();
+
+        // Opening an already-oversized log rotates it immediately — this is what reclaims the space
+        // on an install that has been appending forever.
+        let mut log = RotatingLog::open(path.clone(), 64);
+        assert_eq!(std::fs::metadata(&path).unwrap().len(), 0);
+        assert_eq!(
+            std::fs::read_to_string(tmp.path().join("core.log.1"))
+                .unwrap()
+                .len(),
+            500
+        );
+
+        log.writeln("--- core started ---");
+        assert!(std::fs::read_to_string(&path)
+            .unwrap()
+            .contains("core started"));
+    }
+
+    #[test]
+    fn rotating_log_appends_across_restarts_below_the_cap() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("core.log");
+
+        RotatingLog::open(path.clone(), 1024).writeln("first run");
+        RotatingLog::open(path.clone(), 1024).writeln("second run");
+
+        // A crash's output must survive the relaunch that follows it.
+        let body = std::fs::read_to_string(&path).unwrap();
+        assert!(body.contains("first run") && body.contains("second run"));
+    }
 
     #[test]
     fn html_escape_neutralizes_markup_metacharacters() {

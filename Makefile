@@ -125,6 +125,8 @@ e2e: ## Browser end-to-end (Playwright) vs the scripted core + vite. One-time: c
 	# Build the core up front so Playwright's webServer starts it fast (no cold cargo build under the
 	# start timeout). The scripted engine is platform-neutral, so default features suffice on macOS.
 	cargo build --manifest-path $(RUST)/Cargo.toml -p hearsay-core
+	# An archived (compressed-only) meeting recording for the playback spec, built by the real encoder.
+	cargo run -q --manifest-path $(RUST)/Cargo.toml -p hearsay-audio --example fixture -- outputs/e2e/fixture
 	cd web && npx playwright test
 
 test-all: ci probes e2e ## Run everything: the deterministic gate + the model/hardware probes + the browser E2E

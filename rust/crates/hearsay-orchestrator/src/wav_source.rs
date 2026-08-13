@@ -1,4 +1,4 @@
-//! A file-backed [`AudioSource`] for offline / dev runs: stream a recorded WAV through the
+//! A file-backed [`AudioSource`] for offline / dev runs: stream a recorded meeting through the
 //! pipeline without capture hardware. Reads the canonical stereo `audio.wav` (Me = left, Them =
 //! right, 16 kHz — the format `MeetingAudioRecorder` writes), splitting it into timed chunks on the
 //! shared `host_ts` clock. A mono file is treated as the Them stream.
@@ -39,8 +39,16 @@ impl WavFileSource {
     }
 }
 
-/// Read a 16 kHz WAV into per-stream f32 sample vectors (Me = left, Them = right; mono -> Them).
-fn read_wav(path: &Path) -> Result<(Vec<f32>, Vec<f32>), OrchestratorError> {
+/// Read a 16 kHz recording into per-stream f32 sample vectors (Me = left, Them = right; mono ->
+/// Them). Accepts the archived FLAC as well as the WAV, so replaying a meeting keeps working after
+/// the storage sweep has compressed it.
+fn read_recording(path: &Path) -> Result<(Vec<f32>, Vec<f32>), OrchestratorError> {
+    if path
+        .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("flac"))
+    {
+        return read_flac(path);
+    }
     let mut reader = hound::WavReader::open(path)
         .map_err(|e| OrchestratorError::Backend(format!("open wav: {e}")))?;
     let spec = reader.spec();
@@ -75,20 +83,40 @@ fn read_wav(path: &Path) -> Result<(Vec<f32>, Vec<f32>), OrchestratorError> {
     if channels == 1 {
         return Ok((Vec::new(), samples));
     }
+    Ok(split_stereo(&samples))
+}
+
+/// Read the archived FLAC form of the same recording.
+fn read_flac(path: &Path) -> Result<(Vec<f32>, Vec<f32>), OrchestratorError> {
+    let channels = hearsay_audio::flac_channels(path)
+        .map_err(|e| OrchestratorError::Backend(format!("read flac: {e}")))?;
+    let read = |ch| {
+        hearsay_audio::read_flac_channel_16k(path, ch)
+            .map_err(|e| OrchestratorError::Backend(format!("read flac: {e}")))
+    };
+    // Mono is Them only, matching the wav path.
+    if channels <= 1 {
+        return Ok((Vec::new(), read(0)?));
+    }
+    Ok((read(0)?, read(1)?))
+}
+
+/// Split interleaved stereo into (Me = left, Them = right).
+fn split_stereo(samples: &[f32]) -> (Vec<f32>, Vec<f32>) {
     let mut me = Vec::with_capacity(samples.len() / 2);
     let mut them = Vec::with_capacity(samples.len() / 2);
     for pair in samples.chunks_exact(2) {
         me.push(pair[0]);
         them.push(pair[1]);
     }
-    Ok((me, them))
+    (me, them)
 }
 
 #[async_trait]
 impl AudioSource for WavFileSource {
     async fn start(&mut self) -> Result<mpsc::Receiver<CaptureChunk>, OrchestratorError> {
         let path = self.path.clone();
-        let (me, them) = tokio::task::spawn_blocking(move || read_wav(&path))
+        let (me, them) = tokio::task::spawn_blocking(move || read_recording(&path))
             .await
             .map_err(|e| OrchestratorError::Backend(format!("wav read task: {e}")))??;
 
@@ -126,5 +154,70 @@ impl AudioSource for WavFileSource {
         if let Some(stop_tx) = self.stop_tx.take() {
             let _ = stop_tx.send(());
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn write_stereo(path: &Path, frames: usize) -> Vec<i16> {
+        let spec = hound::WavSpec {
+            channels: 2,
+            sample_rate: SAMPLE_RATE,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        };
+        let mut samples = Vec::with_capacity(frames * 2);
+        let mut writer = hound::WavWriter::create(path, spec).unwrap();
+        for i in 0..frames as i32 {
+            let me = ((i * 5) % 7_001 - 3_500) as i16;
+            let them = ((i * 11) % 15_001 - 7_500) as i16;
+            writer.write_sample(me).unwrap();
+            writer.write_sample(them).unwrap();
+            samples.push(me);
+            samples.push(them);
+        }
+        writer.finalize().unwrap();
+        samples
+    }
+
+    /// Replaying a meeting must survive the storage sweep compressing it — the dev output dir is
+    /// the same tree the sweep walks.
+    #[test]
+    fn reads_an_archived_flac_identically_to_its_wav() {
+        let tmp = tempfile::tempdir().unwrap();
+        let wav = tmp.path().join("audio.wav");
+        let flac = tmp.path().join("audio.flac");
+        write_stereo(&wav, 5_000);
+        hearsay_audio::encode_wav_to_flac(&wav, &flac).expect("encode");
+
+        let (me_wav, them_wav) = read_recording(&wav).expect("read wav");
+        let (me_flac, them_flac) = read_recording(&flac).expect("read flac");
+
+        assert_eq!(me_wav.len(), 5_000);
+        assert_eq!(me_wav, me_flac);
+        assert_eq!(them_wav, them_flac);
+    }
+
+    #[test]
+    fn a_mono_wav_is_treated_as_them_only() {
+        let tmp = tempfile::tempdir().unwrap();
+        let wav = tmp.path().join("mono.wav");
+        let spec = hound::WavSpec {
+            channels: 1,
+            sample_rate: SAMPLE_RATE,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        };
+        let mut writer = hound::WavWriter::create(&wav, spec).unwrap();
+        for i in 0..2_000i32 {
+            writer.write_sample((i % 1_000) as i16).unwrap();
+        }
+        writer.finalize().unwrap();
+
+        let (me, them) = read_recording(&wav).expect("read wav");
+        assert!(me.is_empty(), "mono has no Me channel");
+        assert_eq!(them.len(), 2_000);
     }
 }

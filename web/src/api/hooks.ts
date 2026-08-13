@@ -559,8 +559,10 @@ export function useUpdateSpeakers() {
   });
 }
 
-// Update the default storage location; server validates the directory (422 on bad path). Patch
-// the section, then refetch so storage_info (usage, DB path) reflects the change.
+// Update the `storage` section (recordings location + the audio-archival policy). The server
+// validates the directory (422 on bad path) and full-replaces the section, so callers send every
+// field — never omit one you mean to keep. Patch the section from the response, then invalidate so
+// `storage_info` (usage, uncompressed bytes) is refetched rather than left stale.
 export function useUpdateStorage() {
   const qc = useQueryClient();
   return useMutation({
@@ -569,6 +571,7 @@ export function useUpdateStorage() {
       qc.setQueryData<SettingsRead>(queryKeys.settings.all, (old) =>
         old ? { ...old, storage } : old,
       );
+      void qc.invalidateQueries({ queryKey: queryKeys.settings.all });
     },
   });
 }

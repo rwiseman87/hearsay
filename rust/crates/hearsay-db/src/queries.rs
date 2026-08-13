@@ -160,6 +160,26 @@ pub async fn list_nonterminal_meetings(pool: &SqlitePool) -> Result<Vec<Meeting>
     .await
 }
 
+/// Finalized meetings that ended before `cutoff`, oldest first — the archival sweep's work list.
+///
+/// `ended_at` is nullable (a row finalized by the startup reconcile after a hard exit may never have
+/// stamped one), so the age falls back to `started_at`; without that, such a meeting would never
+/// become eligible. Only `finalized` rows are returned, so a live or refining meeting is never a
+/// candidate.
+pub async fn list_finalized_before(
+    pool: &SqlitePool,
+    cutoff: DateTime<Utc>,
+) -> Result<Vec<Meeting>, sqlx::Error> {
+    sqlx::query_as::<_, Meeting>(
+        "SELECT * FROM meetings WHERE status = ? AND COALESCE(ended_at, started_at) < ? \
+         ORDER BY started_at",
+    )
+    .bind(MeetingStatus::Finalized)
+    .bind(cutoff)
+    .fetch_all(pool)
+    .await
+}
+
 /// Finalize a meeting stranded in a non-terminal state by a prior hard exit: set `finalized`, and
 /// stamp `ended_at` only when it was never set (a row that died mid-`refining` already has it). Used
 /// by the startup reconcile sweep, never during normal stop.
@@ -1730,6 +1750,39 @@ pub async fn effective_output_dir(
                 .and_then(|v| v.as_str().map(PathBuf::from))
         })
         .unwrap_or_else(|| default.to_path_buf()))
+}
+
+/// The parsed `storage` section object (or `None` when unset/corrupt), for the settings route to
+/// resolve each field against its config default — mirrors [`models_section`].
+pub async fn storage_section(
+    pool: &SqlitePool,
+) -> Result<Option<serde_json::Map<String, serde_json::Value>>, sqlx::Error> {
+    section_object(pool, SECTION_STORAGE).await
+}
+
+/// Effective audio-compression settings (archive the recorded WAV as lossless FLAC once a meeting is
+/// this many days old): the stored `storage` override, else the config defaults. Each field falls
+/// back independently, so a row that predates these keys (only `output_dir`) still yields usable
+/// values. Read fresh on each sweep, so a Settings change applies without a restart. Returns
+/// `(enabled, after_days)`.
+pub async fn effective_compression(
+    pool: &SqlitePool,
+    default_enabled: bool,
+    default_days: u64,
+) -> Result<(bool, u64), sqlx::Error> {
+    let obj = section_object(pool, SECTION_STORAGE).await?;
+    let enabled = obj
+        .as_ref()
+        .and_then(|o| o.get("compress_audio").and_then(serde_json::Value::as_bool))
+        .unwrap_or(default_enabled);
+    let days = obj
+        .as_ref()
+        .and_then(|o| {
+            o.get("compress_after_days")
+                .and_then(serde_json::Value::as_u64)
+        })
+        .unwrap_or(default_days);
+    Ok((enabled, days))
 }
 
 /// Effective offline-refine whisper model: the stored `models` override, else `default` (the

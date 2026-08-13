@@ -3,6 +3,7 @@
 //! `--synthetic` runs the capture helper in synthetic mode (generated audio, no TCC prompts).
 
 use std::path::Path;
+use std::sync::Arc;
 
 use tokio::io::AsyncReadExt as _;
 use tokio::net::TcpListener;
@@ -92,6 +93,20 @@ async fn main() -> Result<(), BoxError> {
     // `refining` forever, with no session to finalize it. Nothing is active at startup, so sweep and
     // finalize every such row (writing its transcript from the persisted segments) before we serve.
     hearsay_backends::reconcile::reconcile_stranded_meetings(&pool, &settings.output_dir).await;
+
+    // Archive finalized meetings' audio as lossless FLAC once it is old enough, reclaiming ~3x on
+    // recordings that would otherwise grow without bound. Periodic rather than one-shot: it must
+    // catch meetings that age past the threshold while the app stays open, and it re-reads the
+    // setting each tick. Holds a weak engine ref so it stops with the engine, and skips entirely
+    // while a meeting is recording.
+    hearsay_backends::archive::spawn_archive_ticker(
+        pool.clone(),
+        settings.output_dir.clone(),
+        Arc::downgrade(&engine),
+        Arc::new(hearsay_backends::archive::Sweeper::new()),
+        settings.compress_audio,
+        settings.compress_after_days,
+    );
 
     // Grab the handshake path before `settings` moves into the app state; the handshake file is
     // written after the listener binds (it carries the resolved port).

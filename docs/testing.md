@@ -49,13 +49,15 @@ both scripts by `scripts\windows-build-env.ps1`.
 | Layer | What's tested | Where | Run by |
 |---|---|---|---|
 | **Pure-logic units** | speaker ordering / segment-speaker assignment / voiceprint matching (`hearsay-attribution`); notes prompt build + reply parse (`hearsay-notes-prompt`); IPC frame + control codec (`hearsay-ipc`); inline core/orchestrator/inference units (AEC, recorder gap-fill, markdown render) | `#[cfg(test)]` mods in each crate's `src/` | `rust-test` |
+| **Audio archival** | the FLAC encoder round-tripping bit-exactly at every block boundary, the decoder, the verifier rejecting truncated/corrupt/mismatched encodes, and `compress_meeting_audio` leaving the wav untouched on any failure | `hearsay-audio/src/` `#[cfg(test)]` mods | `rust-test` |
+| **Archival sweep** | which meetings are eligible (aged + finalized only, `ended_at` fallback), that it yields to a live meeting, skips already-archived and unrecorded meetings, and does not retry a failure | `hearsay-backends/tests/archive.rs` | `rust-test` |
 | **Database** | schema round-trips over real migrations, `queries.rs` branches (FTS search, cross-meeting edit scope, the `reassign_segment_speaker` guards, cycle guard), the migration-upgrade fixture (populated old DB → head, data intact) | `hearsay-db/tests/schema.rs` (in-memory SQLite) | `rust-test` |
 | **Core HTTP API** | the assembled axum router via `tower::oneshot` against in-memory SQLite with `DisabledEngine` — every REST route: meetings, segments (edit + per-line speaker reassign), speakers, folders, notes, search, settings, auth/Origin gating | `hearsay-core/tests/api.rs` | `rust-test` |
 | **Full-stack HTTP/WS** | the core booted on a real TCP port with a scripted orchestrator: `start` → live `TranscriptEvent` frames over a real WS client → `stop` → REST read-back; a companion refine read-back replaces the Them track | `hearsay-core/tests/api.rs` | `rust-test` |
 | **Orchestrator** | meeting lifecycle, the capture→transcribe→persist pipeline, recorder/markdown, refine — all with scripted fakes (fake audio source + stubbed transcribers/diarizer, no ML) | `hearsay-orchestrator/tests/`, `src/testing.rs` | `rust-test` |
 | **Web client + hooks** | `api/client.ts` (request shaping, token, timeout, error envelope), `api/ws.ts` (reconnect/backoff, parse), the query hooks + `queryKeys`, `hooks/useTranscript.ts` (live assembly) against a stubbed fetch/WebSocket | `web/src/**/*.test.ts(x)` | `web-test` |
-| **Web components** | `TranscriptView` (line edit + speaker reassign), `Library` (list/select/delete), `SettingsPage` (models validation) against the real fetch wrapper + MSW | `web/src/components/*.test.tsx` | `web-test` |
-| **Browser E2E** | real UI → real core (scripted engine) → real pipeline: start → live transcript → stop → Library → rename speaker → reassign a line → generate notes, asserting exact text | `web/e2e/meeting.spec.ts` | `e2e` |
+| **Web components** | `TranscriptView` (line edit + speaker reassign), `Library` (list/select/delete), `SettingsPage` (models validation, the storage archival policy + its full-section writes) against the real fetch wrapper + MSW | `web/src/components/*.test.tsx` | `web-test` |
+| **Browser E2E** | real UI → real core (scripted engine) → real pipeline: start → live transcript → stop → Library → rename speaker → reassign a line → generate notes, asserting exact text; the storage panel round-tripping the archival policy; and a meeting whose audio exists only as FLAC serving, seeking, and playing in a real browser | `web/e2e/*.spec.ts` | `e2e` |
 | **IPC parity** | the codec against golden fixtures, in **both** languages | `hearsay-ipc/tests/golden_fixtures.rs` + Swift `selftest` | `rust-test`, `swift-test` |
 | **Regression locks** | `insta` snapshot of the markdown export; `proptest` for the IPC codec round-trip + voiceprint `cosine`; codegen-drift diff | across the crates above + `codegen-check` | `rust-test`, `codegen-check` |
 | **Model/hardware probes** | whisper refine + `hearsay-diarize` (`refine_mac_probe`, `transcribe`, embed-cap), the notes LLM (`summarize`), the live pipeline (`streaming_pipeline`), synthetic capture | `*/tests/*probe*.rs`, `hearsay-{notes,backends,capture}/tests/` (all `#[ignore]`d) | `probes` |
@@ -103,6 +105,10 @@ refine GPU (`metal` vs `vulkan`/CPU) are covered per-OS by unit tests for the pu
 `make probes` is not model-free: each probe hard-requires a downloaded model, and some need an input
 WAV supplied via environment variable (a bare `make probes` fails on the first such probe by design).
 Point them at real inputs — for example the refine decomposition probe:
+
+The archival sweep compresses meetings under the dev output dir once they are old enough, so a corpus
+recording may be `audio.flac` rather than `audio.wav`. The refine and `WavFileSource` read either;
+point `HEARSAY_BENCH_WAV` at whichever the folder holds.
 
 ```sh
 HEARSAY_BENCH_WAV=outputs/recordings/<meeting>/audio.wav \

@@ -449,10 +449,19 @@ pub struct SpeakerSettings {
     pub recognition_threshold: f64,
 }
 
-/// The default root new meetings are written under (existing meetings keep their stamped location).
+/// Storage: the default root new meetings are written under (existing meetings keep their stamped
+/// location), plus the audio-archival policy — once a finalized meeting is `compress_after_days`
+/// old, its `audio.wav` is re-encoded as lossless FLAC (~3x smaller, bit-identical, so playback and
+/// re-diarization are unaffected). Editable section; a request body and part of [`SettingsRead`].
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct StorageSettings {
     pub output_dir: String,
+    /// Archive finalized meetings' audio as lossless FLAC. Deliberately NOT `#[serde(default)]`:
+    /// the PUT full-replaces the section, so a body omitting this would silently switch archival
+    /// off rather than leave it alone. Required means a partial write is a 422 instead.
+    pub compress_audio: bool,
+    /// Days after a meeting ends before its audio is archived.
+    pub compress_after_days: u32,
 }
 
 /// Read-only storage facts shown alongside the editable storage section.
@@ -462,6 +471,8 @@ pub struct StorageInfo {
     pub database_path: String,
     pub tracked_bytes: i64,
     pub meeting_count: i64,
+    /// Bytes still held in uncompressed `audio.wav` files — what archiving would shrink ~3x.
+    pub uncompressed_bytes: i64,
 }
 
 /// Models: the offline-refine whisper model path plus the optional local-LLM notes step (enable +

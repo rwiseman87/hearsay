@@ -11,12 +11,15 @@ hearsay-capture = { path = "../hearsay-capture" }
 hearsay-inference = { path = "../hearsay-inference" }
 hearsay-notes-prompt = { path = "../hearsay-notes-prompt" }
 hearsay-db = { path = "../hearsay-db" }
-tokio = { workspace = true, features = ["rt", "sync"] }
+hearsay-audio = { path = "../hearsay-audio" }
+tokio = { workspace = true, features = ["rt", "sync", "time"] }
 async-trait = { workspace = true }
 tracing = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sqlx = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
 
 # `sherpa` forwards to `hearsay-inference/sherpa` to build the cross-platform (Windows) sherpa-onnx
 # live/diarize path (`SherpaTranscriber` + the streaming test); off by default so the macOS bundle
@@ -36,3 +39,4 @@ cuda = ["hearsay-inference/cuda"]
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 tempfile = { workspace = true }
+hound = { workspace = true }

@@ -60,6 +60,13 @@ pub struct Settings {
     /// marker (`HEARSAY_INACTIVITY_END_MINUTES`, default 10; must exceed the prompt threshold when both
     /// are enabled; the `recording` section overrides it).
     pub inactivity_end_minutes: u64,
+    /// Default switch for archiving a finalized meeting's audio as lossless FLAC
+    /// (`HEARSAY_COMPRESS_AUDIO`, default on). Compression is ~3x and bit-exact, so it costs nothing
+    /// downstream; the `storage` settings section overrides it per install.
+    pub compress_audio: bool,
+    /// Default age in days at which a finalized meeting's audio is archived
+    /// (`HEARSAY_COMPRESS_AFTER_DAYS`, default 7; the `storage` section overrides it).
+    pub compress_after_days: u64,
     /// Default for the optional local-LLM notes step: generate meeting notes at stop
     /// (`HEARSAY_NOTES`, default off — opt-in, and needs a downloaded model). The `models` settings
     /// section overrides it per install.
@@ -257,6 +264,8 @@ impl Settings {
         let inactivity_prompt_minutes =
             env_u64("HEARSAY_INACTIVITY_PROMPT_MINUTES", 5, &mut problems);
         let inactivity_end_minutes = env_u64("HEARSAY_INACTIVITY_END_MINUTES", 10, &mut problems);
+        let compress_audio = env_bool("HEARSAY_COMPRESS_AUDIO", true, &mut problems);
+        let compress_after_days = env_u64("HEARSAY_COMPRESS_AFTER_DAYS", 7, &mut problems);
         let notes_enabled = env_bool("HEARSAY_NOTES", false, &mut problems);
         let refine_timeout =
             Duration::from_secs(env_u64("HEARSAY_REFINE_TIMEOUT_SECS", 1800, &mut problems));
@@ -300,6 +309,8 @@ impl Settings {
             inactivity_auto_end,
             inactivity_prompt_minutes,
             inactivity_end_minutes,
+            compress_audio,
+            compress_after_days,
             notes_enabled,
             notes_model: PathBuf::from(env_or("HEARSAY_NOTES_MODEL", "")),
             notes_prompt: env_or(

@@ -135,6 +135,13 @@ in-browser playback and the post-meeting refine (which reads the Them channel). 
 audio retained, and it can be turned off in Settings, which also disables the refine since there is
 nothing to re-diarize.
 
+Once a meeting has been finalized for `HEARSAY_COMPRESS_AFTER_DAYS` (default 7), a background sweep
+re-encodes that WAV as lossless FLAC — roughly 3x smaller on real meeting audio, and bit-identical,
+so playback, the refine, and re-diarization are unaffected. The original is only removed after the
+encoded file has been decoded back and compared to it sample for sample. The sweep skips any meeting
+that is not `finalized` and yields entirely while a meeting is recording. See
+`hearsay-backends/src/archive.rs` and the `hearsay-audio` crate.
+
 ### 5. Fan-out per segment
 
 Each sidecar final is fanned out three ways by the loop's `handle` function: broadcast to the
@@ -158,7 +165,7 @@ handles overlap better. The refine runs automatically at stop when auto-refine i
 and on demand from the "Refine speakers" button (`POST /api/meetings/{id}/rediarize`). Both paths
 drive the same `LiveEngine::rediarize` implementation. The refine:
 
-- diarizes the whole Them track (the right channel of `audio.wav`) with the `hearsay-diarize`
+- diarizes the whole Them track (the right channel of the recording) with the `hearsay-diarize`
   sidecar, which returns speaker turns and each speaker's mean voiceprint,
 - transcribes the whole Them track in one whisper pass (`hearsay-inference`) — not a per-turn
   transcribe loop — then attributes each ASR segment to the diarizer turn it most overlaps, so the

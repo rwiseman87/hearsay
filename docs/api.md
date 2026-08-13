@@ -128,11 +128,15 @@ unknown, or `409` if the meeting is currently recording.
 
 ### `GET /api/meetings/{id}/audio` (meeting audio, for playback)
 
-Serves `audio.wav`: one timeline-accurate stereo track with Me on the left channel and Them on the
-right. Sample N is meeting second N/16000, so a segment's `start_s` maps directly onto
+Serves the meeting's recording: one timeline-accurate stereo track with Me on the left channel and
+Them on the right. Sample N is meeting second N/16000, so a segment's `start_s` maps directly onto
 `audio.currentTime`. Accepts the token as `?token=` (an `<audio>` element cannot set a header) or
 as a bearer header, and supports `Range` requests (`206 Partial Content`) for seeking. `404` if the
 meeting is unknown or was recorded with audio retention off.
+
+The file is `audio.wav` until the archival sweep compresses it, then `audio.flac` — losslessly, so
+the samples are identical either way. The response content type reflects which one it is
+(`audio/wav` or `audio/flac`); both decode natively in the shipped webviews.
 
 ### `PATCH /api/meetings/{id}` (rename or move)
 
@@ -375,16 +379,18 @@ permission facts.
 Returns every editable section (`recording`, `speakers`, `storage`, `models`) plus the read-only
 `storage_info`, `models_info`, and `about`. `models_info` reports the effective default refine and
 notes models, whether each file is present on disk, and the default notes prompt, so the Models panel
-can show what will run without the user having set an override.
+can show what will run without the user having set an override. `storage_info` adds
+`uncompressed_bytes` — how much is still held in un-archived `audio.wav` files, which the Storage
+panel uses to show what archiving would reclaim.
 
 ```json
 // 200 OK
 {
   "recording": { "record": true, "inactivity_prompt_enabled": true, "inactivity_auto_end_enabled": true, "inactivity_prompt_minutes": 5, "inactivity_end_minutes": 10 },
   "speakers": { "auto_refine": false, "recognition_threshold": 0.6 },
-  "storage": { "output_dir": "/Users/you/.../outputs/recordings" },
+  "storage": { "output_dir": "/Users/you/.../outputs/recordings", "compress_audio": true, "compress_after_days": 7 },
   "models": { "notes_enabled": false, "notes_model": "", "notes_prompt": "<template with {transcript}>", "refine_model": ".../ggml-large-v3-turbo.bin" },
-  "storage_info": { "output_dir": "...", "database_path": ".../hearsay.db", "tracked_bytes": 12345, "meeting_count": 3 },
+  "storage_info": { "output_dir": "...", "database_path": ".../hearsay.db", "tracked_bytes": 12345, "meeting_count": 3, "uncompressed_bytes": 9000 },
   "models_info": { "default_refine_model": ".../ggml-large-v3-turbo.bin", "refine_model_exists": true, "default_notes_model": "", "notes_model_exists": false, "default_notes_prompt": "<template with {transcript}>" },
   "about": { "app_version": "0.1.0", "environment": "production", "protocol_version": 1, "database_path": ".../hearsay.db" }
 }
@@ -392,8 +398,12 @@ can show what will run without the user having set an override.
 
 ### `PUT /api/settings/{recording,speakers,storage,models}` (update one section)
 
-Each takes that section's body and returns it. `storage` validates that `output_dir` is absolute,
-existing, and writable; `speakers` validates `recognition_threshold` in `0..=1`; `models`
+Each takes that section's body and returns it. Every PUT full-replaces its section, so a body must
+carry every field of it — omitting one is a `422`, never a silent reset. `storage` validates that
+`output_dir` is absolute, existing, and writable, and that `compress_after_days` is 1..=365 when
+`compress_audio` is on (a disabled threshold is inert, and 0 is rejected because archiving the moment
+a meeting finalizes would race the post-stop refine); `speakers` validates `recognition_threshold` in
+`0..=1`; `models`
 validates the notes model path (must exist and be a GGUF) and the prompt length; `recording`
 independently gates the inactivity prompt and the silence auto-end — each enabled threshold must be
 1..=1440 minutes, and when both are on the auto-end must exceed the prompt. All return `422` on a bad
