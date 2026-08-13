@@ -10,6 +10,13 @@
 //! The frame layout otherwise mirrors the reference encoder: a fixed 4096-sample block size
 //! declared as both the min and the max, with a short final block carried by `FrameBuf`'s
 //! `filled_size` (which is what the frame header's block size is read from).
+//!
+//! **STREAMINFO is load-bearing, not metadata.** The frame-size range is patched in after the frames
+//! are written, because `flacenc` leaves it at `min = 0xFFFFFF` / `max = 0` -- an impossible range
+//! that AVFoundation refuses to decode, taking out WKWebView (the app's player) and QuickTime, while
+//! still reporting the right duration and no error. Decoding the file proves nothing here: claxon
+//! and libFLAC ignore these fields, so a byte-exact round trip passes over a file no macOS player
+//! will play. Anything written into this header needs a real player in the loop, not just a decoder.
 
 use std::fs::File;
 use std::io::{BufWriter, Seek, SeekFrom, Write};

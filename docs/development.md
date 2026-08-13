@@ -174,6 +174,18 @@ refused while a meeting is recording.
 Note for development: the dev output dir (`outputs/recordings`) is swept too, so an old corpus
 recording there may become `audio.flac`. Everything that reads a recording accepts either form.
 
+Two recovery tools live alongside the codec, both operating on a recordings root and neither
+touching a sample:
+
+```sh
+# Decode an archived library back to audio.wav (add --delete-flac to reclaim the space).
+cargo run --release -p hearsay-audio --example restore -- <recordings-dir>
+
+# Rewrite the STREAMINFO frame-size range in files written before it was populated. Such files
+# decode correctly but will not play in WKWebView or QuickTime; see docs/architecture.md.
+cargo run --release -p hearsay-audio --example repair_header -- <recordings-dir>
+```
+
 When run from source, all runtime data (recordings, the SQLite database, downloaded models) lives
 under the repo's `outputs/` directory, which is gitignored. Override any path with the variables
 above.

@@ -3,7 +3,9 @@
 //! This runs before the WAV — the user's only copy of the meeting — is deleted, so it compares
 //! every sample rather than trusting a checksum or the encoder. Both sides are streamed in lockstep
 //! so a long meeting never materializes twice in memory. (This is also why the encoder leaves the
-//! STREAMINFO MD5 signature at its spec-legal zero: an exact comparison is strictly stronger.)
+//! STREAMINFO MD5 signature at zero: an exact comparison is strictly stronger than a checksum.
+//! Unlike the frame-size range, that field being zero is verified to play in WKWebView and
+//! QuickTime, not merely assumed spec-legal -- see `encode.rs`.)
 
 use std::path::Path;
 
