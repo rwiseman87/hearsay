@@ -2,7 +2,7 @@
 build/
 dist/
 
-# Local secrets / env (AWS Bedrock creds etc.) — never commit
+# Local secrets / env — never commit
 .env
 .env.*
 !.env.example

@@ -8,7 +8,11 @@ token:
 open: http://127.0.0.1:<port>/?token=<token>
 ```
 
-The OpenAPI document is served at `/openapi.json`; it drives the TypeScript codegen.
+**Request and response schemas are not duplicated here.** The OpenAPI document — served at
+`/openapi.json`, committed as `web/openapi.json`, and generated from the Rust route definitions — is
+authoritative for every endpoint's parameters, bodies, and status codes, and `make codegen-check`
+fails CI if it drifts. This page documents what the schema cannot express: the auth model, the
+shared conventions below, per-endpoint behavior and side effects, and the WebSocket event stream.
 
 When the web UI is built (`web/dist` present), the core also serves it: `GET /` returns
 `index.html` with the session token injected as `window.__HEARSAY_TOKEN__` behind a per-response
@@ -34,8 +38,14 @@ pass the Origin check; the token is the real gate.
 
 - REST base path is `/api`. Times are ISO 8601; segment `start_s`/`end_s` are meeting-relative
   seconds.
-- List endpoints return a paginated envelope: `{ "total", "page", "page_size", "items" }`.
+- List endpoints return a paginated envelope: `{ "total", "page", "page_size", "items" }`, and take
+  `page` (at least 1, default 1) and `page_size` (1 to 200, default 50).
 - Errors return `{ "detail": "..." }`.
+- Every REST call carries the bearer token:
+
+```sh
+curl -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8137/api/meetings
+```
 
 ## Meetings
 
@@ -44,41 +54,12 @@ pass the Origin check; the token is the real gate.
 Spawns the helper, begins capture, and starts the transcription pipeline. One meeting may be
 active at a time; a second start returns `409`.
 
-```sh
-curl -X POST http://127.0.0.1:8137/api/meetings \
-  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
-  -d '{"title": "Weekly Sync"}'
-```
-
-```json
-// 201 Created
-{
-  "id": "0f7c2c8e-2b1a-4a9c-9c0a-1f2e3d4b5a6c",
-  "title": "Weekly Sync",
-  "folder": "2026-06-26_1430_weekly-sync",
-  "status": "recording",
-  "started_at": "2026-06-26T14:30:00+00:00",
-  "ended_at": null,
-  "created_at": "2026-06-26T14:30:00+00:00",
-  "updated_at": "2026-06-26T14:30:00+00:00"
-}
-```
-
 `title` is optional; omitted, it defaults to a timestamp-derived name.
 
 ### `GET /api/meetings` (list meetings)
 
 Paginated, newest first. Query parameters: `page` (at least 1, default 1) and `page_size` (1 to
 200, default 50).
-
-```sh
-curl "http://127.0.0.1:8137/api/meetings?page=1&page_size=50" -H "Authorization: Bearer $TOKEN"
-```
-
-```json
-// 200 OK
-{ "total": 1, "page": 1, "page_size": 50, "items": [ { "id": "0f7c...", "status": "finalized", "...": "..." } ] }
-```
 
 ### `GET /api/meetings/{id}` (get one meeting)
 
@@ -87,17 +68,6 @@ Returns a `MeetingRead`, or `404` if unknown.
 ### `GET /api/meetings/{id}/segments` (list finalized segments)
 
 Paginated, ordered by `start_s`. This is how a past meeting reloads from the database.
-
-```json
-// 200 OK
-{
-  "total": 2, "page": 1, "page_size": 200,
-  "items": [
-    { "id": "a1...", "stream": "me",   "speaker_label": "Me",        "cluster_id": null,   "text": "What is this about?",     "start_s": 8.0,  "end_s": 9.1,  "edited": false },
-    { "id": "b2...", "stream": "them", "speaker_label": "Speaker 1", "cluster_id": "c9...", "text": "Your car is on its way.", "start_s": 28.4, "end_s": 30.0, "edited": false }
-  ]
-}
-```
 
 ### `POST /api/meetings/{id}/stop` (stop and finalize)
 
@@ -165,12 +135,6 @@ re-exported best-effort. Returns the updated `SegmentRead`. `404` if the segment
 meeting; `422` on a Me line, an unknown target cluster, or a body that is not exactly one of the two
 fields; `409` while the meeting is recording.
 
-```sh
-curl -X PATCH http://127.0.0.1:8137/api/meetings/$MID/segments/$SID/speaker \
-  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
-  -d '{"display_name": "Dana"}'
-```
-
 ### `PUT /api/meetings/{id}/folder` (file into a folder)
 
 Body `{ "folder_id": "<uuid>" }`, or `null` to un-file to the root. `404` if the meeting or the
@@ -190,29 +154,12 @@ Me is the microphone channel and is not a cluster.
 
 Paginated. Each item carries the cluster's resolved `label`: a bound name, else `Speaker N`.
 
-```json
-// 200 OK
-{
-  "total": 2, "page": 1, "page_size": 2,
-  "items": [
-    { "id": "c9...", "ordinal": 1, "label": "Alice",     "identity_id": "i7...", "locked": true  },
-    { "id": "ca...", "ordinal": 2, "label": "Speaker 2", "identity_id": null,    "locked": false }
-  ]
-}
-```
-
 ### `PUT /api/meetings/{id}/speakers/{cluster_id}` (rename a speaker)
 
 Binds the cluster to an identity (get-or-create by name), locks it, and relabels that speaker's
 segments. If the meeting is active, the name also propagates to the live pipeline so subsequent
 utterances carry it. Returns the updated `SpeakerRead`; `404` if the cluster is not in the meeting,
 `422` if the name is blank.
-
-```sh
-curl -X PUT http://127.0.0.1:8137/api/meetings/$MID/speakers/$CID \
-  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
-  -d '{"display_name": "Alice"}'
-```
 
 ### `POST /api/meetings/{id}/speakers/{cluster_id}/merge` (combine two speakers)
 
@@ -226,12 +173,6 @@ unrelated speakers whose lines still carry the old text. Returns the refreshed s
 while the meeting is recording, `404` if the path cluster is not in the meeting, `422` for a
 self-merge or an `into` outside the meeting.
 
-```sh
-curl -X POST http://127.0.0.1:8137/api/meetings/$MID/speakers/$CID/merge \
-  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
-  -d '{"into": "ca..."}'
-```
-
 ### `POST /api/meetings/{id}/rediarize` (re-run the offline refine)
 
 Re-diarizes and re-transcribes the whole Them track (the "Refine speakers" button): global
@@ -243,11 +184,6 @@ model or sidecar is unavailable.
 
 Paginated, most recently updated first. Powers the rename autocomplete, so a name from one meeting
 is suggested in the next.
-
-```json
-// 200 OK
-{ "total": 1, "page": 1, "page_size": 50, "items": [ { "id": "i7...", "display_name": "Alice", "email": null } ] }
-```
 
 ## Voiceprints
 
@@ -267,23 +203,6 @@ this list; the row cannot linger with nothing to match on and nothing left to re
 (a sample only counts once its name was set by hand), so `active_count: 0` means "saved, matching
 nothing yet". `dimension` is the embedding length — 256 on macOS, 192 on Windows — and samples of
 different lengths never match each other.
-
-```json
-// 200 OK
-{
-  "total": 1, "page": 1, "page_size": 50,
-  "items": [
-    {
-      "identity_id": "i7...", "display_name": "Alice", "email": null,
-      "sample_count": 2, "active_count": 2, "last_heard": "2026-08-01T10:00:00Z",
-      "samples": [
-        { "id": "c9...", "meeting_id": "m1...", "meeting_title": "Weekly Sync",
-          "started_at": "2026-08-01T10:00:00Z", "locked": true, "dimension": 256 }
-      ]
-    }
-  ]
-}
-```
 
 ### `PATCH /api/identities/{id}` (rename a person everywhere)
 
@@ -325,10 +244,6 @@ Query parameters: `q`, `page`, `page_size`. Runs an FTS5 match over finalized tr
 a parameter, so an empty or all-punctuation query returns an empty page rather than an error.
 Returns the paginated envelope of `SearchHit`s: meeting, matching segment, and a highlighted
 snippet.
-
-```sh
-curl "http://127.0.0.1:8137/api/search?q=budget&page=1&page_size=50" -H "Authorization: Bearer $TOKEN"
-```
 
 ## Notes (optional local-LLM summary)
 
@@ -383,19 +298,6 @@ can show what will run without the user having set an override. `storage_info` a
 `uncompressed_bytes` — how much is still held in un-archived `audio.wav` files, which the Storage
 panel uses to show what archiving would reclaim.
 
-```json
-// 200 OK
-{
-  "recording": { "record": true, "inactivity_prompt_enabled": true, "inactivity_auto_end_enabled": true, "inactivity_prompt_minutes": 5, "inactivity_end_minutes": 10 },
-  "speakers": { "auto_refine": false, "recognition_threshold": 0.6 },
-  "storage": { "output_dir": "/Users/you/.../outputs/recordings", "compress_audio": true, "compress_after_days": 7 },
-  "models": { "notes_enabled": false, "notes_model": "", "notes_prompt": "<template with {transcript}>", "refine_model": ".../ggml-large-v3-turbo.bin" },
-  "storage_info": { "output_dir": "...", "database_path": ".../hearsay.db", "tracked_bytes": 12345, "meeting_count": 3, "uncompressed_bytes": 9000 },
-  "models_info": { "default_refine_model": ".../ggml-large-v3-turbo.bin", "refine_model_exists": true, "default_notes_model": "", "notes_model_exists": false, "default_notes_prompt": "<template with {transcript}>" },
-  "about": { "app_version": "0.1.0", "environment": "production", "protocol_version": 1, "database_path": ".../hearsay.db" }
-}
-```
-
 ### `GET` / `POST /api/settings/storage/compress` (archive audio on demand)
 
 Runs the same archival pass as the periodic sweep, without waiting for it. `POST` answers `202` with
@@ -403,11 +305,6 @@ the opening snapshot — the work list is counted before it returns, so `total` 
 is already true — and does the encoding in the background, since a backlog takes far longer than a
 request should hold. `409` while a meeting is recording (encoding must not compete with live
 capture) or while a pass is already running. `GET` returns the same snapshot for polling:
-
-```json
-// 200 OK
-{ "running": true, "total": 3, "done": 1, "compressed": 1, "failed": 0, "reclaimed_bytes": 33833586 }
-```
 
 It honors the effective age threshold, so it never archives a meeting the `compress_after_days`
 setting says is still too recent. It does not require the automatic sweep to be enabled — pressing
@@ -441,13 +338,6 @@ opened.
 Briefly spawns the capture helper and reads its `check_permissions` snapshot and build version;
 nothing is persisted. Degrades to `helper_available: false` with every field `unknown` when the
 helper binary is absent.
-
-```json
-// 200 OK
-{ "helper_available": true, "helper_version": "0.1.0", "microphone": "granted",
-  "audio_capture": "undetermined", "screen_recording": "undetermined",
-  "accessibility": "undetermined", "calendar": "undetermined" }
-```
 
 ## Status
 
