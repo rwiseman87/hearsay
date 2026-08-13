@@ -51,6 +51,8 @@ fn test_settings(output_dir: PathBuf, web_dir: PathBuf) -> Settings {
         inactivity_auto_end: true,
         inactivity_prompt_minutes: 5,
         inactivity_end_minutes: 10,
+        compress_audio: true,
+        compress_after_days: 7,
         notes_enabled: false,
         notes_model: PathBuf::from("no-notes-model"),
         notes_prompt: "Summarize:\n{transcript}".into(),
@@ -85,6 +87,7 @@ async fn setup() -> (Router, SqlitePool, tempfile::TempDir) {
         settings,
         TOKEN.to_string(),
         Arc::new(DisabledEngine),
+        Default::default(),
     );
     (create_app(state), pool, tmp)
 }
@@ -189,7 +192,13 @@ async fn index_gates_the_token_and_pins_the_ws_host() {
     )
     .unwrap();
     let settings = test_settings(tmp.path().to_path_buf(), web);
-    let state = AppState::new(pool, settings, TOKEN.to_string(), Arc::new(DisabledEngine));
+    let state = AppState::new(
+        pool,
+        settings,
+        TOKEN.to_string(),
+        Arc::new(DisabledEngine),
+        Default::default(),
+    );
     let app = create_app(state);
 
     let index_req = |uri: &str| {
@@ -1328,6 +1337,7 @@ async fn serve_ws() -> (String, tempfile::TempDir) {
         settings,
         TOKEN.to_string(),
         Arc::new(DisabledEngine),
+        Default::default(),
     );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let authority = format!("127.0.0.1:{}", listener.local_addr().unwrap().port());
@@ -1480,7 +1490,13 @@ async fn full_stack_meeting_drives_events_and_persistence() {
     let engine: Arc<dyn LiveEngine> =
         Orchestrator::new(pool.clone(), tmp.path().to_path_buf(), backend).into_arc();
     let settings = test_settings(tmp.path().to_path_buf(), tmp.path().join("no-web"));
-    let state = AppState::new(pool.clone(), settings, TOKEN.to_string(), engine);
+    let state = AppState::new(
+        pool.clone(),
+        settings,
+        TOKEN.to_string(),
+        engine,
+        Default::default(),
+    );
 
     let app = create_app(state.clone());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1520,6 +1536,13 @@ async fn full_stack_meeting_drives_events_and_persistence() {
     )
     .await;
     assert_eq!(status, StatusCode::CONFLICT);
+
+    // And archiving on demand: encoding is CPU work, so it must never compete with live capture.
+    let (status, body) = send(&app, post("/api/settings/storage/compress", "")).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert!(body["detail"]
+        .as_str()
+        .is_some_and(|d| d.contains("recording")));
 
     // Pause so the WS connect yields a deterministic paused snapshot — our subscribe barrier.
     let (status, _) = send(&app, post(&format!("/api/meetings/{id}/pause"), "")).await;
@@ -1606,7 +1629,13 @@ async fn full_stack_refine_replaces_them_segments_on_read_back() {
         .with_refiner(refiner)
         .into_arc();
     let settings = test_settings(tmp.path().to_path_buf(), tmp.path().join("no-web"));
-    let state = AppState::new(pool.clone(), settings, TOKEN.to_string(), orch.clone());
+    let state = AppState::new(
+        pool.clone(),
+        settings,
+        TOKEN.to_string(),
+        orch.clone(),
+        Default::default(),
+    );
     let app = create_app(state);
 
     // Start over HTTP, then drop a placeholder audio.wav into the meeting folder — the refiner ignores
@@ -1778,6 +1807,127 @@ async fn rejects_out_of_range_recognition_threshold() {
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
 }
 
+/// A `storage` row written before audio archival existed carries only `output_dir`. Deserializing
+/// the section as a struct would resolve the absent keys to their type defaults (`false` / `0`),
+/// shipping archival disabled on precisely the installs with the most audio to reclaim. Guard that
+/// each field falls back to its config default instead.
+#[tokio::test]
+async fn compress_now_starts_a_pass_and_reports_progress() {
+    let (app, _pool, _tmp) = setup().await;
+
+    // Idle before anything is asked for.
+    let (status, body) = send(&app, get("/api/settings/storage/compress")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["running"], false);
+    assert_eq!(body["compressed"], 0);
+
+    // The button hands the work to the background and answers immediately -- a backlog takes far
+    // longer than a request should hold.
+    let (status, body) = send(&app, post("/api/settings/storage/compress", "")).await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    assert!(body["total"].is_number());
+    assert!(body["reclaimed_bytes"].is_i64());
+}
+
+#[tokio::test]
+async fn settings_survive_a_legacy_storage_preference() {
+    let (app, pool, _tmp) = setup().await;
+    hearsay_db::queries::set_preference(
+        &pool,
+        hearsay_db::queries::SECTION_STORAGE,
+        r#"{"output_dir":"/legacy/recordings"}"#,
+    )
+    .await
+    .unwrap();
+
+    let (status, body) = send(&app, get("/api/settings")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["storage"]["output_dir"], "/legacy/recordings");
+    // The fields the row predates come from the config defaults, so archival ships on rather than
+    // silently disabled.
+    assert_eq!(body["storage"]["compress_audio"], true);
+    assert_eq!(body["storage"]["compress_after_days"], 7);
+    // And the rest of the page still rendered.
+    assert!(body["recording"].is_object());
+    assert!(body["models"].is_object());
+    assert!(body["storage_info"]["uncompressed_bytes"].is_i64());
+}
+
+#[tokio::test]
+async fn storage_update_round_trips_compression_and_validates_it() {
+    let (app, _pool, tmp) = setup().await;
+    let dir = serde_json::to_string(&tmp.path().to_string_lossy()).unwrap();
+
+    let (status, body) = send(
+        &app,
+        put(
+            "/api/settings/storage",
+            &format!("{{\"output_dir\":{dir},\"compress_audio\":true,\"compress_after_days\":30}}"),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["compress_audio"], true);
+    assert_eq!(body["compress_after_days"], 30);
+
+    // And it survives a re-read.
+    let (_, settings) = send(&app, get("/api/settings")).await;
+    assert_eq!(settings["storage"]["compress_after_days"], 30);
+
+    // Zero would race the post-stop refine, which is still reading the WAV.
+    for days in ["0", "400"] {
+        let (status, _) = send(
+            &app,
+            put(
+                "/api/settings/storage",
+                &format!(
+                    "{{\"output_dir\":{dir},\"compress_audio\":true,\"compress_after_days\":{days}}}"
+                ),
+            ),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "compress_after_days {days} should be rejected"
+        );
+    }
+
+    // A disabled threshold is inert, so it is not checked.
+    let (status, _) = send(
+        &app,
+        put(
+            "/api/settings/storage",
+            &format!("{{\"output_dir\":{dir},\"compress_audio\":false,\"compress_after_days\":0}}"),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+}
+
+/// The PUT full-replaces the section, so a body that omits the archival fields must be rejected —
+/// accepting it would silently switch archival off while the user was only changing the folder.
+#[tokio::test]
+async fn storage_update_rejects_a_partial_body() {
+    let (app, _pool, tmp) = setup().await;
+    let dir = serde_json::to_string(&tmp.path().to_string_lossy()).unwrap();
+
+    let (status, _) = send(
+        &app,
+        put(
+            "/api/settings/storage",
+            &format!("{{\"output_dir\":{dir}}}"),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+
+    // And the stored policy is unchanged.
+    let (_, settings) = send(&app, get("/api/settings")).await;
+    assert_eq!(settings["storage"]["compress_audio"], true);
+    assert_eq!(settings["storage"]["compress_after_days"], 7);
+}
+
 #[tokio::test]
 async fn validates_output_dir_on_storage_update() {
     let (app, _pool, tmp) = setup().await;
@@ -1787,7 +1937,7 @@ async fn validates_output_dir_on_storage_update() {
         &app,
         put(
             "/api/settings/storage",
-            "{\"output_dir\":\"/no/such/hearsay/dir\"}",
+            "{\"output_dir\":\"/no/such/hearsay/dir\",\"compress_audio\":true,\"compress_after_days\":7}",
         ),
     )
     .await;
@@ -1799,7 +1949,7 @@ async fn validates_output_dir_on_storage_update() {
         &app,
         put(
             "/api/settings/storage",
-            &format!("{{\"output_dir\":{dir}}}"),
+            &format!("{{\"output_dir\":{dir},\"compress_audio\":true,\"compress_after_days\":7}}"),
         ),
     )
     .await;

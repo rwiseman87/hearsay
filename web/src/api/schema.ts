@@ -561,6 +561,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/settings/storage/compress": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["read_archive"];
+        put?: never;
+        /**
+         * Run the archival pass now instead of waiting for the periodic sweep.
+         * @description Returns immediately with the starting snapshot and does the work in the background -- a backlog
+         *     can take a minute of CPU, far longer than a request should hold. The UI polls the GET above.
+         *     Honors the effective age threshold, so pressing the button never archives a meeting the user's
+         *     own setting says is still too recent; it does not require the automatic sweep to be enabled,
+         *     since pressing it is an explicit instruction.
+         */
+        post: operations["start_archive"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/status": {
         parameters: {
             query?: never;
@@ -623,6 +647,30 @@ export interface components {
             environment: string;
             /** Format: int32 */
             protocol_version: number;
+        };
+        /**
+         * @description Progress of the audio-archival pass, whether started by the Settings button or the periodic
+         *     sweep. Polled by the UI while `running`; the counters describe the current pass, or the last one
+         *     once it has finished. Read-only.
+         */
+        ArchiveState: {
+            /** Format: int32 */
+            compressed: number;
+            /**
+             * Format: int32
+             * @description Meetings processed so far.
+             */
+            done: number;
+            /** Format: int32 */
+            failed: number;
+            /** Format: int64 */
+            reclaimed_bytes: number;
+            running: boolean;
+            /**
+             * Format: int32
+             * @description Meetings this pass will process.
+             */
+            total: number;
         };
         /**
          * @description A capture-health frame (not a transcript line): the named stream is delivering digital silence —
@@ -1250,9 +1298,30 @@ export interface components {
             output_dir: string;
             /** Format: int64 */
             tracked_bytes: number;
+            /**
+             * Format: int64
+             * @description Bytes still held in uncompressed `audio.wav` files — what archiving would shrink ~3x.
+             */
+            uncompressed_bytes: number;
         };
-        /** @description The default root new meetings are written under (existing meetings keep their stamped location). */
+        /**
+         * @description Storage: the default root new meetings are written under (existing meetings keep their stamped
+         *     location), plus the audio-archival policy — once a finalized meeting is `compress_after_days`
+         *     old, its `audio.wav` is re-encoded as lossless FLAC (~3x smaller, bit-identical, so playback and
+         *     re-diarization are unaffected). Editable section; a request body and part of [`SettingsRead`].
+         */
         StorageSettings: {
+            /**
+             * Format: int32
+             * @description Days after a meeting ends before its audio is archived.
+             */
+            compress_after_days: number;
+            /**
+             * @description Archive finalized meetings' audio as lossless FLAC. Deliberately NOT `#[serde(default)]`:
+             *     the PUT full-replaces the section, so a body omitting this would silently switch archival
+             *     off rather than leave it alone. Required means a partial write is a 422 instead.
+             */
+            compress_audio: boolean;
             output_dir: string;
         };
         /**
@@ -2653,6 +2722,50 @@ export interface operations {
                 };
             };
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    read_archive: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ArchiveState"];
+                };
+            };
+        };
+    };
+    start_archive: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ArchiveState"];
+                };
+            };
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };

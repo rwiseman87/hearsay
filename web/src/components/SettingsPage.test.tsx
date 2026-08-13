@@ -10,6 +10,8 @@ vi.mock("../api/token", () => ({ getToken: () => "test-token" }));
 // The Danger Zone uses Tauri IPC (desktop only); stub it so the import is inert under test.
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 
+import type { StorageSettings } from "../api/types";
+
 import SettingsPage from "./SettingsPage";
 
 // Only the fields the mounted panels read; the Models panel guards on `models` + `models_info`.
@@ -22,8 +24,14 @@ const settingsFixture = {
     inactivity_end_minutes: 10,
   },
   speakers: { auto_refine: false, recognition_threshold: 0.6 },
-  storage: {},
-  storage_info: {},
+  storage: { output_dir: "/recordings", compress_audio: true, compress_after_days: 7 },
+  storage_info: {
+    output_dir: "/recordings",
+    database_path: "/db/hearsay.db",
+    tracked_bytes: 3_221_225_472,
+    meeting_count: 12,
+    uncompressed_bytes: 2_147_483_648,
+  },
   models: { refine_model: "/models/ggml.bin", notes_enabled: false, notes_model: "", notes_prompt: "" },
   models_info: {
     default_notes_model: "",
@@ -201,5 +209,163 @@ describe("SettingsPage voices panel", () => {
     await user.type(input, "Bob{Enter}");
 
     expect(await screen.findByText("another person already uses that name")).toBeTruthy();
+  });
+});
+
+describe("SettingsPage storage", () => {
+  it("renders the archival policy and what it would reclaim", async () => {
+    const user = userEvent.setup();
+    renderSettings();
+    await user.click(await screen.findByRole("button", { name: "Storage" }));
+
+    const toggle = await screen.findByRole("checkbox", {
+      name: /Compress audio from older meetings/,
+    });
+    expect((toggle as HTMLInputElement).checked).toBe(true);
+    const days = (await screen.findByLabelText("Compress after days")) as HTMLInputElement;
+    expect(days.value).toBe("7");
+    // 2 GiB of wav, which compresses to roughly a third.
+    expect(await screen.findByText(/2\.0 GB — roughly 682\.7 MB once compressed/)).toBeTruthy();
+  });
+
+  it("sends the whole section when only the folder changes", async () => {
+    const user = userEvent.setup();
+    let body: StorageSettings | undefined;
+    server.use(
+      http.put("/api/settings/storage", async ({ request }) => {
+        body = (await request.json()) as StorageSettings;
+        return HttpResponse.json(body);
+      }),
+    );
+    renderSettings();
+    await user.click(await screen.findByRole("button", { name: "Storage" }));
+
+    const input = await screen.findByLabelText("Default recordings location");
+    await user.clear(input);
+    await user.type(input, "/elsewhere");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    // The PUT full-replaces the section: omitting the archival fields here would silently switch
+    // compression off as a side effect of moving the folder.
+    await vi.waitFor(() =>
+      expect(body).toEqual({
+        output_dir: "/elsewhere",
+        compress_audio: true,
+        compress_after_days: 7,
+      }),
+    );
+  });
+
+  it("sends the whole section when only the toggle changes", async () => {
+    const user = userEvent.setup();
+    let body: StorageSettings | undefined;
+    server.use(
+      http.put("/api/settings/storage", async ({ request }) => {
+        body = (await request.json()) as StorageSettings;
+        return HttpResponse.json(body);
+      }),
+    );
+    renderSettings();
+    await user.click(await screen.findByRole("button", { name: "Storage" }));
+
+    await user.click(
+      await screen.findByRole("checkbox", { name: /Compress audio from older meetings/ }),
+    );
+
+    await vi.waitFor(() =>
+      expect(body).toEqual({
+        output_dir: "/recordings",
+        compress_audio: false,
+        compress_after_days: 7,
+      }),
+    );
+  });
+});
+
+describe("SettingsPage compress now", () => {
+  it("starts a pass and shows progress, then the result", async () => {
+    const user = userEvent.setup();
+    let started = false;
+    server.use(
+      http.get("/api/settings/storage/compress", () =>
+        HttpResponse.json(
+          started
+            ? { running: true, total: 4, done: 1, compressed: 1, failed: 0, reclaimed_bytes: 1024 }
+            : { running: false, total: 0, done: 0, compressed: 0, failed: 0, reclaimed_bytes: 0 },
+        ),
+      ),
+      http.post("/api/settings/storage/compress", () => {
+        started = true;
+        return HttpResponse.json(
+          { running: true, total: 4, done: 0, compressed: 0, failed: 0, reclaimed_bytes: 0 },
+          { status: 202 },
+        );
+      }),
+    );
+    renderSettings();
+    await user.click(await screen.findByRole("button", { name: "Storage" }));
+
+    await user.click(await screen.findByRole("button", { name: "Compress now" }));
+
+    // The button reflects the in-flight pass rather than looking idle while work happens.
+    const busy = (await screen.findByRole("button", { name: "Compressing…" })) as HTMLButtonElement;
+    expect(busy.disabled).toBe(true);
+    expect(await screen.findByText(/of 4 meetings/)).toBeTruthy();
+  });
+
+  it("surfaces the server's refusal while a meeting is recording", async () => {
+    const user = userEvent.setup();
+    server.use(
+      http.get("/api/settings/storage/compress", () =>
+        HttpResponse.json({
+          running: false,
+          total: 0,
+          done: 0,
+          compressed: 0,
+          failed: 0,
+          reclaimed_bytes: 0,
+        }),
+      ),
+      http.post("/api/settings/storage/compress", () =>
+        HttpResponse.json(
+          { detail: "a meeting is recording; archiving would compete with it" },
+          { status: 409 },
+        ),
+      ),
+    );
+    renderSettings();
+    await user.click(await screen.findByRole("button", { name: "Storage" }));
+    await user.click(await screen.findByRole("button", { name: "Compress now" }));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toMatch(/a meeting is recording/);
+  });
+
+  it("offers nothing to do when everything is already compressed", async () => {
+    const user = userEvent.setup();
+    server.use(
+      http.get("/api/settings", () =>
+        HttpResponse.json({
+          ...settingsFixture,
+          storage_info: { ...settingsFixture.storage_info, uncompressed_bytes: 0 },
+        }),
+      ),
+      http.get("/api/settings/storage/compress", () =>
+        HttpResponse.json({
+          running: false,
+          total: 0,
+          done: 0,
+          compressed: 0,
+          failed: 0,
+          reclaimed_bytes: 0,
+        }),
+      ),
+    );
+    renderSettings();
+    await user.click(await screen.findByRole("button", { name: "Storage" }));
+
+    const button = (await screen.findByRole("button", { name: "Compress now" })) as HTMLButtonElement;
+    expect(button.disabled).toBe(true);
+    expect(await screen.findByText(/already compressed/)).toBeTruthy();
   });
 });

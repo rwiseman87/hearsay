@@ -134,6 +134,8 @@ error otherwise, so a misconfigured deploy fails fast instead of silently using 
 | Auto-refine at stop | `HEARSAY_AUTO_REFINE` | `false` |
 | Recognition threshold | `HEARSAY_RECOGNITION_THRESHOLD` | `0.6` |
 | Notes (local-LLM summary) | `HEARSAY_NOTES` | `false` |
+| Compress older meeting audio (lossless FLAC) | `HEARSAY_COMPRESS_AUDIO` | `true` |
+| Days before a meeting's audio is compressed | `HEARSAY_COMPRESS_AFTER_DAYS` | `7` |
 | Notes model (GGUF) | `HEARSAY_NOTES_MODEL` | unset until one is downloaded |
 | Notes prompt template | `HEARSAY_NOTES_PROMPT` | built-in template |
 | Models download dir | `HEARSAY_MODELS_DIR` | `outputs/models` |
@@ -143,8 +145,9 @@ error otherwise, so a misconfigured deploy fails fast instead of silently using 
 | Them loopback path (Windows) | `HEARSAY_WIN_LOOPBACK` | `device` (`device` \| `process`) |
 | Environment | `ENVIRONMENT` | `development` |
 
-`HEARSAY_RECORD`, `HEARSAY_AUTO_REFINE`, `HEARSAY_RECOGNITION_THRESHOLD`, and the notes settings
-are the defaults for the editable Settings sections; a stored preference overrides them. The
+`HEARSAY_RECORD`, `HEARSAY_AUTO_REFINE`, `HEARSAY_RECOGNITION_THRESHOLD`, the compression settings,
+and the notes settings are the defaults for the editable Settings sections; a stored preference
+overrides them. The
 handshake and FluidAudio paths are injected by the desktop shell and normally unset in
 development. The sherpa and loopback settings apply only on Windows.
 
@@ -155,6 +158,33 @@ seek) and the refine, which reads its Them channel. The tradeoff is that it reta
 audio: turn it off in Settings or with `HEARSAY_RECORD=false` to opt out, which also disables the
 refine since there is no recording to re-diarize. Deleting a meeting removes the folder. Served by
 `GET /api/meetings/{id}/audio`.
+
+**Audio archival.** Uncompressed, that WAV is 230 MB per hour and never shrinks. A background sweep
+(hourly, on by default) re-encodes a finalized meeting.s WAV as lossless FLAC once it is
+`HEARSAY_COMPRESS_AFTER_DAYS` old — about 3x smaller on real meeting audio. Lossless means nothing
+downstream changes: playback, the refine, and re-diarization read the archived file and see identical
+samples, so `make diarize-eval` scores the same either way. The WAV is deleted only after the encoded
+file has been decoded back and compared to it sample for sample, so a failed encode costs disk space,
+never audio. The sweep never touches a meeting that is not `finalized`, and it defers while a meeting is
+recording, re-checking every 5 minutes rather than waiting out the hour. Turn it off in Settings >
+Storage or with `HEARSAY_COMPRESS_AUDIO=false`. Settings > Storage also has a **Compress now**
+button that runs the same pass immediately, reporting progress and the reclaimed total; it is
+refused while a meeting is recording.
+
+Note for development: the dev output dir (`outputs/recordings`) is swept too, so an old corpus
+recording there may become `audio.flac`. Everything that reads a recording accepts either form.
+
+Two recovery tools live alongside the codec, both operating on a recordings root and neither
+touching a sample:
+
+```sh
+# Decode an archived library back to audio.wav (add --delete-flac to reclaim the space).
+cargo run --release -p hearsay-audio --example restore -- <recordings-dir>
+
+# Rewrite the STREAMINFO frame-size range in files written before it was populated. Such files
+# decode correctly but will not play in WKWebView or QuickTime; see docs/architecture.md.
+cargo run --release -p hearsay-audio --example repair_header -- <recordings-dir>
+```
 
 When run from source, all runtime data (recordings, the SQLite database, downloaded models) lives
 under the repo's `outputs/` directory, which is gitignored. Override any path with the variables

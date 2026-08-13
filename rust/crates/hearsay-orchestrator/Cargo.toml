@@ -7,6 +7,7 @@ publish = false
 [dependencies]
 hearsay-engine = { path = "../hearsay-engine" }
 hearsay-db = { path = "../hearsay-db" }
+hearsay-audio = { path = "../hearsay-audio" }
 tokio = { workspace = true, features = ["process", "io-util", "sync", "rt", "time", "macros", "fs"] }
 async-trait = { workspace = true }
 serde = { workspace = true }

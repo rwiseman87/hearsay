@@ -242,6 +242,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "built"
+version = "0.7.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "56ed6191a7e78c36abdb16ab65341eefd73d64d303fffccdbb00d51e4205967b"
+
+[[package]]
 name = "bumpalo"
 version = "3.20.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -341,6 +347,12 @@ dependencies = [
  "libc",
  "libloading",
 ]
+
+[[package]]
+name = "claxon"
+version = "0.4.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4bfbf56724aa9eca8afa4fcfadeb479e722935bb2a0900c2d37e0cc477af0688"
 
 [[package]]
 name = "cmake"
@@ -625,6 +637,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "flacenc"
+version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "74c892c2b5fa08f967e8b5ad29121570b4762202f2402033ce08479ec65eccd0"
+dependencies = [
+ "built",
+ "crc",
+ "heapless",
+ "md-5 0.10.6",
+ "num-traits",
+ "rustversion",
+ "seq-macro",
+]
+
+[[package]]
 name = "flate2"
 version = "1.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -807,6 +834,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0cc23270f6e1808e30a928bdc84dea0b9b4136a8bc82338574f23baf47bbd280"
 
 [[package]]
+name = "hash32"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "47d60b12902ba28e2730cd37e95b8c9223af2808df9e902d4df49588d1470606"
+dependencies = [
+ "byteorder",
+]
+
+[[package]]
 name = "hashbrown"
 version = "0.16.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -833,6 +869,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "heapless"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0bfb9eb618601c89945a70e254898da93b13be0388091d42117462b265bb3fad"
+dependencies = [
+ "hash32",
+ "stable_deref_trait",
+]
+
+[[package]]
 name = "hearsay-attribution"
 version = "0.1.0"
 dependencies = [
@@ -840,22 +886,36 @@ dependencies = [
 ]
 
 [[package]]
+name = "hearsay-audio"
+version = "0.1.0"
+dependencies = [
+ "claxon",
+ "flacenc",
+ "hound",
+ "tempfile",
+]
+
+[[package]]
 name = "hearsay-backends"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "chrono",
+ "hearsay-audio",
  "hearsay-capture",
  "hearsay-db",
  "hearsay-engine",
  "hearsay-inference",
  "hearsay-notes-prompt",
  "hearsay-orchestrator",
+ "hound",
  "serde",
  "serde_json",
  "sqlx",
  "tempfile",
  "tokio",
  "tracing",
+ "uuid",
 ]
 
 [[package]]
@@ -880,6 +940,7 @@ dependencies = [
  "chrono",
  "futures-util",
  "hearsay-attribution",
+ "hearsay-audio",
  "hearsay-backends",
  "hearsay-db",
  "hearsay-engine",
@@ -928,6 +989,7 @@ name = "hearsay-inference"
 version = "0.1.0"
 dependencies = [
  "hearsay-attribution",
+ "hearsay-audio",
  "hound",
  "serde",
  "serde_json",
@@ -967,6 +1029,7 @@ dependencies = [
  "aec-rs",
  "async-trait",
  "chrono",
+ "hearsay-audio",
  "hearsay-db",
  "hearsay-engine",
  "hound",
@@ -1433,6 +1496,16 @@ checksum = "47e1ffaa40ddd1f3ed91f717a33c8c0ee23fff369e3aa8772b9605cc1d22f4c3"
 
 [[package]]
 name = "md-5"
+version = "0.10.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d89e7ee0cfbedfc4da3340218492196241d89eefb6dab27de5df917a6d2e78cf"
+dependencies = [
+ "cfg-if",
+ "digest 0.10.7",
+]
+
+[[package]]
+name = "md-5"
 version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "69b6441f590336821bb897fb28fc622898ccceb1d6cea3fde5ea86b090c4de98"
@@ -1889,6 +1962,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8a7852d02fc848982e0c167ef163aaff9cd91dc640ba85e263cb1ce46fae51cd"
 
 [[package]]
+name = "seq-macro"
+version = "0.3.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1bc711410fbe7399f390ca1c3b60ad0f53f80e95c5eb935e52268a0e2cd49acc"
+
+[[package]]
 name = "serde"
 version = "1.0.228"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2235,7 +2314,7 @@ dependencies = [
  "hmac",
  "itoa",
  "log",
- "md-5",
+ "md-5 0.11.0",
  "memchr",
  "rand 0.10.1",
  "serde",

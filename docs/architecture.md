@@ -53,7 +53,7 @@ flowchart TB
     end
     subgraph disk["Data at rest (user-writable, outside the bundle)"]
         db[("SQLite database<br/>WAL, foreign keys")]
-        meetings["Per-meeting folders<br/>audio.wav, transcript.md, meeting.json, notes.md"]
+        meetings["Per-meeting folders<br/>audio.wav or audio.flac, transcript.md, meeting.json, notes.md"]
         models["Model files<br/>whisper GGML, notes GGUF, FluidAudio cache"]
     end
 
@@ -83,7 +83,7 @@ flowchart TB
 
 ## Rust crate map
 
-Eleven workspace crates under `rust/crates/`. Arrows point at the dependency (the actual `path`
+Twelve workspace crates under `rust/crates/`. Arrows point at the dependency (the actual `path`
 entries in each `Cargo.toml`). `hearsay-notes` is a standalone sidecar binary the core spawns rather
 than links, so it stands apart from the `hearsay-core` link graph.
 
@@ -91,13 +91,14 @@ than links, so it stands apart from the `hearsay-core` link graph.
 flowchart BT
     ipc["hearsay-ipc<br/>frame + NDJSON codec, golden fixtures"]
     attr["hearsay-attribution<br/>pure speaker-attribution logic"]
+    audio["hearsay-audio<br/>lossless FLAC archival codec"]
     db["hearsay-db<br/>SQLx queries + migrations"]
     engine["hearsay-engine<br/>LiveEngine seam"]
     orch["hearsay-orchestrator<br/>pipeline, recorder, traits"]
     cap["hearsay-capture<br/>SwiftHelperSource, TCC probe"]
     inf["hearsay-inference<br/>whisper refine (no llama)"]
     notesprompt["hearsay-notes-prompt<br/>prompt build + reply parse, no deps"]
-    back["hearsay-backends<br/>MacBackend, MacRefiner, reconcile"]
+    back["hearsay-backends<br/>MacBackend, MacRefiner,<br/>reconcile + archive sweep"]
     core["hearsay-core<br/>axum API, composition root"]
     notes["hearsay-notes<br/>llama.cpp notes sidecar (standalone binary)"]
 
@@ -105,18 +106,22 @@ flowchart BT
     engine --> db
     orch --> engine
     orch --> db
+    orch --> audio
     cap --> orch
     cap --> ipc
     inf --> attr
+    inf --> audio
     back --> engine
     back --> orch
     back --> cap
     back --> inf
     back --> db
+    back --> audio
     back --> notesprompt
     core --> db
     core --> engine
     core --> back
+    core --> audio
     core --> ipc
     notes --> notesprompt
 ```
@@ -125,6 +130,7 @@ flowchart BT
 |---|---|
 | `hearsay-ipc` | The binary media-frame codec (28-byte little-endian header) and the NDJSON control codec. Source of truth for `shared/protocol/ipc.md`; generates the golden fixtures both languages validate in CI. |
 | `hearsay-attribution` | Pure attribution logic: speaker ordering, segment-speaker assignment, cosine voiceprint matching. No dependencies; unit-tested in isolation. |
+| `hearsay-audio` | Lossless FLAC archival of the recorded meeting WAV: a bounded-memory streaming encoder, a block-at-a-time decoder, and the byte-exact verifier that must pass before the original is deleted. Also resolves which form a meeting's recording is in. Ships `restore` and `repair_header` examples for un-archiving a library and for fixing the STREAMINFO of files written before the frame-size range was populated. No first-party dependencies, so every consumer can depend on it without pulling in whisper or the orchestrator. |
 | `hearsay-db` | Persistence: SQLite via SQLx (WAL, `busy_timeout`, foreign keys), UUID primary keys, forward-only migrations, the attribution policy (vote and recognition), FTS transcript search, folders, notes, and settings queries. |
 | `hearsay-engine` | The neutral `LiveEngine` trait and the `DisabledEngine` placeholder the API test suite runs against. Exists so the core and the orchestrator can share the seam without a dependency cycle. |
 | `hearsay-orchestrator` | Implements `LiveEngine`: creates the meeting row and folder, drives an `AudioSource`, routes each stream's PCM to its `Transcriber`, records the stereo `audio.wav`, persists and broadcasts segments, and runs the refine and notes steps after stop. Ships scripted test fakes. |
@@ -132,7 +138,7 @@ flowchart BT
 | `hearsay-inference` | In-process ML, all offline: the whisper refine (GGML; CPU, or Metal/Vulkan/CUDA by feature) and the feature-gated sherpa-onnx modules for the Windows path (`sherpa` feature). The llama.cpp notes summarizer runs out-of-process in the `hearsay-notes` sidecar (its `ggml` must not co-link with whisper's), reusing the pure prompt/parse logic from `hearsay-notes-prompt`. |
 | `hearsay-notes-prompt` | Dependency-free prompt construction and reply parsing for the notes step, shared by `hearsay-backends` (the `SubprocessSummarizer`) and the `hearsay-notes` sidecar so the sidecar never pulls in `hearsay-inference` → whisper. |
 | `hearsay-notes` | The standalone notes-LLM sidecar binary: owns llama.cpp (`llama-cpp-2`), spawned by the core over stdio (JSON in, JSON out). The only process that links llama's vendored `ggml`, kept out of the core so it never co-links with whisper's. |
-| `hearsay-backends` | Platform backend wiring behind the engine seam: `MacBackend` (warm sidecar pool), `MacRefiner`, the `SubprocessSummarizer` (spawns `hearsay-notes`), startup reconciliation, and `build_engine`, where the `WindowsBackend` plugs in. |
+| `hearsay-backends` | Platform backend wiring behind the engine seam: `MacBackend` (warm sidecar pool), `MacRefiner`, the `SubprocessSummarizer` (spawns `hearsay-notes`), startup reconciliation, the periodic audio-archival sweep, and `build_engine`, where the `WindowsBackend` plugs in. |
 | `hearsay-core` | The application binary: the axum HTTP + WebSocket API, security middleware, the served UI, OpenAPI generation, and the composition root that calls `build_engine`. Depends only on the seam, never on the concrete backend crates directly. |
 
 The Tauri shell (`web/src-tauri/`) is a separate crate outside the workspace; it spawns the
@@ -284,6 +290,7 @@ sequenceDiagram
     Core->>Core: seed the FluidAudio model cache from the bundle (first launch)
     Core->>Core: build the engine, prewarm the first sidecar pair
     Core->>Core: finalize meetings stranded by a prior hard exit
+    Core->>Core: start the hourly audio-archival sweep
     Core->>Core: bind 127.0.0.1 on an OS-assigned port
     Core-->>Shell: write the handshake file {port, token} (0600, atomic rename)
     Shell->>Shell: poll the handshake file, delete it after reading
@@ -398,9 +405,46 @@ nothing can be active at startup, the core sweeps every non-terminal row at boot
 finalized, and rewrites its transcript from the persisted segments
 (`hearsay-backends/src/reconcile.rs`).
 
+### Audio archival
+
+An uncompressed `audio.wav` is 230 MB per hour and nothing ever shrinks it, so recordings grow
+without bound. An hourly background sweep (`hearsay-backends/src/archive.rs`, on by default) re-encodes
+a finalized meeting's WAV as lossless FLAC once it is older than the configured threshold — about 3x
+smaller on real meeting audio. Because it is lossless, nothing downstream changes: playback, the
+offline refine, and re-diarization resolve whichever form exists
+(`hearsay_audio::resolve_recorded_audio`) and see identical samples, so diarization accuracy is
+unaffected.
+
+The encoder patches the real frame-size range into STREAMINFO after the frames are written. This is
+not cosmetic: leaving `flacenc`'s defaults writes `min_frame_size = 0xFFFFFF` against
+`max_frame_size = 0`, an impossible range that AVFoundation -- and therefore every macOS player,
+including the app's own WKWebView -- refuses to play, while reporting the correct duration and no
+error. The audio decodes perfectly either way, so no round-trip test catches it; the encoder asserts
+the declared range is coherent instead. `cargo run -p hearsay-audio --example repair_header` rewrites
+those six bytes in files written before the fix, without touching a sample.
+
+The destructive step is ordered so a failure can only cost disk space, never audio: encode to a
+temporary, decode it back and compare it to the source sample for sample, rename it into place, and
+only then unlink the WAV. A crash between the rename and the unlink leaves both files, which the
+resolver tolerates and the next sweep cleans up. The sweep only considers `finalized` rows, so it
+never races the recorder or the post-stop refine, and it defers entirely while a meeting is
+recording — encoding is CPU work and a live meeting owns the machine.
+
+The Settings > Storage "Compress now" button runs the same pass on demand through
+`start_background_pass`, which resolves the work list before responding (so the UI gets a real total
+and can poll immediately) and shares one `Sweeper` with the ticker, so the two can never sweep the
+same folders at once.
+
+A deferred pass re-checks in 5 minutes rather than waiting out the hour, and a pass cut short by a
+meeting starting mid-sweep does the same. That distinction matters more than it looks: the app is
+normally opened *in order to* record, so the post-launch sweep routinely lands inside a meeting, and
+on a flat hourly cadence a user who records and then quits would never archive anything at all. A deterministic failure (an
+unreadable recording) is remembered for the process so it is not retried hourly forever; a transient
+I/O failure is not.
+
 ## Data model
 
-SQLite, nine tables across ten forward-only migrations (`hearsay-db/migrations/`). UUIDs are
+SQLite, nine tables across twelve forward-only migrations (`hearsay-db/migrations/`). UUIDs are
 stored as BLOB, timestamps as RFC3339 TEXT; every table also carries `created_at` and `updated_at`
 (omitted below).
 
@@ -507,7 +551,7 @@ core therefore treats its port as untrusted and gates it three ways
 | Response hygiene | Every response carries `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, and `Referrer-Policy: strict-origin-when-cross-origin`; the served index adds a per-response CSP nonce. Each request gets an `X-Request-Id` and one access-log line with the token redacted. |
 | Error discipline | Database and internal errors render as a literal "internal error"; details go to the log only. |
 
-Privacy posture: raw audio retention is a single per-meeting `audio.wav` that can be turned off in
+Privacy posture: raw audio retention is a single per-meeting recording that can be turned off in
 Settings (turning it off also disables the refine, which reads it), deleting a meeting removes both
 the rows and the folder, and the app collects no telemetry.
 

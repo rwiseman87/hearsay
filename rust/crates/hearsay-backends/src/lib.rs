@@ -23,6 +23,7 @@ use hearsay_engine::LiveEngine;
 use hearsay_orchestrator::testing::{ProgressiveBackend, ProgressivePlan, ScriptedSummarizer};
 use hearsay_orchestrator::{AudioChunk, CaptureChunk, Orchestrator, SegmentKind, SidecarSegment};
 
+pub mod archive;
 #[cfg(target_os = "macos")]
 mod mac;
 pub mod reconcile;

@@ -17,6 +17,8 @@ import {
   useUpdateRecording,
   useUpdateSpeakers,
   useUpdateStorage,
+  useArchiveStatus,
+  useCompressNow,
   useVoiceprints,
 } from "../api/hooks";
 import { queryKeys } from "../api/queryKeys";
@@ -24,6 +26,7 @@ import type {
   ModelSettings,
   RecordingSettings,
   SpeakerSettings,
+  StorageSettings,
   VoiceprintRead,
 } from "../api/types";
 
@@ -802,24 +805,52 @@ function ModelsPanel() {
 }
 
 function StoragePanel() {
+  const qc = useQueryClient();
   const settings = useSettings();
   const update = useUpdateStorage();
+  const archive = useArchiveStatus();
+  const compressNow = useCompressNow();
   const storage = settings.data?.storage;
   const info = settings.data?.storage_info;
   const [dir, setDir] = useState("");
+  const [days, setDays] = useState(7);
 
-  // Re-sync the input when the server value changes; depend on the primitive, not the settings object.
+  // Re-sync the inputs when the server value changes; depend on the primitives, not the settings
+  // object.
   const outputDir = storage?.output_dir;
+  const afterDays = storage?.compress_after_days;
   useEffect(() => {
     if (outputDir !== undefined) setDir(outputDir);
   }, [outputDir]);
+  useEffect(() => {
+    if (afterDays !== undefined) setDays(afterDays);
+  }, [afterDays]);
+
+  // A finished pass changed what is on disk, so refresh the usage figures. Fires on the running ->
+  // idle edge, which also covers a pass the periodic sweep started while this panel was open.
+  const passRunning = archive.data?.running ?? false;
+  const wasRunning = useRef(false);
+  useEffect(() => {
+    if (wasRunning.current && !passRunning) {
+      void qc.invalidateQueries({ queryKey: queryKeys.settings.all });
+    }
+    wasRunning.current = passRunning;
+  }, [passRunning, qc]);
 
   if (settings.isLoading || !storage || !info) return <p className="muted">Loading…</p>;
 
+  // The server full-replaces the section, so every field goes on every write — sending a partial
+  // body would switch archival off while the user was only changing the folder.
+  const commit = (patch: Partial<StorageSettings>) => update.mutate({ ...storage, ...patch });
+
   const onSave = () => {
     const trimmed = dir.trim();
-    if (trimmed) update.mutate({ output_dir: trimmed });
+    if (trimmed) commit({ output_dir: trimmed });
   };
+  const compressOn = storage.compress_audio;
+  const pass = archive.data;
+  const running = pass?.running ?? false;
+  const nothingToDo = info.uncompressed_bytes === 0;
 
   return (
     <div className="settings__panel">
@@ -855,12 +886,80 @@ function StoragePanel() {
           </p>
         ) : null}
       </div>
+      <label className="settings__row">
+        <input
+          type="checkbox"
+          checked={compressOn}
+          disabled={update.isPending}
+          onChange={(event) => commit({ compress_audio: event.target.checked })}
+        />
+        <span className="settings__row-body">
+          <span className="settings__row-label">Compress audio from older meetings</span>
+          <span className="settings__row-hint muted">
+            Re-saves older recordings in a compressed format that keeps the audio exactly as it was
+            — about 3x smaller, with playback and speaker refinement unaffected. Runs in the
+            background, never while you are recording.
+          </span>
+        </span>
+      </label>
+      <div className="settings__field settings__field--sub">
+        <span className="settings__row-label">Compress after (days)</span>
+        <input
+          type="number"
+          min={1}
+          max={365}
+          value={days}
+          disabled={update.isPending || !compressOn}
+          aria-label="Compress after days"
+          onChange={(event) => setDays(event.currentTarget.valueAsNumber || 0)}
+          onBlur={() => commit({ compress_after_days: days })}
+        />
+      </div>
+      <div className="settings__field settings__field--sub">
+        <div className="settings__inline">
+          <button
+            type="button"
+            onClick={() => compressNow.mutate()}
+            disabled={running || nothingToDo}
+          >
+            {running ? "Compressing…" : "Compress now"}
+          </button>
+          <span className="settings__row-hint muted">
+            {running
+              ? `${pass?.done ?? 0} of ${pass?.total ?? 0} meetings`
+              : nothingToDo
+                ? "Everything old enough is already compressed."
+                : "Runs the same pass as the background sweep, without waiting for it."}
+          </span>
+        </div>
+        {compressNow.isError ? (
+          <p className="settings__error" role="alert">
+            {(compressNow.error as Error).message}
+          </p>
+        ) : null}
+        {!running && (pass?.compressed ?? 0) > 0 ? (
+          <span className="settings__row-hint muted">
+            Compressed {pass?.compressed} {pass?.compressed === 1 ? "meeting" : "meetings"},
+            reclaiming {formatBytes(pass?.reclaimed_bytes ?? 0)}.
+          </span>
+        ) : null}
+      </div>
       <dl className="settings__facts">
         <div>
           <dt>Recorded data</dt>
           <dd>
             {formatBytes(info.tracked_bytes)} across {info.meeting_count}{" "}
             {info.meeting_count === 1 ? "meeting" : "meetings"}
+          </dd>
+        </div>
+        <div>
+          <dt>Not yet compressed</dt>
+          <dd>
+            {info.uncompressed_bytes > 0
+              ? `${formatBytes(info.uncompressed_bytes)} — roughly ${formatBytes(
+                  Math.round(info.uncompressed_bytes / 3),
+                )} once compressed`
+              : "Nothing waiting to compress"}
           </dd>
         </div>
         <div>

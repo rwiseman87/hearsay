@@ -18,8 +18,8 @@ use crate::config::Settings;
 use crate::error::{ApiError, ApiResult};
 use crate::extract::Json;
 use crate::schema::{
-    AboutInfo, ModelSettings, ModelsInfo, PermissionsInfo, RecordingSettings, SettingsRead,
-    SpeakerSettings, StorageInfo, StorageSettings,
+    AboutInfo, ArchiveState, ModelSettings, ModelsInfo, PermissionsInfo, RecordingSettings,
+    SettingsRead, SpeakerSettings, StorageInfo, StorageSettings,
 };
 use crate::state::AppState;
 
@@ -36,6 +36,10 @@ pub fn router() -> Router<AppState> {
         .route("/settings/recording", put(update_recording))
         .route("/settings/speakers", put(update_speakers))
         .route("/settings/storage", put(update_storage))
+        .route(
+            "/settings/storage/compress",
+            get(read_archive).post(start_archive),
+        )
         .route("/settings/models", put(update_models).delete(reset_models))
         .route("/settings/reveal", post(reveal_output_dir))
 }
@@ -135,13 +139,26 @@ async fn resolve_speakers(state: &AppState) -> ApiResult<SpeakerSettings> {
 }
 
 async fn resolve_storage(state: &AppState) -> ApiResult<StorageSettings> {
-    match queries::get_preference(&state.pool, SECTION_STORAGE).await? {
-        Some(json) => serde_json::from_str(&json)
-            .map_err(|e| ApiError::Internal(format!("corrupt storage preference: {e}"))),
-        None => Ok(StorageSettings {
-            output_dir: state.settings.output_dir.to_string_lossy().to_string(),
-        }),
-    }
+    // Resolve each field against its CONFIG default rather than deserializing the section as a
+    // struct: every install that saved a recordings folder before archival existed holds a
+    // `{"output_dir": ...}` row, and a struct parse resolves the absent keys to their *type*
+    // defaults (false / 0) — shipping the feature silently disabled on exactly the installs that
+    // have the most audio to reclaim. Mirrors the per-field `resolve_recording` / `resolve_models`.
+    let obj = queries::storage_section(&state.pool).await?;
+    let field = |key: &str| obj.as_ref().and_then(|o| o.get(key));
+    Ok(StorageSettings {
+        output_dir: field("output_dir")
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+            .unwrap_or_else(|| state.settings.output_dir.to_string_lossy().to_string()),
+        compress_audio: field("compress_audio")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(state.settings.compress_audio),
+        compress_after_days: field("compress_after_days")
+            .and_then(serde_json::Value::as_u64)
+            .map(|v| v as u32)
+            .unwrap_or(state.settings.compress_after_days as u32),
+    })
 }
 
 async fn resolve_models(state: &AppState) -> ApiResult<ModelSettings> {
@@ -184,7 +201,7 @@ async fn storage_info(state: &AppState) -> ApiResult<StorageInfo> {
     let output_dir = resolve_storage(state).await?.output_dir;
     let meeting_count = queries::count_meetings(&state.pool).await?;
     let root = PathBuf::from(&output_dir);
-    let tracked_bytes = tokio::task::spawn_blocking(move || dir_size(&root))
+    let (tracked_bytes, uncompressed_bytes) = tokio::task::spawn_blocking(move || dir_size(&root))
         .await
         .map_err(|e| ApiError::Internal(format!("storage scan panicked: {e}")))?;
     Ok(StorageInfo {
@@ -192,15 +209,19 @@ async fn storage_info(state: &AppState) -> ApiResult<StorageInfo> {
         database_path: database_path(&state.settings.database_url),
         tracked_bytes,
         meeting_count,
+        uncompressed_bytes,
     })
 }
 
-/// Recursive on-disk size (bytes) of the recordings tree. The Rust core has no asset manifest yet,
-/// so this walks the output dir rather than summing a `meeting_assets` table. Best-effort:
-/// unreadable entries are skipped; `DirEntry::metadata` does not follow symlinks (no cycles). A
-/// missing root (fresh install) reports 0.
-fn dir_size(root: &Path) -> i64 {
+/// Recursive on-disk size of the recordings tree as `(total_bytes, uncompressed_audio_bytes)`. The
+/// Rust core has no asset manifest yet, so this walks the output dir rather than summing a
+/// `meeting_assets` table. The second figure buckets the still-uncompressed `audio.wav` files in the
+/// same pass — it is what the archival sweep would shrink, and a separate walk would double the cost
+/// of every `GET /settings`. Best-effort: unreadable entries are skipped; `DirEntry::metadata` does
+/// not follow symlinks (no cycles). A missing root (fresh install) reports 0.
+fn dir_size(root: &Path) -> (i64, i64) {
     let mut total: i64 = 0;
+    let mut uncompressed: i64 = 0;
     let mut stack = vec![root.to_path_buf()];
     while let Some(dir) = stack.pop() {
         let Ok(entries) = std::fs::read_dir(&dir) else {
@@ -214,10 +235,13 @@ fn dir_size(root: &Path) -> i64 {
                 stack.push(entry.path());
             } else if meta.is_file() {
                 total = total.saturating_add(meta.len() as i64);
+                if entry.file_name() == hearsay_audio::AUDIO_WAV {
+                    uncompressed = uncompressed.saturating_add(meta.len() as i64);
+                }
             }
         }
     }
-    total
+    (total, uncompressed)
 }
 
 #[utoipa::path(get, path = "/api/settings", tag = "settings", responses((status = 200, body = SettingsRead)))]
@@ -295,11 +319,14 @@ pub(crate) async fn update_storage(
             "output_dir must not be empty".into(),
         ));
     }
+    validate_compression(&body)?;
     let resolved = tokio::task::spawn_blocking(move || validate_output_dir(&input))
         .await
         .map_err(|e| ApiError::Internal(format!("output_dir validation panicked: {e}")))??;
     let stored = StorageSettings {
         output_dir: resolved,
+        compress_audio: body.compress_audio,
+        compress_after_days: body.compress_after_days,
     };
     store_section(&state, SECTION_STORAGE, &stored).await?;
     Ok(Json(stored))
@@ -445,6 +472,83 @@ async fn store_section<T: serde::Serialize>(
 
 /// Resolve `input` to an absolute, existing, writable directory or a 422:
 /// expand `~`, require absolute, resolve, is-dir, write-probe.
+fn archive_state(sweeper: &hearsay_backends::archive::Sweeper) -> ArchiveState {
+    progress_to_state(sweeper.progress())
+}
+
+fn progress_to_state(p: hearsay_backends::archive::SweepProgress) -> ArchiveState {
+    ArchiveState {
+        running: p.running,
+        total: p.total as u32,
+        done: p.done as u32,
+        compressed: p.compressed as u32,
+        failed: p.failed as u32,
+        reclaimed_bytes: p.reclaimed_bytes as i64,
+    }
+}
+
+#[utoipa::path(
+    get, path = "/api/settings/storage/compress", tag = "settings",
+    responses((status = 200, body = ArchiveState)),
+)]
+pub(crate) async fn read_archive(State(state): State<AppState>) -> Json<ArchiveState> {
+    Json(archive_state(&state.archive))
+}
+
+/// Run the archival pass now instead of waiting for the periodic sweep.
+///
+/// Returns immediately with the starting snapshot and does the work in the background -- a backlog
+/// can take a minute of CPU, far longer than a request should hold. The UI polls the GET above.
+/// Honors the effective age threshold, so pressing the button never archives a meeting the user's
+/// own setting says is still too recent; it does not require the automatic sweep to be enabled,
+/// since pressing it is an explicit instruction.
+#[utoipa::path(
+    post, path = "/api/settings/storage/compress", tag = "settings",
+    responses((status = 202, body = ArchiveState), (status = 409)),
+)]
+pub(crate) async fn start_archive(
+    State(state): State<AppState>,
+) -> ApiResult<(StatusCode, Json<ArchiveState>)> {
+    if state.engine.active_meeting().is_some() {
+        return Err(ApiError::Conflict(
+            "a meeting is recording; archiving would compete with it".into(),
+        ));
+    }
+    if state.archive.is_running() {
+        return Err(ApiError::Conflict("archiving is already running".into()));
+    }
+    let (_enabled, days) = queries::effective_compression(
+        &state.pool,
+        state.settings.compress_audio,
+        state.settings.compress_after_days,
+    )
+    .await?;
+
+    let started = hearsay_backends::archive::start_background_pass(
+        state.pool.clone(),
+        state.settings.output_dir.clone(),
+        days,
+        state.archive.clone(),
+        state.engine.clone(),
+    )
+    .await
+    .ok_or_else(|| ApiError::Conflict("archiving is already running".into()))?;
+    Ok((StatusCode::ACCEPTED, Json(progress_to_state(started))))
+}
+
+/// Bound the archival threshold at the boundary so a bad value never reaches the sweep. Like the
+/// inactivity thresholds, the value is only checked when the feature is on — a disabled threshold is
+/// inert. Zero is rejected even so: archiving the instant a meeting finalizes would race the
+/// post-stop refine, which is still reading the WAV.
+fn validate_compression(body: &StorageSettings) -> ApiResult<()> {
+    if body.compress_audio && !(1..=365).contains(&body.compress_after_days) {
+        return Err(ApiError::Unprocessable(
+            "compress_after_days must be between 1 and 365".into(),
+        ));
+    }
+    Ok(())
+}
+
 fn validate_output_dir(input: &str) -> Result<String, ApiError> {
     let expanded = expand_home(input);
     let path = Path::new(&expanded);
