@@ -114,8 +114,10 @@ make probes
 
 The GPU-backed probes that ship their own fixtures (e.g. `refines_real_meeting_them_track`,
 `summarize`) need only the models; the WAV/diarizer vars are for the decomposition/benchmark probes.
-The refine anti-loop entropy thresholds are pinned in `hearsay-inference/tests/refine_mac_probe.rs` so a
-whisper repetition-attractor regression surfaces here.
+The refine's anti-loop defence is pinned in `hearsay-inference/tests/refine_mac_probe.rs`, which fails
+on any run of back-to-back identical segments, so a whisper repetition-attractor regression surfaces
+here. The detector it guards (`find_loop_runs`) is pure and unit-tested in `hearsay-inference`'s lib
+tests, which need no model.
 
 ## Not covered (by design)
 
