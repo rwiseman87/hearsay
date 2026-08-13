@@ -1,6 +1,6 @@
 //! The macOS live-capture + offline-refine backend, assembled into an [`Orchestrator`] by
-//! [`build_engine`]. Moved out of the `hearsay-core` binary so the web-API crate no longer links the
-//! concrete capture/inference stack (the `LiveEngine` seam is now honored at the composition root).
+//! [`build_engine`]. It lives here, not in the `hearsay-core` binary, so the web-API crate does not
+//! link the concrete capture/inference stack; the `LiveEngine` seam is honored at the composition root.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};

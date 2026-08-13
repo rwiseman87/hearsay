@@ -1,12 +1,10 @@
 //! The live-capture seam — the neutral port shared by the API and the orchestrator.
 //!
-//! The meeting *lifecycle* (start / stop) and the live transcript stream require a running capture
-//! and inference pipeline. `hearsay-core` (the HTTP/WS API) depends on this [`LiveEngine`] trait,
-//! and `hearsay-orchestrator` implements it — the core takes the engine as an injected dependency.
-//! Keeping the trait here (not in either crate) lets the core consume it and the
-//! orchestrator implement it without a dependency cycle, and keeps the orchestrator off the web
-//! stack. When no orchestrator is wired (tests, or a capture-less build), [`DisabledEngine`] answers those routes
-//! with 503 / a clean WebSocket close; every read + pure-DB-write + serving route works without it.
+//! `hearsay-core` consumes this [`LiveEngine`] trait and `hearsay-orchestrator` implements it. The
+//! trait lives in neither crate so the two can depend on it without a cycle, and so the
+//! orchestrator stays off the web stack. When no orchestrator is wired (tests, or a capture-less
+//! build), [`DisabledEngine`] answers the capture routes with 503 / a clean WebSocket close; every
+//! read, pure-DB-write, and serving route works without it.
 
 use async_trait::async_trait;
 use tokio::sync::broadcast;

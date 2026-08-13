@@ -13,97 +13,67 @@ use hearsay_backends::LoopbackMode;
 /// Resolved settings for one process.
 #[derive(Debug, Clone)]
 pub struct Settings {
-    /// SQLx database URL (e.g. `sqlite://.../hearsay.db`). Portable to PostgreSQL later.
+    /// SQLx database URL. Portable to PostgreSQL later.
     pub database_url: String,
     /// Root of the per-meeting output folders (audio, transcript, notes).
     pub output_dir: PathBuf,
-    /// Built web UI directory (`web/dist`); served when it contains `index.html`.
+    /// Built web UI directory; served when it contains `index.html`.
     pub web_dir: PathBuf,
-    /// Bind host (loopback only in production).
+    /// Bind host (loopback only outside development).
     pub server_host: String,
     /// Bind port; `0` asks the OS for a free port.
     pub server_port: u16,
     /// Deployment environment (`development` | `staging` | `production`).
     pub environment: String,
-    /// Path to the Swift `hearsay-helper` capture binary (the `hearsay-live` / `hearsay-me` /
-    /// `hearsay-diarize` sidecars are resolved as siblings). Used by the macOS live-capture backend.
+    /// Path to the Swift `hearsay-helper` capture binary; the sidecars resolve as siblings.
     pub helper_path: PathBuf,
-    /// GGML whisper model for the offline refine (re-transcribing diarized turns at re-diarization).
+    /// GGML whisper model for the offline refine.
     pub refine_model: PathBuf,
-    /// Deadline for the `hearsay-diarize` refine subprocess (`HEARSAY_REFINE_TIMEOUT_SECS`, default
-    /// 1800s). Generous — a legitimate refine is minutes-long — but bounded so a hung sidecar can
-    /// never wedge meeting stop.
+    /// Deadline for the `hearsay-diarize` refine subprocess, so a hung sidecar cannot wedge stop.
     pub refine_timeout: Duration,
-    /// Auto-run the offline refine when a meeting stops (`HEARSAY_AUTO_REFINE`, default off — the
-    /// refine contends with the next meeting's sidecars on the ANE, so it is opt-in and users drive
-    /// it from the "Refine speakers" button when they have time). The manual `/rediarize` route works
-    /// regardless.
+    /// Run the offline refine at stop. Off by default: it contends with the next meeting's
+    /// sidecars on the ANE. The manual `/rediarize` route works regardless.
     pub auto_refine: bool,
-    /// Default audio-retention switch: keep one WAV per meeting (`HEARSAY_RECORD`, default on). The
-    /// editable `recording` settings section overrides this per install.
+    /// Keep one WAV per meeting.
     pub record: bool,
-    /// Default cosine threshold at/above which a refined speaker is auto-matched to a person named
-    /// in a prior meeting (`HEARSAY_RECOGNITION_THRESHOLD`, default 0.6; the `speakers` section
-    /// overrides it).
+    /// Cosine threshold at/above which a refined speaker is matched to a person named previously.
     pub recognition_threshold: f64,
-    /// Default switch for the inactivity "still recording?" prompt (`HEARSAY_INACTIVITY_PROMPT`,
-    /// default on). The `recording` section overrides it per install.
+    /// Show the inactivity "still recording?" prompt.
     pub inactivity_prompt: bool,
-    /// Default switch for auto-ending a meeting after prolonged silence
-    /// (`HEARSAY_INACTIVITY_AUTO_END`, default on). Independent of the prompt; the `recording` section
-    /// overrides it per install.
+    /// Auto-end a meeting after prolonged silence. Independent of the prompt.
     pub inactivity_auto_end: bool,
-    /// Default minutes of continuous silence (no Me/Them speech) before the in-app "still recording?"
-    /// prompt (`HEARSAY_INACTIVITY_PROMPT_MINUTES`, default 5; the `recording` section overrides it).
+    /// Minutes of continuous silence before the "still recording?" prompt.
     pub inactivity_prompt_minutes: u64,
-    /// Default minutes of continuous silence before the meeting auto-ends with a logged transcript
-    /// marker (`HEARSAY_INACTIVITY_END_MINUTES`, default 10; must exceed the prompt threshold when both
-    /// are enabled; the `recording` section overrides it).
+    /// Minutes of continuous silence before auto-end. Must exceed the prompt threshold when both
+    /// are enabled.
     pub inactivity_end_minutes: u64,
-    /// Default switch for archiving a finalized meeting's audio as lossless FLAC
-    /// (`HEARSAY_COMPRESS_AUDIO`, default on). Compression is ~3x and bit-exact, so it costs nothing
-    /// downstream; the `storage` settings section overrides it per install.
+    /// Archive a finalized meeting's audio as lossless FLAC.
     pub compress_audio: bool,
-    /// Default age in days at which a finalized meeting's audio is archived
-    /// (`HEARSAY_COMPRESS_AFTER_DAYS`, default 7; the `storage` section overrides it).
+    /// Age in days before a finalized meeting's audio is archived.
     pub compress_after_days: u64,
-    /// Default for the optional local-LLM notes step: generate meeting notes at stop
-    /// (`HEARSAY_NOTES`, default off — opt-in, and needs a downloaded model). The `models` settings
-    /// section overrides it per install.
+    /// Generate meeting notes at stop. Off by default; needs a downloaded model.
     pub notes_enabled: bool,
-    /// Default GGUF model for the notes step (`HEARSAY_NOTES_MODEL`, default empty — unset until the
-    /// user downloads or points at one). The `models` section overrides it; read fresh at each
-    /// stop/generate so a Models-panel change or a completed download applies with no restart.
+    /// GGUF model for the notes step. Read fresh at each generate, so a Models-panel change or a
+    /// completed download applies with no restart.
     pub notes_model: PathBuf,
-    /// Default prompt template for the notes step (`HEARSAY_NOTES_PROMPT`, default the built-in
-    /// [`hearsay_backends::DEFAULT_NOTES_PROMPT`]). The template's `{transcript}` placeholder is
-    /// filled with the finalized transcript. The `models` section overrides it per install; read
-    /// fresh at each generate so a Models-panel edit applies with no restart.
+    /// Prompt template for the notes step; its `{transcript}` placeholder is filled with the
+    /// finalized transcript. Read fresh at each generate, like `notes_model`.
     pub notes_prompt: String,
-    /// Path to the `hearsay-notes` sidecar that runs the local-LLM notes step out-of-process
-    /// (`HEARSAY_NOTES_PATH`, default a `hearsay-notes` sibling of this executable). Out-of-process so
-    /// llama.cpp never links into the core alongside whisper (a `ggml` collision that slows the
-    /// refine ~5x).
+    /// Path to the `hearsay-notes` sidecar. Out-of-process so llama.cpp never links into the core
+    /// alongside whisper — see `docs/architecture.md`.
     pub notes_binary: PathBuf,
-    /// Root the download manager writes models into and references them from
-    /// (`HEARSAY_MODELS_DIR`, default `outputs/models`; the desktop shell points it at a persistent
-    /// app-data dir so downloaded models survive reinstall).
+    /// Root the download manager writes models into and references them from.
     pub models_dir: PathBuf,
-    /// Path to the desktop shell's handshake file (`HEARSAY_HANDSHAKE_PATH`): the private 0600 file
-    /// the shell reads once for `{port, token}`. `None` in headless dev, where no handshake is written.
+    /// The desktop shell's private 0600 `{port, token}` handshake file. `None` in headless dev.
     pub handshake_path: Option<PathBuf>,
-    /// Bundled FluidAudio live-models directory (`HEARSAY_FLUID_MODELS_DIR`, set by the desktop shell):
-    /// seeded into FluidAudio's cache on first launch. `None` in headless dev, where FluidAudio downloads.
+    /// Bundled FluidAudio live models, seeded into FluidAudio's cache on first launch. `None` in
+    /// headless dev, where FluidAudio downloads them.
     pub fluid_models_dir: Option<PathBuf>,
-    /// The process's home directory (`HOME`): the base of FluidAudio's default model cache when
-    /// seeding the bundled models. `None` when `HOME` is unset.
+    /// The process's home directory: the base of FluidAudio's default model cache.
     pub home_dir: Option<PathBuf>,
-    /// Directory holding the sherpa live/diarize models for the Windows backend
-    /// (`HEARSAY_SHERPA_MODELS_DIR`, default `outputs/models/sherpa`; the desktop shell points it at
-    /// the bundled copy). Unused on macOS.
+    /// Sherpa live/diarize models for the Windows backend. Unused on macOS.
     pub sherpa_models_dir: PathBuf,
-    /// Which WASAPI loopback path captures the Them stream on Windows (`HEARSAY_WIN_LOOPBACK`,
-    /// `device` | `process`, default `device`). Unused on macOS.
+    /// Which WASAPI loopback path captures Them on Windows. Unused on macOS.
     pub win_loopback_mode: LoopbackMode,
 }
 
@@ -344,8 +314,7 @@ mod tests {
 
     /// The notes sidecar is found by an `is_file()` probe in the summarizer, so the name the core
     /// resolves has to match what the packager stages beside it — `hearsay-notes.exe` on Windows.
-    /// Staging it the way the bundler does and probing the resolved path exercises exactly the
-    /// predicate that silently 500'd the "Generate notes" route on Windows.
+    /// Staging it the way the bundler does and probing the resolved path exercises that predicate.
     #[test]
     fn notes_sidecar_resolves_to_the_staged_binary() {
         let dir = tempfile::tempdir().expect("tempdir");

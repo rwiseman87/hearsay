@@ -533,7 +533,6 @@ export function usePermissions() {
   });
 }
 
-// Update the recording/privacy section; the response is the new section, so patch the cache.
 export function useUpdateRecording() {
   const qc = useQueryClient();
   return useMutation({
@@ -547,7 +546,6 @@ export function useUpdateRecording() {
   });
 }
 
-// Update the speaker-diarization section; patch the cache with the returned section.
 export function useUpdateSpeakers() {
   const qc = useQueryClient();
   return useMutation({

@@ -1,14 +1,10 @@
 //! Text-level echo dedup: a backstop for acoustic echo cancellation.
 //!
-//! On speakers the remote party ("Them") leaks into the microphone ("Me"). The acoustic canceller
-//! ([`crate::aec`]) removes most of that leakage, but a linear filter cannot fully cancel cheap
-//! laptop speakers (nonlinear distortion, a time-varying echo path), so residual Them audio can
-//! still reach `hearsay-me` and be transcribed a second time, attributed to the local user. This
-//! module drops a Me *final* whose text is an echo of a recently transcribed Them final.
-//!
-//! Where AEC works on the signal, this works on the transcript: a pure, dependency-free complement
-//! that removes whatever residual still lands as text. It touches only the live Me finals that
-//! would otherwise be persisted and broadcast — never the archive or the offline refine.
+//! The acoustic canceller ([`crate::aec`]) cannot fully cancel cheap laptop speakers, so residual
+//! Them audio still reaches `hearsay-me` and is transcribed as the local user. This module drops a
+//! Me *final* whose text echoes a recently transcribed Them final — the transcript-level complement
+//! to AEC's signal-level work. It touches only live Me finals, never the archive or the offline
+//! refine. See `docs/echo-cancellation.md`.
 //!
 //! ## Streaming order
 //!

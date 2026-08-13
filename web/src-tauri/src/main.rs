@@ -176,7 +176,7 @@ struct RotatingLog {
 
 impl RotatingLog {
     /// Open (creating/appending to) `path`, rotating immediately if it is already over the cap —
-    /// which is what clears a file that grew unbounded before this existed.
+    /// which also clears a file that grew past the cap.
     fn open(path: std::path::PathBuf, max_bytes: u64) -> Self {
         let mut log = RotatingLog {
             path,
