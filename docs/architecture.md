@@ -415,6 +415,14 @@ offline refine, and re-diarization resolve whichever form exists
 (`hearsay_audio::resolve_recorded_audio`) and see identical samples, so diarization accuracy is
 unaffected.
 
+The encoder patches the real frame-size range into STREAMINFO after the frames are written. This is
+not cosmetic: leaving `flacenc`'s defaults writes `min_frame_size = 0xFFFFFF` against
+`max_frame_size = 0`, an impossible range that AVFoundation -- and therefore every macOS player,
+including the app's own WKWebView -- refuses to play, while reporting the correct duration and no
+error. The audio decodes perfectly either way, so no round-trip test catches it; the encoder asserts
+the declared range is coherent instead. `cargo run -p hearsay-audio --example repair_header` rewrites
+those six bytes in files written before the fix, without touching a sample.
+
 The destructive step is ordered so a failure can only cost disk space, never audio: encode to a
 temporary, decode it back and compare it to the source sample for sample, rename it into place, and
 only then unlink the WAV. A crash between the rename and the unlink leaves both files, which the

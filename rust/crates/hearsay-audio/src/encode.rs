@@ -12,7 +12,7 @@
 //! `filled_size` (which is what the frame header's block size is read from).
 
 use std::fs::File;
-use std::io::{BufWriter, Write};
+use std::io::{BufWriter, Seek, SeekFrom, Write};
 use std::path::Path;
 
 use flacenc::bitsink::ByteSink;
@@ -26,6 +26,10 @@ use crate::{CHANNELS, SAMPLE_RATE};
 /// Samples per block, per channel — the de-facto FLAC default, and what the reference encoder uses
 /// at every compression level for this sample rate.
 const BLOCK_SIZE: usize = 4096;
+/// Byte offset of STREAMINFO's `min_frame_size`: the 4-byte `fLaC` marker, a 4-byte metadata block
+/// header, then 4 bytes of block sizes. `max_frame_size` follows it. Both are 24-bit big-endian and
+/// are patched in once the frames have been written and their real sizes are known.
+const MIN_FRAME_OFFSET: u64 = 12;
 
 /// Encode the stereo 16 kHz `src` WAV to `dst` as FLAC, returning the stereo frame count written.
 ///
@@ -80,6 +84,7 @@ pub fn encode_wav_to_flac(src: &Path, dst: &Path) -> Result<u64, AudioError> {
     let mut samples = reader.samples::<i16>();
     let mut written: usize = 0;
     let mut frame_number: usize = 0;
+    let (mut min_frame, mut max_frame) = (u32::MAX, 0u32);
 
     while written < total {
         let this_block = BLOCK_SIZE.min(total - written);
@@ -109,6 +114,9 @@ pub fn encode_wav_to_flac(src: &Path, dst: &Path) -> Result<u64, AudioError> {
         frame
             .write(&mut sink)
             .map_err(|e| AudioError::Flac(format!("write frame {frame_number}: {e:?}")))?;
+        let frame_bytes = sink.as_slice().len() as u32;
+        min_frame = min_frame.min(frame_bytes);
+        max_frame = max_frame.max(frame_bytes);
         out.write_all(sink.as_slice())?;
         sink.clear();
 
@@ -117,9 +125,30 @@ pub fn encode_wav_to_flac(src: &Path, dst: &Path) -> Result<u64, AudioError> {
     }
 
     out.flush()?;
-    out.into_inner()
-        .map_err(|e| AudioError::Io(e.into_error()))?
-        .sync_all()?;
+    let mut file = out
+        .into_inner()
+        .map_err(|e| AudioError::Io(e.into_error()))?;
+
+    // Patch the real frame-size range into STREAMINFO. Leaving these at their defaults writes
+    // min = 0xFFFFFF (flacenc's "no frame seen yet" sentinel) against max = 0, an impossible range
+    // that some decoders -- AVFoundation among them, so every macOS player -- refuse to play even
+    // though the audio decodes perfectly. A stream with no frames declares both unknown (0).
+    let (min_frame, max_frame) = if frame_number == 0 {
+        (0, 0)
+    } else {
+        (min_frame, max_frame)
+    };
+    let sizes = [
+        (min_frame >> 16) as u8,
+        (min_frame >> 8) as u8,
+        min_frame as u8,
+        (max_frame >> 16) as u8,
+        (max_frame >> 8) as u8,
+        max_frame as u8,
+    ];
+    file.seek(SeekFrom::Start(MIN_FRAME_OFFSET))?;
+    file.write_all(&sizes)?;
+    file.sync_all()?;
     Ok(written as u64)
 }
 
@@ -168,6 +197,39 @@ mod tests {
         ] {
             assert_lossless_round_trip(frames);
         }
+    }
+
+    /// STREAMINFO is not just decoration: a decoder may size its packet buffer from the frame-size
+    /// range, and an impossible one (min > max, or max = 0 with a non-empty stream) makes
+    /// AVFoundation load the file, report the right duration, and then refuse to play a sample.
+    /// The round-trip tests cannot catch this -- claxon ignores these fields entirely.
+    #[test]
+    fn declares_a_coherent_frame_size_range() {
+        let tmp = tempfile::tempdir().unwrap();
+        let wav = tmp.path().join("audio.wav");
+        let flac = tmp.path().join("audio.flac");
+        write_wav(
+            &wav,
+            stereo_spec(),
+            &interleaved_pattern(BLOCK_SIZE * 3 + 17),
+        );
+        encode_wav_to_flac(&wav, &flac).expect("encode");
+
+        let info = claxon::FlacReader::open(&flac).unwrap().streaminfo();
+        let min = info
+            .min_frame_size
+            .expect("min_frame_size must be declared");
+        let max = info
+            .max_frame_size
+            .expect("max_frame_size must be declared");
+        assert!(
+            min > 0,
+            "min_frame_size must not be the empty-stream marker"
+        );
+        assert!(min <= max, "impossible range: min {min} > max {max}");
+        // And it must actually bound the frames: the file is header + frames, so no frame can be
+        // larger than the file.
+        assert!((max as u64) < std::fs::metadata(&flac).unwrap().len());
     }
 
     #[test]
