@@ -1329,9 +1329,8 @@ mod tests {
     }
 
     use chrono::Utc;
-    use hearsay_db::{connect_options, queries, MIGRATOR};
-    use sqlx::sqlite::SqlitePoolOptions;
-    use sqlx::SqlitePool;
+    use hearsay_db::queries;
+    use hearsay_db::test_support::memory_pool;
     use tokio::sync::{broadcast, oneshot, watch};
 
     fn cfg() -> InactivityConfig {
@@ -1341,16 +1340,6 @@ mod tests {
             prompt_after: Duration::from_secs(5 * 60),
             end_after: Duration::from_secs(10 * 60),
         }
-    }
-
-    async fn memory_pool() -> SqlitePool {
-        let pool = SqlitePoolOptions::new()
-            .max_connections(1)
-            .connect_with(connect_options("sqlite::memory:").unwrap())
-            .await
-            .unwrap();
-        MIGRATOR.run(&pool).await.unwrap();
-        pool
     }
 
     #[test]

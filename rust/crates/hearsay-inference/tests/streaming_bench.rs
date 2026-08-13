@@ -9,16 +9,13 @@
 //! Override the defaults with `HEARSAY_BENCH_MODEL_DIR` (a dir holding encoder/decoder/joiner
 //! `.onnx` plus `tokens.txt`) and `HEARSAY_BENCH_WAV` (16 kHz mono).
 
+mod common;
+use common::repo;
+
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use hearsay_inference::{read_wav_mono_16k, StreamingAsr, StreamingModel};
-
-fn repo(rel: &str) -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../..")
-        .join(rel)
-}
 
 /// The first file in `dir` whose name contains `stem` and ends in `.onnx`.
 fn onnx(dir: &Path, stem: &str) -> PathBuf {

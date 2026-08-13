@@ -900,8 +900,7 @@ mod tests {
 
     use std::collections::VecDeque;
 
-    use hearsay_db::{connect_options, MIGRATOR};
-    use sqlx::sqlite::SqlitePoolOptions;
+    use hearsay_db::test_support::memory_pool;
 
     use crate::testing::{GateRefiner, ScriptedBackend, ScriptedSource, ScriptedTranscriber};
     use crate::traits::BackendInstance;
@@ -946,16 +945,6 @@ mod tests {
         assert_eq!(unique_meeting_dir(root, base).0, format!("{base}-2"));
         std::fs::create_dir(root.join(format!("{base}-2"))).unwrap();
         assert_eq!(unique_meeting_dir(root, base).0, format!("{base}-3"));
-    }
-
-    async fn memory_pool() -> SqlitePool {
-        let pool = SqlitePoolOptions::new()
-            .max_connections(1)
-            .connect_with(connect_options("sqlite::memory:").unwrap())
-            .await
-            .unwrap();
-        MIGRATOR.run(&pool).await.unwrap();
-        pool
     }
 
     fn them_chunk(host_ts: u64, samples: &[f32]) -> CaptureChunk {

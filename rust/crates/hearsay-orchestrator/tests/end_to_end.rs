@@ -7,23 +7,12 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use hearsay_db::models::Stream;
-use hearsay_db::{connect_options, queries, MIGRATOR};
+use hearsay_db::queries;
+use hearsay_db::test_support::memory_pool;
 use hearsay_engine::LiveEngine;
 use hearsay_orchestrator::{
     Backend, BackendInstance, Orchestrator, ProcessTranscriber, WavFileSource,
 };
-use sqlx::sqlite::SqlitePoolOptions;
-use sqlx::SqlitePool;
-
-async fn memory_pool() -> SqlitePool {
-    let pool = SqlitePoolOptions::new()
-        .max_connections(1)
-        .connect_with(connect_options("sqlite::memory:").unwrap())
-        .await
-        .unwrap();
-    MIGRATOR.run(&pool).await.unwrap();
-    pool
-}
 
 /// A backend wiring a WAV file (as the capture source) to two `mock_sidecar` process transcribers.
 struct FileProcessBackend {

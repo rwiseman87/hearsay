@@ -20,8 +20,10 @@ use sqlx::SqlitePool;
 
 use hearsay_db::models::Stream;
 use hearsay_engine::LiveEngine;
-use hearsay_orchestrator::testing::{ProgressiveBackend, ProgressivePlan, ScriptedSummarizer};
-use hearsay_orchestrator::{AudioChunk, CaptureChunk, Orchestrator, SegmentKind, SidecarSegment};
+use hearsay_orchestrator::testing::{
+    chunk, seg, ProgressiveBackend, ProgressivePlan, ScriptedSummarizer,
+};
+use hearsay_orchestrator::{Orchestrator, SegmentKind};
 
 pub mod archive;
 #[cfg(target_os = "macos")]
@@ -122,37 +124,10 @@ pub fn build_scripted_engine(config: EngineConfig) -> Arc<dyn LiveEngine> {
 /// (Me at t0, Them +0.5 s), then a short Me/Them exchange whose partials + finals emit ~0.4-1.2 s into
 /// the meeting so the browser E2E can watch the transcript grow, then assert the two finalized turns.
 fn scripted_meeting_plan() -> ProgressivePlan {
-    fn seg(
-        kind: SegmentKind,
-        text: &str,
-        start_s: f64,
-        end_s: f64,
-        speaker: Option<i64>,
-    ) -> SidecarSegment {
-        SidecarSegment {
-            kind,
-            text: text.to_string(),
-            start_s,
-            end_s,
-            speaker,
-        }
-    }
     ProgressivePlan {
         chunks: vec![
-            CaptureChunk {
-                stream: Stream::Me,
-                chunk: AudioChunk {
-                    host_ts: 1_000_000_000,
-                    samples: vec![0.05, 0.05],
-                },
-            },
-            CaptureChunk {
-                stream: Stream::Them,
-                chunk: AudioChunk {
-                    host_ts: 1_500_000_000,
-                    samples: vec![0.05, 0.05, 0.05],
-                },
-            },
+            chunk(Stream::Me, 1_000_000_000, &[0.05, 0.05]),
+            chunk(Stream::Them, 1_500_000_000, &[0.05, 0.05, 0.05]),
         ],
         me: vec![
             (

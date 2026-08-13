@@ -11,19 +11,13 @@
 //!   cargo test --manifest-path rust/Cargo.toml -p hearsay-inference --release \
 //!     --features sherpa --test embed_cap_probe -- --ignored --nocapture
 
-use std::path::PathBuf;
+mod common;
+use common::sherpa_model as model;
 
 use hearsay_attribution::voiceprint::cosine;
 use hearsay_inference::{Diarizer, SherpaDiarizer};
 
 const SAMPLE_RATE: usize = 16_000;
-
-fn model(rel: &str) -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../..")
-        .join("outputs/models/sherpa")
-        .join(rel)
-}
 
 /// Deterministic voiced-ish tone so the segmentation model finds speech and `is_ready` passes.
 fn tone(secs: f64, hz: f64) -> Vec<f32> {

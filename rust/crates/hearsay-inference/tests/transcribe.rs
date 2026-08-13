@@ -2,16 +2,12 @@
 //! Ignored by default (needs the gitignored ~150 MB `ggml-base.bin` + is slow); run with:
 //!   cargo test --manifest-path rust/Cargo.toml -p hearsay-inference -- --ignored
 
-use std::path::PathBuf;
+mod common;
+use common::outputs;
 
 use hearsay_inference::{read_wav_mono_16k, WhisperAsr};
 
 /// Repo-root `outputs/` (this crate lives at `rust/crates/hearsay-inference`).
-fn outputs(rel: &str) -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../../outputs")
-        .join(rel)
-}
 
 #[test]
 #[ignore = "needs outputs/models/ggml-base.bin + outputs/jfk.wav"]

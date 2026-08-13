@@ -3,17 +3,13 @@
 //! + the built sidecar + a model); run with:
 //!   cargo test --manifest-path rust/Cargo.toml -p hearsay-inference --features metal -- --ignored --nocapture
 
+mod common;
+use common::repo;
+
 use std::collections::BTreeSet;
-use std::path::PathBuf;
 use std::time::Duration;
 
 use hearsay_inference::{read_them_channel, refine_them, WhisperAsr};
-
-fn repo(rel: &str) -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../..")
-        .join(rel)
-}
 
 #[test]
 #[ignore = "needs a recorded meeting + hearsay-diarize + a whisper model"]

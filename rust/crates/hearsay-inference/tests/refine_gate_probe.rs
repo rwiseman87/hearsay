@@ -17,17 +17,14 @@
 //!   HEARSAY_PROBE_WAV=... HEARSAY_PROBE_MODEL=... cargo test -p hearsay-inference \
 //!     --features sherpa --test refine_gate_probe -- --ignored --nocapture
 
+mod common;
+use common::repo;
+
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use hearsay_attribution::ConsolidateConfig;
 use hearsay_inference::{read_them_channel, DiarizeTuning, Diarizer, SherpaDiarizer, WhisperAsr};
-
-fn repo(rel: &str) -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../..")
-        .join(rel)
-}
 
 #[test]
 #[ignore = "measurement; needs a recording + whisper + ONNX models"]

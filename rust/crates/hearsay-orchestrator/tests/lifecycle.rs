@@ -8,56 +8,19 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use hearsay_db::models::MeetingStatus;
-use hearsay_db::{connect_options, queries, MIGRATOR};
+use hearsay_db::queries;
+use hearsay_db::test_support::memory_pool;
 use hearsay_engine::{LiveEngine, LiveError};
 use hearsay_orchestrator::testing::{
-    CrashingBackend, EmptyBackend, FailingBackend, GateRefiner, ScriptedBackend, ScriptedRefiner,
-    ScriptedSummarizer, WarmingBackend, WedgeMeBackend,
+    chunk, seg, CrashingBackend, EmptyBackend, FailingBackend, GateRefiner, ScriptedBackend,
+    ScriptedRefiner, ScriptedSummarizer, WarmingBackend, WedgeMeBackend,
 };
 use hearsay_orchestrator::{
-    AudioChunk, Backend, CaptureChunk, Orchestrator, RefinedThemSegment, SegmentKind,
-    SidecarSegment, Stream,
+    Backend, CaptureChunk, Orchestrator, RefinedThemSegment, SegmentKind, Stream,
 };
 use serde_json::Value;
-use sqlx::sqlite::SqlitePoolOptions;
 use sqlx::SqlitePool;
 use tokio::sync::broadcast::error::RecvError;
-
-async fn memory_pool() -> SqlitePool {
-    let pool = SqlitePoolOptions::new()
-        .max_connections(1)
-        .connect_with(connect_options("sqlite::memory:").unwrap())
-        .await
-        .unwrap();
-    MIGRATOR.run(&pool).await.unwrap();
-    pool
-}
-
-fn chunk(stream: Stream, host_ts: u64, samples: &[f32]) -> CaptureChunk {
-    CaptureChunk {
-        stream,
-        chunk: AudioChunk {
-            host_ts,
-            samples: samples.to_vec(),
-        },
-    }
-}
-
-fn seg(
-    kind: SegmentKind,
-    text: &str,
-    start_s: f64,
-    end_s: f64,
-    speaker: Option<i64>,
-) -> SidecarSegment {
-    SidecarSegment {
-        kind,
-        text: text.to_string(),
-        start_s,
-        end_s,
-        speaker,
-    }
-}
 
 fn orchestrator(
     pool: SqlitePool,

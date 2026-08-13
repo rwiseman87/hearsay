@@ -16,7 +16,35 @@ use hearsay_db::queries::{NotesResult, RefineResult, RefinedThemSegment};
 use crate::error::OrchestratorError;
 use crate::traits::{AudioSource, Backend, BackendInstance, Refiner, Summarizer, Transcriber};
 use crate::transcriber::SEGMENT_CHANNEL_CAPACITY;
-use crate::types::{CaptureChunk, SidecarSegment};
+use crate::types::{AudioChunk, CaptureChunk, SegmentKind, SidecarSegment, Stream};
+
+/// One stream-tagged PCM chunk on the capture clock.
+pub fn chunk(stream: Stream, host_ts: u64, samples: &[f32]) -> CaptureChunk {
+    CaptureChunk {
+        stream,
+        chunk: AudioChunk {
+            host_ts,
+            samples: samples.to_vec(),
+        },
+    }
+}
+
+/// One segment as a sidecar would emit it.
+pub fn seg(
+    kind: SegmentKind,
+    text: &str,
+    start_s: f64,
+    end_s: f64,
+    speaker: Option<i64>,
+) -> SidecarSegment {
+    SidecarSegment {
+        kind,
+        text: text.to_string(),
+        start_s,
+        end_s,
+        speaker,
+    }
+}
 
 /// A capture source that replays `chunks`, then holds the channel open (as a live capture would)
 /// until [`stop`](AudioSource::stop) is called.

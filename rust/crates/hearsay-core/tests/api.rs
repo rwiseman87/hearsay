@@ -12,18 +12,16 @@ use axum::http::{Request, StatusCode};
 use axum::Router;
 use futures_util::StreamExt;
 use serde_json::Value;
-use sqlx::sqlite::SqlitePoolOptions;
 use sqlx::SqlitePool;
 use tower::ServiceExt;
 use uuid::Uuid;
 
 use hearsay_core::{create_app, AppState, DisabledEngine, LiveEngine, Settings};
 use hearsay_db::models::Stream;
-use hearsay_db::{connect_options, queries, MIGRATOR};
-use hearsay_orchestrator::testing::{ScriptedBackend, ScriptedRefiner};
-use hearsay_orchestrator::{
-    AudioChunk, CaptureChunk, Orchestrator, RefinedThemSegment, SegmentKind, SidecarSegment,
-};
+use hearsay_db::queries;
+use hearsay_db::test_support::memory_pool;
+use hearsay_orchestrator::testing::{chunk, seg, ScriptedBackend, ScriptedRefiner};
+use hearsay_orchestrator::{Orchestrator, RefinedThemSegment, SegmentKind};
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::http::header as ws_header;
@@ -64,16 +62,6 @@ fn test_settings(output_dir: PathBuf, web_dir: PathBuf) -> Settings {
         sherpa_models_dir: PathBuf::from("no-sherpa-models"),
         win_loopback_mode: Default::default(),
     }
-}
-
-async fn memory_pool() -> SqlitePool {
-    let pool = SqlitePoolOptions::new()
-        .max_connections(1)
-        .connect_with(connect_options("sqlite::memory:").unwrap())
-        .await
-        .unwrap();
-    MIGRATOR.run(&pool).await.unwrap();
-    pool
 }
 
 /// Build the app over an in-memory DB. Returns the app, the pool (for seeding), and the temp dir
@@ -889,23 +877,22 @@ async fn lists_identities_after_a_rename() {
 #[tokio::test]
 async fn rediarize_is_404_then_unavailable() {
     let (app, pool, _tmp) = setup().await;
-    let post = |id: Uuid| {
-        Request::builder()
-            .method("POST")
-            .uri(format!("/api/meetings/{id}/rediarize"))
-            .header("host", "127.0.0.1")
-            .header("authorization", format!("Bearer {TOKEN}"))
-            .body(Body::empty())
-            .unwrap()
-    };
 
-    let (status, _) = send(&app, post(Uuid::new_v4())).await;
+    let (status, _) = send(
+        &app,
+        post(&format!("/api/meetings/{}/rediarize", Uuid::new_v4()), ""),
+    )
+    .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 
     let meeting = queries::create_meeting(&pool, "M", "f", "", chrono::Utc::now())
         .await
         .unwrap();
-    let (status, _) = send(&app, post(meeting.id)).await;
+    let (status, _) = send(
+        &app,
+        post(&format!("/api/meetings/{}/rediarize", meeting.id), ""),
+    )
+    .await;
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
 }
 
@@ -942,19 +929,9 @@ async fn deletes_a_meeting_then_404s() {
         .await
         .unwrap();
 
-    let del = |id: Uuid| {
-        Request::builder()
-            .method("DELETE")
-            .uri(format!("/api/meetings/{id}"))
-            .header("host", "127.0.0.1")
-            .header("authorization", format!("Bearer {TOKEN}"))
-            .body(Body::empty())
-            .unwrap()
-    };
-
-    let (status, _) = send(&app, del(meeting.id)).await;
+    let (status, _) = send(&app, del(&format!("/api/meetings/{}", meeting.id))).await;
     assert_eq!(status, StatusCode::NO_CONTENT);
-    let (status, _) = send(&app, del(meeting.id)).await;
+    let (status, _) = send(&app, del(&format!("/api/meetings/{}", meeting.id))).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
@@ -965,18 +942,14 @@ async fn renames_a_meeting_and_validates_the_title() {
         .await
         .unwrap();
 
-    let patch = |id: Uuid, body: &str| {
-        Request::builder()
-            .method("PATCH")
-            .uri(format!("/api/meetings/{id}"))
-            .header("host", "127.0.0.1")
-            .header("authorization", format!("Bearer {TOKEN}"))
-            .header("content-type", "application/json")
-            .body(Body::from(body.to_string()))
-            .unwrap()
-    };
-
-    let (status, body) = send(&app, patch(meeting.id, "{\"title\":\"  New name  \"}")).await;
+    let (status, body) = send(
+        &app,
+        patch(
+            &format!("/api/meetings/{}", meeting.id),
+            "{\"title\":\"  New name  \"}",
+        ),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
     // Trimmed and returned; the list reflects it too.
     assert_eq!(body["title"], "New name");
@@ -985,12 +958,26 @@ async fn renames_a_meeting_and_validates_the_title() {
 
     // A blank title is a 422 + the `{ "detail": ... }` envelope (never let the DB store an empty
     // name); input validation is 422 across the API, not a plain 400.
-    let (status, body) = send(&app, patch(meeting.id, "{\"title\":\"   \"}")).await;
+    let (status, body) = send(
+        &app,
+        patch(
+            &format!("/api/meetings/{}", meeting.id),
+            "{\"title\":\"   \"}",
+        ),
+    )
+    .await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
     assert!(body["detail"].is_string());
 
     // An unknown id is a 404.
-    let (status, _) = send(&app, patch(Uuid::new_v4(), "{\"title\":\"x\"}")).await;
+    let (status, _) = send(
+        &app,
+        patch(
+            &format!("/api/meetings/{}", Uuid::new_v4()),
+            "{\"title\":\"x\"}",
+        ),
+    )
+    .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
@@ -1042,14 +1029,7 @@ async fn extractor_rejections_are_422_with_the_detail_envelope() {
     assert!(body["detail"].is_string());
 
     // A malformed JSON body — extraction fails before the handler (so before the engine 503).
-    let malformed = Request::builder()
-        .method("POST")
-        .uri("/api/meetings")
-        .header("host", "127.0.0.1")
-        .header("authorization", format!("Bearer {TOKEN}"))
-        .header("content-type", "application/json")
-        .body(Body::from("{\"title\": "))
-        .unwrap();
+    let malformed = post("/api/meetings", "{\"title\": ");
     let (status, body) = send(&app, malformed).await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
     assert!(body["detail"].is_string());
@@ -1438,32 +1418,6 @@ async fn next_ws_json(socket: &mut WsStream) -> Option<Value> {
             )) => return None,
             Some(Err(err)) => panic!("WS error: {err}"),
         }
-    }
-}
-
-fn chunk(stream: Stream, host_ts: u64, samples: &[f32]) -> CaptureChunk {
-    CaptureChunk {
-        stream,
-        chunk: AudioChunk {
-            host_ts,
-            samples: samples.to_vec(),
-        },
-    }
-}
-
-fn seg(
-    kind: SegmentKind,
-    text: &str,
-    start_s: f64,
-    end_s: f64,
-    speaker: Option<i64>,
-) -> SidecarSegment {
-    SidecarSegment {
-        kind,
-        text: text.to_string(),
-        start_s,
-        end_s,
-        speaker,
     }
 }
 
@@ -2027,13 +1981,7 @@ async fn validates_refine_model_and_round_trips_override() {
     assert_eq!(body["models_info"]["refine_model_exists"], true);
 
     // DELETE clears the override, reverting to the config default (even though it is a bare name).
-    let del = Request::builder()
-        .method("DELETE")
-        .uri("/api/settings/models")
-        .header("host", "127.0.0.1")
-        .header("authorization", format!("Bearer {TOKEN}"))
-        .body(Body::empty())
-        .unwrap();
+    let del = del("/api/settings/models");
     let (status, body) = send(&app, del).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["refine_model"], "no-model");
@@ -2145,25 +2093,24 @@ async fn notes_prompt_round_trips_and_caps_length() {
 #[tokio::test]
 async fn generate_notes_is_404_then_unavailable() {
     let (app, pool, _tmp) = setup().await;
-    let post = |id: Uuid| {
-        Request::builder()
-            .method("POST")
-            .uri(format!("/api/meetings/{id}/notes"))
-            .header("host", "127.0.0.1")
-            .header("authorization", format!("Bearer {TOKEN}"))
-            .body(Body::empty())
-            .unwrap()
-    };
 
     // Unknown meeting is a 404 even without an engine wired.
-    let (status, _) = send(&app, post(Uuid::new_v4())).await;
+    let (status, _) = send(
+        &app,
+        post(&format!("/api/meetings/{}/rediarize", Uuid::new_v4()), ""),
+    )
+    .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 
     // A real meeting against `DisabledEngine` reports the notes step unavailable.
     let meeting = queries::create_meeting(&pool, "M", "f", "", chrono::Utc::now())
         .await
         .unwrap();
-    let (status, _) = send(&app, post(meeting.id)).await;
+    let (status, _) = send(
+        &app,
+        post(&format!("/api/meetings/{}/rediarize", meeting.id), ""),
+    )
+    .await;
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
 }
 
@@ -2217,14 +2164,7 @@ async fn settings_tolerates_a_partial_models_section_from_a_download() {
 #[tokio::test]
 async fn download_unknown_model_is_404() {
     let (app, _pool, _tmp) = setup().await;
-    let req = Request::builder()
-        .method("POST")
-        .uri("/api/models/download")
-        .header("host", "127.0.0.1")
-        .header("authorization", format!("Bearer {TOKEN}"))
-        .header("content-type", "application/json")
-        .body(Body::from(r#"{"id":"no-such-model"}"#))
-        .unwrap();
+    let req = post("/api/models/download", r#"{"id":"no-such-model"}"#);
     let (status, _) = send(&app, req).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
