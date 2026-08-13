@@ -160,13 +160,14 @@ refine since there is no recording to re-diarize. Deleting a meeting removes the
 `GET /api/meetings/{id}/audio`.
 
 **Audio archival.** Uncompressed, that WAV is 230 MB per hour and never shrinks. A background sweep
-(hourly, on by default) re-encodes a finalized meeting's WAV as lossless FLAC once it is
+(hourly, on by default) re-encodes a finalized meeting.s WAV as lossless FLAC once it is
 `HEARSAY_COMPRESS_AFTER_DAYS` old — about 3x smaller on real meeting audio. Lossless means nothing
 downstream changes: playback, the refine, and re-diarization read the archived file and see identical
 samples, so `make diarize-eval` scores the same either way. The WAV is deleted only after the encoded
 file has been decoded back and compared to it sample for sample, so a failed encode costs disk space,
-never audio. The sweep never touches a meeting that is not `finalized`, and it yields entirely while a
-meeting is recording. Turn it off in Settings > Storage or with `HEARSAY_COMPRESS_AUDIO=false`.
+never audio. The sweep never touches a meeting that is not `finalized`, and it defers while a meeting is
+recording, re-checking every 5 minutes rather than waiting out the hour. Turn it off in Settings >
+Storage or with `HEARSAY_COMPRESS_AUDIO=false`.
 
 Note for development: the dev output dir (`outputs/recordings`) is swept too, so an old corpus
 recording there may become `audio.flac`. Everything that reads a recording accepts either form.

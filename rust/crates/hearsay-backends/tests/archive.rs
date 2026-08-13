@@ -1,7 +1,7 @@
 //! Background archival: a finalized meeting's audio is losslessly compressed once it is old enough.
 
 use std::path::Path;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use chrono::Duration as ChronoDuration;
 use sqlx::sqlite::SqlitePoolOptions;
@@ -167,6 +167,9 @@ async fn yields_entirely_while_a_meeting_is_recording() {
     .await;
 
     assert_eq!(stats.compressed, 0);
+    // Reported so the ticker comes back in minutes instead of waiting out the full interval — the
+    // app is usually opened in order to record, so the post-launch sweep routinely lands here.
+    assert!(stats.deferred, "a busy skip must be reported as deferred");
     assert!(dir.join("audio.wav").is_file());
 }
 
@@ -196,6 +199,10 @@ async fn stops_the_pass_when_a_meeting_starts_mid_sweep() {
     .await;
 
     assert_eq!(stats.compressed, 1);
+    assert!(
+        stats.deferred,
+        "an interrupted pass must be reported as deferred"
+    );
 }
 
 #[tokio::test]
@@ -270,6 +277,7 @@ async fn a_meeting_finalized_without_an_end_time_still_ages_in() {
     let stats = sweep_once(&pool, tmp.path(), true, 7, &Sweeper::new(), &never_busy()).await;
 
     assert_eq!(stats.compressed, 1);
+    assert!(!stats.deferred);
     assert!(dir.join("audio.flac").is_file());
 }
 
@@ -303,5 +311,40 @@ async fn a_transient_io_failure_is_retried_on_the_next_pass() {
         second.compressed, 1,
         "should be retried after the I/O error"
     );
+    assert!(dir.join("audio.flac").is_file());
+}
+
+/// The scenario that made this feature look broken in the real app: Hearsay is opened in order to
+/// record, so a meeting is often already running when the post-launch sweep fires. Deferring is
+/// correct; deferring for a whole hour is not, because a user who records and then quits would never
+/// archive anything. A deferred pass must report itself so the ticker can come back in minutes.
+#[tokio::test]
+async fn a_meeting_running_at_the_first_tick_only_defers_the_pass() {
+    let pool = memory_pool().await;
+    let tmp = tempfile::tempdir().unwrap();
+    aged_meeting(&pool, tmp.path(), "old", OLD_DAYS).await;
+    let dir = tmp.path().join("old");
+    write_recording(&dir, FRAMES);
+
+    // Recording when the sweep fires.
+    let recording = AtomicBool::new(true);
+    let busy = move || recording.load(Ordering::SeqCst);
+    let first = sweep_once(
+        &pool,
+        tmp.path(),
+        true,
+        7,
+        &Sweeper::new(),
+        &busy as &(dyn Fn() -> bool + Send + Sync),
+    )
+    .await;
+    assert_eq!(first.compressed, 0);
+    assert!(first.deferred, "must signal that work remains");
+    assert!(dir.join("audio.wav").is_file());
+
+    // The meeting ends; the very next pass does the work.
+    let second = sweep_once(&pool, tmp.path(), true, 7, &Sweeper::new(), &never_busy()).await;
+    assert_eq!(second.compressed, 1);
+    assert!(!second.deferred);
     assert!(dir.join("audio.flac").is_file());
 }

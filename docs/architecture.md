@@ -419,8 +419,13 @@ The destructive step is ordered so a failure can only cost disk space, never aud
 temporary, decode it back and compare it to the source sample for sample, rename it into place, and
 only then unlink the WAV. A crash between the rename and the unlink leaves both files, which the
 resolver tolerates and the next sweep cleans up. The sweep only considers `finalized` rows, so it
-never races the recorder or the post-stop refine, and it yields entirely while a meeting is
-recording — encoding is CPU work and a live meeting owns the machine. A deterministic failure (an
+never races the recorder or the post-stop refine, and it defers entirely while a meeting is
+recording — encoding is CPU work and a live meeting owns the machine.
+
+A deferred pass re-checks in 5 minutes rather than waiting out the hour, and a pass cut short by a
+meeting starting mid-sweep does the same. That distinction matters more than it looks: the app is
+normally opened *in order to* record, so the post-launch sweep routinely lands inside a meeting, and
+on a flat hourly cadence a user who records and then quits would never archive anything at all. A deterministic failure (an
 unreadable recording) is remembered for the process so it is not retried hourly forever; a transient
 I/O failure is not.
 

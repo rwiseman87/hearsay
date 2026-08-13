@@ -30,11 +30,17 @@ use uuid::Uuid;
 
 use hearsay_engine::LiveEngine;
 
-/// How often the ticker re-checks. The threshold is in days, so the exact cadence does not matter;
-/// hourly keeps a settings change taking effect promptly without polling the disk in a tight loop.
+/// How long to wait after a sweep before the next one. The threshold is in days, so the exact
+/// cadence does not matter; hourly keeps a settings change taking effect promptly without polling
+/// the disk in a tight loop.
 const SWEEP_INTERVAL: Duration = Duration::from_secs(60 * 60);
 /// Delay before the first sweep, so archival never competes with app launch.
 const SWEEP_START_DELAY: Duration = Duration::from_secs(60);
+/// How long to wait before re-checking after deferring to a live meeting. Deliberately far shorter
+/// than [`SWEEP_INTERVAL`]: the app is usually opened in order to record, so the post-launch sweep
+/// routinely lands inside a meeting. Waiting a full hour on that would mean a user who records and
+/// quits never archives anything at all.
+const SWEEP_BUSY_RETRY: Duration = Duration::from_secs(5 * 60);
 
 /// What one sweep pass did.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -45,6 +51,8 @@ pub struct SweepStats {
     pub failed: usize,
     /// Bytes reclaimed.
     pub reclaimed_bytes: u64,
+    /// The pass was skipped or cut short because a meeting was recording, so work may remain.
+    pub deferred: bool,
 }
 
 /// Meetings whose archival has already failed this process, so a permanently unreadable recording is
@@ -85,7 +93,11 @@ pub async fn sweep_once(
     busy: &(dyn Fn() -> bool + Send + Sync),
 ) -> SweepStats {
     let mut stats = SweepStats::default();
-    if !enabled || busy() {
+    if !enabled {
+        return stats;
+    }
+    if busy() {
+        stats.deferred = true;
         return stats;
     }
     let cutoff = Utc::now() - chrono::Duration::days(after_days as i64);
@@ -100,6 +112,7 @@ pub async fn sweep_once(
     for meeting in candidates {
         if busy() {
             tracing::debug!("archive sweep: a meeting started; stopping this pass");
+            stats.deferred = true;
             break;
         }
         if sweeper.has_failed(meeting.id) {
@@ -169,16 +182,20 @@ pub fn spawn_archive_ticker(
     default_days: u64,
 ) {
     tokio::spawn(async move {
-        let mut ticker = tokio::time::interval_at(
-            tokio::time::Instant::now() + SWEEP_START_DELAY,
-            SWEEP_INTERVAL,
-        );
-        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        // A fixed-period interval is wrong here: deferring to a live meeting must cost
+        // minutes, not the whole period, so the next delay is chosen per iteration.
+        let mut delay = SWEEP_START_DELAY;
         loop {
-            ticker.tick().await;
+            tokio::time::sleep(delay).await;
             let Some(engine) = engine.upgrade() else {
                 return;
             };
+            if engine.active_meeting().is_some() {
+                tracing::debug!("archive sweep: deferring, a meeting is recording");
+                delay = SWEEP_BUSY_RETRY;
+                continue;
+            }
+            delay = SWEEP_INTERVAL;
             let (enabled, days) = match hearsay_db::queries::effective_compression(
                 &pool,
                 default_enabled,
@@ -201,6 +218,11 @@ pub fn spawn_archive_ticker(
                     reclaimed_bytes = stats.reclaimed_bytes,
                     "archive sweep finished"
                 );
+            }
+            // A meeting that started mid-pass cuts the pass short, so come back in minutes with the
+            // rest of the backlog rather than in an hour.
+            if stats.deferred {
+                delay = SWEEP_BUSY_RETRY;
             }
         }
     });

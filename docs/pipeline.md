@@ -139,7 +139,8 @@ Once a meeting has been finalized for `HEARSAY_COMPRESS_AFTER_DAYS` (default 7),
 re-encodes that WAV as lossless FLAC — roughly 3x smaller on real meeting audio, and bit-identical,
 so playback, the refine, and re-diarization are unaffected. The original is only removed after the
 encoded file has been decoded back and compared to it sample for sample. The sweep skips any meeting
-that is not `finalized` and yields entirely while a meeting is recording. See
+that is not `finalized` and defers while a meeting is recording, re-checking in 5 minutes rather
+than waiting out the hour. See
 `hearsay-backends/src/archive.rs` and the `hearsay-audio` crate.
 
 ### 5. Fan-out per segment
