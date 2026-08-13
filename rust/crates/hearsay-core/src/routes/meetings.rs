@@ -14,6 +14,7 @@ use crate::error::{ApiError, ApiResult};
 use crate::extract::{Json, Path, Query};
 use crate::routes::settings::reveal_in_file_manager;
 use crate::routes::Pagination;
+use crate::routes::{reexport, validated_name};
 use crate::schema::{
     MeetingCreate, MeetingFolderAssign, MeetingRead, MeetingUpdate, Page, SegmentEdit, SegmentRead,
     SegmentSpeakerAssign, StatusInfo,
@@ -72,12 +73,7 @@ pub(crate) async fn list_meetings(
     let window = pagination.resolve(50, 200);
     let total = queries::count_meetings(&state.pool).await?;
     let rows = queries::list_meetings(&state.pool, window.limit, window.offset).await?;
-    Ok(Json(Page {
-        total,
-        page: window.page,
-        page_size: window.page_size,
-        items: rows.into_iter().map(MeetingRead::from).collect(),
-    }))
+    Ok(Json(window.page_of(total, rows)))
 }
 
 #[utoipa::path(
@@ -131,14 +127,7 @@ pub(crate) async fn update_meeting(
     Json(body): Json<MeetingUpdate>,
 ) -> ApiResult<Json<MeetingRead>> {
     let title = body.title.trim();
-    if title.is_empty() {
-        return Err(ApiError::Unprocessable("title must not be empty".into()));
-    }
-    if title.chars().count() > 255 {
-        return Err(ApiError::Unprocessable(
-            "title exceeds 255 characters".into(),
-        ));
-    }
+    let title = validated_name(title, "title")?;
     let meeting = queries::update_meeting_title(&state.pool, id, title)
         .await?
         .ok_or(ApiError::NotFound("meeting not found"))?;
@@ -184,12 +173,7 @@ pub(crate) async fn list_segments(
     let window = pagination.resolve(200, 200);
     let total = queries::count_segments(&state.pool, id).await?;
     let rows = queries::list_segments_page(&state.pool, id, window.limit, window.offset).await?;
-    Ok(Json(Page {
-        total,
-        page: window.page,
-        page_size: window.page_size,
-        items: rows.into_iter().map(SegmentRead::from).collect(),
-    }))
+    Ok(Json(window.page_of(total, rows)))
 }
 
 #[utoipa::path(
@@ -222,9 +206,7 @@ pub(crate) async fn edit_segment(
         .await?
         .ok_or(ApiError::NotFound("segment not found"))?;
     // Keep transcript.md in step with the edit (best-effort; the DB is the source of truth).
-    if let Err(err) = state.engine.export_meeting(id).await {
-        tracing::warn!(error = ?err, meeting_id = %id, "segment edit: re-export failed");
-    }
+    reexport(&state, id, "segment edit").await;
     Ok(Json(segment.into()))
 }
 
@@ -281,9 +263,7 @@ pub(crate) async fn reassign_segment_speaker(
             }
         };
     // Keep transcript.md in step with the reassignment (best-effort; the DB is the source of truth).
-    if let Err(err) = state.engine.export_meeting(id).await {
-        tracing::warn!(error = ?err, meeting_id = %id, "segment reassignment: re-export failed");
-    }
+    reexport(&state, id, "segment reassignment").await;
     Ok(Json(segment.into()))
 }
 

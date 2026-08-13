@@ -14,6 +14,11 @@ use sqlx::SqlitePool;
 
 use crate::schema::{CatalogEntry, DownloadState, DownloadStatus, ModelCatalog};
 
+/// Leading bytes of a GGUF file (the ASCII `GGUF`) — the notes models.
+pub(crate) const GGUF_MAGIC: [u8; 4] = *b"GGUF";
+/// Whisper's `GGML_FILE_MAGIC` (0x67676d6c) as stored little-endian — the refine models.
+pub(crate) const GGML_MAGIC: [u8; 4] = [0x6c, 0x6d, 0x67, 0x67];
+
 /// One catalog model with its (internal) HuggingFace source + integrity metadata.
 struct Model {
     id: &'static str,
@@ -83,7 +88,7 @@ fn is_gguf(path: &Path) -> bool {
         return false;
     };
     let mut magic = [0u8; 4];
-    f.read_exact(&mut magic).is_ok() && &magic == b"GGUF"
+    f.read_exact(&mut magic).is_ok() && magic == GGUF_MAGIC
 }
 
 /// Manages the catalog + the single active download and its progress. Held in `AppState` behind an

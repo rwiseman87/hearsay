@@ -12,7 +12,7 @@ use hearsay_db::queries;
 
 use crate::error::{ApiError, ApiResult};
 use crate::extract::{Json, Path, Query};
-use crate::routes::Pagination;
+use crate::routes::{validated_name, Pagination};
 use crate::schema::{FolderCreate, FolderRead, FolderReparent, FolderUpdate, Page};
 use crate::state::AppState;
 
@@ -22,20 +22,6 @@ pub fn router() -> Router<AppState> {
         .route("/folders", get(list_folders).post(create_folder))
         .route("/folders/{id}", patch(rename_folder).delete(delete_folder))
         .route("/folders/{id}/parent", put(reparent_folder))
-}
-
-/// Trim and length-check a folder name (non-empty, <= 255 chars), mirroring the meeting-title rule.
-fn validated_name(raw: &str) -> ApiResult<&str> {
-    let name = raw.trim();
-    if name.is_empty() {
-        return Err(ApiError::Unprocessable("name must not be empty".into()));
-    }
-    if name.chars().count() > 255 {
-        return Err(ApiError::Unprocessable(
-            "name exceeds 255 characters".into(),
-        ));
-    }
-    Ok(name)
 }
 
 #[utoipa::path(
@@ -52,12 +38,7 @@ pub(crate) async fn list_folders(
     let window = pagination.resolve(200, 500);
     let total = queries::count_folders(&state.pool).await?;
     let rows = queries::list_folders(&state.pool, window.limit, window.offset).await?;
-    Ok(Json(Page {
-        total,
-        page: window.page,
-        page_size: window.page_size,
-        items: rows.into_iter().map(FolderRead::from).collect(),
-    }))
+    Ok(Json(window.page_of(total, rows)))
 }
 
 #[utoipa::path(
@@ -69,7 +50,7 @@ pub(crate) async fn create_folder(
     State(state): State<AppState>,
     Json(body): Json<FolderCreate>,
 ) -> ApiResult<(StatusCode, Json<FolderRead>)> {
-    let name = validated_name(&body.name)?;
+    let name = validated_name(&body.name, "name")?;
     if let Some(parent_id) = body.parent_id {
         if queries::get_folder(&state.pool, parent_id).await?.is_none() {
             return Err(ApiError::Unprocessable("parent folder not found".into()));
@@ -90,7 +71,7 @@ pub(crate) async fn rename_folder(
     Path(id): Path<Uuid>,
     Json(body): Json<FolderUpdate>,
 ) -> ApiResult<Json<FolderRead>> {
-    let name = validated_name(&body.name)?;
+    let name = validated_name(&body.name, "name")?;
     let folder = queries::update_folder_name(&state.pool, id, name)
         .await?
         .ok_or(ApiError::NotFound("folder not found"))?;

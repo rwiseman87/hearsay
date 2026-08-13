@@ -578,12 +578,29 @@ fn validate_output_dir(input: &str) -> Result<String, ApiError> {
 /// refine time. The GGML magic check (little-endian `0x67676d6c`, the first 4 bytes of every
 /// `ggml-*.bin` whisper model) guards against pointing the refine at an unrelated file.
 fn validate_refine_model(input: &str) -> Result<String, ApiError> {
+    validate_model_file(
+        input,
+        "refine_model",
+        crate::models::GGML_MAGIC,
+        "a GGML whisper model (expected a ggml-*.bin file)",
+    )
+}
+
+/// Resolve a user-supplied model path and prove it is the expected format: expand `~`, require an
+/// absolute path, canonicalize it, and check the leading four magic bytes. `field` names the setting
+/// in the 422 and `expected` describes the format.
+fn validate_model_file(
+    input: &str,
+    field: &str,
+    magic: [u8; 4],
+    expected: &str,
+) -> Result<String, ApiError> {
     let expanded = expand_home(input);
     let path = Path::new(&expanded);
     if !path.is_absolute() {
-        return Err(ApiError::Unprocessable(
-            "refine_model must be an absolute path".into(),
-        ));
+        return Err(ApiError::Unprocessable(format!(
+            "{field} must be an absolute path"
+        )));
     }
     let resolved = std::fs::canonicalize(path)
         .map_err(|_| ApiError::Unprocessable(format!("{expanded} does not exist")))?;
@@ -593,14 +610,13 @@ fn validate_refine_model(input: &str) -> Result<String, ApiError> {
             resolved.display()
         )));
     }
-    let mut magic = [0u8; 4];
+    let mut found = [0u8; 4];
     std::fs::File::open(&resolved)
-        .and_then(|mut f| std::io::Read::read_exact(&mut f, &mut magic))
+        .and_then(|mut f| std::io::Read::read_exact(&mut f, &mut found))
         .map_err(|_| ApiError::Unprocessable(format!("{} is not readable", resolved.display())))?;
-    // Whisper `GGML_FILE_MAGIC` (0x67676d6c) stored little-endian on disk.
-    if magic != [0x6c, 0x6d, 0x67, 0x67] {
+    if found != magic {
         return Err(ApiError::Unprocessable(format!(
-            "{} is not a GGML whisper model (expected a ggml-*.bin file)",
+            "{} is not {expected}",
             resolved.display()
         )));
     }
@@ -613,33 +629,12 @@ fn validate_refine_model(input: &str) -> Result<String, ApiError> {
 /// 0x46`, the first 4 bytes of every `.gguf` model) so pointing the notes step at a whisper `.bin`
 /// or an unrelated file is caught here, not as a cryptic llama.cpp load failure at generate time.
 fn validate_notes_model(input: &str) -> Result<String, ApiError> {
-    let expanded = expand_home(input);
-    let path = Path::new(&expanded);
-    if !path.is_absolute() {
-        return Err(ApiError::Unprocessable(
-            "notes_model must be an absolute path".into(),
-        ));
-    }
-    let resolved = std::fs::canonicalize(path)
-        .map_err(|_| ApiError::Unprocessable(format!("{expanded} does not exist")))?;
-    if !resolved.is_file() {
-        return Err(ApiError::Unprocessable(format!(
-            "{} is not a file",
-            resolved.display()
-        )));
-    }
-    let mut magic = [0u8; 4];
-    std::fs::File::open(&resolved)
-        .and_then(|mut f| std::io::Read::read_exact(&mut f, &mut magic))
-        .map_err(|_| ApiError::Unprocessable(format!("{} is not readable", resolved.display())))?;
-    // GGUF files start with the ASCII bytes "GGUF".
-    if magic != [0x47, 0x47, 0x55, 0x46] {
-        return Err(ApiError::Unprocessable(format!(
-            "{} is not a GGUF model (expected a .gguf file)",
-            resolved.display()
-        )));
-    }
-    Ok(resolved.to_string_lossy().to_string())
+    validate_model_file(
+        input,
+        "notes_model",
+        crate::models::GGUF_MAGIC,
+        "a GGUF model (expected a .gguf file)",
+    )
 }
 
 /// Expand a leading `~/` to `$HOME`; otherwise unchanged.

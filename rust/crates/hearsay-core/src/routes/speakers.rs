@@ -10,7 +10,7 @@ use hearsay_engine::LiveError;
 
 use crate::error::{ApiError, ApiResult};
 use crate::extract::{Json, Path, Query};
-use crate::routes::Pagination;
+use crate::routes::{reexport, validated_name, Pagination};
 use crate::schema::{IdentityRead, Page, SpeakerMerge, SpeakerRead, SpeakerRename};
 use crate::state::AppState;
 
@@ -65,19 +65,12 @@ pub(crate) async fn rename_speaker(
     Path((meeting_id, cluster_id)): Path<(Uuid, Uuid)>,
     Json(body): Json<SpeakerRename>,
 ) -> ApiResult<Json<SpeakerRead>> {
-    let name = body.display_name.trim();
-    if name.is_empty() || name.chars().count() > 255 {
-        return Err(ApiError::Unprocessable(
-            "display_name must be 1..=255 characters".into(),
-        ));
-    }
+    let name = validated_name(&body.display_name, "display_name")?;
     let row = queries::rename_cluster(&state.pool, meeting_id, cluster_id, name)
         .await?
         .ok_or(ApiError::NotFound("speaker not found"))?;
     // Keep transcript.md in step with the new label (best-effort; the DB is the source of truth).
-    if let Err(err) = state.engine.export_meeting(meeting_id).await {
-        tracing::warn!(error = ?err, meeting_id = %meeting_id, "speaker rename: re-export failed");
-    }
+    reexport(&state, meeting_id, "speaker rename").await;
     Ok(Json(row.into()))
 }
 
@@ -117,9 +110,7 @@ pub(crate) async fn merge_speakers(
             ))
         }
     }
-    if let Err(err) = state.engine.export_meeting(meeting_id).await {
-        tracing::warn!(error = ?err, meeting_id = %meeting_id, "speaker merge: re-export failed");
-    }
+    reexport(&state, meeting_id, "speaker merge").await;
     let speakers = queries::list_speaker_rows(&state.pool, meeting_id).await?;
     Ok(Json(speaker_page(
         speakers.into_iter().map(SpeakerRead::from).collect(),
