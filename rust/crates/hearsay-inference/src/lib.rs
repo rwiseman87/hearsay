@@ -19,7 +19,7 @@ mod sherpa_punct;
 #[cfg(feature = "sherpa")]
 mod sherpa_streaming;
 
-pub use asr::{AsrSegment, WhisperAsr, DEFAULT_LANGUAGE};
+pub use asr::{AsrSegment, WhisperAsr, DEFAULT_LANGUAGE, LOOP_MIN_CYCLES};
 pub use audio::{read_them_channel, read_wav_mono_16k, SAMPLE_RATE};
 pub use diarizer::{DiarTurn, Diarization, Diarizer};
 pub use error::InferenceError;

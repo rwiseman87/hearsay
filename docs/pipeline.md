@@ -164,6 +164,14 @@ drive the same `LiveEngine::rediarize` implementation. The refine:
   transcribe loop — then attributes each ASR segment to the diarizer turn it most overlaps, so the
   transcript follows speaker changes; `replace_them_segments` swaps the live Them segments and
   clusters for the refined, speaker-attributed segments in a single transaction (Me is untouched),
+- repairs whisper's repetition loops before attribution: whisper primes each 30-second window with
+  the text it just produced, so a phrase that starts repeating keeps winning and can run to the end
+  of the track. Its built-in gates catch the short cases only — the entropy check reads the last 32
+  tokens, so a longer repeated unit scores like ordinary speech, and an attractor is confident enough
+  to clear the average-logprob gate. Runs of three or more repeating segments (cycles up to three
+  segments long) are therefore re-decoded from the audio alone, with cross-window prompting off,
+  which breaks the attractor and recovers the speech the loop wrote over. A re-decode that repeats
+  again is treated as genuine repetition and kept,
 - carries manual renames forward by voting each locked name onto the turn ordinal its old segments
   most overlap, so a re-diarize never drops a manual binding (per-line reassignments, being
   segment-level, are rebuilt only at the cluster level — like manual text edits, a refine discards

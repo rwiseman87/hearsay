@@ -9,7 +9,9 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use hearsay_inference::{read_them_channel, refine_them_with, Diarizer, SwiftDiarizer, WhisperAsr};
+use hearsay_inference::{
+    read_them_channel, refine_them_with, Diarizer, SwiftDiarizer, WhisperAsr, LOOP_MIN_CYCLES,
+};
 
 #[test]
 #[ignore = "probe"]
@@ -79,27 +81,46 @@ fn refine_mac_probe() {
         segments.last().map_or(0.0, |s| s.end_s),
         start.elapsed().as_secs_f64()
     );
-    let mut counts: HashMap<&str, usize> = HashMap::new();
-    for seg in &segments {
-        *counts.entry(seg.text.as_str()).or_insert(0) += 1;
-    }
-    let mut repeated: Vec<(&str, usize)> = counts.into_iter().filter(|&(_, n)| n > 3).collect();
-    repeated.sort_by_key(|&(_, n)| std::cmp::Reverse(n));
-    for (text, n) in repeated.iter().take(5) {
-        eprintln!("repeated x{n}: {:?}", &text[..text.len().min(60)]);
+    // Optional full dump (`start<TAB>end<TAB>text`), so a bad region can be read in context rather
+    // than inferred from the head/tail excerpt below.
+    if let Ok(path) = std::env::var("HEARSAY_PROBE_DUMP") {
+        let dump: String = segments
+            .iter()
+            .map(|s| format!("{:.2}\t{:.2}\t{}\n", s.start_s, s.end_s, s.text))
+            .collect();
+        std::fs::write(&path, dump).expect("write dump");
+        eprintln!("dumped {} segments to {path}", segments.len());
     }
 
-    // A real meeting produces speech, not a decoder repetition loop. These guard the anti-loop
-    // entropy_thold in asr.rs (see hearsay-refine-performance): when it regresses, whisper collapses
-    // into one phrase repeated hundreds of times (a 17-min meeting once came back 473x).
+    // Back-to-back repeats, not total occurrences: "Yeah." a dozen times across half an hour is
+    // speech, the same sentence a dozen times in a row is the decoder looping. Counting occurrences
+    // instead let a 120-of-783 loop pass this probe.
+    let mut runs: Vec<(&str, usize)> = Vec::new();
+    for seg in &segments {
+        match runs.last_mut() {
+            Some((text, n)) if *text == seg.text => *n += 1,
+            _ => runs.push((seg.text.as_str(), 1)),
+        }
+    }
+    runs.sort_by_key(|&(_, n)| std::cmp::Reverse(n));
+    for (text, n) in runs.iter().take(5).filter(|&&(_, n)| n > 1) {
+        eprintln!("consecutive x{n}: {:?}", &text[..text.len().min(60)]);
+    }
+
+    // A real meeting produces speech, not a decoder repetition loop. This guards both halves of the
+    // anti-loop defence in asr.rs (see hearsay-refine-performance): the entropy_thold that catches a
+    // short looping phrase mid-decode, and the loop repair that re-decodes what the entropy gate is
+    // structurally blind to — a repeated unit of 32+ tokens (one meeting came back with the same
+    // sentence 120 times, another with one phrase 473 times).
     assert!(!them.is_empty(), "extraction produced no Them samples");
     assert!(!segments.is_empty(), "whisper produced no segments");
     assert!(total_chars > 0, "whisper produced empty transcript");
-    let max_repeat = repeated.first().map_or(0, |&(_, n)| n);
+    let (worst_text, max_run) = runs.first().copied().unwrap_or(("", 0));
     assert!(
-        (max_repeat as f64) < 0.4 * segments.len() as f64,
-        "whisper repetition loop: one phrase repeated {max_repeat}x of {} segments \
-         (anti-loop entropy_thold regressed?)",
+        max_run < LOOP_MIN_CYCLES,
+        "whisper repetition loop survived the refine: {:?} repeated {max_run}x in a row \
+         of {} segments (loop repair or entropy_thold regressed?)",
+        &worst_text[..worst_text.len().min(60)],
         segments.len()
     );
     for seg in segments.iter().take(6) {
