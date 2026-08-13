@@ -25,6 +25,6 @@ pub use hearsay_db::queries::{NotesResult, RefineResult, RefinedThemSegment};
 pub use markdown::write_meeting_files;
 pub use orchestrator::Orchestrator;
 pub use traits::{AudioSource, Backend, BackendInstance, Refiner, Summarizer, Transcriber};
-pub use transcriber::ProcessTranscriber;
+pub use transcriber::{ProcessTranscriber, SEGMENT_CHANNEL_CAPACITY};
 pub use types::{AudioChunk, CaptureChunk, SegmentKind, SidecarSegment, Stream};
 pub use wav_source::WavFileSource;

@@ -20,8 +20,7 @@ use crate::asr::{AsrSegment, WhisperAsr};
 use crate::diarizer::{DiarTurn, Diarization, Diarizer};
 use crate::error::InferenceError;
 
-/// Contract-fixed track sample rate (Hz).
-const SAMPLE_RATE: u32 = 16_000;
+use hearsay_audio::SAMPLE_RATE;
 
 /// How often the bounded diarize wait polls the child for exit.
 const DIARIZE_POLL_INTERVAL: Duration = Duration::from_millis(50);

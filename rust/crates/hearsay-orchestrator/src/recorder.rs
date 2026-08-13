@@ -19,8 +19,7 @@ use std::path::PathBuf;
 use crate::error::OrchestratorError;
 use crate::types::Stream;
 
-/// Contract-fixed capture sample rate (Hz), mono per channel.
-const SAMPLE_RATE: u32 = 16_000;
+use hearsay_audio::SAMPLE_RATE;
 /// Write each stream contiguously; only re-anchor to `t0_s` past this divergence (a real delivery
 /// gap, not per-chunk clock jitter). 0.2 s.
 const RESYNC_GAP: usize = (SAMPLE_RATE / 5) as usize;

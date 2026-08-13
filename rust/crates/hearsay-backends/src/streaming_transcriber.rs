@@ -15,16 +15,15 @@ use async_trait::async_trait;
 use tokio::sync::mpsc;
 
 use hearsay_inference::{Punctuator, StreamEventKind, StreamingAsr, StreamingSession};
-use hearsay_orchestrator::{OrchestratorError, SegmentKind, SidecarSegment, Transcriber};
+// The segment channel carries the same contract as `ProcessTranscriber`'s, so it shares its bound.
+use hearsay_orchestrator::{
+    OrchestratorError, SegmentKind, SidecarSegment, Transcriber, SEGMENT_CHANNEL_CAPACITY,
+};
 
 /// Capacity of the PCM hand-off channel to the sherpa worker thread. Bounded so a worker that falls
 /// behind real-time backpressures the caller (via the async `feed`) instead of growing without
 /// bound; ~13 s of 100 ms chunks.
 const PCM_CHANNEL_CAPACITY: usize = 128;
-
-/// Capacity of the segment (`emit`) channel. Bounded (matching `ProcessTranscriber`) so a stalled
-/// consumer backpressures the worker thread (via `blocking_send`) instead of growing without bound.
-const SEGMENT_CHANNEL_CAPACITY: usize = 256;
 
 /// A live transcriber driving one sherpa streaming session on a worker thread.
 pub struct SherpaTranscriber {

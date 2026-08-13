@@ -16,8 +16,7 @@ use crate::error::OrchestratorError;
 use crate::traits::AudioSource;
 use crate::types::{AudioChunk, CaptureChunk, Stream};
 
-/// Contract-fixed capture sample rate (Hz), mono per channel.
-const SAMPLE_RATE: u32 = 16_000;
+use hearsay_audio::SAMPLE_RATE;
 /// Default chunk size: 1600 samples = 100 ms at 16 kHz.
 const DEFAULT_FRAME_SAMPLES: usize = 1600;
 

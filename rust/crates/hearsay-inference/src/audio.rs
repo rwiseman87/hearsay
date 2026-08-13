@@ -4,8 +4,7 @@ use std::path::Path;
 
 use crate::error::InferenceError;
 
-/// Contract-fixed ASR input rate (Hz).
-pub const SAMPLE_RATE: u32 = 16_000;
+pub use hearsay_audio::SAMPLE_RATE;
 
 /// Read a 16 kHz recording as mono `f32` in [-1, 1] (stereo is downmixed by averaging channels).
 /// Errors if the file is not 16 kHz (no resampler here — the pipeline captures at 16 kHz). Accepts

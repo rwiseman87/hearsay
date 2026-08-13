@@ -32,7 +32,7 @@ const SIDECAR_CLOSE_TIMEOUT: Duration = Duration::from_secs(10);
 /// write instead of letting segments — including finals, which must never be dropped — accumulate
 /// without bound. Segments are far lower-rate than the 128-slot PCM hand-off, so a few hundred slots
 /// is generous headroom a real burst never reaches; it only fills under a sustained stall.
-pub(crate) const SEGMENT_CHANNEL_CAPACITY: usize = 256;
+pub const SEGMENT_CHANNEL_CAPACITY: usize = 256;
 
 /// Owns one streaming sidecar process for a meeting.
 pub struct ProcessTranscriber {

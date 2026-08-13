@@ -13,27 +13,26 @@
 #[cfg(any(feature = "aec", test))]
 const FRAME: usize = 160;
 
-/// Contract-fixed capture sample rate (Hz).
 #[cfg(any(feature = "aec", test))]
-const SAMPLE_RATE: f64 = 16_000.0;
+const SAMPLE_RATE: f64 = hearsay_audio::SAMPLE_RATE as f64;
 
 /// Only re-anchor a stream to a chunk's `t0_s` once it diverges past this — a real delivery gap, not
 /// per-chunk clock jitter. 0.2 s at 16 kHz, matching the recorder's `RESYNC_GAP`.
 #[cfg(any(feature = "aec", test))]
-const RESYNC_GAP: usize = 3200;
+const RESYNC_GAP: usize = (hearsay_audio::SAMPLE_RATE / 5) as usize;
 
 /// The most Me the aligner holds waiting for a far-end reference before emitting it with a
 /// zero-filled (silent) reference. A silent far-end produces no tap chunks, so this bound is what
 /// stops Me stalling when nothing is playing — and cancelling against silence is a near-passthrough,
 /// which is correct because a silent far-end means no echo. 0.2 s at 16 kHz.
 #[cfg(any(feature = "aec", test))]
-const MAX_REF_HOLD: u64 = 3200;
+const MAX_REF_HOLD: u64 = RESYNC_GAP as u64;
 
 /// Cap on a single forward zero-fill, so a non-monotonic `host_ts` (sleep/resume, a garbage
 /// timestamp) can't drive a multi-GB allocation. 5 min of 16 kHz mono — far beyond any real gap, so
 /// it never fires in normal capture. Mirrors the recorder's `MAX_FORWARD_JUMP_FRAMES`.
 #[cfg(any(feature = "aec", test))]
-const MAX_FORWARD_FILL: usize = 5 * 60 * 16_000;
+const MAX_FORWARD_FILL: usize = 5 * 60 * hearsay_audio::SAMPLE_RATE as usize;
 
 /// The most far-end reference buffered ahead of the emission frontier. Far only runs this far ahead
 /// when the Me stream has stalled (mic device loss mid-meeting) — frames are emitted at Me's pace,
@@ -43,7 +42,7 @@ const MAX_FORWARD_FILL: usize = 5 * 60 * 16_000;
 /// instead of ~230 MB/h. 2 s at 16 kHz — 10x `RESYNC_GAP`, so legitimate cross-stream delivery skew
 /// never trips it.
 #[cfg(any(feature = "aec", test))]
-const MAX_FAR_BUFFER: u64 = 2 * 16_000;
+const MAX_FAR_BUFFER: u64 = 2 * hearsay_audio::SAMPLE_RATE as u64;
 
 /// One stream's samples, placed contiguously from `base` on the shared absolute sample clock. Gaps
 /// are zero-filled so `near` and `far` stay index-aligned; consumed samples are dropped from the

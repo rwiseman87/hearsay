@@ -115,7 +115,7 @@ fn fit_transcript_to_tokens(
             out.push_str(&piece);
         }
     }
-    out.push_str("\n[transcript truncated]");
+    out.push_str(hearsay_notes_prompt::TRUNCATION_MARKER);
     Ok(out)
 }
 

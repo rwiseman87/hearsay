@@ -52,8 +52,12 @@ fn sanitize_transcript(s: &str) -> String {
         .replace("<|im_end|>", "<im_end>")
 }
 
-/// Truncate `s` to at most `max_bytes`, backing up to a UTF-8 char boundary, appending a marker when
-/// it actually cut. Never splits a multi-byte char.
+/// Appended when a transcript is cut to fit a budget. Shared so the char-budget path here and the
+/// token-budget path in the `hearsay-notes` sidecar mark a truncation identically.
+pub const TRUNCATION_MARKER: &str = "\n[transcript truncated]";
+
+/// Truncate `s` to at most `max_bytes`, backing up to a UTF-8 char boundary, appending
+/// [`TRUNCATION_MARKER`] when it actually cut. Never splits a multi-byte char.
 fn truncate_on_char_boundary(s: &str, max_bytes: usize) -> String {
     if s.len() <= max_bytes {
         return s.to_string();
@@ -62,7 +66,7 @@ fn truncate_on_char_boundary(s: &str, max_bytes: usize) -> String {
     while end > 0 && !s.is_char_boundary(end) {
         end -= 1;
     }
-    format!("{}\n[transcript truncated]", &s[..end])
+    format!("{}{TRUNCATION_MARKER}", &s[..end])
 }
 
 /// Clean the model's raw reply into the final note, used verbatim: drop any ChatML turn markers the
