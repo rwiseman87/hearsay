@@ -101,7 +101,7 @@ The build environment is pinned by `.github/actions/mac-build-env`, shared by bo
 | Runner | `macos-26` | The arm64 standard image. `stage-release` refuses non-arm64, and the floating `macos-latest` label moves between OS versions without a commit. |
 | Xcode | `26.3` | Swift 6.3.x, matching the development machine, so FluidAudio compiles the same way. |
 | Rust | `rust-toolchain.toml` | A new clippy release must not fail `-D warnings` without a commit. |
-| Node | 24 | The runner image default; `web/package.json` requires >= 20.19.0. |
+| Node | `24.19.0` | Its bundled npm (11.17.0) decides which lockfile tree `npm ci` demands, so the patch version is pinned and `web/package-lock.json` is generated with that npm. Local development needs only >= 20.19.0 (`web/package.json`). |
 | `cargo-audit` / `cargo-deny` / `tauri-cli` | 0.22.2 / 0.20.2 / 2.11.4 | The Makefile assumes all three on `PATH`; none ship on the runner. |
 
 The runner leaves about 14 GB free and this build compiles whisper.cpp, llama.cpp and SpeexDSP from

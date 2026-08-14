@@ -48,9 +48,11 @@ runs:
         cargo --version
         cargo clippy --version
 
+    # Exact, not the floating 24: the bundled npm decides which lockfile tree `npm ci` demands, so a
+    # new Node 24.x patch would break the gate on an unchanged repo. 24.19.0 ships npm 11.17.0.
     - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
       with:
-        node-version: 24
+        node-version: 24.19.0
         cache: npm
         cache-dependency-path: web/package-lock.json
 
