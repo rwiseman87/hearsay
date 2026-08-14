@@ -40,6 +40,7 @@ fn test_settings(output_dir: PathBuf, web_dir: PathBuf) -> Settings {
         server_port: 0,
         environment: "test".into(),
         helper_path: PathBuf::from("no-helper"),
+        scripted: false,
         refine_model: PathBuf::from("no-model"),
         refine_timeout: std::time::Duration::from_secs(1800),
         auto_refine: false,
@@ -58,7 +59,6 @@ fn test_settings(output_dir: PathBuf, web_dir: PathBuf) -> Settings {
         models_dir: PathBuf::from("no-models-dir"),
         handshake_path: None,
         notices_path: PathBuf::from("no-notices"),
-        fluid_models_dir: None,
         home_dir: None,
         sherpa_models_dir: PathBuf::from("no-sherpa-models"),
         win_loopback_mode: Default::default(),
@@ -2166,6 +2166,33 @@ async fn settings_tolerates_a_partial_models_section_from_a_download() {
 async fn download_unknown_model_is_404() {
     let (app, _pool, _tmp) = setup().await;
     let req = post("/api/models/download", r#"{"id":"no-such-model"}"#);
+    let (status, _) = send(&app, req).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn setup_reports_the_work_left_when_models_are_missing() {
+    // `setup()` has no FluidAudio cache and points `refine_model` at a nonexistent file, so the
+    // installer-ships-no-models state is exactly what these settings describe.
+    let (app, _pool, _tmp) = setup().await;
+
+    let (status, body) = send(&app, get("/api/setup")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["required"], true);
+    assert_eq!(body["status"], "idle");
+    let steps = body["steps"].as_array().unwrap();
+    // The live models are always the first thing a run fetches; the refine model is skipped here
+    // because "no-model" is not a file name the catalog knows.
+    assert_eq!(steps[0]["id"], "live");
+    assert_eq!(steps[0]["status"], "pending");
+    assert!(steps[0]["total_bytes"].as_i64().unwrap() > 0);
+    assert!(steps.iter().all(|s| s["id"] != "refine"));
+}
+
+#[tokio::test]
+async fn setup_with_an_unknown_notes_model_is_404() {
+    let (app, _pool, _tmp) = setup().await;
+    let req = post("/api/setup", r#"{"notes_model_id":"no-such-model"}"#);
     let (status, _) = send(&app, req).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }

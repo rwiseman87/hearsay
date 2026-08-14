@@ -183,6 +183,7 @@ pub fn build_engine(config: EngineConfig) -> Arc<dyn LiveEngine> {
         output_dir,
         helper_path: _, // macOS-only: there is no helper process on Windows
         synthetic,
+        prewarm: _, // macOS-only: the sherpa models ship with the installer, so nothing to hold back for
         refine_model,
         refine_timeout: _, // macOS-only: bounds the diarize subprocess; the ONNX diarizer is in-process
         // The editable-settings defaults are lifted whole by `config.defaults()` above.

@@ -334,19 +334,6 @@ fn main() {
             // travel with the distributed app, so the file ships as a resource and Settings > About
             // opens this copy.
             let notices_path = resource_dir.join("THIRD-PARTY-NOTICES.md");
-            // Bundled GGML whisper model for the offline refine; the core defaults to a repo-relative
-            // path that doesn't exist in an installed app, so point it at the resource copy. The
-            // Windows default is a smaller model — no ANE/Metal on the reference hardware (the
-            // Models panel overrides it per install either way).
-            #[cfg(target_os = "macos")]
-            let refine_model = resource_dir.join("models/ggml-large-v3-turbo.bin");
-            #[cfg(windows)]
-            let refine_model = resource_dir.join("models/ggml-small.en.bin");
-            // Bundled FluidAudio live models (Parakeet ASR, LS-EEND diarizer, VAD, pyannote refine).
-            // The core seeds these into FluidAudio's cache on first launch so the sidecars load them
-            // locally instead of downloading from HuggingFace (a self-contained, offline install).
-            #[cfg(target_os = "macos")]
-            let fluid_models = resource_dir.join("models/fluidaudio/Models");
             // Bundled sherpa live/diarize models (the Windows backend reads them in place).
             #[cfg(windows)]
             let sherpa_models = resource_dir.join("models/sherpa");
@@ -354,11 +341,18 @@ fn main() {
             let data_dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(data_dir.join("db"))?;
             std::fs::create_dir_all(data_dir.join("recordings"))?;
-            // Notes models the user downloads land here (the .app bundle is read-only, and the core's
+            // Downloaded models land here (the .app bundle is read-only, and the core's
             // repo-relative `outputs/models` default resolves under the read-only launch dir). Kept in
             // app-data so downloads survive app updates.
             let models_dir = data_dir.join("models");
             std::fs::create_dir_all(&models_dir)?;
+            // The installer ships no whisper refine model on macOS: first-run setup downloads it
+            // here. Windows still bundles a smaller one — no ANE/Metal on the reference hardware —
+            // and the Models panel overrides the path per install either way.
+            #[cfg(target_os = "macos")]
+            let refine_model = models_dir.join("ggml-large-v3-turbo.bin");
+            #[cfg(windows)]
+            let refine_model = resource_dir.join("models/ggml-small.en.bin");
             let db_url = format!("sqlite://{}", data_dir.join("db/hearsay.db").display());
 
             // Private readiness handshake: the core writes {port, token} here once it is listening,
@@ -396,12 +390,7 @@ fn main() {
                     handshake_path.to_string_lossy().to_string(),
                 );
             #[cfg(target_os = "macos")]
-            let cmd = cmd
-                .env("HEARSAY_HELPER_PATH", helper.to_string_lossy().to_string())
-                .env(
-                    "HEARSAY_FLUID_MODELS_DIR",
-                    fluid_models.to_string_lossy().to_string(),
-                );
+            let cmd = cmd.env("HEARSAY_HELPER_PATH", helper.to_string_lossy().to_string());
             #[cfg(windows)]
             let cmd = cmd.env(
                 "HEARSAY_SHERPA_MODELS_DIR",

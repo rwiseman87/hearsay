@@ -842,6 +842,34 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/setup": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Whether first-run model setup is still needed, and how a run is progressing.
+         * @description The installer ships no models: `required` is `true` until the live speech models and the refine
+         *     model are on disk, and the UI blocks recording while it is. `steps` carries per-asset progress
+         *     (`downloaded_bytes` / `total_bytes`) during a run, and the work a run would do before one starts.
+         */
+        get: operations["setup_status"];
+        put?: never;
+        /**
+         * Start (or retry) first-run model setup.
+         * @description Downloads the missing models in the background — the live speech models, the refine model, and
+         *     optionally the notes model named by `notes_model_id`. Steps already satisfied are skipped, so a
+         *     retry after a failure resumes rather than starting over. Poll `GET /api/setup` for progress.
+         */
+        post: operations["start_setup"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/status": {
         parameters: {
             query?: never;
@@ -1498,6 +1526,49 @@ export interface components {
             storage: components["schemas"]["StorageSettings"];
             storage_info: components["schemas"]["StorageInfo"];
         };
+        /**
+         * @description Request body for starting first-run setup: optionally a notes-model catalog `id` to download in
+         *     the same pass (the notes step is never required).
+         */
+        SetupRequest: {
+            notes_model_id?: string | null;
+        };
+        /**
+         * @description First-run model setup, polled by the UI. `required` is the gate: while it is `true` the app has
+         *     no models to record with, so the setup screen stays up.
+         */
+        SetupState: {
+            /** @description A human-readable failure reason when `status` is `error`. */
+            message?: string | null;
+            required: boolean;
+            status: components["schemas"]["SetupStatus"];
+            steps: components["schemas"]["SetupStep"][];
+        };
+        /**
+         * @description Where first-run model setup stands: `idle` (models missing, no run started), `running`, `ready`
+         *     (every model the app needs is on disk), or `error` (a run failed; retrying resumes it).
+         * @enum {string}
+         */
+        SetupStatus: "idle" | "running" | "ready" | "error";
+        /**
+         * @description One asset first-run setup fetches: the live speech models, the refine model, or an optional
+         *     notes model. `total_bytes` is the expected download size (approximate for the live models until
+         *     the preparation sidecar reports its plan).
+         */
+        SetupStep: {
+            /** Format: int64 */
+            downloaded_bytes: number;
+            id: string;
+            label: string;
+            status: components["schemas"]["SetupStepStatus"];
+            /** Format: int64 */
+            total_bytes: number;
+        };
+        /**
+         * @description Where one setup step stands.
+         * @enum {string}
+         */
+        SetupStepStatus: "pending" | "running" | "verifying" | "done" | "error";
         /** @description Combine two of a meeting's speakers: the cluster in the path is folded into `into`. */
         SpeakerMerge: {
             /**
@@ -3167,6 +3238,64 @@ export interface operations {
                 };
             };
             /** @description A meeting is recording, or a pass is already running */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    setup_status: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Setup requirement + per-step progress */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SetupState"];
+                };
+            };
+        };
+    };
+    start_setup: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SetupRequest"];
+            };
+        };
+        responses: {
+            /** @description Setup has started */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SetupState"];
+                };
+            };
+            /** @description Unknown notes model id */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Setup is already running */
             409: {
                 headers: {
                     [name: string]: unknown;

@@ -1,6 +1,6 @@
 import { lazy, Suspense, useRef, useState } from "react";
 
-import { useMeetings, useStatus } from "./api/hooks";
+import { useMeetings, useSetup, useStatus } from "./api/hooks";
 import type { MeetingRead } from "./api/types";
 import { Dashboard } from "./components/Dashboard";
 import { Library } from "./components/Library";
@@ -8,6 +8,7 @@ import { LiveRecording } from "./components/LiveRecording";
 import { NavRail } from "./components/NavRail";
 import { RecordMenu } from "./components/RecordMenu";
 import { SearchBox } from "./components/SearchBox";
+import { SetupScreen } from "./components/SetupScreen";
 import { TranscriptView } from "./components/TranscriptView";
 
 // Route-level code splitting: the settings page loads only when opened.
@@ -40,6 +41,13 @@ export function App() {
     jumpNonce.current += 1;
     setJump({ meetingId, startS, nonce: jumpNonce.current });
   };
+
+  // The installer ships no models: until they are downloaded there is nothing to record with, so
+  // first-run setup replaces the app rather than sitting behind it. An errored probe reads as ready,
+  // so a status-endpoint problem never locks the user out of their meetings.
+  const setup = useSetup();
+  if (setup.isLoading) return null; // one loopback request; holding a frame beats flashing the app
+  if (setup.data?.required) return <SetupScreen />;
 
   return (
     <div className="app">

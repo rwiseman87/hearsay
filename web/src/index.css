@@ -2683,3 +2683,119 @@ mark.find-hit {
   white-space: nowrap;
   font-size: var(--fs-lg);
 }
+
+/* First-run model setup: a full-window card shown until the models are downloaded. */
+.setup {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  padding: 24px;
+  background: var(--bg);
+}
+
+.setup__card {
+  width: min(560px, 100%);
+  padding: 28px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: var(--shadow-lg);
+}
+
+.setup__title {
+  margin: 0 0 10px;
+  font-size: var(--fs-xl);
+}
+
+.setup__lead {
+  margin: 0 0 20px;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.setup__steps {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  margin: 0 0 20px;
+  padding: 0;
+  list-style: none;
+}
+
+.setup__step-head {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--gap);
+  margin-bottom: 4px;
+  font-size: var(--fs-sm);
+}
+
+/* The stock progress element renders as a hairline once its height is set, so draw the track and
+   the fill explicitly. */
+.setup__step progress {
+  appearance: none;
+  display: block;
+  width: 100%;
+  height: 8px;
+  border: none;
+  border-radius: 999px;
+  background: var(--surface-2);
+}
+
+.setup__step progress::-webkit-progress-bar {
+  border-radius: 999px;
+  background: var(--surface-2);
+}
+
+.setup__step progress::-webkit-progress-value {
+  border-radius: 999px;
+  background: var(--accent);
+}
+
+.setup__option {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 20px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+  font-size: var(--fs-sm);
+}
+
+.setup__check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.setup__error {
+  margin: 0 0 16px;
+  color: var(--danger);
+  font-size: var(--fs-sm);
+  line-height: 1.5;
+}
+
+.setup__actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.setup__start {
+  padding: 10px 18px;
+  border: none;
+  border-radius: 6px;
+  background: var(--accent);
+  color: var(--on-accent);
+  font-weight: 600;
+}
+
+.setup__start:disabled {
+  opacity: 0.6;
+}
+
+.setup__note {
+  margin: 16px 0 0;
+  font-size: var(--fs-sm);
+  line-height: 1.5;
+}

@@ -201,6 +201,9 @@ impl Orchestrator {
     /// the orchestrator is dropped) and is tracked so it is aborted on drop. Call once, from within
     /// the Tokio runtime, on the `Arc` returned by [`into_arc`](Self::into_arc).
     pub fn spawn_warm_ticker(self: &Arc<Self>) {
+        if self.warm_ticker.get().is_some() {
+            return; // already ticking (setup completing after a held-back boot calls this again)
+        }
         let weak = Arc::downgrade(self);
         let handle = tokio::spawn(async move {
             let mut ticker = tokio::time::interval(WARM_TICK_INTERVAL);
@@ -694,6 +697,15 @@ impl LiveEngine for Orchestrator {
         // models. Warm *recovery* is handled off this path by the background warm ticker
         // (`spawn_warm_ticker`), so a UI status poll never spawns a sidecar process.
         self.backend.sidecars_ready()
+    }
+
+    fn start_prewarm(&self) {
+        // First-run setup finished, so warming can no longer race a model download. The weak
+        // self-ref is what `spawn_warm_ticker` needs (it takes `Arc<Self>`); it is empty only for a
+        // unit-test orchestrator built without `into_arc`, which has no ticker to start.
+        if let Some(orchestrator) = self.self_weak.upgrade() {
+            orchestrator.spawn_warm_ticker();
+        }
     }
 
     /// Manual re-diarize: run the same refine + persist + transcript-rewrite path the auto-refine at

@@ -27,6 +27,10 @@ pub struct Settings {
     pub environment: String,
     /// Path to the Swift `hearsay-helper` capture binary; the sidecars resolve as siblings.
     pub helper_path: PathBuf,
+    /// Dev-only (`HEARSAY_SCRIPTED`, honored only in development): replace the platform backend with
+    /// the deterministic, model-free scripted engine. It spawns no sidecars, so first-run model
+    /// setup is skipped with it.
+    pub scripted: bool,
     /// GGML whisper model for the offline refine.
     pub refine_model: PathBuf,
     /// Deadline for the `hearsay-diarize` refine subprocess, so a hung sidecar cannot wedge stop.
@@ -69,10 +73,8 @@ pub struct Settings {
     /// The bundled third-party notices, which Settings > About opens. Defaults to the repo copy for
     /// dev; the desktop shell points it at the bundle resource.
     pub notices_path: PathBuf,
-    /// Bundled FluidAudio live models, seeded into FluidAudio's cache on first launch. `None` in
-    /// headless dev, where FluidAudio downloads them.
-    pub fluid_models_dir: Option<PathBuf>,
-    /// The process's home directory: the base of FluidAudio's default model cache.
+    /// The process's home directory: the base of FluidAudio's default model cache, which first-run
+    /// setup fills.
     pub home_dir: Option<PathBuf>,
     /// Sherpa live/diarize models for the Windows backend. Unused on macOS.
     pub sherpa_models_dir: PathBuf,
@@ -229,6 +231,7 @@ impl Settings {
             .ok()
             .and_then(|p| p.parse().ok())
             .unwrap_or(0);
+        let scripted = environment == "development" && env::var_os("HEARSAY_SCRIPTED").is_some();
         let auto_refine = env_bool("HEARSAY_AUTO_REFINE", false, &mut problems);
         let record = env_bool("HEARSAY_RECORD", true, &mut problems);
         let recognition_threshold = env_recognition_threshold(0.6, &mut problems);
@@ -270,6 +273,7 @@ impl Settings {
                 "HEARSAY_HELPER_PATH",
                 "helper/.build/arm64-apple-macosx/debug/hearsay-helper",
             )),
+            scripted,
             refine_model: PathBuf::from(env_or(
                 "HEARSAY_REFINE_MODEL",
                 "outputs/models/ggml-large-v3-turbo.bin",
@@ -297,7 +301,6 @@ impl Settings {
                 "HEARSAY_THIRD_PARTY_NOTICES",
                 "./THIRD-PARTY-NOTICES.md",
             )),
-            fluid_models_dir: env_path("HEARSAY_FLUID_MODELS_DIR"),
             home_dir: env_path("HOME"),
             sherpa_models_dir: PathBuf::from(env_or(
                 "HEARSAY_SHERPA_MODELS_DIR",

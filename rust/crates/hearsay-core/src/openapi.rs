@@ -10,9 +10,10 @@ use crate::schema::{
     IdentityRead, IdentityRename, LevelEvent, MeetingCreate, MeetingFolderAssign, MeetingNotesRead,
     MeetingRead, MeetingStatus, MeetingUpdate, ModelCatalog, ModelSettings, ModelsInfo, NotesEdit,
     PermissionsInfo, PromptEvent, RecordingSettings, ResyncEvent, SearchHit, SegmentEdit,
-    SegmentRead, SegmentSpeakerAssign, SettingsRead, SpeakerMerge, SpeakerRead, SpeakerRename,
-    SpeakerSettings, StatusEvent, StatusInfo, StorageInfo, StorageSettings, Stream,
-    TranscriptEvent, UserNotesRead, UserNotesWrite, VoiceprintRead, VoiceprintSampleRead,
+    SegmentRead, SegmentSpeakerAssign, SettingsRead, SetupRequest, SetupState, SetupStatus,
+    SetupStep, SetupStepStatus, SpeakerMerge, SpeakerRead, SpeakerRename, SpeakerSettings,
+    StatusEvent, StatusInfo, StorageInfo, StorageSettings, Stream, TranscriptEvent, UserNotesRead,
+    UserNotesWrite, VoiceprintRead, VoiceprintSampleRead,
 };
 
 /// Registers the session-token scheme so an API console can offer an "Authorize" box, and so the
@@ -120,6 +121,8 @@ stream with `Range` support), and `/`, which serves the UI with the token inject
         crate::routes::settings::reset_models,
         crate::routes::settings::reveal_output_dir,
         crate::routes::settings::open_notices,
+        crate::routes::setup::setup_status,
+        crate::routes::setup::start_setup,
     ),
     components(schemas(
         MeetingRead,
@@ -160,6 +163,11 @@ stream with `Range` support), and `/`, which serves the UI with the token inject
         DownloadStatus,
         DownloadState,
         DownloadRequest,
+        SetupStatus,
+        SetupStepStatus,
+        SetupStep,
+        SetupState,
+        SetupRequest,
         AboutInfo,
         PermissionsInfo,
         StatusInfo,
@@ -180,6 +188,7 @@ stream with `Range` support), and `/`, which serves the UI with the token inject
         (name = "search", description = "Full-text transcript search across meetings"),
         (name = "models", description = "Notes-model catalog + download manager"),
         (name = "settings", description = "Editable preferences + live permission status"),
+        (name = "setup", description = "First-run model download (the installer ships no models)"),
     ),
 )]
 pub struct ApiDoc;

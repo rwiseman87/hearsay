@@ -6,6 +6,7 @@ use sqlx::SqlitePool;
 
 use crate::config::Settings;
 use crate::models::DownloadManager;
+use crate::setup::SetupManager;
 use hearsay_backends::archive::Sweeper;
 use hearsay_engine::LiveEngine;
 
@@ -18,6 +19,8 @@ pub struct AppState {
     pub engine: Arc<dyn LiveEngine>,
     /// The notes-model catalog + the single active download (progress polled by the UI).
     pub downloads: Arc<DownloadManager>,
+    /// First-run model setup: what is still missing, and the run that fetches it.
+    pub setup: Arc<SetupManager>,
     /// Audio-archival progress + the failure memo, shared with the periodic sweep so the Settings
     /// button and the ticker cannot run two passes at once.
     pub archive: Arc<Sweeper>,
@@ -32,12 +35,14 @@ impl AppState {
         archive: Arc<Sweeper>,
     ) -> Self {
         let downloads = Arc::new(DownloadManager::new(settings.models_dir.clone()));
+        let setup = Arc::new(SetupManager::new(&settings, settings.scripted));
         AppState {
             pool,
             settings: Arc::new(settings),
             session_token: Arc::new(session_token),
             engine,
             downloads,
+            setup,
             archive,
         }
     }

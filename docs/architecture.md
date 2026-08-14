@@ -29,9 +29,10 @@ helper and sidecars), `web/` (the React UI and the Tauri shell).
 
 ## Process topology
 
-One macOS app bundle containing six spawned processes plus the webview. The Tauri shell owns the
-window and the core's lifecycle; the core owns everything else. Two of the six — `hearsay-diarize`
-and `hearsay-notes` — are burst sidecars the core spawns on demand rather than keeping resident.
+One macOS app bundle containing seven spawned processes plus the webview. The Tauri shell owns the
+window and the core's lifecycle; the core owns everything else. Three of the seven —
+`hearsay-diarize`, `hearsay-notes`, and `hearsay-models` — are burst sidecars the core spawns on
+demand rather than keeping resident.
 
 ```mermaid
 flowchart TB
@@ -74,6 +75,7 @@ flowchart TB
 | `hearsay-live` / `hearsay-me` | The live audio AI (FluidAudio on the Apple Neural Engine): streaming diarization plus Parakeet ASR for Them, streaming VAD plus Parakeet for Me. One process per stream, one meeting per process. | Each model owns its address space; a crash is contained and the warm pool replaces the pair. |
 | `hearsay-diarize` | The offline refine diarizer: given the recorded Them track, returns speaker turns and per-speaker voiceprint embeddings. | Same CoreML isolation; runs as a burst after the meeting, never live. |
 | `hearsay-notes` | The optional local-LLM notes step (llama.cpp): given the finalized transcript, returns the verbatim Markdown notes over stdio. | llama's vendored `ggml` must not co-link with the whisper refine's (a ~5x refine slowdown), so it runs out-of-process as a burst sidecar. |
+| `hearsay-models` | First-run model preparation: downloads the FluidAudio models the live and refine sidecars load, reporting progress as NDJSON. The installer ships no models. | It calls the same FluidAudio loaders those sidecars call, so what it fetches cannot drift from what they load — which a hand-maintained file manifest in Rust could not guarantee. |
 
 ## Rust crate map
 
@@ -281,8 +283,8 @@ sequenceDiagram
     activate Core
     Core->>Core: resolve settings, refuse a non-loopback bind
     Core->>Core: open SQLite, apply migrations
-    Core->>Core: seed the FluidAudio model cache from the bundle (first launch)
-    Core->>Core: build the engine, prewarm the first sidecar pair
+    Core->>Core: probe for the speech models (first-run setup gates the UI when they are missing)
+    Core->>Core: build the engine, prewarm the first sidecar pair (only once the models are there)
     Core->>Core: finalize meetings stranded by a prior hard exit
     Core->>Core: start the hourly audio-archival sweep
     Core->>Core: bind 127.0.0.1 on an OS-assigned port

@@ -1674,6 +1674,8 @@ pub const SECTION_RECORDING: &str = "recording";
 pub const SECTION_SPEAKERS: &str = "speakers";
 pub const SECTION_STORAGE: &str = "storage";
 pub const SECTION_MODELS: &str = "models";
+/// Not an editable settings panel: first-run model setup records here that it finished.
+pub const SECTION_SETUP: &str = "setup";
 
 /// The parsed JSON object for a stored section, or `None` when unset or unparseable (the caller then
 /// uses its config default). A corrupt row degrades to the default rather than failing an operation.
@@ -1834,6 +1836,20 @@ pub async fn set_notes_model(pool: &SqlitePool, path: &str) -> Result<(), sqlx::
     .execute(pool)
     .await?;
     Ok(())
+}
+
+/// Whether first-run model setup has completed on this install. Paired with the on-disk probe in
+/// `hearsay-core`'s setup manager: the probe answers for an install that already had its models,
+/// this row answers for one that just downloaded them.
+pub async fn models_ready(pool: &SqlitePool) -> Result<bool, sqlx::Error> {
+    Ok(Section::load(pool, SECTION_SETUP)
+        .await?
+        .bool_field("models_ready", false))
+}
+
+/// Record that first-run model setup finished.
+pub async fn set_models_ready(pool: &SqlitePool) -> Result<(), sqlx::Error> {
+    set_preference(pool, SECTION_SETUP, r#"{"models_ready":true}"#).await
 }
 
 /// Effective notes settings from the same `models` section: `(notes_enabled, notes_model)`. Each

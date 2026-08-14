@@ -225,6 +225,7 @@ pub fn build_engine(config: EngineConfig) -> Arc<dyn LiveEngine> {
         output_dir,
         helper_path,
         synthetic,
+        prewarm,
         refine_model,
         refine_timeout,
         // The editable-settings defaults are lifted whole by `config.defaults()` above.
@@ -246,7 +247,11 @@ pub fn build_engine(config: EngineConfig) -> Arc<dyn LiveEngine> {
     let backend = Arc::new(MacBackend::new(helper_path.clone(), synthetic));
     // Spawn the first sidecar pair now so its models start loading before the first meeting instead
     // of on the start path (subsequent pairs spawn in the background after each meeting adopts one).
-    backend.prewarm();
+    // Skipped while the models are still missing: those sidecars would download them themselves,
+    // racing first-run setup over the same cache.
+    if prewarm {
+        backend.prewarm();
+    }
     // Config defaults seed the orchestrator; the editable Settings panels override them per meeting
     // (read from the DB at start/stop). The refiner is always wired so toggling auto-refine on in the
     // UI takes effect — whether it runs at stop is gated by the effective setting — and so the manual
@@ -278,7 +283,10 @@ pub fn build_engine(config: EngineConfig) -> Arc<dyn LiveEngine> {
     }));
     let orchestrator = orchestrator.into_arc();
     // Start the background warm ticker: it re-warms the sidecar pool while idle (off the polled
-    // `sidecars_ready` read) whenever the ANE is free. Must run within the Tokio runtime.
-    orchestrator.spawn_warm_ticker();
+    // `sidecars_ready` read) whenever the ANE is free. Must run within the Tokio runtime. Held back
+    // until the models are on disk, so warming never races first-run setup for the same downloads.
+    if prewarm {
+        orchestrator.spawn_warm_ticker();
+    }
     orchestrator
 }

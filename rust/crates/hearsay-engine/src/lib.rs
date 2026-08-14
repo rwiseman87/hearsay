@@ -103,6 +103,12 @@ pub trait LiveEngine: Send + Sync {
         true
     }
 
+    /// Begin pre-warming the transcription sidecars. Called once first-run setup has the models on
+    /// disk: the engine is built with pre-warming held back when they are missing, because warming
+    /// then would have the sidecars download the very models setup is downloading. Idempotent.
+    /// Default no-op for engines without a warm pool.
+    fn start_prewarm(&self) {}
+
     /// Re-render a meeting's on-disk exports (`transcript.md` + `meeting.json`, and `notes.md` when it
     /// has notes) from the current DB rows. Called best-effort after an in-app edit so the exported
     /// files stay in step with the edited transcript/notes; the DB remains the source of truth

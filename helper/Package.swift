@@ -72,5 +72,12 @@ let package = Package(
             name: "hearsay-me",
             dependencies: [.product(name: "FluidAudio", package: "FluidAudio"), "SidecarIO"]
         ),
+        // First-run model preparation: downloads the FluidAudio models the sidecars above load,
+        // reporting progress so the core can drive a first-run progress bar. The installer ships
+        // no models, so this is what puts them on the machine.
+        .executableTarget(
+            name: "hearsay-models",
+            dependencies: [.product(name: "FluidAudio", package: "FluidAudio"), "SidecarIO"]
+        ),
     ]
 )

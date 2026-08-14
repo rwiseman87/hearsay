@@ -65,6 +65,10 @@ pub struct EngineConfig {
     pub helper_path: PathBuf,
     /// Run capture with generated audio (`--synthetic`): no devices touched, no permission prompts.
     pub synthetic: bool,
+    /// Whether to start pre-warming the transcription sidecars at boot. False until first-run setup
+    /// has the models on disk — warming then would have the sidecars download the same models setup
+    /// is downloading. Setup starts it with `LiveEngine::start_prewarm` when it finishes.
+    pub prewarm: bool,
     /// Config-default GGML whisper model for the offline refine (the Models panel overrides it).
     pub refine_model: PathBuf,
     /// Deadline for the refine's diarize step.

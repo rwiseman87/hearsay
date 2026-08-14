@@ -24,6 +24,7 @@ import type {
   RecordingSettings,
   SegmentRead,
   SettingsRead,
+  SetupState,
   SpeakerRead,
   SpeakerSettings,
   StatusInfo,
@@ -486,6 +487,34 @@ export function useModelCatalog() {
   return useQuery({
     queryKey: queryKeys.models.catalog,
     queryFn: ({ signal }) => api.get<ModelCatalog>("/api/models/catalog", signal),
+  });
+}
+
+// First-run model setup: whether models are still missing, and a run's per-step progress. Polls
+// while a run is going (to move the progress bar) and while the setup screen is up; once nothing is
+// required it stops, since only a run changes that and the app has moved on.
+export function useSetup() {
+  return useQuery({
+    queryKey: queryKeys.setup.all,
+    queryFn: ({ signal }) => api.get<SetupState>("/api/setup", signal),
+    refetchInterval: (query) => {
+      const state = query.state.data;
+      if (state?.status === "running") return 1_000;
+      return state?.required ? 5_000 : false;
+    },
+  });
+}
+
+// Start (or retry) first-run setup, optionally downloading a notes model in the same pass. Seed the
+// returned snapshot so the progress poll picks up immediately.
+export function useStartSetup() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (notesModelId: string | null) =>
+      api.post<SetupState>("/api/setup", { notes_model_id: notesModelId }),
+    onSuccess: (state) => {
+      qc.setQueryData<SetupState>(queryKeys.setup.all, state);
+    },
   });
 }
 

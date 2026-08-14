@@ -42,4 +42,8 @@ export const queryKeys = {
   status: {
     all: ["status"] as const,
   },
+  // First-run model setup (whether models are still missing, and a run's progress).
+  setup: {
+    all: ["setup"] as const,
+  },
 } as const;
