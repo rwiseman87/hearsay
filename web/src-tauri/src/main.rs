@@ -346,9 +346,8 @@ fn main() {
             // app-data so downloads survive app updates.
             let models_dir = data_dir.join("models");
             std::fs::create_dir_all(&models_dir)?;
-            // The installer ships no whisper refine model on macOS: first-run setup downloads it
-            // here. Windows still bundles a smaller one — no ANE/Metal on the reference hardware —
-            // and the Models panel overrides the path per install either way.
+            // macOS downloads its refine model at first run; Windows bundles a smaller one (no
+            // ANE/Metal on the reference hardware). The Models panel overrides either.
             #[cfg(target_os = "macos")]
             let refine_model = models_dir.join("ggml-large-v3-turbo.bin");
             #[cfg(windows)]

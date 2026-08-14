@@ -19,9 +19,8 @@ pub(crate) const GGUF_MAGIC: [u8; 4] = *b"GGUF";
 /// Whisper's `GGML_FILE_MAGIC` (0x67676d6c) as stored little-endian — the refine models.
 pub(crate) const GGML_MAGIC: [u8; 4] = [0x6c, 0x6d, 0x67, 0x67];
 
-/// A downloadable model file: its (internal) HuggingFace source + the integrity metadata enforced
-/// after download. Shared by the notes catalog and the first-run setup, which fetches the refine
-/// model the same resumable, hash-checked way.
+/// A downloadable model file: its HuggingFace source + the integrity metadata enforced after
+/// download. Shared by the notes catalog and first-run setup.
 pub(crate) struct Source {
     repo: &'static str,
     file: &'static str,
@@ -102,10 +101,8 @@ const CATALOG: &[Model] = &[
     },
 ];
 
-/// The whisper refine models the first-run setup knows how to fetch, keyed by file name: setup
-/// downloads the one the configured refine path names, so an install pointed at some other model
-/// skips the step rather than fetching a model it will never load. Sizes + SHA256 are HuggingFace's
-/// reported values (its LFS oid), verified against the file at authoring time.
+/// Refine models setup can fetch, keyed by file name — an install pointed at some other model skips
+/// the step rather than fetching one it will never load. Sizes + SHA256 are HuggingFace's LFS oid.
 const REFINE_SOURCES: &[Source] = &[
     // The macOS default.
     Source {
@@ -114,8 +111,7 @@ const REFINE_SOURCES: &[Source] = &[
         sha256: "1fc70f774d38eb169993ac391eea357ef47c88757ef72ee5943879b7e8e2bc69",
         size_bytes: 1_624_555_275,
     },
-    // The Windows default (bundled by the installer today; here so an install that loses it can
-    // fetch it back).
+    // The Windows default, bundled today; here so an install that loses it can fetch it back.
     Source {
         repo: "ggerganov/whisper.cpp",
         file: "ggml-small.en.bin",
@@ -134,8 +130,7 @@ pub(crate) fn refine_source(path: &Path) -> Option<&'static Source> {
     REFINE_SOURCES.iter().find(|s| s.file == name)
 }
 
-/// The catalog source for a notes-model id (what the first-run setup downloads when the user picks
-/// one alongside the required models).
+/// The catalog source for a notes-model id.
 pub(crate) fn notes_source(id: &str) -> Option<&'static Source> {
     find(id).map(|m| &m.source)
 }
@@ -155,8 +150,7 @@ fn is_gguf(path: &Path) -> bool {
     has_magic(path, GGUF_MAGIC)
 }
 
-/// Whether `path` is a loadable whisper refine model (present, with the GGML magic) — the first-run
-/// setup's readiness check for the refine step.
+/// Whether `path` is a loadable whisper refine model — setup's readiness check.
 pub(crate) fn is_ggml(path: &Path) -> bool {
     has_magic(path, GGML_MAGIC)
 }
@@ -293,10 +287,9 @@ fn idle_state() -> DownloadState {
 }
 
 /// Blocking download of `source` into `dir` via a `.part` file (resuming from any bytes already
-/// there), streaming SHA256 as it goes, then size- + hash-verifying and atomically renaming into
-/// place. `progress` is called with `(status, downloaded, total)` as bytes arrive — the notes
-/// catalog maps that onto its download snapshot, first-run setup onto its step. Returns the final
-/// path string on success. Called via `spawn_blocking`.
+/// there), streaming SHA256, then size- + hash-verifying and atomically renaming into place.
+/// `progress` reports `(status, downloaded, total)`. Returns the final path. Call via
+/// `spawn_blocking`.
 pub(crate) fn download_source(
     source: &Source,
     dir: &Path,
@@ -317,8 +310,7 @@ pub(crate) fn download_source(
 
     let mut hasher = Sha256::new();
     let existing = std::fs::metadata(part).map(|m| m.len()).unwrap_or(0);
-    // Report the bytes already on disk before the request + re-hash, so a resumed multi-GB download
-    // does not show an empty bar for the seconds those take.
+    // Report what is already on disk before the request + re-hash, which take seconds on a resume.
     progress(DownloadStatus::Downloading, existing, expected_size);
 
     // ureq's `timeout_recv_body` is a whole-body deadline, not an idle timeout: a flat 120 s failed

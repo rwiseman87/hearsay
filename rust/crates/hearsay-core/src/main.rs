@@ -45,9 +45,7 @@ async fn main() -> Result<(), BoxError> {
     let token = format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
 
     let bind = format!("{}:{}", settings.server_host, settings.server_port);
-    // The installer ships no models, so decide up front whether this launch has them: without them
-    // the engine must not pre-warm its sidecars (they would download the same models first-run setup
-    // downloads, over each other). `POST /api/setup` starts pre-warming when it finishes.
+    // Whether this launch has its models, which gates pre-warming (see `LiveEngine::start_prewarm`).
     let refine_model =
         hearsay_db::queries::effective_refine_model(&pool, &settings.refine_model).await?;
     let models_present = hearsay_core::setup::models_present(&settings, &refine_model);

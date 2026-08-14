@@ -4,10 +4,8 @@ import { useModelCatalog, useSetup, useStartSetup } from "../api/hooks";
 import type { SetupState, SetupStep } from "../api/types";
 import { formatBytes } from "./format";
 
-// First-run model setup. The installer ships no models, so until they are downloaded the app cannot
-// transcribe anything — this screen replaces the whole UI (rather than sitting behind it) so the
-// state is unambiguous. The download is never automatic: it is billions of bytes, and a metered or
-// offline first run is the user's call.
+// First-run model setup. The download is never automatic — it is billions of bytes, so a metered or
+// offline first run stays the user's call.
 
 // Progress bar + byte counter for one asset.
 function StepRow({ step }: { step: SetupStep }) {
@@ -38,8 +36,7 @@ export function SetupScreen() {
   const setup = useSetup();
   const catalog = useModelCatalog();
   const start = useStartSetup();
-  // Opt-in extra: the notes model is large and only matters if meeting notes are wanted, so it is
-  // offered here (one download instead of two) rather than assumed.
+  // Offered here so notes are one download instead of two, but never assumed.
   const [withNotes, setWithNotes] = useState(false);
   const [notesId, setNotesId] = useState<string | null>(null);
 

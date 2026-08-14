@@ -42,9 +42,8 @@ export function App() {
     setJump({ meetingId, startS, nonce: jumpNonce.current });
   };
 
-  // The installer ships no models: until they are downloaded there is nothing to record with, so
-  // first-run setup replaces the app rather than sitting behind it. An errored probe reads as ready,
-  // so a status-endpoint problem never locks the user out of their meetings.
+  // Without models there is nothing to record with, so setup replaces the app rather than sitting
+  // behind it. An errored probe reads as ready: a status-endpoint problem must not lock anyone out.
   const setup = useSetup();
   if (setup.isLoading) return null; // one loopback request; holding a frame beats flashing the app
   if (setup.data?.required) return <SetupScreen />;

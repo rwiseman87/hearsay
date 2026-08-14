@@ -1739,7 +1739,7 @@
           "setup"
         ],
         "summary": "Whether first-run model setup is still needed, and how a run is progressing.",
-        "description": "The installer ships no models: `required` is `true` until the live speech models and the refine\nmodel are on disk, and the UI blocks recording while it is. `steps` carries per-asset progress\n(`downloaded_bytes` / `total_bytes`) during a run, and the work a run would do before one starts.",
+        "description": "The installer ships no models. `required` stays `true` until the live and refine models are on\ndisk, and the UI blocks recording while it is. `steps` carries per-asset progress during a run,\nand the work a run would do before one starts.",
         "operationId": "setup_status",
         "responses": {
           "200": {
@@ -1759,7 +1759,7 @@
           "setup"
         ],
         "summary": "Start (or retry) first-run model setup.",
-        "description": "Downloads the missing models in the background — the live speech models, the refine model, and\noptionally the notes model named by `notes_model_id`. Steps already satisfied are skipped, so a\nretry after a failure resumes rather than starting over. Poll `GET /api/setup` for progress.",
+        "description": "Downloads the missing models in the background, plus the notes model named by `notes_model_id`.\nSatisfied steps are skipped, so a retry after a failure resumes rather than starting over. Poll\n`GET /api/setup` for progress.",
         "operationId": "start_setup",
         "requestBody": {
           "content": {
@@ -3222,7 +3222,7 @@
       },
       "SetupRequest": {
         "type": "object",
-        "description": "Request body for starting first-run setup: optionally a notes-model catalog `id` to download in\nthe same pass (the notes step is never required).",
+        "description": "Request body for starting first-run setup: optionally a notes-model catalog `id` to fetch in the\nsame pass. The notes step is never required.",
         "properties": {
           "notes_model_id": {
             "type": [
@@ -3274,7 +3274,7 @@
       },
       "SetupStep": {
         "type": "object",
-        "description": "One asset first-run setup fetches: the live speech models, the refine model, or an optional\nnotes model. `total_bytes` is the expected download size (approximate for the live models until\nthe preparation sidecar reports its plan).",
+        "description": "One asset first-run setup fetches: the live speech models, the refine model, or a notes model.\n`total_bytes` is approximate for the live models until the preparation sidecar reports its plan.",
         "required": [
           "id",
           "label",

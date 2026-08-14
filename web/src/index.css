@@ -2731,8 +2731,7 @@ mark.find-hit {
   font-size: var(--fs-sm);
 }
 
-/* The stock progress element renders as a hairline once its height is set, so draw the track and
-   the fill explicitly. */
+/* The stock progress element renders as a hairline once its height is set. */
 .setup__step progress {
   appearance: none;
   display: block;

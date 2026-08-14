@@ -1,11 +1,5 @@
-//! First-run model setup. The installer ships no models, so the app fetches them once: the
-//! FluidAudio live models through the `hearsay-models` sidecar (which calls the same loaders the
-//! live sidecars call, so the prepared set cannot drift from the loaded set) and the whisper refine
-//! model as a resumable, SHA256-verified download, plus an optional notes model in the same pass.
-//!
-//! `GET /api/setup` reports what is missing and how a run is progressing; `POST /api/setup` starts
-//! one. Until it reports ready the UI blocks recording, because a meeting started without models
-//! transcribes nothing.
+//! First-run model setup: the live models via the `hearsay-models` sidecar, the whisper refine
+//! model (and optionally a notes model) via the shared downloader. Drives `GET/POST /api/setup`.
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -20,11 +14,8 @@ use crate::models;
 use crate::schema::{DownloadStatus, SetupState, SetupStatus, SetupStep, SetupStepStatus};
 use hearsay_engine::LiveEngine;
 
-/// FluidAudio's cache layout: one directory per model repo under
-/// `~/Library/Application Support/FluidAudio/Models`. All five present means the live sidecars load
-/// locally instead of downloading mid-meeting; this list mirrors what `hearsay-models` prepares.
-/// A name that drifts from FluidAudio only costs a redundant prepare run — the persisted
-/// completion flag, not this probe, is what stops setup from repeating forever.
+/// FluidAudio's cache layout: one directory per repo. A name that drifts only costs a redundant
+/// prepare run — the persisted completion flag is what stops setup repeating.
 #[cfg(target_os = "macos")]
 const FLUID_REPOS: &[&str] = &[
     "silero-vad",
@@ -34,8 +25,7 @@ const FLUID_REPOS: &[&str] = &[
     "parakeet-unified-en-0.6b",
 ];
 
-/// Approximate total size of the live models, for the progress bar before the sidecar's `plan` line
-/// arrives with the real per-step weights.
+/// Stand-in total until the sidecar's `plan` line arrives with the real per-step weights.
 const LIVE_APPROX_BYTES: i64 = 1_121 * 1_048_576;
 
 const MB: i64 = 1_048_576;
@@ -46,13 +36,10 @@ pub enum StartError {
     Busy,
 }
 
-/// One unit of work in a run: which asset to fetch and how.
+/// One unit of work in a run. `Refine` carries the directory the refine loads from.
 enum Step {
-    /// The FluidAudio live models, via the `hearsay-models` sidecar.
     Live,
-    /// The whisper refine model, downloaded next to where the refine expects it.
     Refine(&'static models::Source, PathBuf),
-    /// A notes model the user picked, downloaded into the models dir.
     Notes(&'static models::Source),
 }
 
@@ -64,17 +51,14 @@ struct Run {
     message: Option<String>,
 }
 
-/// Owns the first-run probe and the single setup run. Held in `AppState` behind an `Arc`; the
-/// background task updates the progress under the mutex as bytes arrive.
+/// Owns the first-run probe and the single setup run. Held in `AppState` behind an `Arc`.
 pub struct SetupManager {
     /// The `hearsay-models` sidecar (a sibling of the capture helper).
     prepare_bin: PathBuf,
-    /// FluidAudio's model cache, where the live models land. `None` when `HOME` is unset.
+    /// FluidAudio's model cache. `None` when `HOME` is unset.
     fluid_cache: Option<PathBuf>,
-    /// Where a downloaded notes model goes.
     models_dir: PathBuf,
-    /// Nothing to prepare: the scripted dev engine spawns no sidecars, so its browser test must not
-    /// meet a setup gate for models it will never load.
+    /// The scripted dev engine spawns no sidecars, so it must not meet a setup gate.
     skip: bool,
     state: Arc<Mutex<Run>>,
 }
@@ -110,10 +94,8 @@ impl SetupManager {
         let complete = self.models_present(&refine) || self.recorded_complete(pool).await;
 
         match run.status {
-            // A run is in flight (or failed): report its steps, and keep `required` true until the
-            // models are actually there, so a failed run still blocks recording. A failure in the
-            // optional notes step leaves `required` false — the app opens, and Settings > Models is
-            // where that download is retried.
+            // `required` tracks the models, not the run, so a failure still blocks recording — and a
+            // failed *notes* step (optional) does not.
             SetupStatus::Running | SetupStatus::Error => SetupState {
                 required: !complete,
                 status: run.status,
@@ -126,8 +108,7 @@ impl SetupManager {
                 steps: run.steps,
                 message: None,
             },
-            // Nothing running and models missing: advertise the work a run would do, so the setup
-            // screen can state the download size before the user commits to it.
+            // Advertise the work a run would do, so the screen can state the size up front.
             _ => SetupState {
                 required: true,
                 status: SetupStatus::Idle,
@@ -137,9 +118,8 @@ impl SetupManager {
         }
     }
 
-    /// Start a run in the background (single-at-a-time), optionally fetching `notes_model_id` in the
-    /// same pass. Steps already satisfied are skipped, so a retry after a partial failure resumes
-    /// where it stopped.
+    /// Start a run in the background (single-at-a-time). Satisfied steps are skipped, so a retry
+    /// after a partial failure resumes where it stopped.
     pub fn start(
         self: &Arc<Self>,
         pool: SqlitePool,
@@ -175,8 +155,7 @@ impl SetupManager {
         Ok(self.snapshot(true))
     }
 
-    /// The steps a run would perform: only what is missing, so a machine that already has the live
-    /// models sees just the refine download.
+    /// The steps a run would perform — only what is missing.
     fn planned_steps(
         &self,
         refine: &Path,
@@ -197,7 +176,7 @@ impl SetupManager {
         steps
     }
 
-    /// The same list as [`planned_steps`](Self::planned_steps), as the work to run.
+    /// [`planned_steps`](Self::planned_steps) as the work to run; the two must stay in step.
     fn work_items(&self, refine: &Path, notes: Option<&'static models::Source>) -> Vec<Step> {
         let mut work = Vec::new();
         if !self.live_present() {
@@ -219,9 +198,8 @@ impl SetupManager {
         work
     }
 
-    /// Run each step in order, stopping at the first failure. On success the completion is recorded
-    /// (so a probe that later disagrees cannot re-gate the app) and the engine starts pre-warming
-    /// the sidecars it was held back from.
+    /// Run each step in order, stopping at the first failure. Success records the completion and
+    /// releases the pre-warm the engine was held back from.
     async fn run_steps(&self, work: Vec<Step>, pool: SqlitePool, engine: Arc<dyn LiveEngine>) {
         for (index, step) in work.iter().enumerate() {
             self.set_step_status(index, SetupStepStatus::Running);
@@ -257,7 +235,7 @@ impl SetupManager {
     }
 
     /// Run the `hearsay-models` sidecar, mapping its NDJSON progress onto this step's byte counters.
-    /// Its stderr (and FluidAudio's own logging) is inherited, so failures land in the core log.
+    /// stderr is inherited, so its (and FluidAudio's) logging lands in the core log.
     async fn run_prepare(&self, index: usize) -> Result<(), String> {
         let mut child = Command::new(&self.prepare_bin)
             .stdin(Stdio::null())
@@ -278,8 +256,7 @@ impl SetupManager {
         let mut lines = BufReader::new(stdout).lines();
 
         while let Ok(Some(line)) = lines.next_line().await {
-            // CoreML writes the odd diagnostic straight to stdout; anything that is not our NDJSON
-            // is not progress.
+            // CoreML writes the odd diagnostic straight to stdout; skip anything that is not ours.
             let Ok(event) = serde_json::from_str::<serde_json::Value>(&line) else {
                 continue;
             };
@@ -356,8 +333,7 @@ impl SetupManager {
         Ok(())
     }
 
-    /// Download one model file into `dir`, updating this step's byte counters. When `notes_pool` is
-    /// set, the finished file becomes the effective notes model.
+    /// Download one model into `dir`. With `notes_pool` set, the file becomes the notes model.
     async fn download(
         &self,
         index: usize,
@@ -389,9 +365,8 @@ impl SetupManager {
         Ok(())
     }
 
-    /// Whether a prior run recorded that setup finished. Belt to the probe's braces: if a cache
-    /// folder name ever drifts from FluidAudio's, this is what keeps the app from gating forever on
-    /// models it already has.
+    /// Whether a prior run recorded that setup finished — what keeps a drifted [`FLUID_REPOS`] name
+    /// from gating the app forever on models it already has.
     async fn recorded_complete(&self, pool: &SqlitePool) -> bool {
         hearsay_db::queries::models_ready(pool)
             .await
@@ -434,15 +409,12 @@ impl SetupManager {
     }
 }
 
-/// Whether every model the app needs is already on disk — the boot probe, which decides whether the
-/// engine may pre-warm its sidecars. Pre-warming into a missing cache would have the live sidecars
-/// download the very models a setup run downloads, over each other.
+/// The boot probe: whether every model is on disk, which decides whether the engine may pre-warm.
 pub fn models_present(settings: &Settings, refine_model: &Path) -> bool {
     settings.scripted
         || (live_models_present(fluid_cache(settings).as_deref()) && models::is_ggml(refine_model))
 }
 
-/// FluidAudio's model cache for this user, where the live models land.
 fn fluid_cache(settings: &Settings) -> Option<PathBuf> {
     settings
         .home_dir
@@ -460,15 +432,14 @@ fn live_models_present(cache: Option<&Path>) -> bool {
         .all(|repo| dir_has_entries(&cache.join(repo)))
 }
 
-/// Windows bundles its live (sherpa) models with the installer, so there is nothing to fetch.
+/// Windows bundles its sherpa models, so there is nothing to fetch.
 #[cfg(not(target_os = "macos"))]
 fn live_models_present(_cache: Option<&Path>) -> bool {
     true
 }
 
-/// The refine model the app will actually load: the stored Models-panel override, else the config
-/// default. Setup fetches that file, not the default, so an install pointed elsewhere is not left
-/// downloading a model it will never open.
+/// The refine model the app will load: the stored override, else the config default. Setup fetches
+/// that file, not the default.
 async fn effective_refine(pool: &SqlitePool, default: &Path) -> PathBuf {
     hearsay_db::queries::effective_refine_model(pool, default)
         .await
@@ -485,8 +456,7 @@ fn pending_step(id: &str, label: &str, total_bytes: i64) -> SetupStep {
     }
 }
 
-/// Whether `dir` exists and holds at least one entry — a model repo that was created but never
-/// filled (an interrupted download) does not count as present.
+/// A repo dir created but never filled (an interrupted download) does not count as present.
 #[cfg(target_os = "macos")]
 fn dir_has_entries(dir: &Path) -> bool {
     std::fs::read_dir(dir)

@@ -851,17 +851,17 @@ export interface paths {
         };
         /**
          * Whether first-run model setup is still needed, and how a run is progressing.
-         * @description The installer ships no models: `required` is `true` until the live speech models and the refine
-         *     model are on disk, and the UI blocks recording while it is. `steps` carries per-asset progress
-         *     (`downloaded_bytes` / `total_bytes`) during a run, and the work a run would do before one starts.
+         * @description The installer ships no models. `required` stays `true` until the live and refine models are on
+         *     disk, and the UI blocks recording while it is. `steps` carries per-asset progress during a run,
+         *     and the work a run would do before one starts.
          */
         get: operations["setup_status"];
         put?: never;
         /**
          * Start (or retry) first-run model setup.
-         * @description Downloads the missing models in the background — the live speech models, the refine model, and
-         *     optionally the notes model named by `notes_model_id`. Steps already satisfied are skipped, so a
-         *     retry after a failure resumes rather than starting over. Poll `GET /api/setup` for progress.
+         * @description Downloads the missing models in the background, plus the notes model named by `notes_model_id`.
+         *     Satisfied steps are skipped, so a retry after a failure resumes rather than starting over. Poll
+         *     `GET /api/setup` for progress.
          */
         post: operations["start_setup"];
         delete?: never;
@@ -1527,8 +1527,8 @@ export interface components {
             storage_info: components["schemas"]["StorageInfo"];
         };
         /**
-         * @description Request body for starting first-run setup: optionally a notes-model catalog `id` to download in
-         *     the same pass (the notes step is never required).
+         * @description Request body for starting first-run setup: optionally a notes-model catalog `id` to fetch in the
+         *     same pass. The notes step is never required.
          */
         SetupRequest: {
             notes_model_id?: string | null;
@@ -1551,9 +1551,8 @@ export interface components {
          */
         SetupStatus: "idle" | "running" | "ready" | "error";
         /**
-         * @description One asset first-run setup fetches: the live speech models, the refine model, or an optional
-         *     notes model. `total_bytes` is the expected download size (approximate for the live models until
-         *     the preparation sidecar reports its plan).
+         * @description One asset first-run setup fetches: the live speech models, the refine model, or a notes model.
+         *     `total_bytes` is approximate for the live models until the preparation sidecar reports its plan.
          */
         SetupStep: {
             /** Format: int64 */

@@ -491,8 +491,7 @@ export function useModelCatalog() {
 }
 
 // First-run model setup: whether models are still missing, and a run's per-step progress. Polls
-// while a run is going (to move the progress bar) and while the setup screen is up; once nothing is
-// required it stops, since only a run changes that and the app has moved on.
+// while a run moves the bar and while the screen is up; stops once nothing is required.
 export function useSetup() {
   return useQuery({
     queryKey: queryKeys.setup.all,
@@ -505,8 +504,7 @@ export function useSetup() {
   });
 }
 
-// Start (or retry) first-run setup, optionally downloading a notes model in the same pass. Seed the
-// returned snapshot so the progress poll picks up immediately.
+// Start (or retry) first-run setup. Seed the returned snapshot so the poll picks up immediately.
 export function useStartSetup() {
   const qc = useQueryClient();
   return useMutation({

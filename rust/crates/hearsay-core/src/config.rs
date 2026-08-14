@@ -27,9 +27,8 @@ pub struct Settings {
     pub environment: String,
     /// Path to the Swift `hearsay-helper` capture binary; the sidecars resolve as siblings.
     pub helper_path: PathBuf,
-    /// Dev-only (`HEARSAY_SCRIPTED`, honored only in development): replace the platform backend with
-    /// the deterministic, model-free scripted engine. It spawns no sidecars, so first-run model
-    /// setup is skipped with it.
+    /// Dev-only (`HEARSAY_SCRIPTED`): swap the platform backend for the model-free scripted engine.
+    /// It spawns no sidecars, so first-run setup is skipped with it.
     pub scripted: bool,
     /// GGML whisper model for the offline refine.
     pub refine_model: PathBuf,
@@ -73,8 +72,7 @@ pub struct Settings {
     /// The bundled third-party notices, which Settings > About opens. Defaults to the repo copy for
     /// dev; the desktop shell points it at the bundle resource.
     pub notices_path: PathBuf,
-    /// The process's home directory: the base of FluidAudio's default model cache, which first-run
-    /// setup fills.
+    /// The process's home directory: the base of FluidAudio's model cache.
     pub home_dir: Option<PathBuf>,
     /// Sherpa live/diarize models for the Windows backend. Unused on macOS.
     pub sherpa_models_dir: PathBuf,

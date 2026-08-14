@@ -247,8 +247,6 @@ pub fn build_engine(config: EngineConfig) -> Arc<dyn LiveEngine> {
     let backend = Arc::new(MacBackend::new(helper_path.clone(), synthetic));
     // Spawn the first sidecar pair now so its models start loading before the first meeting instead
     // of on the start path (subsequent pairs spawn in the background after each meeting adopts one).
-    // Skipped while the models are still missing: those sidecars would download them themselves,
-    // racing first-run setup over the same cache.
     if prewarm {
         backend.prewarm();
     }
@@ -283,8 +281,7 @@ pub fn build_engine(config: EngineConfig) -> Arc<dyn LiveEngine> {
     }));
     let orchestrator = orchestrator.into_arc();
     // Start the background warm ticker: it re-warms the sidecar pool while idle (off the polled
-    // `sidecars_ready` read) whenever the ANE is free. Must run within the Tokio runtime. Held back
-    // until the models are on disk, so warming never races first-run setup for the same downloads.
+    // `sidecars_ready` read) whenever the ANE is free. Must run within the Tokio runtime.
     if prewarm {
         orchestrator.spawn_warm_ticker();
     }

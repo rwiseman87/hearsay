@@ -202,7 +202,7 @@ impl Orchestrator {
     /// the Tokio runtime, on the `Arc` returned by [`into_arc`](Self::into_arc).
     pub fn spawn_warm_ticker(self: &Arc<Self>) {
         if self.warm_ticker.get().is_some() {
-            return; // already ticking (setup completing after a held-back boot calls this again)
+            return; // already ticking; `start_prewarm` calls this again after a held-back boot
         }
         let weak = Arc::downgrade(self);
         let handle = tokio::spawn(async move {
@@ -700,9 +700,8 @@ impl LiveEngine for Orchestrator {
     }
 
     fn start_prewarm(&self) {
-        // First-run setup finished, so warming can no longer race a model download. The weak
-        // self-ref is what `spawn_warm_ticker` needs (it takes `Arc<Self>`); it is empty only for a
-        // unit-test orchestrator built without `into_arc`, which has no ticker to start.
+        // The weak self-ref is empty only for a unit-test orchestrator built without `into_arc`,
+        // which has no ticker to start.
         if let Some(orchestrator) = self.self_weak.upgrade() {
             orchestrator.spawn_warm_ticker();
         }

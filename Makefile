@@ -210,11 +210,10 @@ serve rust-serve: ## Serve the Rust core (SYNTHETIC=1 for no-permission plumbing
 STAGE := web/src-tauri/binaries
 SIDECARS := $(SWIFT_PRODUCTS)
 APP := web/src-tauri/target/release/bundle/macos/Hearsay.app
-# Where the Windows staging targets put their models (a Tauri resource). The macOS bundle carries no
-# models: the app downloads them on first run (see `hearsay-models` + `docs/packaging.md`).
+# Where the Windows staging targets put their models. The macOS bundle carries none — the app
+# downloads them on first run (docs/packaging.md).
 MODELS_STAGE := web/src-tauri/models
-# The whisper refine model a dev run loads (the default `HEARSAY_REFINE_MODEL` path). The packaged
-# app downloads its own copy into app-data instead.
+# The refine model a dev run loads (the default `HEARSAY_REFINE_MODEL` path).
 REFINE_MODEL := ggml-large-v3-turbo.bin
 MODEL_SRC := outputs/models/$(REFINE_MODEL)
 WHISPER_REPO := https://huggingface.co/ggerganov/whisper.cpp/resolve/main

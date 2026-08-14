@@ -1839,8 +1839,7 @@ pub async fn set_notes_model(pool: &SqlitePool, path: &str) -> Result<(), sqlx::
 }
 
 /// Whether first-run model setup has completed on this install. Paired with the on-disk probe in
-/// `hearsay-core`'s setup manager: the probe answers for an install that already had its models,
-/// this row answers for one that just downloaded them.
+/// `hearsay-core`'s setup manager, which covers an install that already had its models.
 pub async fn models_ready(pool: &SqlitePool) -> Result<bool, sqlx::Error> {
     Ok(Section::load(pool, SECTION_SETUP)
         .await?

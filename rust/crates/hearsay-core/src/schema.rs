@@ -597,9 +597,8 @@ pub enum SetupStepStatus {
     Error,
 }
 
-/// One asset first-run setup fetches: the live speech models, the refine model, or an optional
-/// notes model. `total_bytes` is the expected download size (approximate for the live models until
-/// the preparation sidecar reports its plan).
+/// One asset first-run setup fetches: the live speech models, the refine model, or a notes model.
+/// `total_bytes` is approximate for the live models until the preparation sidecar reports its plan.
 #[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct SetupStep {
     pub id: String,
@@ -620,8 +619,8 @@ pub struct SetupState {
     pub message: Option<String>,
 }
 
-/// Request body for starting first-run setup: optionally a notes-model catalog `id` to download in
-/// the same pass (the notes step is never required).
+/// Request body for starting first-run setup: optionally a notes-model catalog `id` to fetch in the
+/// same pass. The notes step is never required.
 #[derive(Debug, Clone, Default, Deserialize, ToSchema)]
 pub struct SetupRequest {
     #[serde(default)]

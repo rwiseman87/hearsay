@@ -1,5 +1,5 @@
-//! First-run model setup: what the app still needs before it can record, and the single run that
-//! fetches it. Thin, like the other routers — the work lives in [`crate::setup::SetupManager`].
+//! First-run model setup. Thin, like the other routers — the work lives in
+//! [`crate::setup::SetupManager`].
 
 use axum::extract::State;
 use axum::routing::get;
@@ -18,9 +18,9 @@ pub fn router() -> Router<AppState> {
 
 /// Whether first-run model setup is still needed, and how a run is progressing.
 ///
-/// The installer ships no models: `required` is `true` until the live speech models and the refine
-/// model are on disk, and the UI blocks recording while it is. `steps` carries per-asset progress
-/// (`downloaded_bytes` / `total_bytes`) during a run, and the work a run would do before one starts.
+/// The installer ships no models. `required` stays `true` until the live and refine models are on
+/// disk, and the UI blocks recording while it is. `steps` carries per-asset progress during a run,
+/// and the work a run would do before one starts.
 #[utoipa::path(
     get, path = "/api/setup", tag = "setup",
     responses((status = 200, body = SetupState, description = "Setup requirement + per-step progress")),
@@ -36,9 +36,9 @@ pub(crate) async fn setup_status(State(state): State<AppState>) -> Json<SetupSta
 
 /// Start (or retry) first-run model setup.
 ///
-/// Downloads the missing models in the background — the live speech models, the refine model, and
-/// optionally the notes model named by `notes_model_id`. Steps already satisfied are skipped, so a
-/// retry after a failure resumes rather than starting over. Poll `GET /api/setup` for progress.
+/// Downloads the missing models in the background, plus the notes model named by `notes_model_id`.
+/// Satisfied steps are skipped, so a retry after a failure resumes rather than starting over. Poll
+/// `GET /api/setup` for progress.
 #[utoipa::path(
     post, path = "/api/setup", tag = "setup",
     request_body = SetupRequest,

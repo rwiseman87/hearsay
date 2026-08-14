@@ -3,12 +3,9 @@ import FluidAudio
 import Foundation
 import SidecarIO
 
-// First-run model preparation: fetches every FluidAudio model the live + refine sidecars load, so
-// the installer ships no models and the first meeting is not a silent multi-minute download. Each
-// step calls the same loader its sidecar calls (`hearsay-me` VAD, `hearsay-{live,me}` streaming ASR,
-// `hearsay-live` batch ASR + LS-EEND, `hearsay-diarize` offline diarizer) with a progress handler, so
-// the prepared set cannot drift from the loaded set. Idempotent: a loader with its repo already in
-// FluidAudio's cache skips the download.
+// First-run model preparation: fetches every FluidAudio model the live + refine sidecars load. Each
+// step calls the same loader its sidecar calls, so the prepared set cannot drift from the loaded
+// set. Idempotent: a loader whose repo is already cached skips the download.
 //
 //   stdout (text): {"kind":"plan","steps":[{"id":"vad","label":"Voice activity","weight":1}, ...]}
 //                  {"kind":"progress","step":"vad","fraction":0.4,"phase":"downloading"}
@@ -16,8 +13,7 @@ import SidecarIO
 //                  {"kind":"done"} | {"kind":"error","step":"vad","message":"..."}
 // Exits 0 once every model is present, 1 on the first failure. Logs to stderr.
 
-// A dead core closes our stdout mid-write; ignore SIGPIPE so that surfaces as a throwing write we
-// handle (exit) instead of terminating the process.
+// A dead core closes our stdout mid-write; ignore SIGPIPE so that surfaces as a throwing write.
 signal(SIGPIPE, SIG_IGN)
 
 func note(_ message: String) { writeError("hearsay-models", message) }
@@ -25,8 +21,8 @@ func note(_ message: String) { writeError("hearsay-models", message) }
 struct PlanStep: Encodable {
     let id: String
     let label: String
-    /// Approximate download size in MB, so the core can weight one overall percentage across steps
-    /// that differ by three orders of magnitude.
+    /// Approximate size in MB: the steps differ by three orders of magnitude, so the core weights
+    /// its overall percentage by this.
     let weight: Int
 }
 
@@ -57,9 +53,8 @@ struct Failure: Encodable {
     let message: String
 }
 
-/// Serializes the progress lines. FluidAudio calls its handler from arbitrary queues, so the write
-/// is taken under a lock (two half-written lines would corrupt the NDJSON stream) and throttled to
-/// whole-percent changes.
+/// Serializes the progress lines: FluidAudio calls its handler from arbitrary queues, and two
+/// interleaved writes would corrupt the NDJSON. Throttled to whole-percent changes.
 final class Reporter: @unchecked Sendable {
     static let shared = Reporter()
     private let lock = NSLock()
