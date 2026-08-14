@@ -1,0 +1,41 @@
+//! Persistence: SQLite via SQLx (WAL + `busy_timeout` + foreign keys), UUID primary keys,
+//! `created_at` / `updated_at` timestamps, forward-only migrations.
+//!
+//! Queries are runtime-checked (`sqlx::query` / `query_as`). See `docs/architecture.md`.
+
+pub mod models;
+pub mod queries;
+pub mod test_support;
+
+use std::str::FromStr;
+use std::time::Duration;
+
+use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
+use sqlx::SqlitePool;
+
+/// Embedded forward-only migrations (`migrations/`).
+pub static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
+
+/// Connection options with the pragmas the core sets: WAL journal, a 5s busy timeout,
+/// enforced foreign keys, and `synchronous=NORMAL` — the standard WAL pairing (crash-safe under WAL;
+/// only the last commit is at risk on power loss, never integrity), which drops the full fsync every
+/// write pays under the default `FULL`.
+pub fn connect_options(url: &str) -> Result<SqliteConnectOptions, sqlx::Error> {
+    Ok(SqliteConnectOptions::from_str(url)?
+        .create_if_missing(true)
+        .journal_mode(SqliteJournalMode::Wal)
+        .synchronous(SqliteSynchronous::Normal)
+        .busy_timeout(Duration::from_secs(5))
+        .foreign_keys(true))
+}
+
+/// Open a connection pool (WAL + busy-timeout + foreign-keys pragmas) and apply any pending
+/// migrations.
+pub async fn connect(url: &str) -> Result<SqlitePool, sqlx::Error> {
+    let pool = SqlitePoolOptions::new()
+        .max_connections(5)
+        .connect_with(connect_options(url)?)
+        .await?;
+    MIGRATOR.run(&pool).await?;
+    Ok(pool)
+}

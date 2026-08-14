@@ -1,0 +1,57 @@
+# Build output (web bundle etc.)
+build/
+dist/
+
+# Local secrets / env — never commit
+.env
+.env.*
+!.env.example
+
+# Swift
+.build/
+helper/.build/
+
+# Node (web frontend)
+node_modules/
+
+# macOS
+.DS_Store
+
+# Defensive catch-all for recorded audio (never commit — may contain real voice);
+# capture-debug writes under outputs/capture-debug/.
+*.wav
+
+# Local log files (e.g. a redirected `make serve` run).
+*.log
+
+# scratch / local verification artifacts (everything under outputs/ is ignored ...)
+outputs/*
+
+# ... except the local runtime storage dirs, kept as structure with their data
+# contents ignored: real voice transcripts, the SQLite DB, and downloaded models.
+!outputs/recordings/
+outputs/recordings/*
+!outputs/recordings/.gitkeep
+!outputs/db/
+outputs/db/*
+!outputs/db/.gitkeep
+!outputs/models/
+outputs/models/*
+!outputs/models/.gitkeep
+
+# editor
+.vscode/
+
+# Agent/editor state that must not travel with a clone.
+.claude/
+
+# Recorded or archived audio in any format, and any stray local database or coredump.
+*.flac
+*.m4a
+*.mp3
+*.db
+*.sqlite*
+core.*
+
+# Working tracker; the public repo carries no roadmap.
+docs/next-steps.md

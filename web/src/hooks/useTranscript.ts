@@ -1,0 +1,331 @@
+import { useQueryClient } from "@tanstack/react-query";
+import { useEffect, useMemo, useReducer, useRef, useState } from "react";
+
+import { useSegments } from "../api/hooks";
+import { notifyStillRecordingIfAway } from "../api/notify";
+import { queryKeys } from "../api/queryKeys";
+import { getToken } from "../api/token";
+import type { MeetingRead, SegmentRead } from "../api/types";
+import { openTranscriptSocket } from "../api/ws";
+import type { ConnectionStatus, TranscriptEvent, WsMessage } from "../api/ws";
+
+// A tiny external store for the live input level (RMS 0..~1), read by the waveform via
+// useSyncExternalStore. Kept out of React state so ~10 Hz level frames re-render only the waveform,
+// never the transcript list.
+export interface LevelStore {
+  subscribe: (callback: () => void) => () => void;
+  getSnapshot: () => number;
+}
+
+export interface TranscriptLine {
+  kind: "partial" | "final";
+  stream: TranscriptEvent["stream"];
+  speaker_label: string;
+  text: string;
+  start_s: number;
+  end_s: number;
+  // The persisted segment id + edited flag, present only on DB-seeded finals (live WS lines have no
+  // row yet). Drive the inline edit affordance + the "edited" badge; undefined lines are not editable.
+  id?: string;
+  edited?: boolean;
+  // The Them line's diarization cluster, present on DB-seeded finals; lets the reassign picker mark
+  // the line's current speaker. Null for Me / unclustered lines and absent on live WS finals.
+  cluster_id?: string | null;
+}
+
+interface State {
+  finals: Map<string, TranscriptLine>;
+  partials: Map<string, TranscriptLine>;
+  // True while the transcription sidecars are still loading their models (a cold start), so the UI
+  // shows a "preparing" notice instead of a silent gap. Driven by the WS warm-up status frames.
+  preparing: boolean;
+  // Set when the server nudges that no speech has been detected for a while (the "still recording?"
+  // banner); carries how long it has been silent. Cleared when speech resumes (any transcript line),
+  // on reset, or by the user acting on the banner. Driven by the WS `prompt` frames.
+  inactivityPrompt: { silentSeconds: number } | null;
+  // True while the mic is delivering digital silence (muted or dead). Distinct from
+  // `inactivityPrompt`, which means "no speech detected" on a working mic: here the signal path
+  // itself is dead, and the transcript that keeps appearing is ASR hallucinating on zeros. Driven by
+  // the WS `capture_health` frames, and only the server clears it (a Them line proves nothing about
+  // the mic).
+  micSilent: boolean;
+  // True while the meeting is paused (the "Pause" control). Driven by the WS `capture_state` frames
+  // (+ a connect snapshot). While paused the timeline is frozen server-side (no gap).
+  paused: boolean;
+}
+
+type Action =
+  | { type: "reset" }
+  | { type: "seed"; segments: SegmentRead[]; replace: boolean }
+  | { type: "event"; event: WsMessage }
+  | { type: "dismissPrompt" };
+
+const lineKey = (line: { stream: string; start_s: number }): string =>
+  `${line.stream}:${line.start_s}`;
+
+function reducer(state: State, action: Action): State {
+  switch (action.type) {
+    case "reset":
+      return {
+        finals: new Map(),
+        partials: new Map(),
+        preparing: false,
+        inactivityPrompt: null,
+        micSilent: false,
+        paused: false,
+      };
+    case "seed": {
+      // While recording, merge the DB snapshot with the live WS finals (a stale fetch may lag
+      // behind the socket). Once finalized, the DB is authoritative -- and the auto-refine has
+      // rewritten the Them segments with new start_s keys, so replace outright (and drop any
+      // lingering partial) to avoid showing both the old live finals and the refined ones.
+      const finals = action.replace ? new Map<string, TranscriptLine>() : new Map(state.finals);
+      for (const segment of action.segments) {
+        finals.set(lineKey(segment), { ...segment, kind: "final" });
+      }
+      return {
+        finals,
+        partials: action.replace ? new Map() : state.partials,
+        preparing: state.preparing,
+        inactivityPrompt: state.inactivityPrompt,
+        micSilent: state.micSilent,
+        paused: state.paused,
+      };
+    }
+    case "event": {
+      const message = action.event;
+      // Warm-up status (not a transcript line): show the notice while "warming", clear on "ready".
+      if (message.kind === "status") {
+        return { ...state, preparing: message.state === "warming" };
+      }
+      // Inactivity nudge (not a transcript line): raise the "still recording?" banner.
+      if (message.kind === "prompt") {
+        return { ...state, inactivityPrompt: { silentSeconds: message.silent_seconds } };
+      }
+      // Capture health (not a transcript line): the mic is dead, or has come back.
+      if (message.kind === "capture_health") {
+        return { ...state, micSilent: message.state === "silent" };
+      }
+      // Capture state (not a transcript line): the meeting was paused or resumed.
+      if (message.kind === "capture_state") {
+        return { ...state, paused: message.state === "paused" };
+      }
+      const event = message;
+      // A transcript arriving proves the sidecars are serving (clear the "preparing" notice) and is
+      // speech, so it clears any active inactivity prompt.
+      if (event.kind === "final") {
+        const finals = new Map(state.finals);
+        finals.set(lineKey(event), event);
+        // A final supersedes the stream's in-flight partial.
+        const partials = new Map(state.partials);
+        partials.delete(event.stream);
+        return {
+          finals,
+          partials,
+          preparing: false,
+          inactivityPrompt: null,
+          micSilent: state.micSilent,
+          paused: state.paused,
+        };
+      }
+      const partials = new Map(state.partials);
+      partials.set(event.stream, event);
+      return {
+        finals: state.finals,
+        partials,
+        preparing: false,
+        inactivityPrompt: null,
+        micSilent: state.micSilent,
+        paused: state.paused,
+      };
+    }
+    case "dismissPrompt":
+      return { ...state, inactivityPrompt: null };
+  }
+}
+
+function init(): State {
+  return {
+    finals: new Map(),
+    partials: new Map(),
+    preparing: false,
+    inactivityPrompt: null,
+    micSilent: false,
+    paused: false,
+  };
+}
+
+export interface TranscriptState {
+  lines: TranscriptLine[];
+  // Live socket state while recording; `null` when the meeting is finalized (no socket).
+  connection: ConnectionStatus | null;
+  // True while the live transcription sidecars are still loading their models, so the UI can show a
+  // "preparing" notice during the start-up gap of a cold start (a pre-warmed start never sets it).
+  preparing: boolean;
+  // Set while the server is nudging that no speech has been detected for a while (the "still
+  // recording?" banner); carries the silent duration. `null` when there is no active nudge.
+  inactivityPrompt: { silentSeconds: number } | null;
+  // True while the live mic is delivering digital silence, so the UI can warn that nothing is being
+  // heard. Any transcript still arriving on Me while this is set is ASR hallucinating on zeros.
+  micSilent: boolean;
+  // Locally dismiss the inactivity banner (the "Keep recording" / "Stop" actions hide it until the
+  // next server nudge). Does not reset the server clock — the caller pairs it with the keep-recording
+  // mutation for that.
+  dismissInactivityPrompt: () => void;
+  // The live input level (max of the me/them RMS), for the waveform to subscribe to without
+  // re-rendering the transcript. Always 0 when not recording.
+  levels: LevelStore;
+  // True while the meeting is paused (the "Pause" control) — the UI freezes the timer + waveform.
+  paused: boolean;
+  // Total ms elided by pauses so far, and (while paused) the epoch-ms the current pause began. The
+  // timer subtracts `pausedMs` from wall time and freezes at `pausedSince` while paused, so it stays
+  // in step with the server's gap-free timeline.
+  pausedMs: number;
+  pausedSince: number | null;
+}
+
+// Merges DB-persisted finals with the live WebSocket stream into a single,
+// time-ordered list. Rendering rule: one partial per stream, replaced by its
+// next final (keyed by stream + start_s). Also surfaces the live socket's
+// connection state so the UI can show reconnecting instead of a frozen view.
+export function useTranscript(meeting: MeetingRead | null): TranscriptState {
+  const isLive = meeting?.status === "recording";
+  const meetingId = meeting?.id ?? null;
+  const segments = useSegments(meetingId, isLive);
+  const queryClient = useQueryClient();
+  const [state, dispatch] = useReducer(reducer, undefined, init);
+  const [connection, setConnection] = useState<ConnectionStatus | null>(null);
+
+  // Live input-level store (see LevelStore). Refs so updating it never re-renders this hook; only
+  // the waveform, subscribed via useSyncExternalStore, re-renders on a level frame.
+  const perStream = useRef({ me: 0, them: 0 });
+  const levelValue = useRef(0);
+  const levelListeners = useRef(new Set<() => void>());
+  const levels = useMemo<LevelStore>(
+    () => ({
+      subscribe: (callback) => {
+        levelListeners.current.add(callback);
+        return () => levelListeners.current.delete(callback);
+      },
+      getSnapshot: () => levelValue.current,
+    }),
+    [],
+  );
+  const setLevel = (stream: string, rms: number) => {
+    if (stream === "me" || stream === "them") {
+      perStream.current[stream] = rms;
+    }
+    const next = Math.max(perStream.current.me, perStream.current.them);
+    if (next !== levelValue.current) {
+      levelValue.current = next;
+      levelListeners.current.forEach((listener) => listener());
+    }
+  };
+
+  // Pause-timing for the timer: total ms elided by pauses, and the epoch-ms the current pause began
+  // (null when running). Refs so a `capture_state` frame updates them without a wasted render (the
+  // reducer's `paused` flag drives the re-render).
+  const pausedMs = useRef(0);
+  const pausedSince = useRef<number | null>(null);
+
+  useEffect(() => {
+    dispatch({ type: "reset" });
+    setLevel("me", 0);
+    setLevel("them", 0);
+    pausedMs.current = 0;
+    pausedSince.current = null;
+  }, [meetingId]);
+
+  useEffect(() => {
+    if (segments.data) {
+      dispatch({ type: "seed", segments: segments.data, replace: !isLive });
+    }
+  }, [segments.data, isLive]);
+
+  useEffect(() => {
+    if (!isLive || meetingId === null) {
+      setConnection(null);
+      return;
+    }
+    return openTranscriptSocket(
+      meetingId,
+      getToken(),
+      (event) => {
+        // Level frames drive the waveform only — route them off the transcript reducer so they never
+        // re-render the transcript list.
+        if (event.kind === "level") {
+          setLevel(event.stream, event.rms);
+          return;
+        }
+        // Track the paused span for the timer: start the clock on pause, accumulate on resume.
+        if (event.kind === "capture_state") {
+          if (event.state === "paused") {
+            if (pausedSince.current === null) pausedSince.current = Date.now();
+          } else if (pausedSince.current !== null) {
+            pausedMs.current += Date.now() - pausedSince.current;
+            pausedSince.current = null;
+          }
+        }
+        dispatch({ type: "event", event });
+        // A silence prompt for a user who has switched away from the window: also fire a native OS
+        // notification so the nudge reaches them (desktop-only, unfocused-only; a no-op otherwise).
+        if (event.kind === "prompt") {
+          notifyStillRecordingIfAway(Math.round(event.silent_seconds / 60));
+        }
+      },
+      setConnection,
+      // On a reconnect or a server resync signal, persisted state may be ahead of the stream;
+      // refetch segments so the reducer merges any missed finals (seed replace=false while live).
+      () => {
+        void queryClient.invalidateQueries({
+          queryKey: queryKeys.meetings.segments(meetingId),
+        });
+      },
+    );
+  }, [isLive, meetingId, queryClient]);
+
+  // Sort the finals once, re-sorting only when the finals map itself changes (a final arrived, a DB
+  // re-seed, or reset) — not on every interim partial (several per second). The non-line reducer
+  // cases (status/prompt/mic/pause) spread `state` but keep the same `finals`/`partials` Map
+  // references, so those events recompute neither this memo nor the merge below.
+  const sortedFinals = useMemo(() => {
+    const arr = [...state.finals.values()];
+    arr.sort((a, b) => a.start_s - b.start_s || a.stream.localeCompare(b.stream));
+    return arr;
+  }, [state.finals]);
+
+  // Merge the <=2 in-flight partials into the sorted finals by insertion (O(n) per partial via
+  // splice) instead of re-sorting the whole meeting on every partial (O(n log n)). Each partial is
+  // inserted after any element that compares equal, exactly reproducing the old full sort (finals
+  // were spread before partials, so an exact tie keeps the final first).
+  const lines = useMemo(() => {
+    if (state.partials.size === 0) return sortedFinals;
+    const merged = sortedFinals.slice();
+    for (const partial of state.partials.values()) {
+      let lo = 0;
+      let hi = merged.length;
+      while (lo < hi) {
+        const mid = (lo + hi) >> 1;
+        const other = merged[mid];
+        const cmp = partial.start_s - other.start_s || partial.stream.localeCompare(other.stream);
+        if (cmp < 0) hi = mid;
+        else lo = mid + 1;
+      }
+      merged.splice(lo, 0, partial);
+    }
+    return merged;
+  }, [sortedFinals, state.partials]);
+
+  return {
+    lines,
+    connection,
+    preparing: isLive && state.preparing,
+    inactivityPrompt: isLive ? state.inactivityPrompt : null,
+    micSilent: isLive && state.micSilent,
+    dismissInactivityPrompt: () => dispatch({ type: "dismissPrompt" }),
+    levels,
+    paused: isLive && state.paused,
+    pausedMs: pausedMs.current,
+    pausedSince: pausedSince.current,
+  };
+}

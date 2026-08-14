@@ -1,0 +1,12 @@
+[package]
+name = "hearsay-notes-prompt"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+# The pure, ML-free half of the notes step: prompt construction + reply parsing + the default prompt
+# template. Deliberately dependency-free so the `hearsay-notes` sidecar (which links llama.cpp) can
+# reuse it WITHOUT pulling in `hearsay-inference` — and therefore without whisper.cpp's `ggml`, whose
+# co-linked copy is exactly the collision this whole split exists to avoid. The core reaches
+# `DEFAULT_NOTES_PROMPT` through `hearsay-backends`.
+[dependencies]

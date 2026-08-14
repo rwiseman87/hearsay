@@ -1,0 +1,23 @@
+---
+source: crates/hearsay-orchestrator/src/markdown.rs
+expression: "render_transcript(\"Weekly Sync\", &segments)"
+---
+# Weekly Sync
+
+
+### 00:00:00 — Me
+
+Morning — shall we start?
+
+### 00:00:03 — Speaker 1
+
+Yes, let's do it.
+First item is the release.
+
+### 00:01:05 — Speaker 2
+
+I have the numbers ready.
+
+### 00:01:10 — Me
+
+Great, go ahead.

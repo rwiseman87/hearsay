@@ -1,0 +1,44 @@
+# Hearsay Rust workspace — cross-platform (macOS + Windows) foundation.
+# Architecture: ../docs/architecture.md
+#
+# Shared dependency versions live in [workspace.dependencies]; crates inherit them with
+# `<dep>.workspace = true` and add only per-crate features. Single-use deps stay in their crate.
+# Everything is locked by the committed Cargo.lock (see rust/README.md for the crate map).
+
+[workspace]
+resolver = "2"
+members = [
+    "crates/hearsay-ipc",
+    "crates/hearsay-db",
+    "crates/hearsay-attribution",
+    "crates/hearsay-audio",
+    "crates/hearsay-engine",
+    "crates/hearsay-orchestrator",
+    "crates/hearsay-capture",
+    "crates/hearsay-core",
+    "crates/hearsay-inference",
+    "crates/hearsay-backends",
+    "crates/hearsay-notes-prompt",
+    "crates/hearsay-notes",
+]
+
+[workspace.package]
+# Canonical app version. `make version-check` fails CI if web/src-tauri/tauri.conf.json or
+# web/package.json drift from this; the About panel reports it via CARGO_PKG_VERSION.
+version = "0.1.0"
+edition = "2021"
+
+[workspace.dependencies]
+# Shared across 2+ crates — one version per dep so a bump is a single edit. Per-crate feature sets
+# are added at the use site with `<dep>.workspace = true` (features are additive across the graph).
+tokio = { version = "1.52.3" }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.150"
+sqlx = { version = "0.9.0", default-features = false, features = ["runtime-tokio", "sqlite", "uuid", "chrono"] }
+uuid = "1.23.4"
+chrono = "0.4.45"
+tracing = "0.1.44"
+async-trait = "0.1.89"
+tempfile = "3.27.0"
+hound = "3.5.1"
+proptest = "1.11.0"

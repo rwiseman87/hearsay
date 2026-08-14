@@ -1,0 +1,10 @@
+{"desc":"command_start_capture","kind":"command","encoded":"{\"args\":{\"sample_rate\":16000,\"tap_mode\":\"global_except_self\"},\"cmd\":\"start_capture\",\"id\":7}"}
+{"desc":"reply_ok_ping","kind":"reply_ok","encoded":"{\"id\":1,\"ok\":true,\"result\":{\"pong\":true}}"}
+{"desc":"reply_fail_no_permission","kind":"reply_fail","encoded":"{\"error\":{\"code\":\"no_permission\",\"message\":\"microphone denied\"},\"id\":2,\"ok\":false}"}
+{"desc":"event_hello","kind":"event","encoded":"{\"data\":{\"helper_version\":\"0.1.0\",\"pid\":4242,\"protocol_version\":1},\"event\":\"hello\",\"ts\":0}"}
+{"desc":"event_status","kind":"event","encoded":"{\"data\":{\"detail\":\"retrying 1/3\",\"device\":\"Built-in Microphone\",\"state\":\"degraded\"},\"event\":\"status\",\"ts\":1000000000}"}
+{"desc":"event_permission","kind":"event","encoded":"{\"data\":{\"audio_capture\":\"granted\",\"microphone\":\"granted\"},\"event\":\"permission\",\"ts\":1000000001}"}
+{"desc":"event_tap_health","kind":"event","encoded":"{\"data\":{\"action\":\"rebuilt_tap\",\"state\":\"recovered\"},\"event\":\"tap_health\",\"ts\":123456789}"}
+{"desc":"event_mic_health","kind":"event","encoded":"{\"data\":{\"action\":\"restarted_engine\",\"state\":\"recovered\"},\"event\":\"mic_health\",\"ts\":123456790}"}
+{"desc":"event_level","kind":"event","encoded":"{\"data\":{\"rms\":0.5,\"stream\":\"them\"},\"event\":\"level\",\"ts\":2000000000}"}
+{"desc":"event_error","kind":"event","encoded":"{\"data\":{\"fatal\":false,\"message\":\"device removed\",\"scope\":\"audio_capture\"},\"event\":\"error\",\"ts\":2000000004}"}

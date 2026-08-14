@@ -1,0 +1,41 @@
+# cargo-audit config for the Tauri shell tree (read by `make audit` -> `cd web/src-tauri && cargo
+# audit`). Every ignored advisory is a transitive dependency with no compatible patched version yet;
+# none is a vulnerability (all are `unmaintained` / `unsound` / DoS-only informational advisories).
+# Re-check on each Tauri upgrade and drop entries as upstream moves.
+#
+# quick-xml 0.39.4 (RUSTSEC-2026-0194/-0195): a DoS (quadratic attribute scan + unbounded namespace
+# allocation) reached only via plist -> tauri (macOS Info.plist parsing in the bundler/build); it never
+# parses untrusted network input here. `cargo update` finds no semver-compatible fix under plist's
+# `^0.39` constraint, so this waits on an upstream tauri/plist bump.
+#
+# Tauri v2's Linux GTK3 + WebKit backend pulls the now-EOL gtk-rs 0.18 family (atk / gdk / gtk / glib
+# and their -sys crates, gtk3-macros -> proc-macro-error, and the unic-* set). They are flagged
+# `unmaintained` (glib `unsound`) with no maintained successor at 0.18. Hearsay ships macOS + Windows
+# only, so this GTK stack never compiles into the shipped binary; the advisories are informational and
+# have no fix to take. Listed per-id (not a blanket category ignore) so any future *real* vulnerability
+# in these crates still surfaces under a new advisory id.
+[advisories]
+ignore = [
+    # quick-xml DoS (plist -> tauri bundler).
+    "RUSTSEC-2026-0194",
+    "RUSTSEC-2026-0195",
+    # gtk-rs 0.18 GTK3 bindings — unmaintained (Tauri's Linux backend).
+    "RUSTSEC-2024-0411", # gdkwayland-sys
+    "RUSTSEC-2024-0412", # gdk
+    "RUSTSEC-2024-0413", # atk
+    "RUSTSEC-2024-0414", # gdkx11-sys
+    "RUSTSEC-2024-0415", # gtk
+    "RUSTSEC-2024-0416", # atk-sys
+    "RUSTSEC-2024-0417", # gdkx11
+    "RUSTSEC-2024-0418", # gdk-sys
+    "RUSTSEC-2024-0419", # gtk3-macros
+    "RUSTSEC-2024-0420", # gtk-sys
+    "RUSTSEC-2024-0429", # glib (unsound)
+    "RUSTSEC-2024-0370", # proc-macro-error — unmaintained (via gtk3-macros)
+    # unic-* — unmaintained (transitive via the GTK / WebKit stack).
+    "RUSTSEC-2025-0075", # unic-char-range
+    "RUSTSEC-2025-0080", # unic-common
+    "RUSTSEC-2025-0081", # unic-char-property
+    "RUSTSEC-2025-0098", # unic-ucd-version
+    "RUSTSEC-2025-0100", # unic-ucd-ident
+]

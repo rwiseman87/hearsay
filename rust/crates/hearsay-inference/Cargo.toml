@@ -1,0 +1,36 @@
+[package]
+name = "hearsay-inference"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+hearsay-attribution = { path = "../hearsay-attribution" }
+hearsay-audio = { path = "../hearsay-audio" }
+hound = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+# `shared` (not the crate's default `static`) links sherpa-onnx + onnxruntime as DLLs. The static
+# libs are prebuilt against the *static* CRT, which would force `-C target-feature=+crt-static` on
+# the whole binary — and whisper.cpp pins CMP0091 OLD, so its cmake appends `/MD` after the `/MT`
+# and the link fails on mismatched runtimes with no toolchain-file fix available. Linking the DLLs
+# keeps the CRT inside them, so every crate here builds against the default dynamic runtime.
+sherpa-onnx = { version = "1.13.3", optional = true, default-features = false, features = [
+    "shared",
+] }
+tempfile = { workspace = true }
+whisper-rs = "0.16.0"
+
+# `sherpa` enables the cross-platform (Windows) sherpa-onnx diarize + streaming path; it is off by
+# default so the macOS bundle never compiles or links onnxruntime (macOS uses the Swift sidecars).
+#
+# Per-OS GPU acceleration for the whisper refine is opt-in (default = portable CPU). The
+# installer/build selects the backend for the target: `--features metal` on macOS, `vulkan` on the
+# Intel Arc iGPU, `cuda` on discrete NVIDIA. Same code, per-OS accel (see docs/architecture.md). The
+# notes LLM's matching GPU accel lives on the standalone `hearsay-notes` crate (separate process, so
+# llama.cpp's ggml never co-links with whisper.cpp's).
+[features]
+sherpa = ["dep:sherpa-onnx"]
+metal = ["whisper-rs/metal"]
+vulkan = ["whisper-rs/vulkan"]
+cuda = ["whisper-rs/cuda"]

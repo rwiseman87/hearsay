@@ -1,0 +1,23 @@
+[package]
+name = "hearsay-capture"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+hearsay-orchestrator = { path = "../hearsay-orchestrator" }
+hearsay-ipc = { path = "../hearsay-ipc" }
+tokio = { workspace = true, features = ["net", "process", "io-util", "sync", "time", "rt", "macros"] }
+async-trait = { workspace = true }
+tempfile = { workspace = true }
+tracing = { workspace = true }
+
+# Windows capture (`WasapiSource`): WASAPI shared-mode capture + process/device loopback; plus the
+# ConsentStore registry read behind the permissions probe. Target-gated so macOS never compiles
+# them; still lockfile-resolved everywhere, so `make licenses` / `make audit` vet them from any host.
+[target.'cfg(windows)'.dependencies]
+wasapi = "0.23.0"
+windows-registry = "0.6.1"
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

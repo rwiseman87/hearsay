@@ -1,0 +1,15 @@
+[package]
+name = "hearsay-db"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+hearsay-attribution = { path = "../hearsay-attribution" }
+chrono = { workspace = true }
+serde_json = { workspace = true }
+sqlx = { workspace = true, features = ["macros", "migrate"] }
+uuid = { workspace = true, features = ["v4"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt"] }

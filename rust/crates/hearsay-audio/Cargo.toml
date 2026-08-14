@@ -1,0 +1,30 @@
+[package]
+name = "hearsay-audio"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+# Lossless FLAC archival for the recorded meeting WAV — the codec half of the storage sweep, kept as
+# a dependency-free leaf so every consumer (the refine reader, the orchestrator's path checks, the
+# core's playback route, and the sweep itself) can depend on it without pulling in whisper or the
+# orchestrator.
+[dependencies]
+hound = { workspace = true }
+# Pure-Rust FLAC encoder (Apache-2.0). `default-features = false` drops `par` (crossbeam-channel,
+# which only parallelizes the whole-file encoder we deliberately do not use), `serde`, and `log`.
+flacenc = { version = "0.5.1", default-features = false }
+# Pure-Rust FLAC decoder (Apache-2.0), block-at-a-time so decoding stays O(block) rather than
+# O(meeting) — which is what lets the verifier compare a multi-hundred-MB recording against its
+# source without holding either in memory. It is also the decoder `flacenc` validates its own output
+# against.
+#
+# No release since 2020, which normally disqualifies a dependency here. It stands because the FLAC
+# bitstream is a fixed, backward-compatible grammar (standardized as IETF RFC 9639), so a decoder has
+# nothing to keep up with: "no releases" means finished, not stale — and the repo is still active.
+# The real risk for a decoder is malformed input, and its one advisory (RUSTSEC-2018-0004) is fixed
+# in this version. The maintained alternative, symphonia, is MPL-2.0 and four crates for a decode
+# loop we use in one module.
+claxon = "0.4.3"
+
+[dev-dependencies]
+tempfile = { workspace = true }

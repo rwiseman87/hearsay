@@ -1,0 +1,2685 @@
+:root {
+  --bg: #0f1115;
+  --surface: #171a21;
+  --surface-2: #1f2430;
+  --border: #2a3040;
+  --text: #e6e9ef;
+  --muted: #8b93a7;
+  --accent: #5b9dff;
+  --me: #5b9dff;
+  --them: #2ecc9b;
+  --danger: #ff6b6b;
+  --radius: 8px;
+  --gap: 12px;
+  --rail-width: 62px;
+
+  /* Foreground for filled buttons (text/icon on an accent or danger fill). */
+  --on-accent: #0f1115;
+  --on-danger: #2a0b08;
+
+  /* Elevation. */
+  --shadow: 0 6px 20px rgba(0, 0, 0, 0.28);
+  --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.4);
+
+  /* Monospace stack (editable prompt / code-ish fields). */
+  --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  /* Stacking order, low -> high: in-content popover, dropdown, rail popover, modal. */
+  --z-raised: 5;
+  --z-dropdown: 30;
+  --z-popover: 40;
+  --z-modal: 60;
+
+  /* Rotating speaker colors for the live view's avatars/dots (Me uses --me). */
+  --spk-1: #2ecc9b;
+  --spk-2: #c6b8ff;
+  --spk-3: #ffcf8a;
+  --spk-4: #94e0a4;
+
+  --fs-xs: 0.6875rem;
+  --fs-sm: 0.75rem;
+  --fs-md: 0.8125rem;
+  --fs-lg: 0.9375rem;
+  --fs-xl: 1.125rem;
+
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+}
+
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+/* Two columns: the fixed nav rail and the flexible content pane (the meeting list now lives inside
+   the home dashboard, not a persistent sidebar). */
+.app__main {
+  display: grid;
+  grid-template-columns: var(--rail-width) 1fr;
+  flex: 1;
+  min-height: 0;
+}
+
+.transcript {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  container-type: inline-size;
+}
+
+.transcript--empty {
+  align-items: center;
+  justify-content: center;
+}
+
+.transcript__error {
+  margin: 0;
+  padding: 8px 16px;
+  color: var(--danger);
+  font-size: var(--fs-md);
+}
+
+.transcript__status {
+  margin: 0;
+  padding: 8px 16px;
+  color: var(--accent);
+  font-size: var(--fs-md);
+}
+
+.inactivity-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin: 8px 16px 0;
+  padding: 10px 14px;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  color: var(--text);
+  font-size: var(--fs-md);
+}
+
+.inactivity-banner__text {
+  flex: 1;
+  min-width: 220px;
+}
+
+.inactivity-banner__actions {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.inactivity-banner__stop {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+.transcript__lines {
+  flex: 1;
+  min-height: 0;
+  margin: 0;
+  padding: 4px 28px 24px;
+  list-style: none;
+  overflow-y: auto;
+}
+
+/* Finalized rows reuse the live speaker-line layout (avatar + name/time + body). These scoped rules
+   add the finalized-only affordances: click-to-seek, hover, the active/playing row, and the
+   reveal-on-hover edit button. */
+.transcript__lines .live-line {
+  position: relative;
+  padding: 12px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.transcript__lines .live-line:hover {
+  background: var(--surface-2);
+}
+
+.line--active {
+  background: var(--surface-2);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+.line--active .live-line__text {
+  color: var(--text);
+}
+
+.badge {
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: var(--fs-xs);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.badge--recording {
+  color: var(--them);
+  border-color: var(--them);
+}
+
+.badge--refining {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+button,
+input,
+select {
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  color: var(--text);
+  font: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+button:not(:disabled):hover {
+  border-color: var(--accent);
+}
+
+.error {
+  padding: 0 12px;
+  color: var(--danger);
+  font-size: var(--fs-md);
+}
+
+.muted {
+  padding: 8px 12px;
+  color: var(--muted);
+}
+
+/* Speaker strip above the transcript: a readable, editable row of per-speaker pills. */
+.speakers-bar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 10px 22px;
+  border-bottom: 1px solid var(--border);
+}
+
+.speakers-bar__label {
+  color: var(--muted);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.speakers-bar__list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.speaker-chip {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 12px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface-2);
+}
+
+.speaker-chip__dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--spk);
+}
+
+.speaker-chip__name {
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  font-size: var(--fs-md);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.speaker-chip__name:hover {
+  color: var(--accent);
+}
+
+.speaker-chip__form {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.speaker-chip__input {
+  width: 130px;
+  padding: 3px 8px;
+  font-size: var(--fs-sm);
+}
+
+.speaker-chip__save {
+  padding: 3px 10px;
+  font-size: var(--fs-sm);
+}
+
+/* Filter toggle: the whole dot+name area is the control, so its accessible name stays exactly the
+   speaker's label and the pressed state is carried by aria-pressed. */
+.speaker-chip__toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+}
+
+.speaker-chip__toggle:hover .speaker-chip__name,
+.speaker-chip__toggle[aria-pressed="true"] .speaker-chip__name {
+  color: var(--accent);
+}
+
+.speaker-chip.is-active {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 18%, var(--surface-2));
+}
+
+.speaker-chip__more {
+  padding: 0 4px;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  line-height: 1;
+  cursor: pointer;
+}
+
+.speaker-chip__more:hover {
+  color: var(--text);
+}
+
+/* Mirrors .line__reassign, but anchored under the chip rather than the transcript row. */
+.speaker-chip__pop {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: var(--z-popover);
+  width: 220px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+  text-align: left;
+}
+
+.speaker-chip__warn {
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--fs-sm);
+  line-height: 1.4;
+}
+
+.speaker-chip__confirm {
+  display: flex;
+  gap: 6px;
+}
+
+.speaker-chip__error {
+  margin: 0;
+  color: var(--danger);
+  font-size: var(--fs-sm);
+}
+
+.speakers-bar__count {
+  color: var(--muted);
+  font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums;
+}
+
+.speakers-bar__clear {
+  padding: 2px 8px;
+  font-size: var(--fs-xs);
+}
+
+.settings-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-modal);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+
+.settings-overlay__backdrop {
+  position: absolute;
+  inset: 0;
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  background: rgba(0, 0, 0, 0.55);
+  cursor: default;
+}
+
+.settings {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  width: min(720px, 100%);
+  /* Fixed height (not max-height) so the box — and the left tab rail — stay put when switching tabs;
+     short panels leave whitespace, tall ones scroll inside .settings__content. */
+  height: min(560px, 100%);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  overflow: hidden;
+}
+
+.settings__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.settings__header h2 {
+  margin: 0;
+  font-size: var(--fs-lg);
+}
+
+.settings__close {
+  padding: 2px 8px;
+}
+
+.settings__body {
+  display: grid;
+  grid-template-columns: 180px 1fr;
+  min-height: 0;
+  flex: 1;
+}
+
+.settings__nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 10px;
+  border-right: 1px solid var(--border);
+  background: var(--surface-2);
+}
+
+.settings__nav-item {
+  padding: 8px 10px;
+  border: none;
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  font-size: var(--fs-md);
+}
+
+.settings__nav-item.is-active {
+  background: var(--surface);
+  color: var(--accent);
+}
+
+.settings__content {
+  padding: 16px;
+  overflow-y: auto;
+}
+
+/* One consistent vertical rhythm for every panel; children keep margin 0 and rely on the gap. */
+.settings__panel {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.settings__panel-title {
+  margin: 0;
+  font-size: var(--fs-lg);
+}
+
+.settings__row {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+}
+
+.settings__row input {
+  margin-top: 2px;
+}
+
+.settings__row-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.settings__row-label {
+  font-size: var(--fs-md);
+  font-weight: 600;
+}
+
+.settings__row-hint {
+  padding: 0;
+  font-size: var(--fs-sm);
+}
+
+.settings__error {
+  margin: 0;
+  color: var(--danger);
+  font-size: var(--fs-sm);
+}
+
+.settings__field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* A child setting of the toggle above it (e.g. the silence minutes under their reminder toggle):
+   indented to the toggle's text column and pulled toward its parent so the pair reads as one group. */
+.settings__field--sub {
+  margin-top: -6px;
+  margin-left: 26px;
+}
+
+.settings__field--sub input {
+  width: 90px;
+}
+
+.settings__prompt {
+  width: 100%;
+  min-height: 120px;
+  padding: 8px;
+  font-family: var(--mono);
+  font-size: var(--fs-sm);
+  line-height: 1.5;
+  resize: vertical;
+}
+
+.settings__slider {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.settings__slider input {
+  flex: 1;
+}
+
+.settings__slider-value {
+  min-width: 34px;
+  font-variant-numeric: tabular-nums;
+  font-size: var(--fs-md);
+  color: var(--them);
+}
+
+.settings__inline {
+  display: flex;
+  gap: 6px;
+}
+
+.settings__inline input {
+  flex: 1;
+  min-width: 0;
+  padding: 4px 8px;
+  font-size: var(--fs-sm);
+}
+
+.settings__inline select {
+  flex: 1;
+  min-width: 0;
+  padding: 4px 8px;
+  font-size: var(--fs-sm);
+}
+
+/* Buttons keep their label on one line: only the neighbouring input or hint text may flex, or a long
+   hint squeezes the button until its label wraps. */
+.settings__inline button {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+/* A subsection break within a panel (e.g. the notes controls below the refine model). */
+.settings__field--divided {
+  margin-top: 8px;
+  padding-top: 18px;
+  border-top: 1px solid var(--border);
+}
+
+.settings__download {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.settings__download progress {
+  width: 100%;
+  height: 8px;
+}
+
+.settings__advanced {
+  margin-top: 4px;
+  font-size: var(--fs-sm);
+}
+
+.settings__advanced summary {
+  cursor: pointer;
+  color: var(--accent);
+  padding: 4px 0;
+}
+
+.settings__advanced .settings__inline {
+  margin-top: 6px;
+}
+
+.settings__facts {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.settings__facts div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.settings__facts dt {
+  color: var(--muted);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.settings__facts dd {
+  margin: 0;
+  font-size: var(--fs-md);
+  word-break: break-all;
+}
+
+.settings__perm-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.settings__perms {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.settings__perm {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.settings__perm-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.settings__status {
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.settings__status--granted {
+  color: var(--them);
+  border-color: var(--them);
+}
+
+.settings__status--denied {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+
+.settings__status--undetermined {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.settings__perm-link {
+  align-self: flex-start;
+  color: var(--accent);
+  font-size: var(--fs-sm);
+  text-decoration: none;
+}
+
+.settings__perm-link:hover {
+  text-decoration: underline;
+}
+
+.settings__reveal-btn {
+  align-self: flex-start;
+}
+
+/* Inline link-styled button (e.g. "Reset to default" next to a fact) — no button chrome. */
+.settings__link-btn {
+  margin-left: 8px;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--accent);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+}
+
+.settings__link-btn:hover:not(:disabled) {
+  text-decoration: underline;
+}
+
+.settings__link-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.settings__danger {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 8px;
+  padding-top: 20px;
+  border-top: 1px solid var(--border);
+}
+
+.voices__list,
+.voices__samples {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.voices__row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.voices__row:last-child {
+  border-bottom: none;
+}
+
+/* Name left, badges hard right — so "last heard" lines up down the column instead of drifting with
+   each name's length. */
+.voices__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.voices__expand {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--text);
+  font-size: var(--fs-md);
+  text-align: left;
+  cursor: pointer;
+}
+
+.voices__caret {
+  width: 11px;
+  color: var(--muted);
+}
+
+.voices__name {
+  font-weight: 600;
+}
+
+.voices__badges {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.voices__meta {
+  font-size: var(--fs-xs);
+}
+
+/* Indented to the name column (caret + gap), so the actions read as belonging to the row above. */
+.voices__actions,
+.voices__rename,
+.voices__samples {
+  padding-left: 17px;
+}
+
+.voices__actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.voices__actions .settings__link-btn {
+  margin-left: 0;
+}
+
+.voices__forget {
+  color: var(--danger);
+}
+
+.voices__confirm {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: var(--fs-sm);
+}
+
+.voices__rename input {
+  max-width: 260px;
+}
+
+.voices__samples {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 2px;
+}
+
+.voices__sample {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: var(--fs-sm);
+}
+
+.voices__sample-title {
+  min-width: 140px;
+}
+
+.settings__danger-btn {
+  align-self: flex-start;
+  color: var(--danger);
+  border-color: var(--danger);
+}
+
+.settings__danger-btn:disabled {
+  opacity: 0.5;
+}
+
+.settings__done {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.crash {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  height: 100%;
+  padding: 24px;
+  text-align: center;
+}
+
+.crash__title {
+  margin: 0;
+  font-size: var(--fs-xl);
+}
+
+.crash__message {
+  margin: 0;
+  max-width: 40ch;
+  color: var(--muted);
+  font-size: var(--fs-md);
+}
+
+/* --- Global transcript search (popover, opened from the nav rail) --- */
+.search-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-popover);
+}
+
+.search-overlay__panel {
+  position: absolute;
+  top: 14px;
+  left: calc(var(--rail-width) + 8px);
+  width: 460px;
+  max-width: calc(100vw - var(--rail-width) - 24px);
+}
+
+/* --- New-recording popover (opened from the rail's red record button) --- */
+.record-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-popover);
+}
+
+.record-overlay__panel {
+  position: absolute;
+  top: 14px;
+  left: calc(var(--rail-width) + 8px);
+  width: 300px;
+  max-width: calc(100vw - var(--rail-width) - 24px);
+}
+
+.record-menu {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: var(--shadow-lg);
+}
+
+.record-menu__label {
+  margin: 0 0 2px;
+  color: var(--muted);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.record-menu__title,
+.record-menu__folder {
+  width: 100%;
+}
+
+.record-menu__start {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 2px;
+  padding: 9px 14px;
+  border: none;
+  border-radius: var(--radius);
+  background: var(--danger);
+  color: var(--on-danger);
+  font-weight: 700;
+}
+
+.record-menu__start:not(:disabled):hover {
+  filter: brightness(1.06);
+}
+
+.record-menu__start:disabled {
+  opacity: 0.6;
+}
+
+.record-menu__start-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--on-danger);
+}
+
+/* Pulse while the models load so "Preparing models…" reads as working, not stuck. */
+.record-menu__start-dot.is-preparing {
+  animation: live-recpulse 1.2s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .record-menu__start-dot.is-preparing,
+  .live__rec-dot,
+  .live-line__caret,
+  .line--jump {
+    animation: none;
+  }
+}
+
+.record-menu__error {
+  margin: 0;
+  color: var(--danger);
+  font-size: var(--fs-sm);
+}
+
+/* ============================================================================
+   Library — the full-view meetings browser (rail's list icon opens it)
+   ============================================================================ */
+.library {
+  display: grid;
+  grid-template-columns: 232px 1fr;
+  min-width: 0;
+  min-height: 0;
+}
+
+/* Left rail: All meetings + the folder tree as selectable filters. */
+.library__nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 16px 12px;
+  border-right: 1px solid var(--border);
+  background: var(--surface);
+  overflow-y: auto;
+}
+
+.library__nav-head {
+  margin: 14px 8px 4px;
+  color: var(--muted);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.library__nav-head:first-child {
+  margin-top: 0;
+}
+
+.library__item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 7px 8px;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  font-size: var(--fs-md);
+}
+
+.library__item:hover {
+  background: var(--surface-2);
+  border-color: transparent; /* neutralize the global button hover border on the All-meetings button */
+}
+
+.library__item.is-active {
+  background: var(--surface-2);
+  color: var(--accent);
+}
+
+.library__item[data-drop] {
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  border-color: var(--accent);
+}
+
+/* The selectable part of a folder row (a button, so the row div can hold action buttons too). */
+.library__item-btn {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0;
+  border: none;
+  background: none;
+  color: inherit;
+  text-align: left;
+  font: inherit;
+}
+
+.library__item-icon {
+  display: inline-flex;
+  flex: none;
+  color: var(--muted);
+}
+
+.library__item.is-active .library__item-icon {
+  color: var(--accent);
+}
+
+.library__item-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.library__trailing {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+}
+
+.library__count {
+  color: var(--muted);
+  font-size: var(--fs-sm);
+  font-variant-numeric: tabular-nums;
+}
+
+.library__actions {
+  display: none;
+  gap: 2px;
+}
+
+.library__item:hover .library__actions {
+  display: inline-flex;
+}
+
+.library__item:has(.library__actions):hover .library__count {
+  display: none;
+}
+
+.library__actions button,
+.library__confirm button {
+  padding: 0 5px;
+  border: none;
+  background: none;
+  color: var(--muted);
+  font-size: var(--fs-sm);
+}
+
+.library__actions button:hover {
+  color: var(--text);
+}
+
+.library__confirm {
+  display: inline-flex;
+  gap: 4px;
+  flex: none;
+}
+
+.library__confirm button {
+  color: var(--accent);
+}
+
+.library__edit {
+  display: flex;
+  gap: 4px;
+  padding: 4px 8px;
+}
+
+.library__edit input {
+  flex: 1;
+  min-width: 0;
+  padding: 4px 8px;
+}
+
+.library__edit button {
+  padding: 2px 8px;
+  font-size: var(--fs-sm);
+}
+
+.library__new-folder {
+  margin-top: 6px;
+  padding: 7px 10px;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius);
+  background: none;
+  color: var(--muted);
+  text-align: left;
+}
+
+.library__new-folder:hover {
+  color: var(--text);
+  border-color: var(--muted);
+}
+
+/* Right pane: the filtered meetings, grouped by recency. */
+.library__main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.library__top {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 22px 28px 12px;
+}
+
+.library__title {
+  margin: 0;
+  flex: 1;
+  min-width: 0;
+  font-size: 1.375rem;
+  font-weight: 800;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.library__tools {
+  display: flex;
+  gap: 10px;
+  flex: none;
+}
+
+.library__search {
+  width: 260px;
+  max-width: 40vw;
+  padding: 8px 12px;
+}
+
+.library__list {
+  padding: 4px 28px 28px;
+}
+
+.library__empty {
+  margin: 16px 2px;
+}
+
+.library__group + .library__group {
+  margin-top: 18px;
+}
+
+.library__group-label {
+  margin: 0 0 2px;
+  color: var(--muted);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.library__rows {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.library__rows li {
+  border-bottom: 1px solid var(--border);
+}
+
+.library__row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 8px;
+  border-radius: 8px;
+}
+
+.library__row:hover {
+  background: var(--surface);
+}
+
+/* The clickable "open meeting" area; siblings hold the rename/delete actions. */
+.library__row-open {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 4px 0;
+  border: none;
+  background: none;
+  color: inherit;
+  text-align: left;
+  font: inherit;
+}
+
+.library__row-trailing {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+}
+
+.library__row-actions {
+  display: none;
+  gap: 2px;
+}
+
+.library__row:hover .library__row-actions {
+  display: inline-flex;
+}
+
+.library__row-actions button {
+  padding: 0 6px;
+  border: none;
+  background: none;
+  color: var(--muted);
+  font-size: var(--fs-md);
+}
+
+.library__row-actions button:hover {
+  color: var(--text);
+}
+
+.library__row-edit {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 8px;
+}
+
+.library__row-edit input {
+  flex: 1;
+  min-width: 0;
+  padding: 6px 10px;
+}
+
+.library__row-edit button {
+  padding: 4px 10px;
+  font-size: var(--fs-sm);
+}
+
+.library__avatar {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 9px;
+  font-size: var(--fs-sm);
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.library__row-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.library__row-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--fs-lg);
+}
+
+.library__row-meta {
+  color: var(--muted);
+  font-size: var(--fs-sm);
+}
+
+.library__error {
+  margin: 8px;
+  color: var(--danger);
+  font-size: var(--fs-sm);
+}
+
+.search {
+  position: relative;
+}
+
+.search__input {
+  width: 100%;
+  padding: 8px 12px;
+}
+
+/* The rail popover floats over content, so lift its box; the inline dashboard bar stays flat. */
+.search-overlay__panel .search__input {
+  box-shadow: var(--shadow-lg);
+}
+
+.search__results {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  right: 0;
+  z-index: var(--z-dropdown);
+  max-height: 60vh;
+  overflow-y: auto;
+  padding: 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: var(--shadow-lg);
+}
+
+.search__state {
+  margin: 0;
+  padding: 8px 10px;
+  font-size: var(--fs-md);
+}
+
+.search__group + .search__group {
+  margin-top: 6px;
+  border-top: 1px solid var(--border);
+  padding-top: 6px;
+}
+
+.search__group-title {
+  margin: 0;
+  padding: 4px 8px;
+  color: var(--muted);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.search__hits {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.search__hit {
+  display: grid;
+  grid-template-columns: 48px 96px 1fr;
+  gap: 10px;
+  align-items: baseline;
+  width: 100%;
+  padding: 6px 8px;
+  border: none;
+  border-radius: 6px;
+  background: none;
+  text-align: left;
+}
+
+.search__hit:hover {
+  background: var(--surface-2);
+  border-color: transparent;
+}
+
+.search__hit-time {
+  color: var(--muted);
+  font-size: var(--fs-sm);
+  font-variant-numeric: tabular-nums;
+}
+
+.search__hit-speaker {
+  font-weight: 600;
+  font-size: var(--fs-md);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.search__hit-snippet {
+  font-size: var(--fs-md);
+  line-height: 1.4;
+  color: var(--muted);
+}
+
+.search__results mark {
+  background: none;
+  color: var(--text);
+  font-weight: 700;
+}
+
+/* --- Transcript toolbar (section label + in-meeting find), pinned above the scrolling lines --- */
+.transcript__toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--gap);
+  padding: 8px 16px;
+  background: var(--surface);
+}
+
+.transcript__toolbar-title {
+  color: var(--muted);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.transcript__toolbar-hint {
+  font-weight: 400;
+  letter-spacing: 0;
+  text-transform: none;
+  opacity: 0.75;
+}
+
+.find {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.find__input {
+  width: 200px;
+  padding: 4px 10px;
+  font-size: var(--fs-md);
+}
+
+.find__input:focus {
+  width: 240px;
+  border-color: var(--accent);
+  outline: none;
+}
+
+.find__count {
+  min-width: 34px;
+  text-align: right;
+  color: var(--muted);
+  font-size: var(--fs-sm);
+  font-variant-numeric: tabular-nums;
+}
+
+.find__nav {
+  padding: 3px 9px;
+  font-size: var(--fs-sm);
+  line-height: 1;
+}
+
+/* --- Transcript find/jump highlights --- */
+mark.find-hit {
+  background: color-mix(in srgb, var(--accent) 35%, transparent);
+  color: var(--text);
+  border-radius: 2px;
+}
+
+.line--match {
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+
+.line--match-current {
+  background: var(--surface-2);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+.line--jump {
+  animation: line-jump 2.5s ease-out;
+}
+
+@keyframes line-jump {
+  0%,
+  25% {
+    background: color-mix(in srgb, var(--accent) 28%, transparent);
+  }
+  100% {
+    background: transparent;
+  }
+}
+
+/* --- Inline transcript line editing --- */
+/* Small pill next to edited text. */
+.line__edited-pill {
+  margin-left: 8px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  color: var(--muted);
+  font-size: var(--fs-xs);
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  vertical-align: middle;
+}
+
+/* The per-line action controls (Edit + Reassign speaker): pinned top-right of the row, each revealed
+   as a clear button when the line is hovered or a button is focused. */
+.line__actions {
+  position: absolute;
+  top: 10px;
+  right: 8px;
+  display: flex;
+  gap: 4px;
+}
+
+.line__edit-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: none;
+  color: var(--muted);
+  font-size: var(--fs-sm);
+  line-height: 1.5;
+  opacity: 0;
+  transition:
+    opacity 0.12s ease,
+    border-color 0.12s ease;
+}
+
+.transcript__lines .live-line:hover .line__edit-btn,
+.line__edit-btn:focus-visible {
+  opacity: 1;
+  border-color: var(--border);
+  background: var(--surface);
+}
+
+.line__edit-btn:not(:disabled):hover {
+  border-color: var(--accent);
+  color: var(--text);
+}
+
+/* The per-line reassign popover: a small card anchored under the action buttons, listing the
+   meeting's speakers plus a "new speaker" field. */
+.line__reassign {
+  position: absolute;
+  top: 40px;
+  right: 8px;
+  z-index: var(--z-raised);
+  width: 220px;
+  max-width: calc(100% - 16px);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
+.line__reassign-title {
+  color: var(--muted);
+  font-size: var(--fs-xs);
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.line__reassign-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 180px;
+  overflow-y: auto;
+}
+
+.line__reassign-option {
+  width: 100%;
+  padding: 4px 8px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: none;
+  color: var(--text);
+  font-size: var(--fs-sm);
+  text-align: left;
+}
+
+.line__reassign-option:not(:disabled):hover {
+  border-color: var(--accent);
+  background: var(--surface-2);
+}
+
+.line__reassign-option[aria-current="true"] {
+  color: var(--muted);
+}
+
+.line__reassign-new {
+  display: flex;
+  gap: 6px;
+}
+
+.line__reassign-input {
+  flex: 1;
+  min-width: 0;
+  padding: 4px 8px;
+  font: inherit;
+  font-size: var(--fs-sm);
+}
+
+.line__reassign-save {
+  padding: 4px 10px;
+  font-size: var(--fs-sm);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.line__reassign-cancel {
+  padding: 4px 10px;
+  font-size: var(--fs-sm);
+  align-self: flex-start;
+}
+
+.line__reassign-error {
+  color: var(--danger);
+  font-size: var(--fs-xs);
+}
+
+.line__edit {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 2px;
+}
+
+.line__edit-input {
+  width: 100%;
+  min-height: 2.6em;
+  padding: 6px 8px;
+  font: inherit;
+  font-size: var(--fs-md);
+  line-height: 1.5;
+  resize: vertical;
+}
+
+.line__edit-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.line__save,
+.line__cancel {
+  padding: 4px 12px;
+  font-size: var(--fs-sm);
+}
+
+.line__save {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.line__cancel {
+  color: var(--muted);
+}
+
+/* --- Transcript reveal + refine confirm --- */
+.transcript__reveal {
+  padding: 4px 10px;
+  font-size: var(--fs-md);
+}
+
+.transcript__confirm {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.transcript__confirm-text {
+  color: var(--danger);
+  font-size: var(--fs-sm);
+}
+
+/* ============================================================================
+   Nav rail + live recording screen (design direction 1a "Signal")
+   ============================================================================ */
+
+.rail {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  padding: 14px 0;
+  border-right: 1px solid var(--border);
+  background: var(--bg);
+}
+
+.rail__logo {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: none;
+  border-radius: 9px;
+  background: transparent;
+  cursor: pointer;
+}
+
+.rail__logo:hover {
+  filter: brightness(1.1);
+}
+
+.rail__logo:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* The red "new recording" button — a filled tile (like the logo) so it reads as the primary action. */
+.rail__record {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: var(--danger);
+  color: var(--on-danger);
+}
+
+.rail__record:not(:disabled):hover {
+  filter: brightness(1.06);
+}
+
+.rail__record.is-active {
+  outline: 2px solid var(--danger);
+  outline-offset: 2px;
+}
+
+.rail__btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--muted);
+}
+
+.rail__btn:not(:disabled):hover {
+  background: var(--surface-2);
+  border-color: var(--border);
+  color: var(--text);
+}
+
+.rail__btn.is-active {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  color: var(--accent);
+}
+
+.rail__btn--bottom {
+  margin-top: auto;
+}
+
+.live {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+}
+
+.live__main {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Topbar: REC pill + timer, title/meta, waveform (right-aligned), Pause + End. */
+.live__topbar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  height: 66px;
+  padding: 0 20px;
+  border-bottom: 1px solid var(--border);
+}
+
+.live__rec {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--danger) 35%, transparent);
+}
+
+.live__rec-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--danger);
+  animation: live-recpulse 1.6s ease-in-out infinite;
+}
+
+.live__rec-label,
+.live__rec-time {
+  color: var(--danger);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+}
+
+.live__rec-label {
+  letter-spacing: 0.04em;
+}
+
+.live__rec-time {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Paused: the dot stops pulsing and the pill goes muted (no longer "live red"). */
+.live__rec--paused {
+  background: var(--surface-2);
+  border-color: var(--border);
+}
+
+.live__rec--paused .live__rec-dot {
+  animation: none;
+  background: var(--muted);
+}
+
+.live__rec--paused .live__rec-label,
+.live__rec--paused .live__rec-time {
+  color: var(--muted);
+}
+
+.live-wave--paused {
+  opacity: 0.45;
+}
+
+.live__title {
+  min-width: 0;
+}
+
+.live__title-name {
+  font-size: var(--fs-lg);
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.live__title-meta {
+  font-size: var(--fs-sm);
+  color: var(--muted);
+}
+
+.live-wave {
+  margin-left: auto;
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: 26px;
+}
+
+/* Bar height tracks the live input level: the component sets scaleY per bar from the RMS, and the
+   transition smooths the ~10 Hz steps into a moving meter. */
+.live-wave__bar {
+  width: 3px;
+  height: 22px;
+  border-radius: 2px;
+  background: var(--accent);
+  transform-origin: center bottom;
+  transform: scaleY(0.16);
+  transition: transform 0.09s linear;
+}
+
+.live__ghost {
+  padding: 8px 14px;
+  background: transparent;
+  border-color: var(--border);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+}
+
+.live__end {
+  padding: 8px 16px;
+  border: none;
+  border-radius: var(--radius);
+  background: var(--danger);
+  color: var(--on-danger);
+  font-size: var(--fs-sm);
+  font-weight: 700;
+}
+
+.live__end:not(:disabled):hover {
+  border-color: transparent;
+  filter: brightness(1.06);
+}
+
+.live__status {
+  margin: 0;
+  padding: 8px 20px;
+  color: var(--accent);
+  font-size: var(--fs-md);
+}
+
+.live__error {
+  margin: 0;
+  padding: 8px 20px;
+  color: var(--danger);
+  font-size: var(--fs-md);
+}
+
+/* Transcript is the hero: a scrolling list with a bottom fade over the newest content. */
+.live__transcript {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 0 28px;
+}
+
+.live__transcript-label {
+  padding: 14px 0 6px;
+  color: var(--muted);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  letter-spacing: 0.14em;
+}
+
+.live__lines {
+  flex: 1;
+  min-height: 0;
+  margin: 0;
+  padding: 0 0 24px;
+  list-style: none;
+  overflow-y: auto;
+}
+
+.live__empty {
+  padding: 12px 0;
+}
+
+.live__fade {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 80px;
+  background: linear-gradient(to top, var(--bg), transparent);
+  pointer-events: none;
+}
+
+.live-line {
+  display: flex;
+  gap: 13px;
+  padding: 13px 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+}
+
+.live-line__avatar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--spk) 20%, transparent);
+  color: var(--spk);
+  font-size: var(--fs-sm);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.live-line__body {
+  flex: 1;
+  min-width: 0;
+}
+
+.live-line__head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-bottom: 4px;
+}
+
+.live-line__name {
+  font-size: var(--fs-md);
+  font-weight: 600;
+}
+
+.live-line__time {
+  color: var(--muted);
+  font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums;
+}
+
+.live-line__text {
+  max-width: 560px;
+  color: color-mix(in srgb, var(--text) 80%, transparent);
+  font-size: var(--fs-md);
+  line-height: 1.6;
+}
+
+.live-line--partial .live-line__text {
+  font-style: italic;
+}
+
+.live-line--newest .live-line__text {
+  color: var(--text);
+}
+
+.live-line__caret {
+  display: inline-block;
+  width: 2px;
+  height: 15px;
+  margin-left: 3px;
+  vertical-align: -2px;
+  background: var(--accent);
+  animation: live-caret 1s steps(1) infinite;
+}
+
+/* AI layer stays quiet and secondary: a footer strip, not a panel. */
+.live__ai {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 12px 20px;
+  border-top: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.live__ai-label {
+  color: var(--accent);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  letter-spacing: 0.12em;
+}
+
+.live__ai-hint {
+  color: var(--muted);
+  font-size: var(--fs-sm);
+}
+
+.live__notes {
+  flex: none;
+  width: 326px;
+  display: flex;
+  flex-direction: column;
+  border-left: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.live__notes-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 16px 18px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.live__notes-title {
+  font-size: var(--fs-md);
+  font-weight: 700;
+}
+
+.live__notes-status {
+  color: var(--muted);
+  font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Borderless editor filling the panel between the header and the footer chips. */
+.live__notes-editor {
+  flex: 1;
+  min-height: 0;
+  padding: 14px 18px;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: var(--fs-md);
+  line-height: 1.7;
+  resize: none;
+}
+
+.live__notes-editor:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.live__notes-editor::placeholder {
+  color: var(--muted);
+}
+
+@keyframes live-recpulse {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.4;
+    transform: scale(0.8);
+  }
+}
+
+@keyframes live-caret {
+  0%,
+  49% {
+    opacity: 1;
+  }
+  50%,
+  100% {
+    opacity: 0;
+  }
+}
+
+/* Post-meeting "My notes" panel in the finalized detail view (the notes taken during recording). */
+.user-notes {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.user-notes__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.user-notes__title {
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.user-notes__status {
+  color: var(--muted);
+  font-size: var(--fs-xs);
+}
+
+.user-notes__editor {
+  width: 100%;
+  min-height: 5em;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  color: var(--text);
+  font: inherit;
+  font-size: var(--fs-md);
+  line-height: 1.6;
+  resize: vertical;
+}
+
+.user-notes__editor:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.user-notes__editor::placeholder {
+  color: var(--muted);
+}
+
+/* ============================================================================
+   Meeting detail (design direction 2a) + home dashboard (2b)
+   ============================================================================ */
+
+/* --- 2a: two-column meeting detail --- */
+.detail {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.detail__header {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 14px 22px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.detail__crumb {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 40%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+  font-size: var(--fs-sm);
+}
+
+.detail__titleblock {
+  min-width: 0;
+}
+
+.detail__title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.detail__title {
+  margin: 0;
+  font-size: var(--fs-lg);
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.detail__meta {
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: var(--fs-sm);
+}
+
+.detail__actions {
+  margin-left: auto;
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* Audio scrubber: round play button, elapsed, seek (played portion painted inline), total, volume. */
+.detail__scrubber {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 12px 22px;
+  border-bottom: 1px solid var(--border);
+}
+
+.detail__play {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: var(--accent);
+  color: var(--on-accent);
+}
+
+.detail__play:not(:disabled):hover {
+  filter: brightness(1.08);
+}
+
+.detail__time {
+  flex: none;
+  min-width: 42px;
+  color: var(--muted);
+  font-size: var(--fs-sm);
+  font-variant-numeric: tabular-nums;
+}
+
+.detail__time--total {
+  text-align: right;
+}
+
+.detail__seek {
+  flex: 1;
+  min-width: 0;
+  height: 5px;
+  padding: 0;
+  border-radius: 3px;
+  -webkit-appearance: none;
+  appearance: none;
+  cursor: pointer;
+}
+
+.detail__seek::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: none;
+  background: var(--text);
+  cursor: pointer;
+}
+
+.detail__volume {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.detail__volume-icon {
+  display: inline-flex;
+  color: var(--muted);
+}
+
+.detail__volume-slider {
+  width: 72px;
+  accent-color: var(--accent);
+}
+
+/* Body: transcript hero (left) + AI-recap rail (right). */
+.detail__body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
+.detail__transcript {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid var(--border);
+}
+
+.detail__fade {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 60px;
+  background: linear-gradient(to top, var(--bg), transparent);
+  pointer-events: none;
+}
+
+.detail__recap {
+  flex: none;
+  width: var(--recap-width, 360px);
+  min-height: 0;
+  overflow-y: auto;
+  background: var(--surface);
+}
+
+.detail__recap > :last-child {
+  border-bottom: none;
+}
+
+/* Drag handle between the transcript and the recap rail; the transcript's border-right is the visible
+   seam, this is the wider grab zone that lights up on hover/focus. */
+.detail__resizer {
+  flex: none;
+  width: 6px;
+  cursor: col-resize;
+  background: transparent;
+  touch-action: none;
+}
+
+.detail__resizer:hover,
+.detail__resizer:active,
+.detail__resizer:focus-visible {
+  background: var(--accent);
+  outline: none;
+}
+
+/* --- 2a: AI-recap rail contents --- */
+.recap {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--border);
+}
+
+.recap__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.recap__eyebrow {
+  color: var(--accent);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  letter-spacing: 0.08em;
+}
+
+.recap__head-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.recap__action {
+  padding: 4px 10px;
+  font-size: var(--fs-sm);
+}
+
+.recap__action--stale {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--on-accent);
+  font-weight: 600;
+}
+
+.recap__action--stale:not(:disabled):hover {
+  border-color: var(--accent);
+  filter: brightness(1.08);
+}
+
+.recap__confirm {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.recap__confirm-text {
+  color: var(--danger);
+  font-size: var(--fs-sm);
+}
+
+.recap__stale {
+  margin: 0;
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: var(--surface-2);
+  color: var(--accent);
+  font-size: var(--fs-sm);
+}
+
+.recap__body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.recap__subhead {
+  color: var(--muted);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  letter-spacing: 0.08em;
+}
+
+.recap__badge {
+  color: var(--muted);
+  font-weight: 400;
+  letter-spacing: 0;
+}
+
+.recap__summary {
+  margin: 0;
+  color: color-mix(in srgb, var(--text) 80%, transparent);
+  font-size: var(--fs-md);
+  line-height: 1.65;
+  white-space: pre-wrap;
+}
+
+.recap__meta {
+  margin: 4px 0 0;
+  font-size: var(--fs-xs);
+}
+
+.recap__hint {
+  margin: 0;
+  font-size: var(--fs-md);
+}
+
+.recap__error {
+  margin: 0;
+  color: var(--danger);
+  font-size: var(--fs-sm);
+}
+
+.recap__editor {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.recap__editor-label {
+  color: var(--muted);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.recap__editor-content {
+  width: 100%;
+  min-height: 10em;
+  padding: 6px 8px;
+  font: inherit;
+  font-size: var(--fs-md);
+  line-height: 1.5;
+  resize: vertical;
+}
+
+.recap__editor-actions {
+  display: flex;
+  gap: 6px;
+}
+
+/* --- 2b: home dashboard --- */
+.dashboard {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0 28px 32px;
+}
+
+/* Centered greeting + the global search bar, the dashboard's front door. */
+.dashboard__hero {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 18px;
+  padding: 12vh 0 44px;
+}
+
+.dashboard__title {
+  margin: 0;
+  font-size: 1.5rem;
+  font-weight: 700;
+  text-align: center;
+  color: var(--text);
+}
+
+.dashboard__search {
+  width: 100%;
+  max-width: 680px;
+}
+
+.dashboard__search .search__input {
+  padding: 13px 16px;
+  border-radius: 12px;
+  font-size: var(--fs-lg);
+}
+
+.dashboard__error {
+  margin: 0 auto 12px;
+  width: 100%;
+  max-width: 900px;
+  color: var(--danger);
+  font-size: var(--fs-md);
+}
+
+/* The flat "recent meetings" list that replaces the folder tree on the home view. */
+.dashboard__recent {
+  width: 100%;
+  max-width: 900px;
+  margin: 0 auto;
+}
+
+.dashboard__recent-label {
+  margin: 0 0 4px;
+  color: var(--muted);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.dashboard__recent-empty {
+  margin: 10px 2px;
+}
+
+.recent {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.recent li {
+  border-bottom: 1px solid var(--border);
+}
+
+.recent__row {
+  display: grid;
+  grid-template-columns: 88px 1fr auto;
+  gap: 16px;
+  align-items: center;
+  width: 100%;
+  padding: 13px 6px;
+  border: none;
+  border-radius: 6px;
+  background: none;
+  text-align: left;
+}
+
+.recent__row:hover {
+  background: var(--surface);
+}
+
+.recent__when {
+  color: var(--muted);
+  font-size: var(--fs-sm);
+}
+
+.recent__title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--fs-lg);
+}

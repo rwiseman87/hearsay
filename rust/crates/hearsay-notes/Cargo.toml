@@ -1,0 +1,32 @@
+[package]
+name = "hearsay-notes"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+# The local-LLM notes sidecar: a standalone binary that owns llama.cpp (`llama-cpp-2`) so it is the
+# ONLY process that links llama's vendored `ggml`. It must never share a binary with `whisper-rs`
+# (the refine), whose own vendored `ggml` collides at link time and degrades whisper's Metal backend
+# ~5x. The core spawns this over stdio (JSON in, JSON out) exactly as it spawns `hearsay-diarize`.
+[[bin]]
+name = "hearsay-notes"
+path = "src/main.rs"
+
+[dependencies]
+# The pure prompt-building + reply-parsing (no ML) is shared with the core's config default; reuse it
+# from the dependency-free crate rather than forking it. Crucially NOT `hearsay-inference` — that
+# pulls whisper-rs, whose vendored `ggml` would then co-link with llama.cpp's here and reintroduce the
+# very collision this sidecar exists to avoid. This binary links llama.cpp and nothing else ML.
+hearsay-notes-prompt = { path = "../hearsay-notes-prompt" }
+llama-cpp-2 = { version = "0.1.151", default-features = false }
+encoding_rs = "0.8.35"
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Per-OS GPU acceleration for the notes LLM, selected by the installer/build to match the whisper
+# refine's backend: `metal` on Apple Silicon, `vulkan` on the Intel Arc iGPU, `cuda` on NVIDIA.
+# Default = portable CPU.
+[features]
+metal = ["llama-cpp-2/metal"]
+vulkan = ["llama-cpp-2/vulkan"]
+cuda = ["llama-cpp-2/cuda"]
