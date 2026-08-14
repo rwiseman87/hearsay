@@ -346,10 +346,8 @@ fn main() {
             // app-data so downloads survive app updates.
             let models_dir = data_dir.join("models");
             std::fs::create_dir_all(&models_dir)?;
-            // macOS downloads its refine model at first run; Windows bundles a smaller one (no
-            // ANE/Metal on the reference hardware). The Models panel overrides either.
-            #[cfg(target_os = "macos")]
-            let refine_model = models_dir.join("ggml-large-v3-turbo.bin");
+            // macOS downloads its refine model into the models dir, which the core defaults to on
+            // its own. Windows bundles one, so it needs the override.
             #[cfg(windows)]
             let refine_model = resource_dir.join("models/ggml-small.en.bin");
             let db_url = format!("sqlite://{}", data_dir.join("db/hearsay.db").display());
@@ -371,10 +369,6 @@ fn main() {
                     notices_path.to_string_lossy().to_string(),
                 )
                 .env(
-                    "HEARSAY_REFINE_MODEL",
-                    refine_model.to_string_lossy().to_string(),
-                )
-                .env(
                     "HEARSAY_OUTPUT_DIR",
                     data_dir.join("recordings").to_string_lossy().to_string(),
                 )
@@ -391,10 +385,15 @@ fn main() {
             #[cfg(target_os = "macos")]
             let cmd = cmd.env("HEARSAY_HELPER_PATH", helper.to_string_lossy().to_string());
             #[cfg(windows)]
-            let cmd = cmd.env(
-                "HEARSAY_SHERPA_MODELS_DIR",
-                sherpa_models.to_string_lossy().to_string(),
-            );
+            let cmd = cmd
+                .env(
+                    "HEARSAY_SHERPA_MODELS_DIR",
+                    sherpa_models.to_string_lossy().to_string(),
+                )
+                .env(
+                    "HEARSAY_REFINE_MODEL",
+                    refine_model.to_string_lossy().to_string(),
+                );
             // Where the core's stdout/stderr is mirrored (see the drain task below).
             let core_log_path = data_dir.join("logs").join("core.log");
             let _ = std::fs::create_dir_all(data_dir.join("logs"));

@@ -101,6 +101,14 @@ const CATALOG: &[Model] = &[
     },
 ];
 
+/// The refine model an install uses when nothing overrides it: the file [`Settings::refine_model`]
+/// defaults to, and the one first-run setup fetches. Windows takes a smaller model — no ANE/Metal on
+/// the reference hardware.
+#[cfg(not(windows))]
+pub(crate) const DEFAULT_REFINE_FILE: &str = "ggml-large-v3-turbo.bin";
+#[cfg(windows)]
+pub(crate) const DEFAULT_REFINE_FILE: &str = "ggml-small.en.bin";
+
 /// Refine models setup can fetch, keyed by file name — an install pointed at some other model skips
 /// the step rather than fetching one it will never load. Sizes + SHA256 are HuggingFace's LFS oid.
 const REFINE_SOURCES: &[Source] = &[
@@ -449,6 +457,9 @@ mod tests {
         // An unknown model is skipped rather than replaced with one of ours.
         assert!(refine_source(Path::new("/opt/models/ggml-tiny.bin")).is_none());
         assert!(refine_source(Path::new("")).is_none());
+        // The default this platform ships must be one setup can actually fetch, or a fresh install
+        // would gate on a refine model with no way to get it.
+        assert!(refine_source(Path::new(DEFAULT_REFINE_FILE)).is_some());
     }
 
     #[test]

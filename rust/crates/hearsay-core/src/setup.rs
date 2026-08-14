@@ -80,7 +80,7 @@ impl SetupManager {
 
     /// Whether every model the app needs is on disk.
     pub fn models_present(&self, refine_model: &Path) -> bool {
-        self.skip || (self.live_present() && models::is_ggml(refine_model))
+        present(self.skip, self.fluid_cache.as_deref(), refine_model)
     }
 
     fn live_present(&self) -> bool {
@@ -112,7 +112,11 @@ impl SetupManager {
             _ => SetupState {
                 required: true,
                 status: SetupStatus::Idle,
-                steps: self.planned_steps(&refine, None),
+                steps: self
+                    .plan(&refine, None)
+                    .into_iter()
+                    .map(|(s, _)| s)
+                    .collect(),
                 message: None,
             },
         }
@@ -144,8 +148,7 @@ impl SetupManager {
         let manager = self.clone();
         tokio::spawn(async move {
             let refine = effective_refine(&pool, &default_refine).await;
-            let steps = manager.planned_steps(&refine, notes);
-            let work = manager.work_items(&refine, notes);
+            let (steps, work): (Vec<_>, Vec<_>) = manager.plan(&refine, notes).into_iter().unzip();
             {
                 let mut run = manager.state.lock().unwrap_or_else(|e| e.into_inner());
                 run.steps = steps;
@@ -155,32 +158,20 @@ impl SetupManager {
         Ok(self.snapshot(true))
     }
 
-    /// The steps a run would perform — only what is missing.
-    fn planned_steps(
+    /// What a run would do — only what is missing. The reported step and the work that fills it are
+    /// produced together: `run_steps` indexes the progress by position, so they cannot be two lists
+    /// that drift apart.
+    fn plan(
         &self,
         refine: &Path,
         notes: Option<&'static models::Source>,
-    ) -> Vec<SetupStep> {
-        let mut steps = Vec::new();
+    ) -> Vec<(SetupStep, Step)> {
+        let mut plan = Vec::new();
         if !self.live_present() {
-            steps.push(pending_step("live", "Speech models", LIVE_APPROX_BYTES));
-        }
-        if !models::is_ggml(refine) {
-            if let Some(source) = models::refine_source(refine) {
-                steps.push(pending_step("refine", "Refine model", source.size_bytes()));
-            }
-        }
-        if let Some(source) = notes {
-            steps.push(pending_step("notes", "Notes model", source.size_bytes()));
-        }
-        steps
-    }
-
-    /// [`planned_steps`](Self::planned_steps) as the work to run; the two must stay in step.
-    fn work_items(&self, refine: &Path, notes: Option<&'static models::Source>) -> Vec<Step> {
-        let mut work = Vec::new();
-        if !self.live_present() {
-            work.push(Step::Live);
+            plan.push((
+                pending_step("live", "Speech models", LIVE_APPROX_BYTES),
+                Step::Live,
+            ));
         }
         if !models::is_ggml(refine) {
             if let Some(source) = models::refine_source(refine) {
@@ -189,13 +180,19 @@ impl SetupManager {
                     .filter(|p| !p.as_os_str().is_empty())
                     .map(Path::to_path_buf)
                     .unwrap_or_else(|| self.models_dir.clone());
-                work.push(Step::Refine(source, dir));
+                plan.push((
+                    pending_step("refine", "Refine model", source.size_bytes()),
+                    Step::Refine(source, dir),
+                ));
             }
         }
         if let Some(source) = notes {
-            work.push(Step::Notes(source));
+            plan.push((
+                pending_step("notes", "Notes model", source.size_bytes()),
+                Step::Notes(source),
+            ));
         }
-        work
+        plan
     }
 
     /// Run each step in order, stopping at the first failure. Success records the completion and
@@ -344,14 +341,13 @@ impl SetupManager {
         let state = self.state.clone();
         let path = tokio::task::spawn_blocking(move || {
             models::download_source(source, &dir, &move |status, downloaded, total| {
-                let mut run = state.lock().unwrap_or_else(|e| e.into_inner());
-                if let Some(step) = run.steps.get_mut(index) {
+                update_step(&state, index, |step| {
                     step.downloaded_bytes = downloaded as i64;
                     step.total_bytes = total as i64;
                     if status == DownloadStatus::Verifying {
                         step.status = SetupStepStatus::Verifying;
                     }
-                }
+                });
             })
         })
         .await
@@ -384,35 +380,41 @@ impl SetupManager {
     }
 
     fn set_step_status(&self, index: usize, status: SetupStepStatus) {
-        let mut run = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(step) = run.steps.get_mut(index) {
+        update_step(&self.state, index, |step| {
             step.status = status;
             if status == SetupStepStatus::Done {
                 step.downloaded_bytes = step.total_bytes;
             }
-        }
+        });
     }
 
     fn set_step_bytes(&self, index: usize, downloaded: i64, total: i64) {
-        let mut run = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(step) = run.steps.get_mut(index) {
+        update_step(&self.state, index, |step| {
             step.downloaded_bytes = downloaded;
             step.total_bytes = total;
-        }
+        });
     }
 
     fn set_step_downloaded(&self, index: usize, downloaded: i64) {
-        let mut run = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(step) = run.steps.get_mut(index) {
+        update_step(&self.state, index, |step| {
             step.downloaded_bytes = downloaded.min(step.total_bytes);
-        }
+        });
     }
 }
 
 /// The boot probe: whether every model is on disk, which decides whether the engine may pre-warm.
+/// Runs before there is an [`AppState`](crate::AppState) to ask, and answers the same rule the
+/// manager's [`models_present`](SetupManager::models_present) does.
 pub fn models_present(settings: &Settings, refine_model: &Path) -> bool {
-    settings.scripted
-        || (live_models_present(fluid_cache(settings).as_deref()) && models::is_ggml(refine_model))
+    present(
+        settings.scripted,
+        fluid_cache(settings).as_deref(),
+        refine_model,
+    )
+}
+
+fn present(skip: bool, cache: Option<&Path>, refine_model: &Path) -> bool {
+    skip || (live_models_present(cache) && models::is_ggml(refine_model))
 }
 
 fn fluid_cache(settings: &Settings) -> Option<PathBuf> {
@@ -444,6 +446,15 @@ async fn effective_refine(pool: &SqlitePool, default: &Path) -> PathBuf {
     hearsay_db::queries::effective_refine_model(pool, default)
         .await
         .unwrap_or_else(|_| default.to_path_buf())
+}
+
+/// Mutate one step under the lock. An index past the end is ignored, so a progress line arriving
+/// after its run was replaced cannot panic.
+fn update_step(state: &Mutex<Run>, index: usize, edit: impl FnOnce(&mut SetupStep)) {
+    let mut run = state.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(step) = run.steps.get_mut(index) {
+        edit(step);
+    }
 }
 
 fn pending_step(id: &str, label: &str, total_bytes: i64) -> SetupStep {
