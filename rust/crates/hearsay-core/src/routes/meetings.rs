@@ -50,7 +50,15 @@ pub fn router() -> Router<AppState> {
         .route("/status", get(read_status))
 }
 
-#[utoipa::path(get, path = "/api/status", tag = "meetings", responses((status = 200, body = StatusInfo)))]
+/// Live app readiness, for the UI header.
+///
+/// Reports whether the transcription sidecars have finished loading their models. A cold start
+/// takes several seconds, so the record control polls this to show a "preparing" state rather than
+/// accepting a start that would stall. Read-only and cheap to poll.
+#[utoipa::path(
+    get, path = "/api/status", tag = "meetings",
+    responses((status = 200, body = StatusInfo, description = "Current sidecar readiness")),
+)]
 pub(crate) async fn read_status(State(state): State<AppState>) -> Json<StatusInfo> {
     Json(StatusInfo {
         sidecars_ready: state.engine.sidecars_ready(),
@@ -61,10 +69,13 @@ fn unavailable() -> ApiError {
     ApiError::Unavailable("live capture engine not available (build hearsay-orchestrator)".into())
 }
 
+/// List meetings, newest first.
+///
+/// Backs the Library and Dashboard views.
 #[utoipa::path(
     get, path = "/api/meetings", tag = "meetings",
     params(("page" = Option<u32>, Query), ("page_size" = Option<u32>, Query)),
-    responses((status = 200, body = Page<MeetingRead>)),
+    responses((status = 200, body = Page<MeetingRead>, description = "A page of meetings, newest first")),
 )]
 pub(crate) async fn list_meetings(
     State(state): State<AppState>,
@@ -76,10 +87,19 @@ pub(crate) async fn list_meetings(
     Ok(Json(window.page_of(total, rows)))
 }
 
+/// Start a meeting.
+///
+/// Spawns the capture helper, begins capture, and starts the transcription pipeline. One meeting
+/// may be active at a time. `title` is optional; omitted, it defaults to a timestamp-derived name.
 #[utoipa::path(
     post, path = "/api/meetings", tag = "meetings",
     request_body = MeetingCreate,
-    responses((status = 201, body = MeetingRead), (status = 409), (status = 422), (status = 503)),
+    responses(
+        (status = 201, body = MeetingRead, description = "Recording started"),
+        (status = 409, description = "A meeting is already recording"),
+        (status = 422, description = "Title exceeds 255 characters"),
+        (status = 503, description = "Capture engine unavailable"),
+    ),
 )]
 pub(crate) async fn start_meeting(
     State(state): State<AppState>,
@@ -100,10 +120,14 @@ pub(crate) async fn start_meeting(
     }
 }
 
+/// Read one meeting.
 #[utoipa::path(
     get, path = "/api/meetings/{id}", tag = "meetings",
     params(("id" = Uuid, Path)),
-    responses((status = 200, body = MeetingRead), (status = 404)),
+    responses(
+        (status = 200, body = MeetingRead, description = "The meeting"),
+        (status = 404, description = "No such meeting"),
+    ),
 )]
 pub(crate) async fn get_meeting(
     State(state): State<AppState>,
@@ -115,11 +139,19 @@ pub(crate) async fn get_meeting(
     Ok(Json(meeting.into()))
 }
 
+/// Rename a meeting.
+///
+/// Updates the title only; filing a meeting into a folder is a separate operation
+/// (`PUT /api/meetings/{id}/folder`). The title is trimmed before it is stored.
 #[utoipa::path(
     patch, path = "/api/meetings/{id}", tag = "meetings",
     params(("id" = Uuid, Path)),
     request_body = MeetingUpdate,
-    responses((status = 200, body = MeetingRead), (status = 404), (status = 422)),
+    responses(
+        (status = 200, body = MeetingRead, description = "The renamed meeting"),
+        (status = 404, description = "No such meeting"),
+        (status = 422, description = "Blank title, or over 255 characters"),
+    ),
 )]
 pub(crate) async fn update_meeting(
     State(state): State<AppState>,
@@ -134,11 +166,19 @@ pub(crate) async fn update_meeting(
     Ok(Json(meeting.into()))
 }
 
+/// File a meeting into a folder.
+///
+/// A `null` `folder_id` un-files the meeting back to the root. Organizational only — the meeting's
+/// on-disk directory never moves.
 #[utoipa::path(
     put, path = "/api/meetings/{id}/folder", tag = "meetings",
     params(("id" = Uuid, Path)),
     request_body = MeetingFolderAssign,
-    responses((status = 200, body = MeetingRead), (status = 404), (status = 422)),
+    responses(
+        (status = 200, body = MeetingRead, description = "The re-filed meeting"),
+        (status = 404, description = "The meeting or the target folder is unknown"),
+        (status = 422, description = "Malformed request body"),
+    ),
 )]
 pub(crate) async fn assign_meeting_folder(
     State(state): State<AppState>,
@@ -157,13 +197,18 @@ pub(crate) async fn assign_meeting_folder(
     Ok(Json(meeting.into()))
 }
 
+/// List a meeting's finalized transcript segments, ordered by `start_s`.
+///
+/// How a past meeting reloads from the database, and how a live client recovers after a `resync`
+/// event on the transcript WebSocket. Only finalized segments are stored; streamed partials are
+/// never persisted.
 #[utoipa::path(
     get, path = "/api/meetings/{id}/segments", tag = "meetings",
     params(
         ("id" = Uuid, Path),
         ("page" = Option<u32>, Query), ("page_size" = Option<u32>, Query),
     ),
-    responses((status = 200, body = Page<SegmentRead>)),
+    responses((status = 200, body = Page<SegmentRead>, description = "A page of segments, ordered by start time")),
 )]
 pub(crate) async fn list_segments(
     State(state): State<AppState>,
@@ -176,11 +221,20 @@ pub(crate) async fn list_segments(
     Ok(Json(window.page_of(total, rows)))
 }
 
+/// Correct one transcript line's text.
+///
+/// The database is the source of truth; `transcript.md` is re-exported best-effort afterwards.
+/// Finalized meetings only — while recording, the live pipeline is still appending segments.
 #[utoipa::path(
     patch, path = "/api/meetings/{id}/segments/{segment_id}", tag = "meetings",
     params(("id" = Uuid, Path), ("segment_id" = Uuid, Path)),
     request_body = SegmentEdit,
-    responses((status = 200, body = SegmentRead), (status = 404), (status = 409), (status = 422)),
+    responses(
+        (status = 200, body = SegmentRead, description = "The edited segment"),
+        (status = 404, description = "The segment is not in this meeting"),
+        (status = 409, description = "The meeting is still recording"),
+        (status = 422, description = "Empty text, or over the length limit"),
+    ),
 )]
 pub(crate) async fn edit_segment(
     State(state): State<AppState>,
@@ -210,11 +264,25 @@ pub(crate) async fn edit_segment(
     Ok(Json(segment.into()))
 }
 
+/// Reassign one line to a different speaker.
+///
+/// Fixes an individual diarization mistake without renaming the whole cluster. Send exactly one of
+/// `cluster_id` (move the line to an existing speaker in this meeting) or `display_name` (assign it
+/// to a person by name, reusing that identity's cluster in the meeting if it has one, else creating
+/// a new locked speaker).
+///
+/// The line is flagged `edited`, so it counts toward the warning shown before a refine discards
+/// manual work. The database is the source of truth; `transcript.md` is re-exported best-effort.
 #[utoipa::path(
     patch, path = "/api/meetings/{id}/segments/{segment_id}/speaker", tag = "meetings",
     params(("id" = Uuid, Path), ("segment_id" = Uuid, Path)),
     request_body = SegmentSpeakerAssign,
-    responses((status = 200, body = SegmentRead), (status = 404), (status = 409), (status = 422)),
+    responses(
+        (status = 200, body = SegmentRead, description = "The reassigned segment"),
+        (status = 404, description = "The segment is not in this meeting"),
+        (status = 409, description = "The meeting is still recording"),
+        (status = 422, description = "A Me line, an unknown target cluster, or a body that is not exactly one of the two fields"),
+    ),
 )]
 pub(crate) async fn reassign_segment_speaker(
     State(state): State<AppState>,
@@ -267,10 +335,19 @@ pub(crate) async fn reassign_segment_speaker(
     Ok(Json(segment.into()))
 }
 
+/// Stop and finalize a meeting.
+///
+/// Stops capture, flushes the pipeline, rewrites `transcript.md` in timestamp order, and stamps
+/// `ended_at`. Returns the updated meeting immediately: when a refine or notes step will run the
+/// status is `refining`, and it flips to `finalized` once that background work completes.
 #[utoipa::path(
     post, path = "/api/meetings/{id}/stop", tag = "meetings",
     params(("id" = Uuid, Path)),
-    responses((status = 200, body = MeetingRead), (status = 404), (status = 503)),
+    responses(
+        (status = 200, body = MeetingRead, description = "The finalized (or refining) meeting"),
+        (status = 404, description = "No such meeting"),
+        (status = 503, description = "Capture engine unavailable"),
+    ),
 )]
 pub(crate) async fn stop_meeting(
     State(state): State<AppState>,
@@ -292,7 +369,10 @@ pub(crate) async fn stop_meeting(
 #[utoipa::path(
     post, path = "/api/meetings/{id}/keep-recording", tag = "meetings",
     params(("id" = Uuid, Path)),
-    responses((status = 204), (status = 404)),
+    responses(
+        (status = 204, description = "Silence clock reset"),
+        (status = 404, description = "Not the current recording session"),
+    ),
 )]
 pub(crate) async fn keep_recording(
     State(state): State<AppState>,
@@ -311,7 +391,10 @@ pub(crate) async fn keep_recording(
 #[utoipa::path(
     post, path = "/api/meetings/{id}/pause", tag = "meetings",
     params(("id" = Uuid, Path)),
-    responses((status = 204), (status = 404)),
+    responses(
+        (status = 204, description = "Paused (or already paused)"),
+        (status = 404, description = "Not the current recording session"),
+    ),
 )]
 pub(crate) async fn pause_meeting(
     State(state): State<AppState>,
@@ -328,7 +411,10 @@ pub(crate) async fn pause_meeting(
 #[utoipa::path(
     post, path = "/api/meetings/{id}/resume", tag = "meetings",
     params(("id" = Uuid, Path)),
-    responses((status = 204), (status = 404)),
+    responses(
+        (status = 204, description = "Resumed (or already running)"),
+        (status = 404, description = "Not the current recording session"),
+    ),
 )]
 pub(crate) async fn resume_meeting(
     State(state): State<AppState>,
@@ -340,10 +426,18 @@ pub(crate) async fn resume_meeting(
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// Delete a meeting and its recordings.
+///
+/// Removes the database rows (segments, clusters, and both notes tables cascade) and deletes the
+/// on-disk folder. Irreversible. The active recording session cannot be deleted — stop it first.
 #[utoipa::path(
     delete, path = "/api/meetings/{id}", tag = "meetings",
     params(("id" = Uuid, Path)),
-    responses((status = 204), (status = 404), (status = 409)),
+    responses(
+        (status = 204, description = "Deleted"),
+        (status = 404, description = "No such meeting"),
+        (status = 409, description = "The meeting is currently recording"),
+    ),
 )]
 pub(crate) async fn delete_meeting(
     State(state): State<AppState>,
@@ -382,7 +476,11 @@ pub(crate) async fn delete_meeting(
 #[utoipa::path(
     post, path = "/api/meetings/{id}/reveal", tag = "meetings",
     params(("id" = Uuid, Path)),
-    responses((status = 204), (status = 404), (status = 503)),
+    responses(
+        (status = 204, description = "Handed off to the file manager"),
+        (status = 404, description = "No such meeting"),
+        (status = 503, description = "The folder could not be opened"),
+    ),
 )]
 pub(crate) async fn reveal_meeting(
     State(state): State<AppState>,

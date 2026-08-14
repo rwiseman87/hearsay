@@ -22,26 +22,43 @@ pub fn router() -> Router<AppState> {
     )
 }
 
+/// The notes-model catalog, with each entry's installed state.
+///
+/// A small fixed catalog of GGUF instruct models, plus the directory they install into. Always
+/// compiled, independent of whether the notes sidecar is bundled, so the API surface is identical
+/// across builds.
 #[utoipa::path(
     get, path = "/api/models/catalog", tag = "models",
-    responses((status = 200, body = ModelCatalog)),
+    responses((status = 200, body = ModelCatalog, description = "The catalog and the models directory")),
 )]
 pub(crate) async fn catalog(State(state): State<AppState>) -> Json<ModelCatalog> {
     Json(state.downloads.catalog())
 }
 
+/// The current model download's status, for polling.
+///
+/// One of `idle`, `downloading` (with progress), `verifying` (checking the SHA-256), `ready`, or
+/// `error`.
 #[utoipa::path(
     get, path = "/api/models/download", tag = "models",
-    responses((status = 200, body = DownloadState)),
+    responses((status = 200, body = DownloadState, description = "The current download status")),
 )]
 pub(crate) async fn download_status(State(state): State<AppState>) -> Json<DownloadState> {
     Json(state.downloads.status())
 }
 
+/// Start downloading a catalog model.
+///
+/// Downloads into the models directory and verifies it by SHA-256 before marking it ready. One
+/// download at a time; poll `GET /api/models/download` for progress.
 #[utoipa::path(
     post, path = "/api/models/download", tag = "models",
     request_body = DownloadRequest,
-    responses((status = 200, body = DownloadState), (status = 404), (status = 409)),
+    responses(
+        (status = 200, body = DownloadState, description = "The download has started"),
+        (status = 404, description = "Unknown model id"),
+        (status = 409, description = "A download is already running"),
+    ),
 )]
 pub(crate) async fn start_download(
     State(state): State<AppState>,

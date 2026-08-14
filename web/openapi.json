@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "hearsay",
-    "description": "Local-first meeting-note transcriber — loopback API.",
+    "description": "Local-first meeting-note transcriber. The core serves this API on `127.0.0.1` only, for the bundled web UI.\n\n**Conventions**\n\n- Base path is `/api`. Every request needs the session token; see the `session_token` scheme.\n- List endpoints return `{ total, page, page_size, items }` and take `page` (at least 1, default 1) and `page_size` (1 to 200, default 50).\n- Errors return `{ \"detail\": \"...\" }`. Database and internal failures render as a literal \"internal error\" — details go to the log only.\n- Times are ISO 8601. Segment `start_s` and `end_s` are seconds relative to the meeting start, not wall clock.\n\n**Not in this document**\n\nThree served routes have no OpenAPI representation and are specified in `docs/api.md`: the live transcript WebSocket at `/ws/meetings/{id}`, meeting audio at `/api/meetings/{id}/audio` (a byte stream with `Range` support), and `/`, which serves the UI with the token injected.",
     "license": {
       "name": ""
     },
@@ -14,6 +14,8 @@
         "tags": [
           "folders"
         ],
+        "summary": "List folders, flat.",
+        "description": "Returned flat with each folder's `parent_id`; the client assembles the tree.",
         "operationId": "list_folders",
         "parameters": [
           {
@@ -39,7 +41,7 @@
         ],
         "responses": {
           "200": {
-            "description": "",
+            "description": "A flat page of folders",
             "content": {
               "application/json": {
                 "schema": {
@@ -54,6 +56,8 @@
         "tags": [
           "folders"
         ],
+        "summary": "Create a folder.",
+        "description": "Omit `parent_id` (or send `null`) to create it at the root.",
         "operationId": "create_folder",
         "requestBody": {
           "content": {
@@ -67,7 +71,7 @@
         },
         "responses": {
           "201": {
-            "description": "",
+            "description": "The created folder",
             "content": {
               "application/json": {
                 "schema": {
@@ -77,7 +81,7 @@
             }
           },
           "422": {
-            "description": ""
+            "description": "Blank name"
           }
         }
       }
@@ -87,6 +91,8 @@
         "tags": [
           "folders"
         ],
+        "summary": "Delete a folder.",
+        "description": "Cascade-deletes its sub-folders but un-files its meetings to the root. A folder operation never\ndeletes a meeting.",
         "operationId": "delete_folder",
         "parameters": [
           {
@@ -101,10 +107,10 @@
         ],
         "responses": {
           "204": {
-            "description": ""
+            "description": "Deleted; its meetings were un-filed to the root"
           },
           "404": {
-            "description": ""
+            "description": "No such folder"
           }
         }
       },
@@ -112,6 +118,7 @@
         "tags": [
           "folders"
         ],
+        "summary": "Rename a folder.",
         "operationId": "rename_folder",
         "parameters": [
           {
@@ -136,7 +143,7 @@
         },
         "responses": {
           "200": {
-            "description": "",
+            "description": "The renamed folder",
             "content": {
               "application/json": {
                 "schema": {
@@ -146,10 +153,10 @@
             }
           },
           "404": {
-            "description": ""
+            "description": "No such folder"
           },
           "422": {
-            "description": ""
+            "description": "Blank name"
           }
         }
       }
@@ -159,6 +166,8 @@
         "tags": [
           "folders"
         ],
+        "summary": "Move a folder under a new parent.",
+        "description": "A `null` `parent_id` moves it to the root. A folder cannot become its own descendant; the cycle\nis rejected rather than orphaning a subtree.",
         "operationId": "reparent_folder",
         "parameters": [
           {
@@ -183,7 +192,7 @@
         },
         "responses": {
           "200": {
-            "description": "",
+            "description": "The moved folder",
             "content": {
               "application/json": {
                 "schema": {
@@ -193,10 +202,10 @@
             }
           },
           "404": {
-            "description": ""
+            "description": "The folder or the target parent is unknown"
           },
           "422": {
-            "description": ""
+            "description": "The move would create a cycle"
           }
         }
       }
@@ -206,6 +215,8 @@
         "tags": [
           "speakers"
         ],
+        "summary": "List known people, most recently updated first.",
+        "description": "Every name that has ever been bound to a speaker, whether or not it has a stored voiceprint.\nPowers the rename autocomplete, so a name used in one meeting is suggested in the next. For the\nsubset that can actually be recognized by voice, see `GET /api/voiceprints`.",
         "operationId": "list_identities",
         "parameters": [
           {
@@ -231,7 +242,7 @@
         ],
         "responses": {
           "200": {
-            "description": "",
+            "description": "A page of known people",
             "content": {
               "application/json": {
                 "schema": {
@@ -248,6 +259,8 @@
         "tags": [
           "voiceprints"
         ],
+        "summary": "Rename a person everywhere.",
+        "description": "Renames the identity and relabels every segment bound to it, across every meeting, in one\ntransaction, then re-exports each affected `transcript.md`. Generated notes are **not**\nregenerated — they are model output rather than derived rows, so they keep the old name until\nregenerated by hand.\n\nA name collision is a conflict, never a silent identity merge. Re-applying the current name is a\nno-op `200`.",
         "operationId": "rename_identity",
         "parameters": [
           {
@@ -272,7 +285,7 @@
         },
         "responses": {
           "200": {
-            "description": "",
+            "description": "The renamed person",
             "content": {
               "application/json": {
                 "schema": {
@@ -282,13 +295,13 @@
             }
           },
           "404": {
-            "description": ""
+            "description": "No such person"
           },
           "409": {
-            "description": ""
+            "description": "Another person already holds that name"
           },
           "422": {
-            "description": ""
+            "description": "Blank name, or over 255 characters"
           }
         }
       }
@@ -298,6 +311,8 @@
         "tags": [
           "voiceprints"
         ],
+        "summary": "Forget a person's voice entirely.",
+        "description": "Clears every centroid stored for that person, including unlocked ones — otherwise an unlocked\nsample would re-enter the candidate set as soon as its cluster was renamed. Names, locks, and\npast transcripts are untouched; only future recognition stops.",
         "operationId": "forget_voice",
         "parameters": [
           {
@@ -312,10 +327,10 @@
         ],
         "responses": {
           "204": {
-            "description": ""
+            "description": "All of that person's centroids cleared"
           },
           "404": {
-            "description": ""
+            "description": "No such person"
           }
         }
       }
@@ -325,6 +340,8 @@
         "tags": [
           "meetings"
         ],
+        "summary": "List meetings, newest first.",
+        "description": "Backs the Library and Dashboard views.",
         "operationId": "list_meetings",
         "parameters": [
           {
@@ -350,7 +367,7 @@
         ],
         "responses": {
           "200": {
-            "description": "",
+            "description": "A page of meetings, newest first",
             "content": {
               "application/json": {
                 "schema": {
@@ -365,6 +382,8 @@
         "tags": [
           "meetings"
         ],
+        "summary": "Start a meeting.",
+        "description": "Spawns the capture helper, begins capture, and starts the transcription pipeline. One meeting\nmay be active at a time. `title` is optional; omitted, it defaults to a timestamp-derived name.",
         "operationId": "start_meeting",
         "requestBody": {
           "content": {
@@ -378,7 +397,7 @@
         },
         "responses": {
           "201": {
-            "description": "",
+            "description": "Recording started",
             "content": {
               "application/json": {
                 "schema": {
@@ -388,13 +407,13 @@
             }
           },
           "409": {
-            "description": ""
+            "description": "A meeting is already recording"
           },
           "422": {
-            "description": ""
+            "description": "Title exceeds 255 characters"
           },
           "503": {
-            "description": ""
+            "description": "Capture engine unavailable"
           }
         }
       }
@@ -404,6 +423,7 @@
         "tags": [
           "meetings"
         ],
+        "summary": "Read one meeting.",
         "operationId": "get_meeting",
         "parameters": [
           {
@@ -418,7 +438,7 @@
         ],
         "responses": {
           "200": {
-            "description": "",
+            "description": "The meeting",
             "content": {
               "application/json": {
                 "schema": {
@@ -428,7 +448,7 @@
             }
           },
           "404": {
-            "description": ""
+            "description": "No such meeting"
           }
         }
       },
@@ -436,6 +456,8 @@
         "tags": [
           "meetings"
         ],
+        "summary": "Delete a meeting and its recordings.",
+        "description": "Removes the database rows (segments, clusters, and both notes tables cascade) and deletes the\non-disk folder. Irreversible. The active recording session cannot be deleted — stop it first.",
         "operationId": "delete_meeting",
         "parameters": [
           {
@@ -450,13 +472,13 @@
         ],
         "responses": {
           "204": {
-            "description": ""
+            "description": "Deleted"
           },
           "404": {
-            "description": ""
+            "description": "No such meeting"
           },
           "409": {
-            "description": ""
+            "description": "The meeting is currently recording"
           }
         }
       },
@@ -464,6 +486,8 @@
         "tags": [
           "meetings"
         ],
+        "summary": "Rename a meeting.",
+        "description": "Updates the title only; filing a meeting into a folder is a separate operation\n(`PUT /api/meetings/{id}/folder`). The title is trimmed before it is stored.",
         "operationId": "update_meeting",
         "parameters": [
           {
@@ -488,7 +512,7 @@
         },
         "responses": {
           "200": {
-            "description": "",
+            "description": "The renamed meeting",
             "content": {
               "application/json": {
                 "schema": {
@@ -498,10 +522,10 @@
             }
           },
           "404": {
-            "description": ""
+            "description": "No such meeting"
           },
           "422": {
-            "description": ""
+            "description": "Blank title, or over 255 characters"
           }
         }
       }
@@ -511,6 +535,8 @@
         "tags": [
           "meetings"
         ],
+        "summary": "File a meeting into a folder.",
+        "description": "A `null` `folder_id` un-files the meeting back to the root. Organizational only — the meeting's\non-disk directory never moves.",
         "operationId": "assign_meeting_folder",
         "parameters": [
           {
@@ -535,7 +561,7 @@
         },
         "responses": {
           "200": {
-            "description": "",
+            "description": "The re-filed meeting",
             "content": {
               "application/json": {
                 "schema": {
@@ -545,10 +571,10 @@
             }
           },
           "404": {
-            "description": ""
+            "description": "The meeting or the target folder is unknown"
           },
           "422": {
-            "description": ""
+            "description": "Malformed request body"
           }
         }
       }
@@ -573,10 +599,10 @@
         ],
         "responses": {
           "204": {
-            "description": ""
+            "description": "Silence clock reset"
           },
           "404": {
-            "description": ""
+            "description": "Not the current recording session"
           }
         }
       }
@@ -586,6 +612,8 @@
         "tags": [
           "notes"
         ],
+        "summary": "Read a meeting's generated notes.",
+        "description": "Returns the Markdown `content`, the model that produced it, and timestamps, plus `edited` (set\nonce the notes have been hand-edited) and `stale` (`true` when the transcript changed after the\nnotes were generated, so the client can offer a regenerate).",
         "operationId": "read_notes",
         "parameters": [
           {
@@ -600,7 +628,7 @@
         ],
         "responses": {
           "200": {
-            "description": "",
+            "description": "The stored notes",
             "content": {
               "application/json": {
                 "schema": {
@@ -610,7 +638,7 @@
             }
           },
           "404": {
-            "description": ""
+            "description": "This meeting has no notes yet"
           }
         }
       },
@@ -618,6 +646,8 @@
         "tags": [
           "notes"
         ],
+        "summary": "Generate (or regenerate) meeting notes with the local LLM.",
+        "description": "Runs in the bundled `hearsay-notes` sidecar (llama.cpp, out-of-process) over the finalized\ntranscript. The model's reply is stored and returned verbatim as `content` — the user-editable\nprompt template dictates the format, so nothing is parsed into structured fields.\n\nRegenerating replaces existing notes, including hand-edited ones.",
         "operationId": "generate_notes",
         "parameters": [
           {
@@ -632,7 +662,7 @@
         ],
         "responses": {
           "200": {
-            "description": "",
+            "description": "The generated notes",
             "content": {
               "application/json": {
                 "schema": {
@@ -642,16 +672,16 @@
             }
           },
           "404": {
-            "description": ""
+            "description": "No such meeting"
           },
           "409": {
-            "description": ""
+            "description": "The meeting is still recording"
           },
           "422": {
-            "description": ""
+            "description": "The meeting has no transcript to summarize"
           },
           "503": {
-            "description": ""
+            "description": "No notes model is configured, or the sidecar is unavailable"
           }
         }
       },
@@ -659,6 +689,8 @@
         "tags": [
           "notes"
         ],
+        "summary": "Hand-edit a meeting's generated notes.",
+        "description": "Replaces the stored Markdown `content` and sets the `edited` flag, which is what warns the user\nbefore a regenerate overwrites their edits.",
         "operationId": "edit_notes",
         "parameters": [
           {
@@ -683,7 +715,7 @@
         },
         "responses": {
           "200": {
-            "description": "",
+            "description": "The edited notes",
             "content": {
               "application/json": {
                 "schema": {
@@ -693,13 +725,13 @@
             }
           },
           "404": {
-            "description": ""
+            "description": "This meeting has no notes to edit"
           },
           "409": {
-            "description": ""
+            "description": "The meeting is still recording"
           },
           "422": {
-            "description": ""
+            "description": "Content exceeds the length limit"
           }
         }
       }
@@ -724,10 +756,10 @@
         ],
         "responses": {
           "204": {
-            "description": ""
+            "description": "Paused (or already paused)"
           },
           "404": {
-            "description": ""
+            "description": "Not the current recording session"
           }
         }
       }
@@ -737,6 +769,8 @@
         "tags": [
           "speakers"
         ],
+        "summary": "Re-run the offline refine (\"Refine speakers\").",
+        "description": "Re-diarizes and re-transcribes the whole Them track: global clustering, overlap handling, and\nvoiceprint recognition of people named in earlier meetings. More accurate than the streaming\nlabels, which run online with limited context.\n\nManual (locked) names are carried across. Segment-level work is not: per-line reassignments and\nhand-edited text are rebuilt only at the cluster level, which is what the `edited` flag warns\nabout before the user starts a refine.",
         "operationId": "rediarize",
         "parameters": [
           {
@@ -751,7 +785,7 @@
         ],
         "responses": {
           "200": {
-            "description": "",
+            "description": "The meeting's speakers after the refine",
             "content": {
               "application/json": {
                 "schema": {
@@ -761,13 +795,13 @@
             }
           },
           "404": {
-            "description": ""
+            "description": "No such meeting"
           },
           "409": {
-            "description": ""
+            "description": "The meeting is still recording"
           },
           "503": {
-            "description": ""
+            "description": "The refine model or diarizer sidecar is unavailable"
           }
         }
       }
@@ -792,10 +826,10 @@
         ],
         "responses": {
           "204": {
-            "description": ""
+            "description": "Resumed (or already running)"
           },
           "404": {
-            "description": ""
+            "description": "Not the current recording session"
           }
         }
       }
@@ -820,13 +854,13 @@
         ],
         "responses": {
           "204": {
-            "description": ""
+            "description": "Handed off to the file manager"
           },
           "404": {
-            "description": ""
+            "description": "No such meeting"
           },
           "503": {
-            "description": ""
+            "description": "The folder could not be opened"
           }
         }
       }
@@ -836,6 +870,8 @@
         "tags": [
           "meetings"
         ],
+        "summary": "List a meeting's finalized transcript segments, ordered by `start_s`.",
+        "description": "How a past meeting reloads from the database, and how a live client recovers after a `resync`\nevent on the transcript WebSocket. Only finalized segments are stored; streamed partials are\nnever persisted.",
         "operationId": "list_segments",
         "parameters": [
           {
@@ -870,7 +906,7 @@
         ],
         "responses": {
           "200": {
-            "description": "",
+            "description": "A page of segments, ordered by start time",
             "content": {
               "application/json": {
                 "schema": {
@@ -887,6 +923,8 @@
         "tags": [
           "meetings"
         ],
+        "summary": "Correct one transcript line's text.",
+        "description": "The database is the source of truth; `transcript.md` is re-exported best-effort afterwards.\nFinalized meetings only — while recording, the live pipeline is still appending segments.",
         "operationId": "edit_segment",
         "parameters": [
           {
@@ -920,7 +958,7 @@
         },
         "responses": {
           "200": {
-            "description": "",
+            "description": "The edited segment",
             "content": {
               "application/json": {
                 "schema": {
@@ -930,13 +968,13 @@
             }
           },
           "404": {
-            "description": ""
+            "description": "The segment is not in this meeting"
           },
           "409": {
-            "description": ""
+            "description": "The meeting is still recording"
           },
           "422": {
-            "description": ""
+            "description": "Empty text, or over the length limit"
           }
         }
       }
@@ -946,6 +984,8 @@
         "tags": [
           "meetings"
         ],
+        "summary": "Reassign one line to a different speaker.",
+        "description": "Fixes an individual diarization mistake without renaming the whole cluster. Send exactly one of\n`cluster_id` (move the line to an existing speaker in this meeting) or `display_name` (assign it\nto a person by name, reusing that identity's cluster in the meeting if it has one, else creating\na new locked speaker).\n\nThe line is flagged `edited`, so it counts toward the warning shown before a refine discards\nmanual work. The database is the source of truth; `transcript.md` is re-exported best-effort.",
         "operationId": "reassign_segment_speaker",
         "parameters": [
           {
@@ -979,7 +1019,7 @@
         },
         "responses": {
           "200": {
-            "description": "",
+            "description": "The reassigned segment",
             "content": {
               "application/json": {
                 "schema": {
@@ -989,13 +1029,13 @@
             }
           },
           "404": {
-            "description": ""
+            "description": "The segment is not in this meeting"
           },
           "409": {
-            "description": ""
+            "description": "The meeting is still recording"
           },
           "422": {
-            "description": ""
+            "description": "A Me line, an unknown target cluster, or a body that is not exactly one of the two fields"
           }
         }
       }
@@ -1005,6 +1045,8 @@
         "tags": [
           "speakers"
         ],
+        "summary": "List a meeting's diarized speakers.",
+        "description": "Each item carries the cluster's resolved `label`: a bound name if the speaker has been named,\nelse `Speaker N`. Me is the microphone channel, not a cluster, so it never appears here.",
         "operationId": "list_speakers",
         "parameters": [
           {
@@ -1019,7 +1061,7 @@
         ],
         "responses": {
           "200": {
-            "description": "",
+            "description": "A page of this meeting's speakers",
             "content": {
               "application/json": {
                 "schema": {
@@ -1036,6 +1078,8 @@
         "tags": [
           "speakers"
         ],
+        "summary": "Name a speaker, binding the cluster to a cross-meeting identity.",
+        "description": "Gets or creates the identity by name, locks the binding, and relabels that speaker's segments.\nA locked binding wins over voiceprint recognition and survives a re-diarize. If the meeting is\nstill active the name also propagates to the live pipeline, so subsequent utterances carry it.",
         "operationId": "rename_speaker",
         "parameters": [
           {
@@ -1069,7 +1113,7 @@
         },
         "responses": {
           "200": {
-            "description": "",
+            "description": "The renamed speaker",
             "content": {
               "application/json": {
                 "schema": {
@@ -1079,10 +1123,10 @@
             }
           },
           "404": {
-            "description": ""
+            "description": "The cluster is not in this meeting"
           },
           "422": {
-            "description": ""
+            "description": "Blank name"
           }
         }
       }
@@ -1092,6 +1136,8 @@
         "tags": [
           "speakers"
         ],
+        "summary": "Combine two speakers the diarizer split apart.",
+        "description": "Folds the cluster named in the path into the one named by `into`: its lines are repointed,\nrelabelled to the target's name, and flagged `edited`, and the now-empty cluster is deleted.\nScoped to this meeting — no other meeting is touched, and the target's stored voiceprint is left\nalone. The source's own voice sample goes with its row, so a spurious split stops feeding\nrecognition.\n\nThe freed ordinal is not reused, so labels can read \"Speaker 1, Speaker 3\"; renumbering would\nrename unrelated speakers whose lines still carry the old text.",
         "operationId": "merge_speakers",
         "parameters": [
           {
@@ -1125,7 +1171,7 @@
         },
         "responses": {
           "200": {
-            "description": "",
+            "description": "The meeting's speakers after the merge",
             "content": {
               "application/json": {
                 "schema": {
@@ -1135,13 +1181,13 @@
             }
           },
           "404": {
-            "description": ""
+            "description": "The path cluster is not in this meeting"
           },
           "409": {
-            "description": ""
+            "description": "The meeting is still recording"
           },
           "422": {
-            "description": ""
+            "description": "A self-merge, or an `into` cluster outside this meeting"
           }
         }
       }
@@ -1151,6 +1197,8 @@
         "tags": [
           "meetings"
         ],
+        "summary": "Stop and finalize a meeting.",
+        "description": "Stops capture, flushes the pipeline, rewrites `transcript.md` in timestamp order, and stamps\n`ended_at`. Returns the updated meeting immediately: when a refine or notes step will run the\nstatus is `refining`, and it flips to `finalized` once that background work completes.",
         "operationId": "stop_meeting",
         "parameters": [
           {
@@ -1165,7 +1213,7 @@
         ],
         "responses": {
           "200": {
-            "description": "",
+            "description": "The finalized (or refining) meeting",
             "content": {
               "application/json": {
                 "schema": {
@@ -1175,10 +1223,10 @@
             }
           },
           "404": {
-            "description": ""
+            "description": "No such meeting"
           },
           "503": {
-            "description": ""
+            "description": "Capture engine unavailable"
           }
         }
       }
@@ -1188,6 +1236,8 @@
         "tags": [
           "notes"
         ],
+        "summary": "Read the user-authored \"My notes\" for a meeting.",
+        "description": "Free-form text the user types themselves, distinct from the LLM-generated notes. One row per\nmeeting. A `404` is the normal empty state — the panel starts blank.",
         "operationId": "read_user_notes",
         "parameters": [
           {
@@ -1202,7 +1252,7 @@
         ],
         "responses": {
           "200": {
-            "description": "",
+            "description": "The stored body and its last-saved time",
             "content": {
               "application/json": {
                 "schema": {
@@ -1212,7 +1262,7 @@
             }
           },
           "404": {
-            "description": ""
+            "description": "Nothing has been typed for this meeting yet"
           }
         }
       },
@@ -1220,6 +1270,8 @@
         "tags": [
           "notes"
         ],
+        "summary": "Autosave the user-authored \"My notes\" for a meeting.",
+        "description": "The database is the source of truth; `my-notes.md` in the meeting folder is mirrored\nbest-effort. Unlike the generated notes these may be written while the meeting is still\nrecording, so this route does not gate on the active session.",
         "operationId": "save_user_notes",
         "parameters": [
           {
@@ -1244,7 +1296,7 @@
         },
         "responses": {
           "200": {
-            "description": "",
+            "description": "The saved notes",
             "content": {
               "application/json": {
                 "schema": {
@@ -1254,10 +1306,10 @@
             }
           },
           "404": {
-            "description": ""
+            "description": "No such meeting"
           },
           "422": {
-            "description": ""
+            "description": "Body exceeds 100,000 characters"
           }
         }
       }
@@ -1267,10 +1319,12 @@
         "tags": [
           "models"
         ],
+        "summary": "The notes-model catalog, with each entry's installed state.",
+        "description": "A small fixed catalog of GGUF instruct models, plus the directory they install into. Always\ncompiled, independent of whether the notes sidecar is bundled, so the API surface is identical\nacross builds.",
         "operationId": "catalog",
         "responses": {
           "200": {
-            "description": "",
+            "description": "The catalog and the models directory",
             "content": {
               "application/json": {
                 "schema": {
@@ -1287,10 +1341,12 @@
         "tags": [
           "models"
         ],
+        "summary": "The current model download's status, for polling.",
+        "description": "One of `idle`, `downloading` (with progress), `verifying` (checking the SHA-256), `ready`, or\n`error`.",
         "operationId": "download_status",
         "responses": {
           "200": {
-            "description": "",
+            "description": "The current download status",
             "content": {
               "application/json": {
                 "schema": {
@@ -1305,6 +1361,8 @@
         "tags": [
           "models"
         ],
+        "summary": "Start downloading a catalog model.",
+        "description": "Downloads into the models directory and verifies it by SHA-256 before marking it ready. One\ndownload at a time; poll `GET /api/models/download` for progress.",
         "operationId": "start_download",
         "requestBody": {
           "content": {
@@ -1318,7 +1376,7 @@
         },
         "responses": {
           "200": {
-            "description": "",
+            "description": "The download has started",
             "content": {
               "application/json": {
                 "schema": {
@@ -1328,10 +1386,10 @@
             }
           },
           "404": {
-            "description": ""
+            "description": "Unknown model id"
           },
           "409": {
-            "description": ""
+            "description": "A download is already running"
           }
         }
       }
@@ -1341,6 +1399,8 @@
         "tags": [
           "search"
         ],
+        "summary": "Full-text search across every meeting's transcript.",
+        "description": "Runs an FTS5 match over finalized transcript segments — not titles, and not notes. The query is\nsanitized to plain terms (FTS operators are stripped) and bound as a parameter, so an empty or\nall-punctuation query returns an empty page rather than an error.\n\nEach hit carries the meeting, the matching segment, and a highlighted snippet, so a client can\njump straight to that moment in the transcript.",
         "operationId": "search",
         "parameters": [
           {
@@ -1374,7 +1434,7 @@
         ],
         "responses": {
           "200": {
-            "description": "",
+            "description": "A page of matching transcript lines",
             "content": {
               "application/json": {
                 "schema": {
@@ -1384,7 +1444,7 @@
             }
           },
           "422": {
-            "description": ""
+            "description": "Query exceeds the length limit"
           }
         }
       }
@@ -1394,10 +1454,12 @@
         "tags": [
           "settings"
         ],
+        "summary": "The effective settings: editable sections plus read-only build and storage facts.",
+        "description": "Returns every editable section (`recording`, `speakers`, `storage`, `models`) alongside the\nread-only `storage_info`, `models_info`, and `about`. Each section's effective value is the\nstored preference when one exists, else the environment default.\n\n`models_info` reports the default refine and notes models, whether each file is present on disk,\nand the default notes prompt, so the client can show what will run without the user having set\nan override. `storage_info` adds `uncompressed_bytes` — how much is still held in un-archived\n`audio.wav` files, which is what archiving would reclaim.",
         "operationId": "read_settings",
         "responses": {
           "200": {
-            "description": "",
+            "description": "The effective settings",
             "content": {
               "application/json": {
                 "schema": {
@@ -1414,6 +1476,8 @@
         "tags": [
           "settings"
         ],
+        "summary": "Replace the model settings.",
+        "description": "Full-replaces the section: whether notes generation is enabled, which GGUF model runs it, and\nthe prompt template. The notes model path must exist and be a GGUF. The prompt's `{transcript}`\nplaceholder is filled at generation time.",
         "operationId": "update_models",
         "requestBody": {
           "content": {
@@ -1427,7 +1491,7 @@
         },
         "responses": {
           "200": {
-            "description": "",
+            "description": "The stored section",
             "content": {
               "application/json": {
                 "schema": {
@@ -1437,7 +1501,7 @@
             }
           },
           "422": {
-            "description": ""
+            "description": "A missing field, a model path that is absent or not a GGUF, or an over-long prompt"
           }
         }
       },
@@ -1445,10 +1509,12 @@
         "tags": [
           "settings"
         ],
+        "summary": "Reset the model settings to the environment defaults.",
+        "description": "Clears the stored `models` overrides so the section falls back to what the environment\nconfigures, and returns the resulting effective section.",
         "operationId": "reset_models",
         "responses": {
           "200": {
-            "description": "",
+            "description": "The effective section after the reset",
             "content": {
               "application/json": {
                 "schema": {
@@ -1469,10 +1535,10 @@
         "operationId": "open_notices",
         "responses": {
           "204": {
-            "description": ""
+            "description": "Handed off to the default handler"
           },
           "503": {
-            "description": ""
+            "description": "The notices file is missing or could not be opened"
           }
         }
       }
@@ -1482,10 +1548,12 @@
         "tags": [
           "settings"
         ],
+        "summary": "Live OS permission status for the capture helper.",
+        "description": "Briefly spawns the capture helper and reads its permission snapshot and build version; nothing\nis persisted. Degrades to `helper_available: false` with every field `unknown` when the helper\nbinary is absent, so a source build without the Swift side still renders the panel.",
         "operationId": "read_permissions",
         "responses": {
           "200": {
-            "description": "",
+            "description": "The current permission snapshot",
             "content": {
               "application/json": {
                 "schema": {
@@ -1502,6 +1570,8 @@
         "tags": [
           "settings"
         ],
+        "summary": "Replace the recording and privacy settings.",
+        "description": "Full-replaces the section, so the body must carry every field — omitting one is a `422`, never a\nsilent reset. The inactivity prompt and the silence auto-end are gated independently: each\nenabled threshold must be 1..=1440 minutes, and when both are on the auto-end must exceed the\nprompt.\n\nTakes effect from the next meeting; the effective settings are read at meeting start and stop,\nso an edit never alters a meeting already in progress.",
         "operationId": "update_recording",
         "requestBody": {
           "content": {
@@ -1515,7 +1585,7 @@
         },
         "responses": {
           "200": {
-            "description": "",
+            "description": "The stored section",
             "content": {
               "application/json": {
                 "schema": {
@@ -1525,7 +1595,7 @@
             }
           },
           "422": {
-            "description": ""
+            "description": "A missing field, or a threshold outside 1..=1440 / out of order"
           }
         }
       }
@@ -1539,10 +1609,10 @@
         "operationId": "reveal_output_dir",
         "responses": {
           "204": {
-            "description": ""
+            "description": "Handed off to the file manager"
           },
           "503": {
-            "description": ""
+            "description": "The directory could not be opened"
           }
         }
       }
@@ -1552,6 +1622,8 @@
         "tags": [
           "settings"
         ],
+        "summary": "Replace the speaker-recognition settings.",
+        "description": "Full-replaces the section. `recognition_threshold` is the cosine similarity a stored voiceprint\nmust clear to auto-name a returning speaker: higher is stricter.",
         "operationId": "update_speakers",
         "requestBody": {
           "content": {
@@ -1565,7 +1637,7 @@
         },
         "responses": {
           "200": {
-            "description": "",
+            "description": "The stored section",
             "content": {
               "application/json": {
                 "schema": {
@@ -1575,7 +1647,7 @@
             }
           },
           "422": {
-            "description": ""
+            "description": "A missing field, or a recognition threshold outside 0.0..=1.0"
           }
         }
       }
@@ -1585,6 +1657,8 @@
         "tags": [
           "settings"
         ],
+        "summary": "Replace the storage settings.",
+        "description": "Full-replaces the section. `output_dir` must be absolute, existing, and writable. When\n`compress_audio` is on, `compress_after_days` must be 1..=365 — a disabled threshold is inert,\nand 0 is rejected because archiving the moment a meeting finalizes would race the post-stop\nrefine.",
         "operationId": "update_storage",
         "requestBody": {
           "content": {
@@ -1598,7 +1672,7 @@
         },
         "responses": {
           "200": {
-            "description": "",
+            "description": "The stored section, with the output directory resolved",
             "content": {
               "application/json": {
                 "schema": {
@@ -1608,7 +1682,7 @@
             }
           },
           "422": {
-            "description": ""
+            "description": "A missing field, an unusable output directory, or a compression threshold outside 1..=365"
           }
         }
       }
@@ -1618,10 +1692,12 @@
         "tags": [
           "settings"
         ],
+        "summary": "The archival pass's current state, for polling.",
+        "description": "The same snapshot the POST returns: whether a pass is running, how many meetings it has to do,\nhow far it has got, and how many bytes it has reclaimed.",
         "operationId": "read_archive",
         "responses": {
           "200": {
-            "description": "",
+            "description": "The current archival state",
             "content": {
               "application/json": {
                 "schema": {
@@ -1641,7 +1717,7 @@
         "operationId": "start_archive",
         "responses": {
           "202": {
-            "description": "",
+            "description": "Accepted; the work list is already counted, so `total` is real and `running` is true",
             "content": {
               "application/json": {
                 "schema": {
@@ -1651,7 +1727,7 @@
             }
           },
           "409": {
-            "description": ""
+            "description": "A meeting is recording, or a pass is already running"
           }
         }
       }
@@ -1661,10 +1737,12 @@
         "tags": [
           "meetings"
         ],
+        "summary": "Live app readiness, for the UI header.",
+        "description": "Reports whether the transcription sidecars have finished loading their models. A cold start\ntakes several seconds, so the record control polls this to show a \"preparing\" state rather than\naccepting a start that would stall. Read-only and cheap to poll.",
         "operationId": "read_status",
         "responses": {
           "200": {
-            "description": "",
+            "description": "Current sidecar readiness",
             "content": {
               "application/json": {
                 "schema": {
@@ -1681,6 +1759,8 @@
         "tags": [
           "voiceprints"
         ],
+        "summary": "The voice roster: people who have a stored voiceprint, with all of their samples.",
+        "description": "Lists only people who **have** an embedding. Someone named in a meeting that was never refined\nhas no centroid and is therefore absent — they are still a known person on `GET /api/identities`,\njust not a voice. Clearing someone's last sample drops them from this list, so `sample_count` is\nalways at least 1.\n\n`active_count` is the subset recognition actually uses (a sample counts only once its name was\nset by hand), so `active_count: 0` means \"saved, matching nothing yet\". `dimension` is the\nembedding length — 256 on macOS, 192 on Windows — and samples of different lengths never match\neach other.",
         "operationId": "list_voiceprints",
         "parameters": [
           {
@@ -1706,7 +1786,7 @@
         ],
         "responses": {
           "200": {
-            "description": "",
+            "description": "A page of people with stored voiceprints",
             "content": {
               "application/json": {
                 "schema": {
@@ -1723,6 +1803,8 @@
         "tags": [
           "voiceprints"
         ],
+        "summary": "Forget one voice sample.",
+        "description": "Clears that cluster's centroid and nothing else: the cluster, the name binding, and every past\ntranscript survive, and only future recognition changes. Idempotent.",
         "operationId": "delete_voiceprint",
         "parameters": [
           {
@@ -1737,10 +1819,10 @@
         ],
         "responses": {
           "204": {
-            "description": ""
+            "description": "Centroid cleared (or already absent)"
           },
           "404": {
-            "description": ""
+            "description": "No such cluster"
           }
         }
       }
@@ -3437,12 +3519,24 @@
           }
         }
       }
+    },
+    "securitySchemes": {
+      "session_token": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "Per-process session token. `make rust-serve` prints it in the `open:` URL; the packaged app passes it to the webview through a handshake file. Channels that cannot set a header — the WebSocket and the audio element — take `?token=` instead."
+      }
     }
   },
+  "security": [
+    {
+      "session_token": []
+    }
+  ],
   "tags": [
     {
       "name": "meetings",
-      "description": "Meeting lifecycle + transcript segments"
+      "description": "Meeting lifecycle, transcript segments, and playback"
     },
     {
       "name": "folders",
@@ -3450,11 +3544,15 @@
     },
     {
       "name": "speakers",
-      "description": "Diarization clusters + cross-meeting identities"
+      "description": "Per-meeting diarization clusters and the cross-meeting identities they bind to"
+    },
+    {
+      "name": "voiceprints",
+      "description": "Stored voice embeddings and the people they recognize"
     },
     {
       "name": "notes",
-      "description": "Local-LLM meeting notes"
+      "description": "Local-LLM meeting notes and user-authored \"My notes\""
     },
     {
       "name": "search",

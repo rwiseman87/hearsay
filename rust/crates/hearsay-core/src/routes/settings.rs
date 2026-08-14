@@ -230,7 +230,20 @@ fn dir_size(root: &Path) -> (i64, i64) {
     (total, uncompressed)
 }
 
-#[utoipa::path(get, path = "/api/settings", tag = "settings", responses((status = 200, body = SettingsRead)))]
+/// The effective settings: editable sections plus read-only build and storage facts.
+///
+/// Returns every editable section (`recording`, `speakers`, `storage`, `models`) alongside the
+/// read-only `storage_info`, `models_info`, and `about`. Each section's effective value is the
+/// stored preference when one exists, else the environment default.
+///
+/// `models_info` reports the default refine and notes models, whether each file is present on disk,
+/// and the default notes prompt, so the client can show what will run without the user having set
+/// an override. `storage_info` adds `uncompressed_bytes` — how much is still held in un-archived
+/// `audio.wav` files, which is what archiving would reclaim.
+#[utoipa::path(
+    get, path = "/api/settings", tag = "settings",
+    responses((status = 200, body = SettingsRead, description = "The effective settings")),
+)]
 pub(crate) async fn read_settings(State(state): State<AppState>) -> ApiResult<Json<SettingsRead>> {
     let models = resolve_models(&state).await?;
     let models_info = models_info(&state, &models);
@@ -245,7 +258,15 @@ pub(crate) async fn read_settings(State(state): State<AppState>) -> ApiResult<Js
     }))
 }
 
-#[utoipa::path(get, path = "/api/settings/permissions", tag = "settings", responses((status = 200, body = PermissionsInfo)))]
+/// Live OS permission status for the capture helper.
+///
+/// Briefly spawns the capture helper and reads its permission snapshot and build version; nothing
+/// is persisted. Degrades to `helper_available: false` with every field `unknown` when the helper
+/// binary is absent, so a source build without the Swift side still renders the panel.
+#[utoipa::path(
+    get, path = "/api/settings/permissions", tag = "settings",
+    responses((status = 200, body = PermissionsInfo, description = "The current permission snapshot")),
+)]
 pub(crate) async fn read_permissions(State(state): State<AppState>) -> Json<PermissionsInfo> {
     let snapshot = hearsay_backends::probe_permissions(state.settings.helper_path.clone()).await;
     let field = |value: Option<String>| value.unwrap_or_else(|| "unknown".to_string());
@@ -260,10 +281,22 @@ pub(crate) async fn read_permissions(State(state): State<AppState>) -> Json<Perm
     })
 }
 
+/// Replace the recording and privacy settings.
+///
+/// Full-replaces the section, so the body must carry every field — omitting one is a `422`, never a
+/// silent reset. The inactivity prompt and the silence auto-end are gated independently: each
+/// enabled threshold must be 1..=1440 minutes, and when both are on the auto-end must exceed the
+/// prompt.
+///
+/// Takes effect from the next meeting; the effective settings are read at meeting start and stop,
+/// so an edit never alters a meeting already in progress.
 #[utoipa::path(
     put, path = "/api/settings/recording", tag = "settings",
     request_body = RecordingSettings,
-    responses((status = 200, body = RecordingSettings), (status = 422)),
+    responses(
+        (status = 200, body = RecordingSettings, description = "The stored section"),
+        (status = 422, description = "A missing field, or a threshold outside 1..=1440 / out of order"),
+    ),
 )]
 pub(crate) async fn update_recording(
     State(state): State<AppState>,
@@ -274,9 +307,17 @@ pub(crate) async fn update_recording(
     Ok(Json(body))
 }
 
+/// Replace the speaker-recognition settings.
+///
+/// Full-replaces the section. `recognition_threshold` is the cosine similarity a stored voiceprint
+/// must clear to auto-name a returning speaker: higher is stricter.
 #[utoipa::path(
     put, path = "/api/settings/speakers", tag = "settings",
-    request_body = SpeakerSettings, responses((status = 200, body = SpeakerSettings), (status = 422)),
+    request_body = SpeakerSettings,
+    responses(
+        (status = 200, body = SpeakerSettings, description = "The stored section"),
+        (status = 422, description = "A missing field, or a recognition threshold outside 0.0..=1.0"),
+    ),
 )]
 pub(crate) async fn update_speakers(
     State(state): State<AppState>,
@@ -291,9 +332,19 @@ pub(crate) async fn update_speakers(
     Ok(Json(body))
 }
 
+/// Replace the storage settings.
+///
+/// Full-replaces the section. `output_dir` must be absolute, existing, and writable. When
+/// `compress_audio` is on, `compress_after_days` must be 1..=365 — a disabled threshold is inert,
+/// and 0 is rejected because archiving the moment a meeting finalizes would race the post-stop
+/// refine.
 #[utoipa::path(
     put, path = "/api/settings/storage", tag = "settings",
-    request_body = StorageSettings, responses((status = 200, body = StorageSettings), (status = 422)),
+    request_body = StorageSettings,
+    responses(
+        (status = 200, body = StorageSettings, description = "The stored section, with the output directory resolved"),
+        (status = 422, description = "A missing field, an unusable output directory, or a compression threshold outside 1..=365"),
+    ),
 )]
 pub(crate) async fn update_storage(
     State(state): State<AppState>,
@@ -318,9 +369,18 @@ pub(crate) async fn update_storage(
     Ok(Json(stored))
 }
 
+/// Replace the model settings.
+///
+/// Full-replaces the section: whether notes generation is enabled, which GGUF model runs it, and
+/// the prompt template. The notes model path must exist and be a GGUF. The prompt's `{transcript}`
+/// placeholder is filled at generation time.
 #[utoipa::path(
     put, path = "/api/settings/models", tag = "settings",
-    request_body = ModelSettings, responses((status = 200, body = ModelSettings), (status = 422)),
+    request_body = ModelSettings,
+    responses(
+        (status = 200, body = ModelSettings, description = "The stored section"),
+        (status = 422, description = "A missing field, a model path that is absent or not a GGUF, or an over-long prompt"),
+    ),
 )]
 pub(crate) async fn update_models(
     State(state): State<AppState>,
@@ -374,9 +434,13 @@ pub(crate) async fn update_models(
     Ok(Json(stored))
 }
 
+/// Reset the model settings to the environment defaults.
+///
+/// Clears the stored `models` overrides so the section falls back to what the environment
+/// configures, and returns the resulting effective section.
 #[utoipa::path(
     delete, path = "/api/settings/models", tag = "settings",
-    responses((status = 200, body = ModelSettings)),
+    responses((status = 200, body = ModelSettings, description = "The effective section after the reset")),
 )]
 pub(crate) async fn reset_models(State(state): State<AppState>) -> ApiResult<Json<ModelSettings>> {
     queries::clear_preference(&state.pool, SECTION_MODELS).await?;
@@ -390,7 +454,10 @@ pub(crate) async fn reset_models(State(state): State<AppState>) -> ApiResult<Jso
 /// surfaced to the client (not collapsed to a generic 500) so a broken reveal is diagnosable.
 #[utoipa::path(
     post, path = "/api/settings/reveal", tag = "settings",
-    responses((status = 204), (status = 503)),
+    responses(
+        (status = 204, description = "Handed off to the file manager"),
+        (status = 503, description = "The directory could not be opened"),
+    ),
 )]
 pub(crate) async fn reveal_output_dir(State(state): State<AppState>) -> ApiResult<StatusCode> {
     let dir = PathBuf::from(resolve_storage(&state).await?.output_dir);
@@ -407,7 +474,10 @@ pub(crate) async fn reveal_output_dir(State(state): State<AppState>) -> ApiResul
 /// [`reveal_output_dir`].
 #[utoipa::path(
     post, path = "/api/settings/notices", tag = "settings",
-    responses((status = 204), (status = 503)),
+    responses(
+        (status = 204, description = "Handed off to the default handler"),
+        (status = 503, description = "The notices file is missing or could not be opened"),
+    ),
 )]
 pub(crate) async fn open_notices(State(state): State<AppState>) -> ApiResult<StatusCode> {
     let path = state.settings.notices_path.clone();
@@ -496,9 +566,13 @@ fn progress_to_state(p: hearsay_backends::archive::SweepProgress) -> ArchiveStat
     }
 }
 
+/// The archival pass's current state, for polling.
+///
+/// The same snapshot the POST returns: whether a pass is running, how many meetings it has to do,
+/// how far it has got, and how many bytes it has reclaimed.
 #[utoipa::path(
     get, path = "/api/settings/storage/compress", tag = "settings",
-    responses((status = 200, body = ArchiveState)),
+    responses((status = 200, body = ArchiveState, description = "The current archival state")),
 )]
 pub(crate) async fn read_archive(State(state): State<AppState>) -> Json<ArchiveState> {
     Json(archive_state(&state.archive))
@@ -513,7 +587,10 @@ pub(crate) async fn read_archive(State(state): State<AppState>) -> Json<ArchiveS
 /// since pressing it is an explicit instruction.
 #[utoipa::path(
     post, path = "/api/settings/storage/compress", tag = "settings",
-    responses((status = 202, body = ArchiveState), (status = 409)),
+    responses(
+        (status = 202, body = ArchiveState, description = "Accepted; the work list is already counted, so `total` is real and `running` is true"),
+        (status = 409, description = "A meeting is recording, or a pass is already running"),
+    ),
 )]
 pub(crate) async fn start_archive(
     State(state): State<AppState>,

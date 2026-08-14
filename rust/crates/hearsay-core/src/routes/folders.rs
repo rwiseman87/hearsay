@@ -24,10 +24,13 @@ pub fn router() -> Router<AppState> {
         .route("/folders/{id}/parent", put(reparent_folder))
 }
 
+/// List folders, flat.
+///
+/// Returned flat with each folder's `parent_id`; the client assembles the tree.
 #[utoipa::path(
     get, path = "/api/folders", tag = "folders",
     params(("page" = Option<u32>, Query), ("page_size" = Option<u32>, Query)),
-    responses((status = 200, body = Page<FolderRead>)),
+    responses((status = 200, body = Page<FolderRead>, description = "A flat page of folders")),
 )]
 pub(crate) async fn list_folders(
     State(state): State<AppState>,
@@ -41,10 +44,16 @@ pub(crate) async fn list_folders(
     Ok(Json(window.page_of(total, rows)))
 }
 
+/// Create a folder.
+///
+/// Omit `parent_id` (or send `null`) to create it at the root.
 #[utoipa::path(
     post, path = "/api/folders", tag = "folders",
     request_body = FolderCreate,
-    responses((status = 201, body = FolderRead), (status = 422)),
+    responses(
+        (status = 201, body = FolderRead, description = "The created folder"),
+        (status = 422, description = "Blank name"),
+    ),
 )]
 pub(crate) async fn create_folder(
     State(state): State<AppState>,
@@ -60,11 +69,16 @@ pub(crate) async fn create_folder(
     Ok((StatusCode::CREATED, Json(folder.into())))
 }
 
+/// Rename a folder.
 #[utoipa::path(
     patch, path = "/api/folders/{id}", tag = "folders",
     params(("id" = Uuid, Path)),
     request_body = FolderUpdate,
-    responses((status = 200, body = FolderRead), (status = 404), (status = 422)),
+    responses(
+        (status = 200, body = FolderRead, description = "The renamed folder"),
+        (status = 404, description = "No such folder"),
+        (status = 422, description = "Blank name"),
+    ),
 )]
 pub(crate) async fn rename_folder(
     State(state): State<AppState>,
@@ -78,11 +92,19 @@ pub(crate) async fn rename_folder(
     Ok(Json(folder.into()))
 }
 
+/// Move a folder under a new parent.
+///
+/// A `null` `parent_id` moves it to the root. A folder cannot become its own descendant; the cycle
+/// is rejected rather than orphaning a subtree.
 #[utoipa::path(
     put, path = "/api/folders/{id}/parent", tag = "folders",
     params(("id" = Uuid, Path)),
     request_body = FolderReparent,
-    responses((status = 200, body = FolderRead), (status = 404), (status = 422)),
+    responses(
+        (status = 200, body = FolderRead, description = "The moved folder"),
+        (status = 404, description = "The folder or the target parent is unknown"),
+        (status = 422, description = "The move would create a cycle"),
+    ),
 )]
 pub(crate) async fn reparent_folder(
     State(state): State<AppState>,
@@ -111,10 +133,17 @@ pub(crate) async fn reparent_folder(
     Ok(Json(folder.into()))
 }
 
+/// Delete a folder.
+///
+/// Cascade-deletes its sub-folders but un-files its meetings to the root. A folder operation never
+/// deletes a meeting.
 #[utoipa::path(
     delete, path = "/api/folders/{id}", tag = "folders",
     params(("id" = Uuid, Path)),
-    responses((status = 204), (status = 404)),
+    responses(
+        (status = 204, description = "Deleted; its meetings were un-filed to the root"),
+        (status = 404, description = "No such folder"),
+    ),
 )]
 pub(crate) async fn delete_folder(
     State(state): State<AppState>,

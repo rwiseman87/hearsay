@@ -1,7 +1,8 @@
 //! OpenAPI document (utoipa). Drives the TypeScript codegen for the shared web UI.
 //! `GET /openapi.json` serves it; `--dump-openapi` prints it.
 
-use utoipa::OpenApi;
+use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
+use utoipa::{Modify, OpenApi};
 
 use crate::schema::{
     AboutInfo, ArchiveState, CaptureHealthEvent, CaptureStateEvent, CatalogEntry, DownloadRequest,
@@ -14,9 +15,57 @@ use crate::schema::{
     TranscriptEvent, UserNotesRead, UserNotesWrite, VoiceprintRead, VoiceprintSampleRead,
 };
 
+/// Registers the session-token scheme so an API console can offer an "Authorize" box, and so the
+/// document states the auth requirement instead of leaving readers to infer it from a 401.
+struct SessionToken;
+
+impl Modify for SessionToken {
+    fn modify(&self, openapi: &mut utoipa::openapi::OpenApi) {
+        if let Some(components) = openapi.components.as_mut() {
+            components.add_security_scheme(
+                "session_token",
+                SecurityScheme::Http(
+                    HttpBuilder::new()
+                        .scheme(HttpAuthScheme::Bearer)
+                        .description(Some(
+                            "Per-process session token. `make rust-serve` prints it in the \
+                             `open:` URL; the packaged app passes it to the webview through a \
+                             handshake file. Channels that cannot set a header — the WebSocket \
+                             and the audio element — take `?token=` instead.",
+                        ))
+                        .build(),
+                ),
+            );
+        }
+    }
+}
+
 #[derive(OpenApi)]
 #[openapi(
-    info(title = "hearsay", description = "Local-first meeting-note transcriber — loopback API."),
+    info(
+        title = "hearsay",
+        description = "\
+Local-first meeting-note transcriber. The core serves this API on `127.0.0.1` only, for the \
+bundled web UI.
+
+**Conventions**
+
+- Base path is `/api`. Every request needs the session token; see the `session_token` scheme.
+- List endpoints return `{ total, page, page_size, items }` and take `page` (at least 1, \
+default 1) and `page_size` (1 to 200, default 50).
+- Errors return `{ \"detail\": \"...\" }`. Database and internal failures render as a literal \
+\"internal error\" — details go to the log only.
+- Times are ISO 8601. Segment `start_s` and `end_s` are seconds relative to the meeting start, \
+not wall clock.
+
+**Not in this document**
+
+Three served routes have no OpenAPI representation and are specified in `docs/api.md`: the live \
+transcript WebSocket at `/ws/meetings/{id}`, meeting audio at `/api/meetings/{id}/audio` (a byte \
+stream with `Range` support), and `/`, which serves the UI with the token injected."
+    ),
+    modifiers(&SessionToken),
+    security(("session_token" = [])),
     paths(
         crate::routes::meetings::list_meetings,
         crate::routes::meetings::start_meeting,
@@ -119,10 +168,11 @@ use crate::schema::{
         CaptureStateEvent,
     )),
     tags(
-        (name = "meetings", description = "Meeting lifecycle + transcript segments"),
+        (name = "meetings", description = "Meeting lifecycle, transcript segments, and playback"),
         (name = "folders", description = "Nested organizational folders for meetings"),
-        (name = "speakers", description = "Diarization clusters + cross-meeting identities"),
-        (name = "notes", description = "Local-LLM meeting notes"),
+        (name = "speakers", description = "Per-meeting diarization clusters and the cross-meeting identities they bind to"),
+        (name = "voiceprints", description = "Stored voice embeddings and the people they recognize"),
+        (name = "notes", description = "Local-LLM meeting notes and user-authored \"My notes\""),
         (name = "search", description = "Full-text transcript search across meetings"),
         (name = "models", description = "Notes-model catalog + download manager"),
         (name = "settings", description = "Editable preferences + live permission status"),

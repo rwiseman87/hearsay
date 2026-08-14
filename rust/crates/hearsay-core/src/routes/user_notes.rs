@@ -25,10 +25,17 @@ pub fn router() -> Router<AppState> {
     )
 }
 
+/// Read the user-authored "My notes" for a meeting.
+///
+/// Free-form text the user types themselves, distinct from the LLM-generated notes. One row per
+/// meeting. A `404` is the normal empty state — the panel starts blank.
 #[utoipa::path(
     get, path = "/api/meetings/{id}/user-notes", tag = "notes",
     params(("id" = Uuid, Path)),
-    responses((status = 200, body = UserNotesRead), (status = 404)),
+    responses(
+        (status = 200, body = UserNotesRead, description = "The stored body and its last-saved time"),
+        (status = 404, description = "Nothing has been typed for this meeting yet"),
+    ),
 )]
 pub(crate) async fn read_user_notes(
     State(state): State<AppState>,
@@ -42,11 +49,20 @@ pub(crate) async fn read_user_notes(
     Ok(Json(notes.into()))
 }
 
+/// Autosave the user-authored "My notes" for a meeting.
+///
+/// The database is the source of truth; `my-notes.md` in the meeting folder is mirrored
+/// best-effort. Unlike the generated notes these may be written while the meeting is still
+/// recording, so this route does not gate on the active session.
 #[utoipa::path(
     put, path = "/api/meetings/{id}/user-notes", tag = "notes",
     params(("id" = Uuid, Path)),
     request_body = UserNotesWrite,
-    responses((status = 200, body = UserNotesRead), (status = 404), (status = 422)),
+    responses(
+        (status = 200, body = UserNotesRead, description = "The saved notes"),
+        (status = 404, description = "No such meeting"),
+        (status = 422, description = "Body exceeds 100,000 characters"),
+    ),
 )]
 pub(crate) async fn save_user_notes(
     State(state): State<AppState>,

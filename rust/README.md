@@ -1,12 +1,12 @@
 # Hearsay Rust workspace
 
-The Rust core of Hearsay and its supporting crates: the cross-platform foundation (macOS;
-Windows planned). Architecture, crate diagrams, and trait seams:
+The Rust core of Hearsay and its supporting crates — the cross-platform foundation, running on both
+macOS and Windows. Architecture, crate diagrams, and trait seams:
 [`../docs/architecture.md`](../docs/architecture.md).
 
-The macOS live path runs end to end through `hearsay-core`: capture, streaming captions,
-diarization, the offline refine, and optional local-LLM notes, all behind the loopback HTTP and
-WebSocket API the React UI consumes. The whole workspace is gated by `make ci` (clippy with
+The live path runs end to end through `hearsay-core`: capture, streaming captions, diarization, the
+offline refine, and optional local-LLM notes, all behind the loopback HTTP and WebSocket API the
+React UI consumes. The whole workspace is gated by `make ci` (clippy with
 warnings denied, rustfmt, `cargo test`, codegen drift, `cargo audit`, `cargo deny`).
 
 ## Run it (macOS)
@@ -14,7 +14,7 @@ warnings denied, rustfmt, `cargo test`, codegen drift, `cargo audit`, `cargo den
 ```sh
 make swift-build                      # build hearsay-helper + the FluidAudio sidecars (once)
 (cd web && npm ci && npm run build)   # build web/dist (once)
-make rust-serve                       # runs hearsay-core (--features metal,aec); prints a ?token= URL
+make rust-serve                       # runs hearsay-core (--features metal,aec,api-console); prints a ?token= URL
 ```
 
 `make rust-serve` binds `127.0.0.1` on `RUST_PORT` (default 8799) and prints
@@ -62,6 +62,10 @@ but is linted and CVE/license-gated in `make ci`. Build the app with `make dmg` 
   tap as the far-end reference. `make rust-serve` and the release bundle build it (`--features
   metal,aec`); the raw pre-AEC audio is what the recorder and offline refine read. See
   [`../docs/echo-cancellation.md`](../docs/echo-cancellation.md).
+- `api-console`: the browsable Swagger UI at `/docs`, for working against the API by hand. Off by
+  default — the vendored assets are embedded at compile time, so a runtime check alone would still
+  ship them. `make rust-serve` enables it; the mount additionally requires
+  `ENVIRONMENT=development`. See [`../docs/api.md`](../docs/api.md).
 
 The notes LLM is not a core feature: it ships as the standalone `hearsay-notes` sidecar (built with
 its own `metal`/`vulkan`/`cuda`), so llama.cpp never links into the core with whisper. `make

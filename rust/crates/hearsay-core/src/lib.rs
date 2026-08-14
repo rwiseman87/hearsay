@@ -28,6 +28,8 @@ use tower_http::set_header::SetResponseHeaderLayer;
 use tower_http::trace::{DefaultOnResponse, TraceLayer};
 use tracing::Level;
 use utoipa::OpenApi as _;
+#[cfg(feature = "api-console")]
+use utoipa_swagger_ui::SwaggerUi;
 
 pub use config::Settings;
 pub use hearsay_engine::{DisabledEngine, LiveEngine, LiveError};
@@ -97,12 +99,27 @@ pub fn create_app(state: AppState) -> Router {
             HeaderValue::from_static("strict-origin-when-cross-origin"),
         ));
 
-    Router::new()
+    #[cfg_attr(not(feature = "api-console"), allow(unused_mut))]
+    let mut app = Router::new()
         .nest("/api", api)
         .merge(routes::ws::router())
         .merge(routes::web::router(&web_dir))
-        .route("/openapi.json", get(openapi_json))
-        .layer(from_fn(routes::enforce_loopback))
+        .route("/openapi.json", get(openapi_json));
+
+    // Browsable API console, behind the `api-console` feature AND ENVIRONMENT=development, so a
+    // shipping build neither carries the embedded assets nor mounts the route. It sits outside the
+    // `/api` nest, so `enforce_loopback` still gates it but `require_token` does not — the console
+    // itself is static, and its "try it out" calls into `/api` carry the token the user pastes into
+    // Authorize.
+    //
+    // The console serves the document from its own path: `SwaggerUi` registers a route for whatever
+    // URL it is given, and reusing `/openapi.json` panics the router at startup on the duplicate.
+    #[cfg(feature = "api-console")]
+    if state.settings.environment == "development" {
+        app = app.merge(SwaggerUi::new("/docs").url("/docs/openapi.json", ApiDoc::openapi()));
+    }
+
+    app.layer(from_fn(routes::enforce_loopback))
         .layer(hygiene)
         .with_state(state)
 }

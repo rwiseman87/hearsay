@@ -18,6 +18,12 @@ serde_json = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { version = "0.3.23", features = ["json", "env-filter", "fmt"] }
 utoipa = { version = "5.5.0", features = ["axum_extras", "uuid", "chrono"] }
+# Browsable API console at /docs (the `api-console` feature; see `create_app`).
+# `default-features = false` + `vendored` is required, not cosmetic: the default build script shells
+# out to `curl` to fetch the Swagger UI assets at build time, which the offline/pinned dependency
+# policy rules out. The vendored crate carries the assets instead, so the build never touches the
+# network.
+utoipa-swagger-ui = { version = "9.0.2", default-features = false, features = ["axum", "vendored"], optional = true }
 uuid = { workspace = true, features = ["v4", "serde"] }
 chrono = { workspace = true, features = ["serde"] }
 sqlx = { workspace = true }
@@ -38,6 +44,12 @@ sha2 = "0.10.9"
 # notes LLM is no longer a feature of the core: it runs out-of-process in the `hearsay-notes` sidecar
 # (built separately with its own `metal`/`vulkan` accel), so llama.cpp never links here with whisper.
 sherpa = ["hearsay-backends/sherpa"]
+# The browsable Swagger UI console at /docs, for working against the API by hand. Off by default:
+# `vendored` embeds ~1.6 MB of JS/CSS into the binary at COMPILE time, so a runtime check alone
+# would still ship the assets. `make rust-serve` turns it on; the packaged app does not. The mount
+# additionally requires ENVIRONMENT=development at runtime, so a feature-enabled build cannot expose
+# the console in a shipping configuration either.
+api-console = ["dep:utoipa-swagger-ui"]
 aec = ["hearsay-backends/aec"]
 metal = ["hearsay-backends/metal"]
 vulkan = ["hearsay-backends/vulkan"]

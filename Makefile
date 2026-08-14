@@ -149,7 +149,7 @@ serve rust-serve: ## Serve the Rust core (SYNTHETIC=1 for no-permission plumbing
 	# that slows the refine ~5x); the core is built WITHOUT a notes feature.
 	cargo build --manifest-path $(RUST)/Cargo.toml -p hearsay-notes --features metal
 	HEARSAY_SERVER_PORT=$(RUST_PORT) DATABASE_URL="$(RUST_DB)" \
-		cargo run --manifest-path $(RUST)/Cargo.toml -p hearsay-core --features metal,aec $(if $(SYNTHETIC),-- --synthetic)
+		cargo run --manifest-path $(RUST)/Cargo.toml -p hearsay-core --features metal,aec,api-console $(if $(SYNTHETIC),-- --synthetic)
 
 # Distribution staging: build RELEASE binaries + web bundle, then copy them where Tauri's
 # `externalBin` expects them (`<name>-<target-triple>`). Shared by `mac-app` and `dmg`.

@@ -53,13 +53,24 @@ fn build_match(raw: &str) -> Option<String> {
     }
 }
 
+/// Full-text search across every meeting's transcript.
+///
+/// Runs an FTS5 match over finalized transcript segments — not titles, and not notes. The query is
+/// sanitized to plain terms (FTS operators are stripped) and bound as a parameter, so an empty or
+/// all-punctuation query returns an empty page rather than an error.
+///
+/// Each hit carries the meeting, the matching segment, and a highlighted snippet, so a client can
+/// jump straight to that moment in the transcript.
 #[utoipa::path(
     get, path = "/api/search", tag = "search",
     params(
         ("q" = Option<String>, Query),
         ("page" = Option<u32>, Query), ("page_size" = Option<u32>, Query),
     ),
-    responses((status = 200, body = Page<SearchHit>), (status = 422)),
+    responses(
+        (status = 200, body = Page<SearchHit>, description = "A page of matching transcript lines"),
+        (status = 422, description = "Query exceeds the length limit"),
+    ),
 )]
 pub(crate) async fn search(
     State(state): State<AppState>,

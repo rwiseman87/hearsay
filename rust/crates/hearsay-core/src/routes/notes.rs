@@ -30,10 +30,23 @@ pub fn router() -> Router<AppState> {
     )
 }
 
+/// Generate (or regenerate) meeting notes with the local LLM.
+///
+/// Runs in the bundled `hearsay-notes` sidecar (llama.cpp, out-of-process) over the finalized
+/// transcript. The model's reply is stored and returned verbatim as `content` — the user-editable
+/// prompt template dictates the format, so nothing is parsed into structured fields.
+///
+/// Regenerating replaces existing notes, including hand-edited ones.
 #[utoipa::path(
     post, path = "/api/meetings/{id}/notes", tag = "notes",
     params(("id" = Uuid, Path)),
-    responses((status = 200, body = MeetingNotesRead), (status = 404), (status = 409), (status = 422), (status = 503)),
+    responses(
+        (status = 200, body = MeetingNotesRead, description = "The generated notes"),
+        (status = 404, description = "No such meeting"),
+        (status = 409, description = "The meeting is still recording"),
+        (status = 422, description = "The meeting has no transcript to summarize"),
+        (status = 503, description = "No notes model is configured, or the sidecar is unavailable"),
+    ),
 )]
 pub(crate) async fn generate_notes(
     State(state): State<AppState>,
@@ -70,10 +83,18 @@ pub(crate) async fn generate_notes(
     Ok(Json(notes.into()))
 }
 
+/// Read a meeting's generated notes.
+///
+/// Returns the Markdown `content`, the model that produced it, and timestamps, plus `edited` (set
+/// once the notes have been hand-edited) and `stale` (`true` when the transcript changed after the
+/// notes were generated, so the client can offer a regenerate).
 #[utoipa::path(
     get, path = "/api/meetings/{id}/notes", tag = "notes",
     params(("id" = Uuid, Path)),
-    responses((status = 200, body = MeetingNotesRead), (status = 404)),
+    responses(
+        (status = 200, body = MeetingNotesRead, description = "The stored notes"),
+        (status = 404, description = "This meeting has no notes yet"),
+    ),
 )]
 pub(crate) async fn read_notes(
     State(state): State<AppState>,
@@ -92,11 +113,20 @@ pub(crate) async fn read_notes(
     Ok(Json(read))
 }
 
+/// Hand-edit a meeting's generated notes.
+///
+/// Replaces the stored Markdown `content` and sets the `edited` flag, which is what warns the user
+/// before a regenerate overwrites their edits.
 #[utoipa::path(
     patch, path = "/api/meetings/{id}/notes", tag = "notes",
     params(("id" = Uuid, Path)),
     request_body = NotesEdit,
-    responses((status = 200, body = MeetingNotesRead), (status = 404), (status = 409), (status = 422)),
+    responses(
+        (status = 200, body = MeetingNotesRead, description = "The edited notes"),
+        (status = 404, description = "This meeting has no notes to edit"),
+        (status = 409, description = "The meeting is still recording"),
+        (status = 422, description = "Content exceeds the length limit"),
+    ),
 )]
 pub(crate) async fn edit_notes(
     State(state): State<AppState>,
