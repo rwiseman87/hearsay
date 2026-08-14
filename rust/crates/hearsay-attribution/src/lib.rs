@@ -15,5 +15,5 @@ pub use mapping::{
     assign_segment_speaker, max_overlap_turn, order_first_appearance, order_speakers, SpeakerTurn,
 };
 pub use voiceprint::{
-    best_identity, centroid_from_bytes, centroid_to_bytes, cosine, match_identity,
+    best_identity, centroid_from_bytes, centroid_to_bytes, cosine, l2_normalize, match_identity,
 };

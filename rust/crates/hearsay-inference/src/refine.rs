@@ -13,7 +13,7 @@ use std::process::{Command, ExitStatus, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use hearsay_attribution::{max_overlap_turn, order_speakers, SpeakerTurn};
+use hearsay_attribution::{l2_normalize, max_overlap_turn, order_speakers, SpeakerTurn};
 use serde::Deserialize;
 
 use crate::asr::{AsrSegment, WhisperAsr};
@@ -360,27 +360,6 @@ fn build_centroids(embeddings: &HashMap<i64, Vec<f32>>) -> HashMap<i64, Vec<f32>
 
 /// Unit-length a voiceprint so stored centroids match the cosine convention (norm computed in f64).
 /// `None` for an empty vector; a zero vector is returned unchanged.
-fn l2_normalize(vector: &[f32]) -> Option<Vec<f32>> {
-    if vector.is_empty() {
-        return None;
-    }
-    let norm = vector
-        .iter()
-        .map(|&v| f64::from(v) * f64::from(v))
-        .sum::<f64>()
-        .sqrt();
-    if norm > 0.0 {
-        Some(
-            vector
-                .iter()
-                .map(|&v| (f64::from(v) / norm) as f32)
-                .collect(),
-        )
-    } else {
-        Some(vector.to_vec())
-    }
-}
-
 /// Refine a recorded meeting's `audio.wav` end-to-end with any [`Diarizer`]: read the Them (right)
 /// channel, load the whisper model, then re-diarize + re-transcribe. The diarizer-agnostic file
 /// entry — the macOS refiner wraps it with [`SwiftDiarizer`] ([`refine_audio_file`]) and the
@@ -437,15 +416,6 @@ fn write_mono_wav(path: &Path, samples: &[f32]) -> Result<(), InferenceError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn l2_normalize_unit_lengths_and_handles_edges() {
-        let unit = l2_normalize(&[3.0, 4.0]).unwrap();
-        assert!((unit[0] - 0.6).abs() < 1e-6 && (unit[1] - 0.8).abs() < 1e-6);
-        // A zero vector is returned unchanged; an empty vector is dropped.
-        assert_eq!(l2_normalize(&[0.0, 0.0]), Some(vec![0.0, 0.0]));
-        assert_eq!(l2_normalize(&[]), None);
-    }
 
     #[test]
     fn build_centroids_normalizes_and_skips_empty() {

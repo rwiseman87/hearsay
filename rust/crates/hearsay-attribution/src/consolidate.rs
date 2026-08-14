@@ -105,24 +105,6 @@ impl Group {
     }
 }
 
-/// L2-normalize, or `None` for a zero / empty vector (nothing to point at).
-fn normalize(vector: &[f32]) -> Option<Vec<f32>> {
-    let norm = vector
-        .iter()
-        .map(|&v| f64::from(v) * f64::from(v))
-        .sum::<f64>()
-        .sqrt();
-    if norm == 0.0 {
-        return None;
-    }
-    Some(
-        vector
-            .iter()
-            .map(|&v| (f64::from(v) / norm) as f32)
-            .collect(),
-    )
-}
-
 /// Duration-weighted mean of two normalized centroids, renormalized. Falls back to `a` if the sum
 /// cancels out (antipodal centroids of equal weight), which cannot happen for real embeddings.
 fn blend(a: &Group, b: &Group) -> Vec<f32> {
@@ -146,7 +128,7 @@ fn blend(a: &Group, b: &Group) -> Vec<f32> {
         .zip(&b.centroid)
         .map(|(&x, &y)| (f64::from(x) * wa + f64::from(y) * wb) as f32)
         .collect();
-    normalize(&mixed).unwrap_or_else(|| a.centroid.clone())
+    crate::voiceprint::l2_normalize(&mixed).unwrap_or_else(|| a.centroid.clone())
 }
 
 /// Merge `src` into `dst` (both indices into `groups`), removing `src`.
@@ -184,7 +166,7 @@ pub fn consolidate_speakers(
     for ordinal in ordinals {
         remap.insert(ordinal, ordinal);
         // No usable centroid: nothing to compare against, so it keeps its own identity.
-        if let Some(centroid) = normalize(&centroids[&ordinal]) {
+        if let Some(centroid) = crate::voiceprint::l2_normalize(&centroids[&ordinal]) {
             groups.push(Group {
                 members: vec![ordinal],
                 centroid,
