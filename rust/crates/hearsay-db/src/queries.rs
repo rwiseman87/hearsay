@@ -1690,20 +1690,64 @@ async fn section_object(
         .and_then(|v| v.as_object().cloned()))
 }
 
-/// Effective `record` (keep one WAV per meeting): the stored `recording` override, else `default`.
-pub async fn effective_record(pool: &SqlitePool, default: bool) -> Result<bool, sqlx::Error> {
-    Ok(section_object(pool, SECTION_RECORDING)
-        .await?
-        .and_then(|o| o.get("record").and_then(serde_json::Value::as_bool))
-        .unwrap_or(default))
+/// A stored settings section, read field by field against a config default.
+///
+/// Every accessor falls back independently, and an absent section, a corrupt one, a missing key, and
+/// a wrong-typed value are all the same answer: the default. That is what lets a row written before
+/// a key existed — or the partial section [`set_notes_model`] writes — still resolve, where a strict
+/// struct deserialize would reject it and 500 the settings route.
+pub struct Section(Option<serde_json::Map<String, serde_json::Value>>);
+
+impl Section {
+    /// Read this section from the `preferences` table.
+    pub async fn load(pool: &SqlitePool, section: &str) -> Result<Self, sqlx::Error> {
+        Ok(Section(section_object(pool, section).await?))
+    }
+
+    fn get(&self, key: &str) -> Option<&serde_json::Value> {
+        self.0.as_ref().and_then(|o| o.get(key))
+    }
+
+    pub fn bool_field(&self, key: &str, default: bool) -> bool {
+        self.get(key)
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(default)
+    }
+
+    pub fn u64_field(&self, key: &str, default: u64) -> u64 {
+        self.get(key)
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(default)
+    }
+
+    pub fn f64_field(&self, key: &str, default: f64) -> f64 {
+        self.get(key)
+            .and_then(serde_json::Value::as_f64)
+            .unwrap_or(default)
+    }
+
+    /// A stored string, treating empty/whitespace as unset so a cleared field reverts to `default`.
+    pub fn string_field(&self, key: &str, default: &str) -> String {
+        self.get(key)
+            .and_then(|v| v.as_str().map(str::to_string))
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| default.to_string())
+    }
+
+    /// A stored path, treating an empty value as unset so a cleared field reverts to `default`.
+    pub fn path_field(&self, key: &str, default: &Path) -> PathBuf {
+        self.get(key)
+            .and_then(|v| v.as_str().map(PathBuf::from))
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or_else(|| default.to_path_buf())
+    }
 }
 
-/// The parsed `recording` section object (or `None` when unset/corrupt), for the settings route to
-/// resolve each field against its config default — mirrors [`models_section`].
-pub async fn recording_section(
-    pool: &SqlitePool,
-) -> Result<Option<serde_json::Map<String, serde_json::Value>>, sqlx::Error> {
-    section_object(pool, SECTION_RECORDING).await
+/// Effective `record` (keep one WAV per meeting): the stored `recording` override, else `default`.
+pub async fn effective_record(pool: &SqlitePool, default: bool) -> Result<bool, sqlx::Error> {
+    Ok(Section::load(pool, SECTION_RECORDING)
+        .await?
+        .bool_field("record", default))
 }
 
 /// Effective inactivity-watchdog settings (prompt + auto-end toggles, prompt/end minutes): the stored
@@ -1718,22 +1762,12 @@ pub async fn effective_inactivity(
     default_prompt_minutes: u64,
     default_end_minutes: u64,
 ) -> Result<(bool, bool, u64, u64), sqlx::Error> {
-    let obj = section_object(pool, SECTION_RECORDING).await?;
-    let bool_field = |key: &str, default: bool| {
-        obj.as_ref()
-            .and_then(|o| o.get(key).and_then(serde_json::Value::as_bool))
-            .unwrap_or(default)
-    };
-    let u64_field = |key: &str, default: u64| {
-        obj.as_ref()
-            .and_then(|o| o.get(key).and_then(serde_json::Value::as_u64))
-            .unwrap_or(default)
-    };
+    let s = Section::load(pool, SECTION_RECORDING).await?;
     Ok((
-        bool_field("inactivity_prompt_enabled", default_prompt),
-        bool_field("inactivity_auto_end_enabled", default_auto_end),
-        u64_field("inactivity_prompt_minutes", default_prompt_minutes),
-        u64_field("inactivity_end_minutes", default_end_minutes),
+        s.bool_field("inactivity_prompt_enabled", default_prompt),
+        s.bool_field("inactivity_auto_end_enabled", default_auto_end),
+        s.u64_field("inactivity_prompt_minutes", default_prompt_minutes),
+        s.u64_field("inactivity_end_minutes", default_end_minutes),
     ))
 }
 
@@ -1743,21 +1777,9 @@ pub async fn effective_output_dir(
     pool: &SqlitePool,
     default: &Path,
 ) -> Result<PathBuf, sqlx::Error> {
-    Ok(section_object(pool, SECTION_STORAGE)
+    Ok(Section::load(pool, SECTION_STORAGE)
         .await?
-        .and_then(|o| {
-            o.get("output_dir")
-                .and_then(|v| v.as_str().map(PathBuf::from))
-        })
-        .unwrap_or_else(|| default.to_path_buf()))
-}
-
-/// The parsed `storage` section object (or `None` when unset/corrupt), for the settings route to
-/// resolve each field against its config default — mirrors [`models_section`].
-pub async fn storage_section(
-    pool: &SqlitePool,
-) -> Result<Option<serde_json::Map<String, serde_json::Value>>, sqlx::Error> {
-    section_object(pool, SECTION_STORAGE).await
+        .path_field("output_dir", default))
 }
 
 /// Effective audio-compression settings (archive the recorded WAV as lossless FLAC once a meeting is
@@ -1770,19 +1792,11 @@ pub async fn effective_compression(
     default_enabled: bool,
     default_days: u64,
 ) -> Result<(bool, u64), sqlx::Error> {
-    let obj = section_object(pool, SECTION_STORAGE).await?;
-    let enabled = obj
-        .as_ref()
-        .and_then(|o| o.get("compress_audio").and_then(serde_json::Value::as_bool))
-        .unwrap_or(default_enabled);
-    let days = obj
-        .as_ref()
-        .and_then(|o| {
-            o.get("compress_after_days")
-                .and_then(serde_json::Value::as_u64)
-        })
-        .unwrap_or(default_days);
-    Ok((enabled, days))
+    let s = Section::load(pool, SECTION_STORAGE).await?;
+    Ok((
+        s.bool_field("compress_audio", default_enabled),
+        s.u64_field("compress_after_days", default_days),
+    ))
 }
 
 /// Effective offline-refine whisper model: the stored `models` override, else `default` (the
@@ -1792,23 +1806,9 @@ pub async fn effective_refine_model(
     pool: &SqlitePool,
     default: &Path,
 ) -> Result<PathBuf, sqlx::Error> {
-    Ok(section_object(pool, SECTION_MODELS)
+    Ok(Section::load(pool, SECTION_MODELS)
         .await?
-        .and_then(|o| {
-            o.get("refine_model")
-                .and_then(|v| v.as_str().map(PathBuf::from))
-        })
-        .unwrap_or_else(|| default.to_path_buf()))
-}
-
-/// The stored `models` section as a raw JSON object (`None` when unset/corrupt), for the settings
-/// API to resolve each field against its own config default. Tolerates a *partial* section — e.g.
-/// the one [`set_notes_model`] writes with only `notes_model` — which a strict struct deserialize
-/// would reject, 500-ing `GET /settings` after a first download on an otherwise-default install.
-pub async fn models_section(
-    pool: &SqlitePool,
-) -> Result<Option<serde_json::Map<String, serde_json::Value>>, sqlx::Error> {
-    section_object(pool, SECTION_MODELS).await
+        .path_field("refine_model", default))
 }
 
 /// Set the `models` section's `notes_model` to `path` (what the download manager calls on a
@@ -1846,20 +1846,11 @@ pub async fn effective_notes(
     default_enabled: bool,
     default_model: &Path,
 ) -> Result<(bool, PathBuf), sqlx::Error> {
-    let obj = section_object(pool, SECTION_MODELS).await?;
-    let enabled = obj
-        .as_ref()
-        .and_then(|o| o.get("notes_enabled").and_then(serde_json::Value::as_bool))
-        .unwrap_or(default_enabled);
-    let model = obj
-        .as_ref()
-        .and_then(|o| {
-            o.get("notes_model")
-                .and_then(|v| v.as_str().map(PathBuf::from))
-        })
-        .filter(|p| !p.as_os_str().is_empty())
-        .unwrap_or_else(|| default_model.to_path_buf());
-    Ok((enabled, model))
+    let s = Section::load(pool, SECTION_MODELS).await?;
+    Ok((
+        s.bool_field("notes_enabled", default_enabled),
+        s.path_field("notes_model", default_model),
+    ))
 }
 
 /// Effective notes prompt template from the same `models` section: the stored `notes_prompt`
@@ -1870,14 +1861,9 @@ pub async fn effective_notes_prompt(
     pool: &SqlitePool,
     default: &str,
 ) -> Result<String, sqlx::Error> {
-    Ok(section_object(pool, SECTION_MODELS)
+    Ok(Section::load(pool, SECTION_MODELS)
         .await?
-        .and_then(|o| {
-            o.get("notes_prompt")
-                .and_then(|v| v.as_str().map(str::to_string))
-        })
-        .filter(|s| !s.trim().is_empty())
-        .unwrap_or_else(|| default.to_string()))
+        .string_field("notes_prompt", default))
 }
 
 /// Effective `(auto_refine, recognition_threshold)`: the stored `speakers` override per field, else
@@ -1888,17 +1874,9 @@ pub async fn effective_speakers(
     default_auto_refine: bool,
     default_threshold: f64,
 ) -> Result<(bool, f64), sqlx::Error> {
-    let obj = section_object(pool, SECTION_SPEAKERS).await?;
-    let auto_refine = obj
-        .as_ref()
-        .and_then(|o| o.get("auto_refine").and_then(serde_json::Value::as_bool))
-        .unwrap_or(default_auto_refine);
-    let threshold = obj
-        .as_ref()
-        .and_then(|o| {
-            o.get("recognition_threshold")
-                .and_then(serde_json::Value::as_f64)
-        })
-        .unwrap_or(default_threshold);
-    Ok((auto_refine, threshold))
+    let s = Section::load(pool, SECTION_SPEAKERS).await?;
+    Ok((
+        s.bool_field("auto_refine", default_auto_refine),
+        s.f64_field("recognition_threshold", default_threshold),
+    ))
 }

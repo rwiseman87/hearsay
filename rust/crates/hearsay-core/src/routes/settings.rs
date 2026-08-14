@@ -68,36 +68,29 @@ async fn resolve_recording(state: &AppState) -> ApiResult<RecordingSettings> {
     // Resolve each field against its config default rather than a strict struct parse: a row that
     // predates the inactivity fields (only `record`) must still resolve, filling the missing fields
     // from the environment/config default. Mirrors the per-field `resolve_models`.
-    let obj = queries::recording_section(&state.pool).await?;
-    let bool_field = |key: &str, default: bool| {
-        obj.as_ref()
-            .and_then(|o| o.get(key).and_then(serde_json::Value::as_bool))
-            .unwrap_or(default)
-    };
-    let u32_field = |key: &str, default: u32| {
-        obj.as_ref()
-            .and_then(|o| o.get(key).and_then(serde_json::Value::as_u64))
-            .map(|v| v as u32)
-            .unwrap_or(default)
-    };
+    let s = queries::Section::load(&state.pool, SECTION_RECORDING).await?;
     Ok(RecordingSettings {
-        record: bool_field("record", state.settings.record),
-        inactivity_prompt_enabled: bool_field(
+        record: s.bool_field("record", state.settings.record),
+        inactivity_prompt_enabled: s.bool_field(
             "inactivity_prompt_enabled",
             state.settings.inactivity_prompt,
         ),
-        inactivity_auto_end_enabled: bool_field(
+        inactivity_auto_end_enabled: s.bool_field(
             "inactivity_auto_end_enabled",
             state.settings.inactivity_auto_end,
         ),
-        inactivity_prompt_minutes: u32_field(
-            "inactivity_prompt_minutes",
-            state.settings.inactivity_prompt_minutes as u32,
-        ),
-        inactivity_end_minutes: u32_field(
-            "inactivity_end_minutes",
-            state.settings.inactivity_end_minutes as u32,
-        ),
+        inactivity_prompt_minutes: s
+            .u64_field(
+                "inactivity_prompt_minutes",
+                state.settings.inactivity_prompt_minutes,
+            )
+            .min(u64::from(u32::MAX)) as u32,
+        inactivity_end_minutes: s
+            .u64_field(
+                "inactivity_end_minutes",
+                state.settings.inactivity_end_minutes,
+            )
+            .min(u64::from(u32::MAX)) as u32,
     })
 }
 
@@ -144,20 +137,16 @@ async fn resolve_storage(state: &AppState) -> ApiResult<StorageSettings> {
     // `{"output_dir": ...}` row, and a struct parse resolves the absent keys to their *type*
     // defaults (false / 0) — shipping the feature silently disabled on exactly the installs that
     // have the most audio to reclaim. Mirrors the per-field `resolve_recording` / `resolve_models`.
-    let obj = queries::storage_section(&state.pool).await?;
-    let field = |key: &str| obj.as_ref().and_then(|o| o.get(key));
+    let s = queries::Section::load(&state.pool, SECTION_STORAGE).await?;
     Ok(StorageSettings {
-        output_dir: field("output_dir")
-            .and_then(|v| v.as_str())
-            .map(str::to_string)
-            .unwrap_or_else(|| state.settings.output_dir.to_string_lossy().to_string()),
-        compress_audio: field("compress_audio")
-            .and_then(serde_json::Value::as_bool)
-            .unwrap_or(state.settings.compress_audio),
-        compress_after_days: field("compress_after_days")
-            .and_then(serde_json::Value::as_u64)
-            .map(|v| v as u32)
-            .unwrap_or(state.settings.compress_after_days as u32),
+        output_dir: s
+            .path_field("output_dir", &state.settings.output_dir)
+            .to_string_lossy()
+            .to_string(),
+        compress_audio: s.bool_field("compress_audio", state.settings.compress_audio),
+        compress_after_days: s
+            .u64_field("compress_after_days", state.settings.compress_after_days)
+            .min(u64::from(u32::MAX)) as u32,
     })
 }
 
@@ -166,22 +155,18 @@ async fn resolve_models(state: &AppState) -> ApiResult<ModelSettings> {
     // section as a struct: the download manager merges in just `notes_model`, so the stored object is
     // often partial (no `refine_model`), which a strict struct parse would reject. Mirrors the
     // per-field `effective_*` readers in `hearsay-db`.
-    let obj = queries::models_section(&state.pool).await?;
-    let field = |key: &str| {
-        obj.as_ref()
-            .and_then(|o| o.get(key).and_then(|v| v.as_str()))
-            .map(str::to_string)
-    };
+    let s = queries::Section::load(&state.pool, SECTION_MODELS).await?;
     Ok(ModelSettings {
-        refine_model: field("refine_model")
-            .unwrap_or_else(|| state.settings.refine_model.to_string_lossy().to_string()),
-        notes_enabled: obj
-            .as_ref()
-            .and_then(|o| o.get("notes_enabled").and_then(serde_json::Value::as_bool))
-            .unwrap_or(state.settings.notes_enabled),
-        notes_model: field("notes_model")
-            .unwrap_or_else(|| state.settings.notes_model.to_string_lossy().to_string()),
-        notes_prompt: field("notes_prompt").unwrap_or_else(|| state.settings.notes_prompt.clone()),
+        refine_model: s
+            .path_field("refine_model", &state.settings.refine_model)
+            .to_string_lossy()
+            .to_string(),
+        notes_enabled: s.bool_field("notes_enabled", state.settings.notes_enabled),
+        notes_model: s
+            .path_field("notes_model", &state.settings.notes_model)
+            .to_string_lossy()
+            .to_string(),
+        notes_prompt: s.string_field("notes_prompt", &state.settings.notes_prompt),
     })
 }
 
