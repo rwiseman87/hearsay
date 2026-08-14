@@ -66,6 +66,9 @@ pub struct Settings {
     pub models_dir: PathBuf,
     /// The desktop shell's private 0600 `{port, token}` handshake file. `None` in headless dev.
     pub handshake_path: Option<PathBuf>,
+    /// The bundled third-party notices, which Settings > About opens. Defaults to the repo copy for
+    /// dev; the desktop shell points it at the bundle resource.
+    pub notices_path: PathBuf,
     /// Bundled FluidAudio live models, seeded into FluidAudio's cache on first launch. `None` in
     /// headless dev, where FluidAudio downloads them.
     pub fluid_models_dir: Option<PathBuf>,
@@ -290,6 +293,10 @@ impl Settings {
             notes_binary: default_notes_binary(),
             models_dir: PathBuf::from(env_or("HEARSAY_MODELS_DIR", "outputs/models")),
             handshake_path: env_path("HEARSAY_HANDSHAKE_PATH"),
+            notices_path: PathBuf::from(env_or(
+                "HEARSAY_THIRD_PARTY_NOTICES",
+                "./THIRD-PARTY-NOTICES.md",
+            )),
             fluid_models_dir: env_path("HEARSAY_FLUID_MODELS_DIR"),
             home_dir: env_path("HOME"),
             sherpa_models_dir: PathBuf::from(env_or(

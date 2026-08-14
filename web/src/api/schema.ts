@@ -474,6 +474,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/settings/notices": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Open the bundled third-party notices in the OS default handler. Attribution for the CC BY 4.0
+         *     model weights has to reach the user from the distributed app, so the notices ship as a bundle
+         *     resource and Settings > About opens this copy. Routed through the core for the same reason as
+         *     [`reveal_output_dir`].
+         */
+        post: operations["open_notices"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/settings/permissions": {
         parameters: {
             query?: never;
@@ -2597,6 +2619,29 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["ModelSettings"];
                 };
+            };
+        };
+    };
+    open_notices: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };

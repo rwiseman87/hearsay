@@ -1460,6 +1460,23 @@
         }
       }
     },
+    "/api/settings/notices": {
+      "post": {
+        "tags": [
+          "settings"
+        ],
+        "summary": "Open the bundled third-party notices in the OS default handler. Attribution for the CC BY 4.0\nmodel weights has to reach the user from the distributed app, so the notices ship as a bundle\nresource and Settings > About opens this copy. Routed through the core for the same reason as\n[`reveal_output_dir`].",
+        "operationId": "open_notices",
+        "responses": {
+          "204": {
+            "description": ""
+          },
+          "503": {
+            "description": ""
+          }
+        }
+      }
+    },
     "/api/settings/permissions": {
       "get": {
         "tags": [

@@ -42,6 +42,7 @@ pub fn router() -> Router<AppState> {
         )
         .route("/settings/models", put(update_models).delete(reset_models))
         .route("/settings/reveal", post(reveal_output_dir))
+        .route("/settings/notices", post(open_notices))
 }
 
 /// The local DB file path for display; avoid leaking credentials for a remote DB URL: strip the
@@ -400,12 +401,35 @@ pub(crate) async fn reveal_output_dir(State(state): State<AppState>) -> ApiResul
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// Open the bundled third-party notices in the OS default handler. Attribution for the CC BY 4.0
+/// model weights has to reach the user from the distributed app, so the notices ship as a bundle
+/// resource and Settings > About opens this copy. Routed through the core for the same reason as
+/// [`reveal_output_dir`].
+#[utoipa::path(
+    post, path = "/api/settings/notices", tag = "settings",
+    responses((status = 204), (status = 503)),
+)]
+pub(crate) async fn open_notices(State(state): State<AppState>) -> ApiResult<StatusCode> {
+    let path = state.settings.notices_path.clone();
+    if !path.is_file() {
+        return Err(ApiError::Unavailable(format!(
+            "third-party notices not found at {}",
+            path.display()
+        )));
+    }
+    tokio::task::spawn_blocking(move || reveal_in_file_manager(&path))
+        .await
+        .map_err(|e| ApiError::Internal(format!("notices task panicked: {e}")))??;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 /// Open `dir` in Finder via an absolute `/usr/bin/open` (no PATH dependency from the bundled app's
-/// minimal process environment). `dir` is app-controlled (the effective recordings dir), never
-/// user-supplied, so there is no argument-injection surface. Errors carry the reason for the UI.
+/// minimal process environment). `dir` is app-controlled (the effective recordings dir or the
+/// bundled notices file), never user-supplied, so there is no argument-injection surface. Errors
+/// carry the reason for the UI.
 #[cfg(target_os = "macos")]
 pub(crate) fn reveal_in_file_manager(dir: &Path) -> ApiResult<()> {
-    tracing::info!(dir = %dir.display(), "reveal: opening recordings dir in Finder");
+    tracing::info!(path = %dir.display(), "reveal: opening in Finder");
     let status = std::process::Command::new("/usr/bin/open")
         .arg(dir)
         .status()
@@ -426,7 +450,7 @@ pub(crate) fn reveal_in_file_manager(dir: &Path) -> ApiResult<()> {
 /// dir), never user-supplied, so there is no argument-injection surface.
 #[cfg(target_os = "windows")]
 pub(crate) fn reveal_in_file_manager(dir: &Path) -> ApiResult<()> {
-    tracing::info!(dir = %dir.display(), "reveal: opening recordings dir in File Explorer");
+    tracing::info!(path = %dir.display(), "reveal: opening in File Explorer");
     let status = std::process::Command::new("explorer")
         .arg(dir)
         .status()

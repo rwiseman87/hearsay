@@ -57,6 +57,7 @@ fn test_settings(output_dir: PathBuf, web_dir: PathBuf) -> Settings {
         notes_binary: PathBuf::from("no-notes-sidecar"),
         models_dir: PathBuf::from("no-models-dir"),
         handshake_path: None,
+        notices_path: PathBuf::from("no-notices"),
         fluid_models_dir: None,
         home_dir: None,
         sherpa_models_dir: PathBuf::from("no-sherpa-models"),
@@ -2507,6 +2508,19 @@ async fn edit_notes_is_404_without_generated_notes() {
     )
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn notices_reports_a_missing_file_rather_than_opening_nothing() {
+    // The test config points at a notices path that does not exist, so this exercises the guard
+    // without handing anything to the OS file manager. The success path opens the bundled file and
+    // is left to manual verification, like the reveal routes.
+    let (app, _pool, _tmp) = setup().await;
+    let (status, body) = send(&app, post("/api/settings/notices", "")).await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert!(body["detail"]
+        .as_str()
+        .is_some_and(|d| d.contains("third-party notices not found")));
 }
 
 #[tokio::test]

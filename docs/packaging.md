@@ -35,6 +35,11 @@ Both run `stage-release`, which builds the release binaries and copies them wher
 target (which `dmg` depends on) then invokes `cargo tauri build` and runs `codesign --verify --deep
 --strict` on the bundle to confirm the ad-hoc signature is intact.
 
+`THIRD-PARTY-NOTICES.md` is bundled as a Tauri resource (`Contents/Resources/`), and the shell
+points `HEARSAY_THIRD_PARTY_NOTICES` at it so Settings > About can open it. The bundled speech models
+include CC BY 4.0 weights whose attribution has to travel with the distributed app, so this file
+ships with every build — no staging step, Tauri copies it from the repo root.
+
 `stage-release` stages the whisper refine model. `outputs/models/ggml-large-v3-turbo.bin`
 (about 1.5 GB) must be present: the build copies it to `web/src-tauri/models/`, Tauri bundles it
 under `Contents/Resources/models/`, and the shell points `HEARSAY_REFINE_MODEL` at it so "Refine

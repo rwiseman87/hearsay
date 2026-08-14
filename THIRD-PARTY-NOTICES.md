@@ -1,74 +1,92 @@
 # Third-Party Notices
 
-Hearsay's own source is licensed under the Apache License 2.0 with the Commons Clause (see `LICENSE`). The
-packaged application bundles and/or downloads third-party machine-learning models and libraries that
-carry their **own** licenses; none of these weights are stored in this repository. Those licenses
-govern the models and library code, not Hearsay's source, and their obligations apply when Hearsay is
-distributed as an installer.
+Hearsay incorporates the third-party components listed here. Each remains under its own license,
+reproduced or referenced below. Hearsay's own source is licensed separately (see `LICENSE`).
 
-Every bundled or downloaded component is under a permissive or attribution license (MIT, Apache-2.0,
-or CC-BY-4.0) — all permit redistribution and commercial use. Licenses below were verified on
-2026-07-23 against each project's Hugging Face model card, NGC catalog entry, or repository LICENSE.
+---
 
-## macOS live models — bundled, via FluidAudio
+## Creative Commons Attribution 4.0 International (CC BY 4.0)
 
-| Component | Role | License | Source (conversion / upstream) |
-|---|---|---|---|
-| Parakeet TDT 0.6B v3 (Core ML) | batch ASR | **CC-BY-4.0** | `FluidInference/parakeet-tdt-0.6b-v3-coreml` / `nvidia/parakeet-tdt-0.6b-v3` |
-| Parakeet unified EN 0.6B (Core ML) | streaming ASR | **CC-BY-4.0** | `FluidInference/parakeet-unified-en-0.6b-coreml` / NVIDIA Parakeet |
-| LS-EEND (Core ML) | live diarizer | MIT | `FluidInference/ls-eend-coreml` |
-| Speaker diarization: pyannote segmentation 3.0 + WeSpeaker v2 (Core ML) | refine diarizer + embeddings | **CC-BY-4.0** (as distributed) | `FluidInference/speaker-diarization-coreml` (pyannote upstream MIT; WeSpeaker toolkit Apache-2.0) |
-| Silero VAD (Core ML) | voice activity detection | MIT | `FluidInference/silero-vad-coreml` / `snakers4/silero-vad` |
+Licensed under CC BY 4.0: https://creativecommons.org/licenses/by/4.0/
 
-## Windows live models — bundled, via sherpa-onnx (k2-fsa model zoo)
+Each of these components was format-converted for use in Hearsay. No other changes were made.
 
-| Component | Role | License | Source (conversion / upstream) |
-|---|---|---|---|
-| Streaming Zipformer EN 2023-06-21 | streaming ASR | Apache-2.0 | `csukuangfj/sherpa-onnx-streaming-zipformer-en-2023-06-21` |
-| pyannote segmentation 3.0 | diarization segmentation | MIT | `csukuangfj/sherpa-onnx-pyannote-segmentation-3-0` (license from upstream `pyannote/segmentation-3.0`; conversion repo states none) |
-| Online punctuation EN 2024-08-06 | punctuation | Apache-2.0 | k2-fsa sherpa punctuation zoo (license from upstream Edge-Punct-Casing; conversion repo states none) |
-| TitaNet-small (ONNX) | speaker embeddings | **CC-BY-4.0** | `nemo_en_titanet_small.onnx` (NVIDIA NeMo TitaNet weights; NGC/HF model card is CC-BY-4.0 — the Apache-2.0 NeMo Toolkit code license does not govern the weights) |
+- **Parakeet TDT 0.6B v3** — © NVIDIA Corporation. Converted to Core ML by FluidInference
+  (`FluidInference/parakeet-tdt-0.6b-v3-coreml`, from `nvidia/parakeet-tdt-0.6b-v3`).
+- **Parakeet unified EN 0.6B** — © NVIDIA Corporation. Converted to Core ML by FluidInference
+  (`FluidInference/parakeet-unified-en-0.6b-coreml`).
+- **pyannote segmentation 3.0 with WeSpeaker v2 speaker embeddings** — © Hervé Bredin and
+  contributors (pyannote); WeSpeaker authors (embeddings). Distributed under CC BY 4.0 by
+  FluidInference and converted to Core ML (`FluidInference/speaker-diarization-coreml`).
+- **TitaNet-small** — © NVIDIA Corporation. Converted to ONNX
+  (`nemo_en_titanet_small.onnx`); used on the Windows path.
 
-## Offline refine — bundled
+THE WORKS ARE PROVIDED "AS-IS" AND WITHOUT WARRANTIES OF ANY KIND, TO THE EXTENT PERMITTED BY THE
+CC BY 4.0 PUBLIC LICENSE.
 
-| Component | License | Source |
-|---|---|---|
-| Whisper ggml models (large-v3-turbo, small.en) | MIT | `ggerganov/whisper.cpp` / upstream OpenAI Whisper |
+---
 
-## Optional notes LLMs — user-downloaded on selection, not bundled
+## MIT License
 
-| Component | License | Source (quantization / upstream) |
-|---|---|---|
-| Qwen3-1.7B, Qwen3-4B-Instruct-2507 (GGUF) | Apache-2.0 | `unsloth/*-GGUF` / `Qwen/*` |
-| SmolLM3-3B (GGUF) | Apache-2.0 | `unsloth/SmolLM3-3B-GGUF` / `HuggingFaceTB/SmolLM3-3B` |
+The following components are licensed under the MIT License:
 
-## Libraries — bundled or linked
+- **LS-EEND** (Core ML conversion `FluidInference/ls-eend-coreml`)
+- **Silero VAD** — © Silero Team (`snakers4/silero-vad`; Core ML conversion
+  `FluidInference/silero-vad-coreml`)
+- **pyannote segmentation 3.0** — © Hervé Bredin and contributors (ONNX conversion
+  `csukuangfj/sherpa-onnx-pyannote-segmentation-3-0`; used on the Windows path)
+- **Whisper** — © OpenAI (ggml conversions `large-v3-turbo`, `small.en`)
+- **whisper.cpp / ggml** — © Georgi Gerganov and contributors
+- **llama.cpp** — © Georgi Gerganov and contributors
+- **ONNX Runtime** — © Microsoft Corporation
+- **Tauri** — © 2017 - Present Tauri Apps Contributors
 
-| Library | License |
-|---|---|
-| Tauri (`tauri`, `tauri-plugin-*`) | MIT / Apache-2.0 (MPL-2.0 in its dependency tree, allowed by `rust/deny.toml`) |
-| FluidAudio | Apache-2.0 |
-| sherpa-onnx | Apache-2.0 |
-| onnxruntime | MIT |
-| whisper.cpp / ggml | MIT |
-| llama.cpp | MIT |
-| Rust crate dependencies | permissive only (MIT / Apache-2.0 / BSD / ISC / etc.), enforced in CI by `cargo deny` (`rust/deny.toml`) |
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software and
+associated documentation files (the "Software"), to deal in the Software without restriction,
+including without limitation the rights to use, copy, modify, merge, publish, distribute,
+sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
 
-## Attribution requirements
+The above copyright notice and this permission notice shall be included in all copies or
+substantial portions of the Software.
 
-The CC-BY-4.0 components require crediting the original author and indicating that the weights were
-format-converted. Surface these in an in-app "Licenses" / "About" screen or a notices file bundled in
-the installer:
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT
+NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,
+DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT
+OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
-- "Parakeet TDT 0.6B v3" and "Parakeet unified EN 0.6B" (c) NVIDIA — CC-BY-4.0; converted to Core ML.
-- "pyannote speaker diarization / segmentation 3.0" (c) Herve Bredin et al., with "WeSpeaker" speaker
-  embeddings — distributed under CC-BY-4.0 by FluidInference; converted to Core ML.
-- "TitaNet-small" speaker embeddings (c) NVIDIA — CC-BY-4.0; converted to ONNX (used on the Windows path).
+---
 
-All MIT and Apache-2.0 components require preserving their license text and copyright notices in the
-distributed application.
+## Apache License 2.0
 
-Packaging note (not a licensing restriction): the upstream `pyannote/segmentation-3.0` repository is
-access-gated on Hugging Face — downloading it directly requires an authenticated token that has
-accepted its conditions. Hearsay ships the already-converted weights, so end users are never gated;
-this affects only rebuilding the model set from upstream.
+The following components are licensed under the Apache License, Version 2.0. You may obtain a copy
+of the License at http://www.apache.org/licenses/LICENSE-2.0
+
+- **FluidAudio**
+- **sherpa-onnx** — © k2-fsa authors
+- **Streaming Zipformer EN 2023-06-21** (`csukuangfj/sherpa-onnx-streaming-zipformer-en-2023-06-21`)
+- **Online punctuation EN 2024-08-06** (k2-fsa sherpa punctuation model zoo)
+- **Qwen3-1.7B, Qwen3-4B-Instruct-2507** — © Alibaba Cloud (GGUF quantizations by Unsloth).
+  Downloaded on user request; not bundled.
+- **SmolLM3-3B** — © Hugging Face (GGUF quantization by Unsloth). Downloaded on user request; not
+  bundled.
+- **Tauri** (dual-licensed MIT / Apache-2.0)
+
+Unless required by applicable law or agreed to in writing, software distributed under the License
+is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
+implied. See the License for the specific language governing permissions and limitations under the
+License.
+
+Model weights converted to Core ML or ONNX for use in Hearsay are modified from their original
+distributed form; no other changes were made.
+
+---
+
+## Rust and JavaScript dependencies
+
+Hearsay links a tree of Rust crates and bundles a compiled JavaScript frontend. Every dependency is
+under a permissive license (MIT, Apache-2.0, BSD, ISC, Unicode-3.0, Zlib, or MPL-2.0), enforced at
+build time by `cargo deny` against the policy in `rust/deny.toml`. The MIT and Apache-2.0 terms
+above apply to those dependencies carrying those licenses; per-crate copyright notices are held in
+each crate's own repository.

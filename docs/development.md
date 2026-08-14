@@ -148,6 +148,7 @@ compiler-checked source it mirrors.
 | Notes sidecar path | `HEARSAY_NOTES_PATH` | a `hearsay-notes` sibling of the core executable |
 | Models download dir | `HEARSAY_MODELS_DIR` | `outputs/models` |
 | Shell handshake file | `HEARSAY_HANDSHAKE_PATH` | unset (headless dev prints the URL instead) |
+| Third-party notices file | `HEARSAY_THIRD_PARTY_NOTICES` | `./THIRD-PARTY-NOTICES.md` (the shell points it at the bundled copy) |
 | Bundled FluidAudio models | `HEARSAY_FLUID_MODELS_DIR` | unset (FluidAudio downloads to its cache) |
 | Sherpa models dir (Windows backend) | `HEARSAY_SHERPA_MODELS_DIR` | `outputs/models/sherpa` |
 | Diarize clustering threshold (macOS sidecar) | `HEARSAY_DIARIZE_CLUSTER_THRESHOLD` | `0.7` |

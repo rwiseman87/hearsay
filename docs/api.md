@@ -333,6 +333,12 @@ Returns the resulting effective section.
 Opens the recordings root in the OS file manager (server-derived path). `503` if it cannot be
 opened.
 
+### `POST /api/settings/notices` (open the third-party notices)
+
+Opens the bundled `THIRD-PARTY-NOTICES.md` in the OS default handler, which is how the CC BY 4.0
+attribution for the bundled speech models reaches the user. `503` if the file is missing or cannot
+be opened.
+
 ### `GET /api/settings/permissions` (live TCC status)
 
 Briefly spawns the capture helper and reads its `check_permissions` snapshot and build version;
