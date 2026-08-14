@@ -4,8 +4,14 @@ on:
   push:
     branches: [main]
   pull_request:
-  # Called by release.yml so the gate is defined once and runs before any installer is built.
-  workflow_call:
+  # Builds an installer from main at a chosen bump; the merge path always builds a patch.
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: Version bump for the installer this run produces
+        type: choice
+        options: [patch, minor, major]
+        default: patch
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -15,13 +21,45 @@ permissions:
   contents: read
 
 jobs:
+  # A merge whose tree the pull-request gate already saw does not need the gate again. Only skipped
+  # when the cargo cache key is unchanged too: a run on main is what seeds the cache every PR
+  # restores from, because an Actions cache written by a PR is unreadable outside that PR.
+  triage:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    outputs:
+      redundant: ${{ steps.check.outputs.redundant }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Depth 2 reaches both parents: the merge is compared against the branch it merged.
+          fetch-depth: 2
+          persist-credentials: false
+
+      - id: check
+        env:
+          CACHE_KEY_FILES: rust/Cargo.lock web/src-tauri/Cargo.lock rust-toolchain.toml .github/actions/mac-build-env/action.yml
+        run: |
+          set -euo pipefail
+          redundant=false
+          if git rev-parse -q --verify 'HEAD^2^{tree}' > /dev/null &&
+             [ "$(git rev-parse 'HEAD^{tree}')" = "$(git rev-parse 'HEAD^2^{tree}')" ] &&
+             git diff --quiet 'HEAD^' HEAD -- $CACHE_KEY_FILES; then
+            redundant=true
+          fi
+          echo "already covered by the pull-request gate: $redundant"
+          echo "redundant=$redundant" >> "$GITHUB_OUTPUT"
+
   gate:
+    needs: [triage]
+    # triage never runs on a pull request, where the output is empty and the gate always runs.
+    if: ${{ !cancelled() && needs.triage.outputs.redundant != 'true' }}
     # macos-26 is the arm64 standard image: stage-release refuses non-arm64, and the floating
     # macos-latest label would move the build environment without a commit behind it.
     runs-on: macos-26
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # Nothing here pushes; do not leave GITHUB_TOKEN in .git/config for later steps to read.
           persist-credentials: false
@@ -33,3 +71,76 @@ jobs:
       # clippy + rustfmt, Swift codec selftest, cargo test, the Tauri shell, the web gate, codegen
       # drift, version drift, cargo-audit + npm audit, and the cargo-deny license gate.
       - run: make ci
+
+  # The installer for main, built once per merge and kept as an artifact. promote.yml turns a chosen
+  # one into a GitHub Release, so releasing never rebuilds. Not built on pull requests: its cache
+  # would be written where the next PR cannot read it, making every PR pay a cold release build.
+  installer:
+    needs: [gate]
+    if: ${{ !cancelled() && github.event_name != 'pull_request' && needs.gate.result != 'failure' }}
+    runs-on: macos-26
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Full history: the version comes from the last release tag.
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: ./.github/actions/mac-build-env
+        with:
+          cache-key: release
+
+      # The committed version is a placeholder; the shipped number is stamped in here. Building the
+      # next version up front is what lets a promotion ship this artifact untouched.
+      - name: Stamp the next version
+        id: version
+        env:
+          BUMP: ${{ inputs.bump || 'patch' }}
+        run: |
+          set -euo pipefail
+          last="$(git tag --list 'v*' --sort=-v:refname | head -1)"
+          if [ -z "$last" ]; then
+            version=0.1.0
+          else
+            IFS=. read -r major minor patch <<< "${last#v}"
+            case "$BUMP" in
+              major) version="$((major + 1)).0.0" ;;
+              minor) version="$major.$((minor + 1)).0" ;;
+              patch) version="$major.$minor.$((patch + 1))" ;;
+            esac
+          fi
+          echo "${last:-no tag yet} + $BUMP -> $version"
+          make stamp-version "VERSION=$version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      # stage-release builds the web bundle, the five Swift sidecars and the two Rust binaries, stages
+      # them as Tauri externalBin, then bundles and ad-hoc signs the .app and the DMG.
+      - name: Build the DMG
+        run: make dmg
+
+      - name: Checksum the DMG
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          dir="web/src-tauri/target/release/bundle/dmg"
+          base="Hearsay_${VERSION}_aarch64.dmg"
+          test -f "$dir/$base" || {
+            echo "::error::expected $dir/$base"
+            ls -lR web/src-tauri/target/release/bundle
+            exit 1
+          }
+          hdiutil imageinfo "$dir/$base" > /dev/null
+          ( cd "$dir" && shasum -a 256 "$base" > "$base.sha256" && cat "$base.sha256" )
+          ls -lh "$dir"
+
+      # A fixed name so promote.yml can fetch it by name from any run.
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: hearsay-macos-dmg
+          path: |
+            web/src-tauri/target/release/bundle/dmg/*.dmg
+            web/src-tauri/target/release/bundle/dmg/*.sha256
+          if-no-files-found: error
+          retention-days: 30

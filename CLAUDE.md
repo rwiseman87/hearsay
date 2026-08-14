@@ -82,10 +82,11 @@ shared/protocol/ipc.md  IPC contract (source of truth)   ·   shared/fixtures/  
   shell's clippy/tests + the web gate (`tsc` + ESLint + vitest + `vite build`) + codegen-drift check +
   app-version drift check + `cargo audit` + `cargo deny` (license gate). `web-ci` comes before
   `codegen-check` because that target runs `npm run codegen`, which needs `node_modules`.
-- CI is GitHub Actions: `.github/workflows/ci.yml` runs `make ci` on every push + PR;
-  `.github/workflows/release.yml` runs the same gate then `make dmg` on a `vX.Y.Z` tag and attaches the
-  DMG to a draft release. The toolchain is pinned in `.github/actions/mac-build-env` +
-  `rust-toolchain.toml` (see `docs/packaging.md`).
+- CI is GitHub Actions: `.github/workflows/ci.yml` runs `make ci` on every push + PR, then builds the
+  DMG on `main` (stamped with the next patch version; the committed version is a `0.0.0` placeholder).
+  `.github/workflows/promote.yml` publishes a chosen build as a draft release without rebuilding it.
+  The toolchain is pinned in `.github/actions/mac-build-env` + `rust-toolchain.toml`
+  (see `docs/packaging.md`).
 - Run the core locally: `make rust-serve` (`SYNTHETIC=1` for no-permission plumbing). Build the app:
   `make dmg` (see `docs/packaging.md`).
 - Pin exact versions in lockfiles (`rust/Cargo.lock`, `web/package-lock.json`). npm: `ignore-scripts=true`.

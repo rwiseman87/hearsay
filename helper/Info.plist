@@ -7,7 +7,7 @@
 	<key>CFBundleName</key>
 	<string>hearsay-helper</string>
 	<key>CFBundleShortVersionString</key>
-	<string>0.1.0</string>
+	<string>0.0.0</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Hearsay transcribes your microphone so it can capture what you say in meetings.</string>
 	<key>NSAudioCaptureUsageDescription</key>

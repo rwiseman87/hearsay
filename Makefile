@@ -1,4 +1,4 @@
-.PHONY: help swift-plist-guard swift-build swift-test rust-build rust-test rust-lint tauri-lint tauri-test rust-fmt test lint fmt codegen codegen-check web-install web-typecheck web-lint web-test web-build web-ci audit licenses version-check version version-check-tag set-version ci probes diarize-eval coverage e2e test-all clean-test build package notarize clean serve rust-serve fetch-refine-model fetch-sherpa-models stage-sherpa-models stage-release mac-app dmg
+.PHONY: help swift-plist-guard swift-build swift-test rust-build rust-test rust-lint tauri-lint tauri-test rust-fmt test lint fmt codegen codegen-check web-install web-typecheck web-lint web-test web-build web-ci audit licenses version-check version stamp-version set-version ci probes diarize-eval coverage e2e test-all clean-test build package notarize clean serve rust-serve fetch-refine-model fetch-sherpa-models stage-sherpa-models stage-release mac-app dmg
 
 PKG := helper
 RUST := rust
@@ -108,23 +108,14 @@ licenses: ## Fail the build on copyleft dependency licenses (cargo-deny; policy 
 VERSION_FILES := $(RUST)/Cargo.toml web/src-tauri/Cargo.toml web/src-tauri/tauri.conf.json \
                  web/package.json helper/Info.plist
 
-version: ## Print the canonical app version
+# A placeholder in git; the release workflow stamps the real version from the release it is cutting.
+version: ## Print the app version as committed (0.0.0 outside a release build)
 	@grep -m1 '^version' $(RUST)/Cargo.toml | sed -E 's/.*"(.*)".*/\1/'
 
-# Tag-driven releases: the tag is the request, the committed files are the answer, and this asserts
-# they agree. Reads TAG, else GITHUB_REF_NAME, else the tag on HEAD.
-version-check-tag: ## Fail unless the release tag matches the app version (usage: make version-check-tag TAG=v0.2.0)
-	@set -eu; \
-	tag="$${TAG:-$${GITHUB_REF_NAME:-$$(git describe --exact-match --tags HEAD 2>/dev/null || true)}}"; \
-	test -n "$$tag" || { echo "version-check-tag: no tag; pass TAG=vX.Y.Z or build a tagged commit"; exit 1; }; \
-	want="v$$(grep -m1 '^version' $(RUST)/Cargo.toml | sed -E 's/.*"(.*)".*/\1/')"; \
-	test "$$tag" = "$$want" || { \
-		echo "ERROR: tag $$tag does not match the app version $$want"; \
-		echo "run 'make set-version VERSION=$${tag#v}' and commit before tagging."; exit 1; }; \
-	echo "tag $$tag matches the app version"
-
-set-version: ## Set the app version everywhere (usage: make set-version VERSION=0.2.0)
-	@test -n "$(VERSION)" || { echo "usage: make set-version VERSION=x.y.z"; exit 1; }
+# The release build's first step: the committed version is a placeholder, the release workflow
+# derives the real one and stamps it here. No codegen, so it runs before `npm ci`.
+stamp-version: ## Write the app version into all five files (usage: make stamp-version VERSION=0.2.0)
+	@test -n "$(VERSION)" || { echo "usage: make stamp-version VERSION=x.y.z"; exit 1; }
 	@echo "$(VERSION)" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$$' || \
 		{ echo "ERROR: VERSION must be x.y.z (got '$(VERSION)')"; exit 1; }
 	@sed -i '' -E '1,/^version/ s/^version = ".*"/version = "$(VERSION)"/' $(RUST)/Cargo.toml
@@ -133,7 +124,9 @@ set-version: ## Set the app version everywhere (usage: make set-version VERSION=
 	@sed -i '' -E '1,/"version"/ s/("version"[[:space:]]*:[[:space:]]*)".*"/\1"$(VERSION)"/' web/package.json
 	@sed -i "" -E '/CFBundleShortVersionString/{n; s|<string>.*</string>|<string>$(VERSION)</string>|;}' helper/Info.plist
 	@$(MAKE) --no-print-directory version-check
-	# openapi.json embeds the version, so a bump without this leaves codegen-check failing.
+
+set-version: stamp-version ## Set the app version everywhere and regenerate codegen (usage: make set-version VERSION=0.2.0)
+	# openapi.json embeds the version, so a change without this leaves codegen-check failing.
 	@$(MAKE) --no-print-directory codegen
 
 version-check: ## Fail if the app version drifts across the Rust workspace, Tauri shell, package.json, and helper plist

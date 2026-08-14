@@ -7,7 +7,7 @@
       "name": "Apache-2.0 WITH Commons-Clause",
       "url": "https://github.com/rwiseman87/hearsay/blob/main/LICENSE"
     },
-    "version": "0.1.0"
+    "version": "0.0.0"
   },
   "paths": {
     "/api/folders": {

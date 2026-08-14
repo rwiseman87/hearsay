@@ -37,7 +37,7 @@ The `Makefile` is the task runner.
 | `make licenses` | Fail on any copyleft dependency (`cargo deny`; policy in `rust/deny.toml`). |
 | `make version` / `make set-version VERSION=x.y.z` | Print the app version / set it everywhere and regenerate codegen. |
 | `make version-check` | Fail if the app version drifts across the five files that carry it. |
-| `make version-check-tag` | Fail unless the release tag matches the app version (`TAG=`, else `GITHUB_REF_NAME`). |
+| `make stamp-version VERSION=x.y.z` | Write the version into the five files without codegen; what the release build runs. |
 | `make ci` | The full gate: lint, tests, codegen drift, version check, audit, licenses, web CI. Must stay green. |
 | `make web-ci` | The web gate: `npm ci`, `tsc`, ESLint, vitest (unit/component tests), `vite build`. |
 | `make rust-serve` (alias `serve`) | Build the `hearsay-notes` sidecar (`metal`) and run the core (`metal,aec`); the core spawns the sidecar for notes. |
