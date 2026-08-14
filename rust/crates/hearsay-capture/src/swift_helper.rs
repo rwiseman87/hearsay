@@ -88,33 +88,14 @@ impl AudioSource for SwiftHelperSource {
                 self.helper_path.display()
             )));
         }
-        let run_dir = tempfile::tempdir()?;
-        let control_listener = UnixListener::bind(run_dir.path().join("control.sock"))?;
-        let media_listener = UnixListener::bind(run_dir.path().join("media.sock"))?;
-
-        let mut cmd = ProcessCommand::new(&self.helper_path);
-        cmd.arg("serve").arg("--socket-dir").arg(run_dir.path());
-        if self.synthetic {
-            cmd.arg("--synthetic");
-        }
-        // Reap the helper (mic + tap hot) if any start()-internal step below fails and `child` is
-        // dropped before it reaches `Running`, and as a backstop if `Running` is dropped without a
-        // clean `stop()`. The probe path already does this; start() must too.
-        cmd.kill_on_drop(true);
-        let child = cmd.spawn()?;
-
-        // The helper connects back to both sockets (control first, then media).
-        let (control_conn, _) = tokio::time::timeout(CONNECT_TIMEOUT, control_listener.accept())
-            .await
-            .map_err(|_| backend("helper did not connect to control.sock in time"))??;
-        let (media_conn, _) = tokio::time::timeout(CONNECT_TIMEOUT, media_listener.accept())
-            .await
-            .map_err(|_| backend("helper did not connect to media.sock in time"))??;
-
-        let (control_read, mut control_writer) = control_conn.into_split();
-        let mut control_lines = BufReader::new(control_read).lines();
-
-        wait_for_event(&mut control_lines, "hello", CONNECT_TIMEOUT).await?;
+        let Handshake {
+            child,
+            run_dir,
+            mut control_writer,
+            mut control_lines,
+            media_conn,
+            hello: _,
+        } = spawn_and_handshake(&self.helper_path, self.synthetic, CONNECT_TIMEOUT).await?;
 
         let mut args = JsonObj::new();
         args.insert("tap_mode".into(), self.tap_mode.clone().into());
@@ -127,7 +108,13 @@ impl AudioSource for SwiftHelperSource {
         control_writer
             .write_all(&to_line(&start).map_err(|e| backend(e.to_string()))?)
             .await?;
-        wait_for_reply(&mut control_lines, 1, START_CAPTURE_TIMEOUT).await?;
+        wait_for_reply_result(
+            &mut control_lines,
+            1,
+            START_CAPTURE_TIMEOUT,
+            "start_capture",
+        )
+        .await?;
 
         let (tx, rx) = mpsc::channel::<CaptureChunk>(1024);
         let media_task = tokio::spawn(media_pump(media_conn, tx));
@@ -428,6 +415,61 @@ fn map_stream(stream: IpcStream) -> Stream {
 }
 
 /// Read control lines until the named event arrives (or timeout).
+/// Everything the two-socket handshake produces. The capture path keeps all of it; the permissions
+/// probe drops the media socket and lets `kill_on_drop` reap the child at scope end.
+struct Handshake {
+    child: Child,
+    run_dir: tempfile::TempDir,
+    control_writer: OwnedWriteHalf,
+    control_lines: Lines<BufReader<OwnedReadHalf>>,
+    media_conn: UnixStream,
+    hello: Event,
+}
+
+/// Spawn `hearsay-helper serve` on a private socket dir and complete its handshake: bind
+/// `control.sock` + `media.sock`, start the process, accept both connections (control first, then
+/// media, which is the order the helper dials them), and read its `hello` event.
+///
+/// `kill_on_drop` is set before spawning so a failure at any step below reaps the helper rather than
+/// leaving the mic and tap hot.
+async fn spawn_and_handshake(
+    helper_path: &Path,
+    synthetic: bool,
+    timeout: Duration,
+) -> Result<Handshake, OrchestratorError> {
+    let run_dir = tempfile::tempdir()?;
+    let control_listener = UnixListener::bind(run_dir.path().join("control.sock"))?;
+    let media_listener = UnixListener::bind(run_dir.path().join("media.sock"))?;
+
+    let mut cmd = ProcessCommand::new(helper_path);
+    cmd.arg("serve").arg("--socket-dir").arg(run_dir.path());
+    if synthetic {
+        cmd.arg("--synthetic");
+    }
+    cmd.kill_on_drop(true);
+    let child = cmd.spawn()?;
+
+    let (control_conn, _) = tokio::time::timeout(timeout, control_listener.accept())
+        .await
+        .map_err(|_| backend("helper did not connect to control.sock in time"))??;
+    let (media_conn, _) = tokio::time::timeout(timeout, media_listener.accept())
+        .await
+        .map_err(|_| backend("helper did not connect to media.sock in time"))??;
+
+    let (control_read, control_writer) = control_conn.into_split();
+    let mut control_lines = BufReader::new(control_read).lines();
+    let hello = wait_for_event(&mut control_lines, "hello", timeout).await?;
+
+    Ok(Handshake {
+        child,
+        run_dir,
+        control_writer,
+        control_lines,
+        media_conn,
+        hello,
+    })
+}
+
 async fn wait_for_event(
     lines: &mut Lines<BufReader<OwnedReadHalf>>,
     name: &str,
@@ -474,28 +516,16 @@ async fn probe_inner(helper_path: &Path) -> Result<PermissionsSnapshot, Orchestr
         tracing::info!(path = %helper_path.display(), "permissions probe: helper binary missing");
         return Ok(PermissionsSnapshot::default());
     }
-    let run_dir = tempfile::tempdir()?;
-    let control_listener = UnixListener::bind(run_dir.path().join("control.sock"))?;
-    let media_listener = UnixListener::bind(run_dir.path().join("media.sock"))?;
+    // `_child` and `_run_dir` are held to scope end; `kill_on_drop` reaps the helper when they go.
+    let Handshake {
+        child: _child,
+        run_dir: _run_dir,
+        mut control_writer,
+        mut control_lines,
+        media_conn: _media,
+        hello,
+    } = spawn_and_handshake(helper_path, false, PROBE_TIMEOUT).await?;
 
-    let mut cmd = ProcessCommand::new(helper_path);
-    cmd.arg("serve").arg("--socket-dir").arg(run_dir.path());
-    cmd.kill_on_drop(true);
-    // Kept alive to scope end; `kill_on_drop` reaps the helper when this drops.
-    let _child = cmd.spawn()?;
-
-    // The helper connects back to both sockets (control first, then media) before it says hello.
-    let (control_conn, _) = tokio::time::timeout(PROBE_TIMEOUT, control_listener.accept())
-        .await
-        .map_err(|_| backend("helper did not connect to control.sock in time"))??;
-    let _media = tokio::time::timeout(PROBE_TIMEOUT, media_listener.accept())
-        .await
-        .map_err(|_| backend("helper did not connect to media.sock in time"))??;
-
-    let (control_read, mut control_writer) = control_conn.into_split();
-    let mut control_lines = BufReader::new(control_read).lines();
-
-    let hello = wait_for_event(&mut control_lines, "hello", PROBE_TIMEOUT).await?;
     let helper_version = hello
         .data
         .get("helper_version")
@@ -510,7 +540,8 @@ async fn probe_inner(helper_path: &Path) -> Result<PermissionsSnapshot, Orchestr
     control_writer
         .write_all(&to_line(&check).map_err(|e| backend(e.to_string()))?)
         .await?;
-    let result = wait_for_reply_result(&mut control_lines, 1, PROBE_TIMEOUT).await?;
+    let result =
+        wait_for_reply_result(&mut control_lines, 1, PROBE_TIMEOUT, "check_permissions").await?;
 
     // Best-effort graceful shutdown; `kill_on_drop` reaps the child regardless.
     let shutdown = Command {
@@ -542,10 +573,13 @@ async fn probe_inner(helper_path: &Path) -> Result<PermissionsSnapshot, Orchestr
 
 /// Read control lines until the reply to command `id` arrives (or timeout), returning its `result`
 /// object. Errors if the reply is `ok = false`.
+/// Read control lines until the reply to `id` arrives, returning its `result` object. `command`
+/// names the request in both the failure and the timeout error.
 async fn wait_for_reply_result(
     lines: &mut Lines<BufReader<OwnedReadHalf>>,
     id: i64,
     timeout: Duration,
+    command: &str,
 ) -> Result<JsonObj, OrchestratorError> {
     tokio::time::timeout(timeout, async {
         loop {
@@ -562,44 +596,13 @@ async fn wait_for_reply_result(
                         .error
                         .map(|e| format!("{}: {}", e.code, e.message))
                         .unwrap_or_else(|| "unknown error".to_string());
-                    return Err(backend(format!("check_permissions failed: {msg}")));
+                    return Err(backend(format!("{command} failed: {msg}")));
                 }
             }
         }
     })
     .await
-    .map_err(|_| backend("timed out waiting for check_permissions reply"))?
-}
-
-/// Read control lines until the reply to command `id` arrives (or timeout). Errors if the reply is
-/// not `ok`.
-async fn wait_for_reply(
-    lines: &mut Lines<BufReader<OwnedReadHalf>>,
-    id: i64,
-    timeout: Duration,
-) -> Result<(), OrchestratorError> {
-    tokio::time::timeout(timeout, async {
-        loop {
-            let line = lines
-                .next_line()
-                .await?
-                .ok_or_else(|| backend("control channel closed before reply"))?;
-            if let Ok(Inbound::Reply(reply)) = parse_message(line.as_bytes()) {
-                if reply.id == id {
-                    if reply.ok {
-                        return Ok(());
-                    }
-                    let msg = reply
-                        .error
-                        .map(|e| format!("{}: {}", e.code, e.message))
-                        .unwrap_or_else(|| "unknown error".to_string());
-                    return Err(backend(format!("start_capture failed: {msg}")));
-                }
-            }
-        }
-    })
-    .await
-    .map_err(|_| backend("timed out waiting for start_capture reply"))?
+    .map_err(|_| backend(format!("timed out waiting for {command} reply")))?
 }
 
 #[cfg(test)]
