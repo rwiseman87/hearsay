@@ -43,12 +43,17 @@ rust-lint: ## Lint Rust (clippy with warnings denied + rustfmt --check)
 	cargo clippy --manifest-path $(RUST)/Cargo.toml --all-targets -- -D warnings
 	cargo fmt --manifest-path $(RUST)/Cargo.toml --all --check
 
+# tauri-build validates every bundle input at build-script time, and the staged sidecars + web/dist
+# exist only after `make stage-release`. Clippy and the tests bundle nothing, so drop those inputs
+# from the config the build script reads (TAURI_CONFIG is merged into tauri.conf.json; null deletes).
+TAURI_NO_BUNDLE := TAURI_CONFIG='{"bundle":{"externalBin":null,"resources":null}}'
+
 tauri-lint: ## Lint the Tauri shell (the shipping entrypoint; excluded from the rust/ workspace)
-	cargo clippy --manifest-path web/src-tauri/Cargo.toml --all-targets -- -D warnings
+	$(TAURI_NO_BUNDLE) cargo clippy --manifest-path web/src-tauri/Cargo.toml --all-targets -- -D warnings
 	cargo fmt --manifest-path web/src-tauri/Cargo.toml --check
 
 tauri-test: ## Test the Tauri shell (cargo test on web/src-tauri; excluded from the rust/ workspace)
-	cargo test --manifest-path web/src-tauri/Cargo.toml
+	$(TAURI_NO_BUNDLE) cargo test --manifest-path web/src-tauri/Cargo.toml
 
 rust-fmt: ## Format Rust (rustfmt)
 	cargo fmt --manifest-path $(RUST)/Cargo.toml --all
