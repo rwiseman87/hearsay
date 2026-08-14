@@ -42,12 +42,7 @@ pub(crate) async fn list_voiceprints(
     // never refined has no embedding, so they are not part of this roster.
     let total = queries::count_voiceprint_people(&state.pool).await?;
     let people = queries::list_voiceprints(&state.pool, window.limit, window.offset).await?;
-    Ok(Json(Page {
-        total,
-        page: window.page,
-        page_size: window.page_size,
-        items: people.into_iter().map(VoiceprintRead::from).collect(),
-    }))
+    Ok(Json(window.page_of(total, people)))
 }
 
 #[utoipa::path(

@@ -167,10 +167,5 @@ pub(crate) async fn list_identities(
     let window = pagination.resolve(50, 200);
     let total = queries::count_identities(&state.pool).await?;
     let rows = queries::list_identities(&state.pool, window.limit, window.offset).await?;
-    Ok(Json(Page {
-        total,
-        page: window.page,
-        page_size: window.page_size,
-        items: rows.into_iter().map(IdentityRead::from).collect(),
-    }))
+    Ok(Json(window.page_of(total, rows)))
 }
