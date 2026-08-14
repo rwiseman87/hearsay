@@ -1,0 +1,35 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  # Called by release.yml so the gate is defined once and runs before any installer is built.
+  workflow_call:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  gate:
+    # macos-26 is the arm64 standard image: stage-release refuses non-arm64, and the floating
+    # macos-latest label would move the build environment without a commit behind it.
+    runs-on: macos-26
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          # Nothing here pushes; do not leave GITHUB_TOKEN in .git/config for later steps to read.
+          persist-credentials: false
+
+      - uses: ./.github/actions/mac-build-env
+        with:
+          cache-key: gate
+
+      # clippy + rustfmt, Swift codec selftest, cargo test, the Tauri shell, the web gate, codegen
+      # drift, version drift, cargo-audit + npm audit, and the cargo-deny license gate.
+      - run: make ci

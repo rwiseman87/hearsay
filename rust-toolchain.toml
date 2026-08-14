@@ -1,0 +1,7 @@
+# Pin the toolchain for both cargo workspaces (rust/ and web/src-tauri/): `clippy -D warnings` is a CI
+# gate, and a new clippy release must not turn it red without a commit. Bumping is deliberate: run
+# `make lint` on the new channel first. CI pays one rustup download per run.
+[toolchain]
+channel = "1.96.1"
+components = ["clippy", "rustfmt"]
+profile = "minimal"

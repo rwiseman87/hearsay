@@ -131,11 +131,12 @@ docs/              project documentation
 
 ## Conventions
 
-The `Makefile` is the task runner and `make ci` is the pre-commit gate — run on demand, since there
-is no hosted CI: clippy with warnings denied, rustfmt, the Swift codec self-test, `cargo test`, the
-Tauri shell's lint and tests, codegen and app-version drift checks, dependency-advisory and license
-audits, and the web gate. `make e2e` runs the browser suite separately. Full conventions are in
-[CLAUDE.md](CLAUDE.md).
+The `Makefile` is the task runner and `make ci` is the gate — run it before a commit, and GitHub
+Actions runs the same target on every push and pull request: clippy with warnings denied, rustfmt, the
+Swift codec self-test, `cargo test`, the Tauri shell's lint and tests, codegen and app-version drift
+checks, dependency-advisory and license audits, and the web gate. `make e2e` runs the browser suite
+separately, on demand. Pushing a `vX.Y.Z` tag builds the macOS DMG and attaches it to a draft release
+(see [packaging.md](docs/packaging.md)). Full conventions are in [CLAUDE.md](CLAUDE.md).
 
 ## License
 

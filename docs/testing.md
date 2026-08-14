@@ -1,11 +1,12 @@
 # Test suite
 
-Hearsay's tests run **on demand from the Makefile** — no hosted CI, no timers, no git hooks. Rust is
-the source of truth for the API + IPC contract, and the tests consume that contract rather than
-re-implementing it. There are two tiers:
+Hearsay's tests run **from the Makefile** — no timers, no git hooks. `make ci` also runs in GitHub
+Actions on every push and pull request; everything else is on demand. Rust is the source of truth for
+the API + IPC contract, and the tests consume that contract rather than re-implementing it. There are
+two tiers:
 
 - a **deterministic gate** (`make ci`) — fast, hardware-independent, model-free; the pre-flight before
-  a commit or PR.
+  a commit or PR, and what CI enforces.
 - **model/hardware probes** (`make probes`) — the `#[ignore]`d tests that need a downloaded model and
   the ANE/GPU; run on a box that has them.
 

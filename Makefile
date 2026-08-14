@@ -1,4 +1,4 @@
-.PHONY: help swift-build swift-test rust-build rust-test rust-lint tauri-lint tauri-test rust-fmt test lint fmt codegen codegen-check web-install web-typecheck web-lint web-test web-build web-ci audit licenses version-check ci probes diarize-eval coverage e2e test-all clean-test build package notarize clean serve rust-serve fetch-refine-model fetch-sherpa-models stage-sherpa-models stage-release mac-app dmg
+.PHONY: help swift-plist-guard swift-build swift-test rust-build rust-test rust-lint tauri-lint tauri-test rust-fmt test lint fmt codegen codegen-check web-install web-typecheck web-lint web-test web-build web-ci audit licenses version-check version version-check-tag set-version ci probes diarize-eval coverage e2e test-all clean-test build package notarize clean serve rust-serve fetch-refine-model fetch-sherpa-models stage-sherpa-models stage-release mac-app dmg
 
 PKG := helper
 RUST := rust
@@ -148,7 +148,8 @@ version-check: ## Fail if the app version drifts across the Rust workspace, Taur
 	fi; \
 	echo "version $$rust consistent across $(words $(VERSION_FILES)) files"
 
-ci: lint test tauri-test codegen-check version-check audit licenses web-ci ## Full CI gate (Rust + Swift + Tauri + web + codegen drift + versions + supply-chain)
+# web-ci comes before codegen-check: that target runs `npm run codegen`, which needs node_modules.
+ci: lint test tauri-test web-ci codegen-check version-check audit licenses ## Full CI gate (Rust + Swift + Tauri + web + codegen drift + versions + supply-chain)
 
 # On-demand test suite (docs/testing.md). `make ci` above is the fast deterministic gate; the targets
 # below are the model/hardware probes, coverage, and the "run everything" aggregate — run when you want
@@ -282,7 +283,7 @@ stage-sherpa-models: ## Stage the sherpa models into the Tauri bundle (Windows p
 		fi; \
 	done
 
-stage-release: version-check swift-plist-guard ## Build release binaries + web bundle and stage them for the Tauri bundle
+stage-release: version-check swift-plist-guard web-install ## Build release binaries + web bundle and stage them for the Tauri bundle
 	@test "$$(uname -m)" = "arm64" || { echo "stage-release: Apple-Silicon (arm64) only (got $$(uname -m)); the bundle is Apple-Silicon only"; exit 1; }
 	cd web && npm run build
 	@for p in $(SIDECARS); do \

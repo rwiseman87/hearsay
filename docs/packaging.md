@@ -19,11 +19,13 @@ direct download and internal sharing; recipients clear the macOS quarantine flag
 ## Prerequisites
 
 ```sh
-cargo install tauri-cli    # once; provides `cargo tauri build`
+cargo install tauri-cli --version 2.11.4 --locked   # once; provides `cargo tauri build`
 ```
 
 A Rust toolchain, Node (`npm`), and Swift (Command Line Tools) must be installed, the same as the
-development quickstart.
+development quickstart. `rust-toolchain.toml` pins the Rust channel, so rustup will fetch it on the
+first build. The version pinned above is the one CI builds with; matching it locally keeps a local
+`make dmg` and a released DMG comparable.
 
 ## Versioning
 
@@ -77,6 +79,49 @@ Artifacts:
 Ad-hoc signing is configured by `bundle.macOS.signingIdentity: "-"` in
 `web/src-tauri/tauri.conf.json`; the microphone and system-audio TCC prompt strings live in
 `web/src-tauri/Info.plist`.
+
+## Release pipeline
+
+`.github/workflows/release.yml` builds the macOS installer on a `vX.Y.Z` tag push. It runs the full
+`make ci` gate first — as a separate job, via `workflow_call` on `.github/workflows/ci.yml` — then
+`make version-check-tag`, `make dmg`, and attaches the DMG plus a `.sha256` sidecar to a **draft**
+GitHub Release. Publishing is a manual click, so the notes and the artifact can be checked first. The
+static half of the release notes is `.github/release-notes-macos.md`.
+
+`workflow_dispatch` on the same workflow is a dry run: it builds and uploads the DMG as a workflow
+artifact without creating a release. It is also how the release build cache gets warmed: Actions
+caches are only readable from the ref that wrote them and from the default branch, so an entry saved
+during a tag build is unreachable from the next tag's build. Run the dry run from `main` after a
+dependency bump and every later tag build starts warm.
+
+The build environment is pinned by `.github/actions/mac-build-env`, shared by both workflows:
+
+| Pin | Value | Why |
+|---|---|---|
+| Runner | `macos-26` | The arm64 standard image. `stage-release` refuses non-arm64, and the floating `macos-latest` label moves between OS versions without a commit. |
+| Xcode | `26.3` | Swift 6.3.x, matching the development machine, so FluidAudio compiles the same way. |
+| Rust | `rust-toolchain.toml` | A new clippy release must not fail `-D warnings` without a commit. |
+| Node | 24 | The runner image default; `web/package.json` requires >= 20.19.0. |
+| `cargo-audit` / `cargo-deny` / `tauri-cli` | 0.22.2 / 0.20.2 / 2.11.4 | The Makefile assumes all three on `PATH`; none ship on the runner. |
+
+The runner leaves about 14 GB free and this build compiles whisper.cpp, llama.cpp and SpeexDSP from
+source, so the setup action deletes the unused Xcode installations before building.
+
+Three caches, all `actions/cache`: the pinned cargo tools (keyed on the setup action itself, so a
+dependency bump does not discard them), the cargo registries plus both target directories (keyed on the
+lockfiles, the toolchain, and the setup action — its Xcode pin decides which clang compiled the cached C
+objects — exact match with no fallback: on a hit nothing is re-saved, so an entry is written once and
+never accretes stale artifacts), and the SwiftPM dependency checkouts. Incremental compilation is off
+(`CARGO_INCREMENTAL=0`) to keep the target directories inside the repository's 10 GB cache quota.
+`helper/.build` is deliberately not cached, because `swift-plist-guard` compares mtimes that a cache
+restore does not preserve.
+
+Every action used is GitHub-owned (`actions/*`, MIT) and pinned to a full commit SHA, so no third party
+can change what runs in a build. `persist-credentials: false` on checkout keeps `GITHUB_TOKEN` out of
+`.git/config`: nothing in either workflow pushes, and the release step passes `GH_TOKEN` explicitly.
+
+Artifacts stay unsigned and un-notarized — the same posture as a local `make dmg`, so recipients still
+clear the quarantine flag as below.
 
 ## Install on another Mac
 

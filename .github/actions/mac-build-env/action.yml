@@ -1,0 +1,107 @@
+name: mac-build-env
+description: Pin the macOS build toolchain, restore the build caches, and install the pinned cargo tools.
+
+inputs:
+  cache-key:
+    description: Separates the cargo cache between the debug gate and the release build.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    # Xcode 26.3 is Swift 6.3.x, matching the dev machine, so FluidAudio compiles the same way here.
+    - name: Pin the Xcode toolchain
+      shell: bash
+      run: |
+        set -euo pipefail
+        test -d "$XCODE_APP" || {
+          echo "::error::$XCODE_APP is not on this runner image; check its Xcode list and repin."
+          ls -d /Applications/Xcode*.app
+          exit 1
+        }
+        sudo xcode-select -s "$XCODE_APP"
+        swift --version
+        cmake --version | head -1
+      env:
+        XCODE_APP: /Applications/Xcode_26.3.app
+
+    # The image ships seven Xcodes and leaves ~14 GB free; this build compiles whisper.cpp, llama.cpp
+    # and SpeexDSP from source and needs the room. Runs after the select above so the toolchain in use
+    # is never the one being deleted.
+    - name: Reclaim disk space
+      shell: bash
+      run: |
+        set -euo pipefail
+        for app in /Applications/Xcode*.app; do
+          [ "$app" = "$XCODE_APP" ] || sudo rm -rf "$app"
+        done
+        df -h /
+      env:
+        XCODE_APP: /Applications/Xcode_26.3.app
+
+    # Resolves rust-toolchain.toml, so the pinned toolchain is downloaded here rather than mid-build.
+    - name: Resolve the pinned Rust toolchain
+      shell: bash
+      run: |
+        set -euo pipefail
+        rustc --version
+        cargo --version
+        cargo clippy --version
+
+    - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+      with:
+        node-version: 24
+        cache: npm
+        cache-dependency-path: web/package-lock.json
+
+    # The cargo tools below, keyed on this file (which pins their versions) rather than on the project
+    # lockfiles, so a dependency bump does not throw away ~10 minutes of tool compiles. Named binaries,
+    # not all of ~/.cargo/bin: restoring that would overwrite the image's rustup shims with stale ones.
+    - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      with:
+        path: |
+          ~/.cargo/bin/cargo-audit
+          ~/.cargo/bin/cargo-deny
+          ~/.cargo/bin/cargo-tauri
+          ~/.cargo/.crates.toml
+          ~/.cargo/.crates2.json
+        key: cargo-tools-${{ runner.os }}-${{ hashFiles('.github/actions/mac-build-env/action.yml', 'rust-toolchain.toml') }}
+
+    # Incremental artifacts are dead weight under the exact-key cache below; keep target/ small.
+    - name: Disable incremental compilation
+      shell: bash
+      run: echo "CARGO_INCREMENTAL=0" >> "$GITHUB_ENV"
+
+    # rust/ and web/src-tauri/ are separate workspaces with their own lockfiles and target dirs.
+    # Exact key, no restore-keys on purpose: on a hit nothing is re-saved, so an entry is written once
+    # and never accretes stale artifacts. A dependency bump costs one cold build and a clean cache.
+    # This file is in the key: its Xcode pin decides which clang compiled the cached C objects, and
+    # cargo does not fingerprint the compiler.
+    - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      with:
+        path: |
+          ~/.cargo/registry/index
+          ~/.cargo/registry/cache
+          ~/.cargo/git/db
+          rust/target
+          web/src-tauri/target
+        key: cargo-build-${{ inputs.cache-key }}-${{ runner.os }}-${{ hashFiles('rust/Cargo.lock', 'web/src-tauri/Cargo.lock', 'rust-toolchain.toml', '.github/actions/mac-build-env/action.yml') }}
+
+    # Only the SwiftPM dependency checkouts (the FluidAudio clone). helper/.build is deliberately not
+    # cached: swift-plist-guard compares mtimes, which a cache restore does not preserve.
+    - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      with:
+        path: ~/Library/Caches/org.swift.swiftpm
+        key: swiftpm-${{ runner.os }}-${{ hashFiles('helper/Package.resolved') }}
+        restore-keys: swiftpm-${{ runner.os }}-
+
+    # Versions match the dev machine so CI reproduces local results. Built from source rather than
+    # fetched prebuilt: cargo-audit publishes no aarch64-apple-darwin binary, and one mechanism for all
+    # three beats running one of them under Rosetta. Bumping a version here also rotates the tools cache.
+    - name: Install the pinned cargo tools
+      shell: bash
+      run: |
+        set -euo pipefail
+        cargo install cargo-audit --version 0.22.2 --locked
+        cargo install cargo-deny --version 0.20.2 --locked
+        cargo install tauri-cli --version 2.11.4 --locked
