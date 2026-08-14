@@ -6,22 +6,12 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use sqlx::sqlite::SqlitePoolOptions;
 use sqlx::SqlitePool;
 
 use hearsay_backends::{build_scripted_engine, EngineConfig, LoopbackMode};
 use hearsay_db::models::{MeetingStatus, Stream};
-use hearsay_db::{connect_options, queries, MIGRATOR};
-
-async fn memory_pool() -> SqlitePool {
-    let pool = SqlitePoolOptions::new()
-        .max_connections(1)
-        .connect_with(connect_options("sqlite::memory:").unwrap())
-        .await
-        .unwrap();
-    MIGRATOR.run(&pool).await.unwrap();
-    pool
-}
+use hearsay_db::queries;
+use hearsay_db::test_support::memory_pool;
 
 /// A minimal [`EngineConfig`]: the scripted engine reads only `pool` / `output_dir` / the editable
 /// defaults, so the platform paths are placeholders. `record` is off so no `audio.wav` is written.

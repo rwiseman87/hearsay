@@ -66,6 +66,7 @@ use crate::schema::{
         crate::routes::settings::update_models,
         crate::routes::settings::reset_models,
         crate::routes::settings::reveal_output_dir,
+        crate::routes::settings::open_notices,
     ),
     components(schemas(
         MeetingRead,

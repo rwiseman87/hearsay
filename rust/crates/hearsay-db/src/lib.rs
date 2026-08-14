@@ -7,6 +7,7 @@
 
 pub mod models;
 pub mod queries;
+pub mod test_support;
 
 use std::str::FromStr;
 use std::time::Duration;

@@ -101,6 +101,18 @@ fn norm(v: &[f32]) -> f64 {
         .sqrt()
 }
 
+/// Scale `vector` to unit length, or `None` when it has no direction to preserve — an empty vector
+/// or one whose norm is zero. A zero-norm vector is a degenerate embedding, not a voice: storing it
+/// would put someone on the Voices roster who can never be recognized, since [`cosine`] scores any
+/// zero-norm pair 0.
+pub fn l2_normalize(vector: &[f32]) -> Option<Vec<f32>> {
+    let n = norm(vector);
+    if n == 0.0 {
+        return None;
+    }
+    Some(vector.iter().map(|&v| (f64::from(v) / n) as f32).collect())
+}
+
 /// Single pass over two equal-length vectors yielding `(‖b‖, a·b)` in f64. The caller hoists `‖a‖`.
 fn norm_and_dot(a: &[f32], b: &[f32]) -> (f64, f64) {
     let mut sum_sq_b = 0.0_f64;
@@ -116,6 +128,17 @@ fn norm_and_dot(a: &[f32], b: &[f32]) -> (f64, f64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn l2_normalize_unit_lengths_and_drops_directionless_vectors() {
+        let unit = l2_normalize(&[3.0, 4.0]).unwrap();
+        assert!((unit[0] - 0.6).abs() < 1e-6 && (unit[1] - 0.8).abs() < 1e-6);
+        // Neither an empty nor an all-zero vector is a voice, so neither becomes a centroid: a
+        // stored zero centroid would list someone on the Voices roster that `cosine` scores 0
+        // against everything, so they could never actually be recognized.
+        assert_eq!(l2_normalize(&[]), None);
+        assert_eq!(l2_normalize(&[0.0, 0.0]), None);
+    }
 
     #[test]
     fn centroid_bytes_roundtrip() {

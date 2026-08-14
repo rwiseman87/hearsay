@@ -1,21 +1,17 @@
 interface Props {
   onOpenSettings: () => void;
-  // Return to the home dashboard (clears the selected meeting).
+  // Clears the selected meeting as well as navigating.
   onGoHome: () => void;
-  // Open the "new recording" popover; recordActive highlights the button while it's open.
   onOpenRecord: () => void;
   recordActive: boolean;
-  // Open the Library (the full meetings browser: folders + meeting list); meetingsActive highlights it.
   onOpenMeetings: () => void;
   meetingsActive: boolean;
-  // Open the global transcript search popover; searchActive highlights the item while it's open.
   onOpenSearch: () => void;
   searchActive: boolean;
 }
 
-// The slim, always-present left icon rail. The logo returns to the home dashboard; the red button
-// opens the new-recording popover; the list icon opens the Library (meetings + folders); the
-// magnifier opens global search; the gear opens Settings. Branding pins the top, the gear the bottom.
+// The slim, always-present left icon rail. Branding pins the top, the gear the bottom; the
+// `*Active` flags highlight an item while its popover is open.
 export function NavRail({
   onOpenSettings,
   onGoHome,

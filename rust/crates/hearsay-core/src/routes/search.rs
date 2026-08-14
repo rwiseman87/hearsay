@@ -80,22 +80,12 @@ pub(crate) async fn search(
     // An empty (or all-punctuation) query is a valid no-op, not a 422: return an empty page so the
     // UI can clear results without special-casing.
     let Some(match_query) = build_match(trimmed) else {
-        return Ok(Json(Page {
-            total: 0,
-            page: window.page,
-            page_size: window.page_size,
-            items: Vec::new(),
-        }));
+        return Ok(Json(window.empty_page()));
     };
     let total = queries::count_search(&state.pool, &match_query).await?;
     let rows =
         queries::search_segments(&state.pool, &match_query, window.limit, window.offset).await?;
-    Ok(Json(Page {
-        total,
-        page: window.page,
-        page_size: window.page_size,
-        items: rows.into_iter().map(SearchHit::from).collect(),
-    }))
+    Ok(Json(window.page_of(total, rows)))
 }
 
 #[cfg(test)]

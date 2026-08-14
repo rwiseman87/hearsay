@@ -11,27 +11,16 @@ use std::sync::Arc;
 
 use hearsay_backends::SherpaTranscriber;
 use hearsay_db::models::Stream;
-use hearsay_db::{connect_options, queries, MIGRATOR};
+use hearsay_db::queries;
+use hearsay_db::test_support::memory_pool;
 use hearsay_engine::LiveEngine;
 use hearsay_inference::{StreamingAsr, StreamingModel};
 use hearsay_orchestrator::{Backend, BackendInstance, Orchestrator, WavFileSource};
-use sqlx::sqlite::SqlitePoolOptions;
-use sqlx::SqlitePool;
 
 fn repo(rel: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../..")
         .join(rel)
-}
-
-async fn memory_pool() -> SqlitePool {
-    let pool = SqlitePoolOptions::new()
-        .max_connections(1)
-        .connect_with(connect_options("sqlite::memory:").unwrap())
-        .await
-        .unwrap();
-    MIGRATOR.run(&pool).await.unwrap();
-    pool
 }
 
 fn load_streaming(dir: &Path) -> StreamingAsr {

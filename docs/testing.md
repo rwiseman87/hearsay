@@ -76,8 +76,11 @@ The gate stays model-free because the ML is replaced at well-defined seams:
   inside the core *binary* (honored only when `ENVIRONMENT=development`, so a shipping build never fakes
   a meeting). This is what the browser E2E drives, streaming the transcript progressively over the live
   WebSocket, so both the Rust full-stack test and Playwright assert identical output every run.
-- **`memory_pool()`** — a single-connection `sqlite::memory:` pool running the real migrations, shared
-  by the DB and API tests.
+- **`memory_pool()`** (`hearsay_db::test_support`) — a single-connection `sqlite::memory:` pool
+  running the real migrations, shared by every crate's tests. Single-connection because each
+  connection to `sqlite::memory:` gets its own database.
+- **`seg()` / `chunk()`** (`hearsay_orchestrator::testing`) — the segment and capture-chunk builders,
+  alongside the scripted fakes that consume them.
 - **MSW** — mocks the HTTP API for the React component tests while the real fetch wrapper runs.
 
 ## Isolation and artifacts

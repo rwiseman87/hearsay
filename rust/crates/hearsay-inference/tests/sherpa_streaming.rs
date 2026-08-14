@@ -3,15 +3,10 @@
 //! the known words come through. Ignored by default (needs the model + clip). Run:
 //!   cargo test --manifest-path rust/Cargo.toml -p hearsay-inference streaming -- --ignored --nocapture
 
-use std::path::PathBuf;
+mod common;
+use common::repo;
 
 use hearsay_inference::{read_wav_mono_16k, StreamEventKind, StreamingAsr, StreamingModel};
-
-fn repo(rel: &str) -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../..")
-        .join(rel)
-}
 
 fn load_asr() -> StreamingAsr {
     let dir = repo("outputs/models/sherpa/sherpa-onnx-streaming-zipformer-en-2023-06-21");

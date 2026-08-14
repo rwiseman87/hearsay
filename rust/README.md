@@ -26,8 +26,9 @@ audio (no microphone, no TCC prompts). `HEARSAY_HELPER_PATH`, `HEARSAY_REFINE_MO
 
 ## Crate map
 
-Eleven crates; edges are `path` dependencies (diagrammed in
-[`../docs/architecture.md`](../docs/architecture.md)).
+The crates and their responsibilities are tabulated in
+[`../docs/architecture.md`](../docs/architecture.md), which is canonical and carries the dependency
+graph. Edges below are `path` dependencies (diagrammed there).
 
 | Crate | Responsibility |
 |---|---|
@@ -40,7 +41,7 @@ Eleven crates; edges are `path` dependencies (diagrammed in
 | `hearsay-backends` | Per-OS backend wiring behind the engine seam: `MacBackend` (warm sidecar pool), `MacRefiner`, the `SubprocessSummarizer` (spawns the `hearsay-notes` sidecar), startup reconciliation, and `build_engine`. The feature-gated `SherpaTranscriber` is the future Windows live path. |
 | `hearsay-capture` | Audio capture behind the `AudioSource` trait. On macOS, `SwiftHelperSource` drives the Swift `hearsay-helper` (Core Audio tap plus microphone) over the `hearsay-ipc` sockets. Also hosts the TCC permissions probe. |
 | `hearsay-inference` | Local ML, all offline: the whisper ASR (`whisper-rs`, GGML; CPU plus `metal`/`vulkan`/`cuda` features) and the refine (the `hearsay-diarize` sidecar plus whisper re-transcription); the feature-gated sherpa-onnx streaming and diarize modules for the Windows path. No llama.cpp — the notes LLM lives in `hearsay-notes`. |
-| `hearsay-notes` | The local-LLM notes sidecar: a standalone binary that owns llama.cpp (`llama-cpp-2`), spawned by the core over stdio (JSON in, JSON out). Separate process so llama's vendored `ggml` never co-links with whisper's (a ~5x refine slowdown). |
+| `hearsay-notes` | The local-LLM notes sidecar: a standalone binary that owns llama.cpp (`llama-cpp-2`), spawned by the core over stdio (JSON in, JSON out). |
 | `hearsay-notes-prompt` | Dependency-free prompt construction + reply parsing for the notes step, shared by the core's config default and the sidecar (so the sidecar never pulls `hearsay-inference` → whisper). |
 | `hearsay-core` | The application binary: the axum HTTP and WebSocket API (loopback plus per-session token), the served React UI, and the composition root. Depends on `hearsay-engine`, `hearsay-backends`, `hearsay-db`, and `hearsay-ipc`; the concrete backends stay hidden behind the seam. |
 

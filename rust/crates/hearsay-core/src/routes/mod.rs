@@ -20,7 +20,10 @@ use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
 
-use crate::error::ApiError;
+use uuid::Uuid;
+
+use crate::error::{ApiError, ApiResult};
+use crate::schema::Page;
 use crate::security::{bearer_token, host_allowed, origin_allowed, token_matches};
 use crate::state::AppState;
 
@@ -39,6 +42,28 @@ pub struct PageWindow {
     pub offset: i64,
 }
 
+impl PageWindow {
+    /// Wrap this window's rows in the shared list envelope, converting each row into its API type.
+    pub fn page_of<R, T: From<R>>(&self, total: i64, rows: Vec<R>) -> Page<T> {
+        Page {
+            total,
+            page: self.page,
+            page_size: self.page_size,
+            items: rows.into_iter().map(T::from).collect(),
+        }
+    }
+
+    /// The empty page for this window, for a query that is a valid no-op rather than an error.
+    pub fn empty_page<T>(&self) -> Page<T> {
+        Page {
+            total: 0,
+            page: self.page,
+            page_size: self.page_size,
+            items: Vec::new(),
+        }
+    }
+}
+
 impl Pagination {
     /// Resolve to a concrete window, applying the per-endpoint default size and 1..=`max_size` bound.
     pub fn resolve(&self, default_size: u32, max_size: u32) -> PageWindow {
@@ -51,6 +76,32 @@ impl Pagination {
             limit: i64::from(page_size),
             offset,
         }
+    }
+}
+
+/// Trim `raw` and require 1..=255 characters, naming `field` in the 422. The shared shape behind
+/// every user-supplied name, title, and display name.
+pub(crate) fn validated_name<'a>(raw: &'a str, field: &str) -> ApiResult<&'a str> {
+    let name = raw.trim();
+    if name.is_empty() {
+        return Err(ApiError::Unprocessable(format!(
+            "{field} must not be empty"
+        )));
+    }
+    if name.chars().count() > 255 {
+        return Err(ApiError::Unprocessable(format!(
+            "{field} exceeds 255 characters"
+        )));
+    }
+    Ok(name)
+}
+
+/// Re-render a meeting's Markdown after a write that changed it, best-effort: the database is the
+/// source of truth, so a failed export is logged and the request still succeeds. `what` names the
+/// edit in that log line.
+pub(crate) async fn reexport(state: &AppState, meeting_id: Uuid, what: &str) {
+    if let Err(err) = state.engine.export_meeting(meeting_id).await {
+        tracing::warn!(error = ?err, %meeting_id, "{what}: re-export failed");
     }
 }
 

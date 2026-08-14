@@ -26,7 +26,7 @@ Multi-process, local-only (macOS on Apple Silicon 14.4+; Windows on x86_64, Win1
   in-process; the notes LLM (llama.cpp) runs out-of-process because llama's and whisper's vendored
   `ggml` collide when co-linked (a ~5x refine slowdown).
 - **Rust notes sidecar** (`hearsay-notes`) — the local-LLM notes step (llama.cpp), a standalone binary
-  the core spawns over stdio. Separate process so llama's `ggml` never links with whisper's; the pure
+  the core spawns over stdio. Separate process for the `ggml` reason above; the pure
   prompt/parse logic is shared via the dependency-free `hearsay-notes-prompt` crate.
 - **Web UI** (`web/`) — typed React frontend served by the core, shown in a Tauri WKWebView window. The
   **Tauri shell** (`web/src-tauri/`) bundles + spawns the core, and bundles the Swift sidecars + the
@@ -202,23 +202,9 @@ shared/protocol/ipc.md  IPC contract (source of truth)   ·   shared/fixtures/  
 
 ## Environment Variables
 
-- DATABASE_URL: SQLx database URL (default `sqlite://<repo>/outputs/db/hearsay.db`; portable to PostgreSQL later)
-- ENVIRONMENT: development | staging | production
-- HEARSAY_OUTPUT_DIR: root of the per-meeting output folders (audio, transcript, notes)
-- HEARSAY_WEB_DIR: built web UI directory served when it contains `index.html`
-- HEARSAY_SERVER_HOST / HEARSAY_SERVER_PORT: bind host (loopback) / port (`0` = OS-assigned)
-- HEARSAY_HANDSHAKE_PATH: path to the desktop shell's private 0600 `{port, token}` handshake file the core writes on startup so the Tauri shell can reach it (unset in dev; set by the shell)
-- HEARSAY_HELPER_PATH: path to the Swift `hearsay-helper` (the `-live` / `-me` / `-diarize` sidecars resolve as siblings)
-- HEARSAY_REFINE_MODEL: default GGML whisper model for the offline refine (the Settings > Models panel overrides it per install by pointing at any downloaded `ggml-*.bin`; the change applies to the next refine, no restart)
-- HEARSAY_REFINE_TIMEOUT_SECS: deadline for the `hearsay-diarize` refine subprocess before the core aborts it (default 1800)
-- HEARSAY_FLUID_MODELS_DIR: bundled FluidAudio live models the core seeds into FluidAudio's cache on first launch (set by the desktop shell; unset in dev, where FluidAudio downloads them)
-- HEARSAY_DIARIZE_CLUSTER_THRESHOLD: overrides the macOS `hearsay-diarize` sidecar's agglomerative clustering threshold (default 0.7; tuned above FluidAudio's 0.6 default, which under-separates compressed meeting audio)
-- HEARSAY_SHERPA_MODELS_DIR: sherpa live/diarize models for the Windows backend (default `outputs/models/sherpa`; the desktop shell points it at the bundled copy). Conventional contents = the streaming zipformer dir + pyannote segmentation dir + TitaNet-small onnx (`make fetch-sherpa-models`)
-- HEARSAY_WIN_LOOPBACK: which WASAPI path captures Them on Windows — `device` (classic loopback, default; works with new Teams) | `process` (process-loopback-exclude-self; blocked by an open Teams bug)
-- HEARSAY_NOTES_MODEL: default GGUF instruct model for the optional local-LLM notes step (Markdown notes, stored + rendered verbatim; the prompt template dictates the format); empty until one is downloaded/chosen. The Settings > Models panel overrides it per install; applies to the next generate, no restart. The notes step runs in the `hearsay-notes` sidecar (llama.cpp, spawned out-of-process so llama's `ggml` never co-links with the whisper refine's — a collision that slows the refine ~5x); `rust-serve` / `dmg` build + bundle it
-- HEARSAY_NOTES_PATH: path to the `hearsay-notes` sidecar (default a `hearsay-notes` sibling of the core executable — where the bundler stages it and where the cargo target dir puts it in dev)
-- HEARSAY_NOTES_PROMPT: default prompt template for the notes step (its `{transcript}` placeholder is filled with the finalized transcript; the transcript is appended if omitted). Defaults to the built-in template. The Settings > Models panel overrides it per install; applies to the next generate, no restart
-- HEARSAY_MODELS_DIR: root the download manager writes notes models into and references them from (default `outputs/models`; the desktop shell points it at a persistent app-data dir so downloads survive reinstall)
-- HEARSAY_COMPRESS_AUDIO / HEARSAY_COMPRESS_AFTER_DAYS: defaults for audio archival — re-encode a finalized meeting's `audio.wav` as lossless FLAC (~3x smaller, bit-identical) once it is this many days old (default on, 7 days; the `storage` settings section overrides both). A background sweep runs hourly, skips any meeting that is not `finalized`, and defers entirely while a meeting is recording — re-checking every 5 minutes rather than waiting out the hour, since the app is usually opened in order to record
-- HEARSAY_AUTO_REFINE / HEARSAY_RECORD / HEARSAY_RECOGNITION_THRESHOLD / HEARSAY_NOTES: defaults for the editable settings sections (`HEARSAY_NOTES` toggles the notes step, default off)
-- HEARSAY_INACTIVITY_PROMPT / HEARSAY_INACTIVITY_AUTO_END / HEARSAY_INACTIVITY_PROMPT_MINUTES / HEARSAY_INACTIVITY_END_MINUTES: defaults for the inactivity watchdog (the `recording` settings section overrides them). Independent toggles for the in-app "still recording?" prompt and the silence auto-end (both default on), minutes of continuous silence before the prompt (default 5), and minutes before the meeting auto-ends with a logged transcript marker (default 10; must exceed the prompt threshold when both are on)
+Every variable, with its default, is tabulated in `docs/development.md` (Configuration). The
+compiler-checked source is `Settings` in `rust/crates/hearsay-core/src/config.rs`; the table mirrors
+it. Rationale for a given default lives with the behavior it governs, not in the table.
+
+All configuration is resolved from the environment at startup into that one typed struct. A
+malformed override is a warning in development and a hard startup error otherwise.

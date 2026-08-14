@@ -4,6 +4,9 @@
 //! `make fetch-sherpa-models`). Run:
 //!   cargo test --manifest-path rust/Cargo.toml -p hearsay-inference --features sherpa sherpa -- --ignored --nocapture
 
+mod common;
+use common::repo;
+
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
@@ -17,12 +20,6 @@ const RAW: ConsolidateConfig = ConsolidateConfig {
     evidence_s: 0.0,
     non_voice_ceiling: f64::NEG_INFINITY,
 };
-
-fn repo(rel: &str) -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../..")
-        .join(rel)
-}
 
 fn seg_model() -> PathBuf {
     repo("outputs/models/sherpa/sherpa-onnx-pyannote-segmentation-3-0/model.onnx")

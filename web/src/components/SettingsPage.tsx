@@ -1022,6 +1022,18 @@ function PermissionsPanel() {
 function AboutPanel() {
   const settings = useSettings();
   const about = settings.data?.about;
+  const [noticesError, setNoticesError] = useState<string | null>(null);
+
+  // Routed through the core's HTTP API for the same reason as "Reveal data folder": the webview
+  // runs on the core's remote loopback origin, from which Tauri invoke() is not reliably reachable.
+  const openNotices = async () => {
+    setNoticesError(null);
+    try {
+      await api.post("/api/settings/notices");
+    } catch (err) {
+      setNoticesError(err instanceof Error ? err.message : String(err));
+    }
+  };
 
   if (settings.isLoading || !about) return <p className="muted">Loading…</p>;
 
@@ -1048,6 +1060,16 @@ function AboutPanel() {
           </dd>
         </div>
       </dl>
+      <div className="settings__field">
+        <span className="settings__row-label">Third-party licenses</span>
+        <span className="settings__row-hint muted">
+          Attribution and license terms for the bundled speech models and libraries.
+        </span>
+        <button type="button" className="settings__reveal-btn" onClick={() => void openNotices()}>
+          Open notices
+        </button>
+      </div>
+      {noticesError ? <p className="settings__error">{noticesError}</p> : null}
     </div>
   );
 }

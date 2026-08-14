@@ -28,6 +28,21 @@ use crate::traits::{Backend, Refiner, Summarizer};
 /// while idle, so the "Start" gate can never wedge on an empty/dead pool.
 const WARM_TICK_INTERVAL: Duration = Duration::from_secs(2);
 
+/// Config defaults for the editable settings, passed to [`Orchestrator::with_defaults`]. Named
+/// fields rather than positional arguments: five of the nine are `bool`/`u64`, so a transposed pair
+/// would type-check and silently mis-configure the watchdog or the notes step.
+pub struct Defaults {
+    pub record: bool,
+    pub auto_refine: bool,
+    pub recognition_threshold: f64,
+    pub inactivity_prompt: bool,
+    pub inactivity_auto_end: bool,
+    pub inactivity_prompt_minutes: u64,
+    pub inactivity_end_minutes: u64,
+    pub notes_enabled: bool,
+    pub notes_model: PathBuf,
+}
+
 /// The single active recording session: its meeting id and the running pipeline.
 struct ActiveSession {
     meeting_id: Uuid,
@@ -121,31 +136,30 @@ impl Orchestrator {
         }
     }
 
+    /// Run `f` against the live pipeline, but only if `meeting_id` is the one currently recording.
+    /// `None` means there is no active session, or a different meeting is -- the shape every
+    /// per-meeting accessor needs.
+    fn with_active<T>(&self, meeting_id: Uuid, f: impl FnOnce(&Pipeline) -> T) -> Option<T> {
+        let guard = self.active.lock_recover();
+        match guard.as_ref() {
+            Some(s) if s.meeting_id == meeting_id => Some(f(&s.pipeline)),
+            _ => None,
+        }
+    }
+
     /// Set the config defaults for the editable settings (the values used when the UI has stored no
     /// override). Typically the resolved `Settings` (env/startup). The UI still overrides these per
     /// meeting via the `preferences` table.
-    #[allow(clippy::too_many_arguments)]
-    pub fn with_defaults(
-        mut self,
-        record: bool,
-        auto_refine: bool,
-        recognition_threshold: f64,
-        inactivity_prompt: bool,
-        inactivity_auto_end: bool,
-        inactivity_prompt_minutes: u64,
-        inactivity_end_minutes: u64,
-        notes_enabled: bool,
-        notes_model: PathBuf,
-    ) -> Self {
-        self.default_record = record;
-        self.default_auto_refine = auto_refine;
-        self.default_recognition_threshold = recognition_threshold;
-        self.default_inactivity_prompt = inactivity_prompt;
-        self.default_inactivity_auto_end = inactivity_auto_end;
-        self.default_inactivity_prompt_minutes = inactivity_prompt_minutes;
-        self.default_inactivity_end_minutes = inactivity_end_minutes;
-        self.default_notes_enabled = notes_enabled;
-        self.default_notes_model = notes_model;
+    pub fn with_defaults(mut self, defaults: Defaults) -> Self {
+        self.default_record = defaults.record;
+        self.default_auto_refine = defaults.auto_refine;
+        self.default_recognition_threshold = defaults.recognition_threshold;
+        self.default_inactivity_prompt = defaults.inactivity_prompt;
+        self.default_inactivity_auto_end = defaults.inactivity_auto_end;
+        self.default_inactivity_prompt_minutes = defaults.inactivity_prompt_minutes;
+        self.default_inactivity_end_minutes = defaults.inactivity_end_minutes;
+        self.default_notes_enabled = defaults.notes_enabled;
+        self.default_notes_model = defaults.notes_model;
         self
     }
 
@@ -412,22 +426,29 @@ async fn run_auto_refine(
 
 /// Write the meeting's `transcript.md` + `meeting.json` from its finalized segments. Best-effort:
 /// a read/write failure is logged, never surfaced (the stop already succeeded).
+/// Run a blocking Markdown write off the async runtime, logging either failure mode. `what` names
+/// the artifact in those logs. Best-effort by design: the database is the source of truth, so a
+/// failed write never fails the caller.
+async fn write_blocking<F>(what: &str, write: F)
+where
+    F: FnOnce() -> Result<(), OrchestratorError> + Send + 'static,
+{
+    match tokio::task::spawn_blocking(write).await {
+        Ok(Err(err)) => tracing::error!(error = %err, "failed to write {what}"),
+        Err(err) => tracing::error!(error = %err, "{what} writer panicked"),
+        Ok(Ok(())) => {}
+    }
+}
+
 async fn write_transcript(pool: &SqlitePool, output_dir: &Path, meeting: &Meeting) {
     match queries::list_segments(pool, meeting.id).await {
         Ok(segments) => {
             let dir = meeting.dir_path(output_dir);
             let meeting = meeting.clone();
-            let write = tokio::task::spawn_blocking(move || {
+            write_blocking("meeting transcript files", move || {
                 crate::markdown::write_meeting_files(&dir, &meeting, &segments)
             })
             .await;
-            match write {
-                Ok(Err(err)) => {
-                    tracing::error!(error = %err, "failed to write meeting transcript files")
-                }
-                Err(err) => tracing::error!(error = %err, "transcript writer panicked"),
-                Ok(Ok(())) => {}
-            }
         }
         Err(err) => tracing::error!(error = %err, "failed to read segments for transcript"),
     }
@@ -479,15 +500,10 @@ async fn write_notes_file(output_dir: &Path, meeting: &Meeting, notes: &queries:
     let dir = meeting.dir_path(output_dir);
     let meeting = meeting.clone();
     let notes = notes.clone();
-    let write = tokio::task::spawn_blocking(move || {
+    write_blocking("notes.md", move || {
         crate::markdown::write_notes_md(&dir, &meeting, &notes)
     })
     .await;
-    match write {
-        Ok(Err(err)) => tracing::error!(error = %err, "failed to write notes.md"),
-        Err(err) => tracing::error!(error = %err, "notes writer panicked"),
-        Ok(Ok(())) => {}
-    }
 }
 
 /// Write a meeting's `my-notes.md` from the user-authored body. Best-effort: a failure is logged,
@@ -496,15 +512,10 @@ async fn write_user_notes_file(output_dir: &Path, meeting: &Meeting, body: &str)
     let dir = meeting.dir_path(output_dir);
     let meeting = meeting.clone();
     let body = body.to_string();
-    let write = tokio::task::spawn_blocking(move || {
+    write_blocking("my-notes.md", move || {
         crate::markdown::write_user_notes_md(&dir, &meeting, &body)
     })
     .await;
-    match write {
-        Ok(Err(err)) => tracing::error!(error = %err, "failed to write my-notes.md"),
-        Err(err) => tracing::error!(error = %err, "my-notes writer panicked"),
-        Ok(Ok(())) => {}
-    }
 }
 
 #[async_trait]
@@ -650,68 +661,32 @@ impl LiveEngine for Orchestrator {
     }
 
     fn subscribe(&self, meeting_id: Uuid) -> Option<broadcast::Receiver<String>> {
-        let guard = self.active.lock_recover();
-        match guard.as_ref() {
-            Some(s) if s.meeting_id == meeting_id => Some(s.pipeline.broadcast_tx.subscribe()),
-            _ => None,
-        }
+        self.with_active(meeting_id, |p| p.broadcast_tx.subscribe())
     }
 
     fn transcription_warming(&self, meeting_id: Uuid) -> Option<bool> {
-        let guard = self.active.lock_recover();
-        match guard.as_ref() {
-            Some(s) if s.meeting_id == meeting_id => {
-                Some(s.pipeline.warming.load(Ordering::SeqCst))
-            }
-            _ => None,
-        }
+        self.with_active(meeting_id, |p| p.warming.load(Ordering::SeqCst))
     }
 
     fn keep_alive(&self, meeting_id: Uuid) {
-        let guard = self.active.lock_recover();
-        if let Some(s) = guard.as_ref() {
-            if s.meeting_id == meeting_id {
-                s.pipeline.keep_alive();
-            }
-        }
+        self.with_active(meeting_id, |p| p.keep_alive());
     }
 
     fn inactivity_prompt(&self, meeting_id: Uuid) -> Option<u64> {
-        let guard = self.active.lock_recover();
-        match guard.as_ref() {
-            Some(s) if s.meeting_id == meeting_id => *s.pipeline.inactivity_prompt.borrow(),
-            _ => None,
-        }
+        self.with_active(meeting_id, |p| *p.inactivity_prompt.borrow())
+            .flatten()
     }
 
     fn pause_meeting(&self, meeting_id: Uuid) -> bool {
-        let guard = self.active.lock_recover();
-        match guard.as_ref() {
-            Some(s) if s.meeting_id == meeting_id => {
-                s.pipeline.pause();
-                true
-            }
-            _ => false,
-        }
+        self.with_active(meeting_id, |p| p.pause()).is_some()
     }
 
     fn resume_meeting(&self, meeting_id: Uuid) -> bool {
-        let guard = self.active.lock_recover();
-        match guard.as_ref() {
-            Some(s) if s.meeting_id == meeting_id => {
-                s.pipeline.resume();
-                true
-            }
-            _ => false,
-        }
+        self.with_active(meeting_id, |p| p.resume()).is_some()
     }
 
     fn paused(&self, meeting_id: Uuid) -> Option<bool> {
-        let guard = self.active.lock_recover();
-        match guard.as_ref() {
-            Some(s) if s.meeting_id == meeting_id => Some(s.pipeline.is_paused()),
-            _ => None,
-        }
+        self.with_active(meeting_id, |p| p.is_paused())
     }
 
     fn sidecars_ready(&self) -> bool {
@@ -900,8 +875,7 @@ mod tests {
 
     use std::collections::VecDeque;
 
-    use hearsay_db::{connect_options, MIGRATOR};
-    use sqlx::sqlite::SqlitePoolOptions;
+    use hearsay_db::test_support::memory_pool;
 
     use crate::testing::{GateRefiner, ScriptedBackend, ScriptedSource, ScriptedTranscriber};
     use crate::traits::BackendInstance;
@@ -946,16 +920,6 @@ mod tests {
         assert_eq!(unique_meeting_dir(root, base).0, format!("{base}-2"));
         std::fs::create_dir(root.join(format!("{base}-2"))).unwrap();
         assert_eq!(unique_meeting_dir(root, base).0, format!("{base}-3"));
-    }
-
-    async fn memory_pool() -> SqlitePool {
-        let pool = SqlitePoolOptions::new()
-            .max_connections(1)
-            .connect_with(connect_options("sqlite::memory:").unwrap())
-            .await
-            .unwrap();
-        MIGRATOR.run(&pool).await.unwrap();
-        pool
     }
 
     fn them_chunk(host_ts: u64, samples: &[f32]) -> CaptureChunk {

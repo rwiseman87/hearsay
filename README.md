@@ -65,7 +65,7 @@ are in [docs/packaging.md](docs/packaging.md).
 ## Repository layout
 
 ```
-rust/crates/       twelve Rust crates; hearsay-core is the app binary (see docs/architecture.md)
+rust/crates/       the Rust workspace; hearsay-core is the app binary (see docs/architecture.md)
 helper/            SwiftPM package: the capture helper + the FluidAudio sidecars
 web/               React + TypeScript UI; web/src-tauri/ is the Tauri desktop shell
 shared/            IPC contract + golden frame fixtures (generated from Rust)

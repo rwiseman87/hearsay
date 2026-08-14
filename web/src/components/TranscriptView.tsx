@@ -43,7 +43,7 @@ const REASSIGN_SUGGESTIONS_ID = "reassign-identity-suggestions";
 const clampRecap = (value: number) => Math.min(Math.max(value, RECAP_MIN), RECAP_MAX);
 
 // AI-recap rail width, persisted across sessions in localStorage so a resize sticks (the horizontal
-// analogue of the meeting-list sidebar width the app used to keep).
+// analogue of the meeting-list sidebar width).
 function useRecapWidth() {
   const [width, setWidth] = useState(() => {
     const stored = Number(localStorage.getItem(RECAP_KEY));
@@ -567,7 +567,7 @@ export function TranscriptView({ meeting, jumpTo }: Props) {
   // The Web Audio graph is deliberately NOT torn down here. This view is mounted once for the whole
   // session (no `key` on it or on the <audio>), so switching meetings only swaps the element's `src`
   // — the element itself, and the MediaElementAudioSourceNode bound to it, outlive the meeting.
-  // Closing the context here used to leave the surviving element routed into a closed graph (silent
+  // Closing the context here would leave the surviving element routed into a closed graph (silent
   // playback) and let the next play call `createMediaElementSource` on it a second time, which
   // throws InvalidStateError out of the onPlay handler. The context is closed on unmount, below.
   useEffect(() => {

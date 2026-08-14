@@ -15,7 +15,7 @@ use hearsay_db::queries;
 
 use crate::error::{ApiError, ApiResult};
 use crate::extract::{Json, Path, Query};
-use crate::routes::Pagination;
+use crate::routes::{reexport, validated_name, Pagination};
 use crate::schema::{IdentityRead, IdentityRename, Page, VoiceprintRead};
 use crate::state::AppState;
 
@@ -42,12 +42,7 @@ pub(crate) async fn list_voiceprints(
     // never refined has no embedding, so they are not part of this roster.
     let total = queries::count_voiceprint_people(&state.pool).await?;
     let people = queries::list_voiceprints(&state.pool, window.limit, window.offset).await?;
-    Ok(Json(Page {
-        total,
-        page: window.page,
-        page_size: window.page_size,
-        items: people.into_iter().map(VoiceprintRead::from).collect(),
-    }))
+    Ok(Json(window.page_of(total, people)))
 }
 
 #[utoipa::path(
@@ -61,12 +56,7 @@ pub(crate) async fn rename_identity(
     Path(id): Path<Uuid>,
     Json(body): Json<IdentityRename>,
 ) -> ApiResult<Json<IdentityRead>> {
-    let name = body.display_name.trim();
-    if name.is_empty() || name.chars().count() > 255 {
-        return Err(ApiError::Unprocessable(
-            "display_name must be 1..=255 characters".into(),
-        ));
-    }
+    let name = validated_name(&body.display_name, "display_name")?;
     let (identity, meeting_ids) = match queries::rename_identity(&state.pool, id, name).await? {
         queries::RenameIdentityOutcome::Renamed {
             identity,
@@ -85,9 +75,7 @@ pub(crate) async fn rename_identity(
     // transcripts needs re-rendering. Sequential and best-effort: the writes are cheap (a read plus
     // one atomic file write each) and SQLite is single-writer, so fanning out would only queue.
     for meeting_id in meeting_ids {
-        if let Err(err) = state.engine.export_meeting(meeting_id).await {
-            tracing::warn!(error = ?err, meeting_id = %meeting_id, "identity rename: re-export failed");
-        }
+        reexport(&state, meeting_id, "identity rename").await;
     }
     Ok(Json(identity.into()))
 }

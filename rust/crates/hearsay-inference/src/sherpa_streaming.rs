@@ -17,8 +17,7 @@ use sherpa_onnx::{
 
 use crate::error::InferenceError;
 
-/// Contract-fixed track sample rate (Hz).
-const SAMPLE_RATE: i32 = 16_000;
+const SAMPLE_RATE: i32 = hearsay_audio::SAMPLE_RATE as i32;
 
 /// The four files of a streaming zipformer transducer model.
 #[derive(Debug, Clone, Copy)]

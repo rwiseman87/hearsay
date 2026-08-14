@@ -486,20 +486,3 @@ merged voiceprint is still a unit vector suitable for cosine matching.
   (`sherpa_diarize`, `embed_cap_probe`).
 - **The Swift codec / sidecar contract** is validated via `hearsay-helper selftest`. Run everything
   with `make test`.
-
-## File reference
-
-| Concern | Location |
-|---|---|
-| Serialization, cosine, `match_identity` / `best_identity` | `rust/crates/hearsay-attribution/src/voiceprint.rs` |
-| Over-split consolidation + `attenuation` | `rust/crates/hearsay-attribution/src/consolidate.rs` |
-| Diarizer seam (`Diarization`, `Diarizer`) | `rust/crates/hearsay-inference/src/diarizer.rs` |
-| Refine + normalize (`build_centroids`, `l2_normalize`) | `rust/crates/hearsay-inference/src/refine.rs` |
-| sherpa producer (`embed`, consolidation call) | `rust/crates/hearsay-inference/src/sherpa_diarize.rs` |
-| macOS producer (Swift sidecar) | `helper/Sources/hearsay-diarize/main.swift` |
-| Backend assembly | `rust/crates/hearsay-backends/src/{mac,windows}.rs` |
-| Storage, `known_voiceprints`, `recognize_speakers`, `replace_them_segments`, `rename_cluster`, `reassign_segment_speaker` | `rust/crates/hearsay-db/src/queries.rs` |
-| Schema | `rust/crates/hearsay-db/migrations/0001_baseline.sql` |
-| Rename / re-diarize routes | `rust/crates/hearsay-core/src/routes/speakers.rs` |
-| Per-line reassign route | `rust/crates/hearsay-core/src/routes/meetings.rs` |
-| Threshold config + validation | `rust/crates/hearsay-core/src/config.rs`, `.../routes/settings.rs` |

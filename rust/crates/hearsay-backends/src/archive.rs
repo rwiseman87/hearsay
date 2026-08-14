@@ -1,11 +1,8 @@
 //! Background archival of finalized meetings' audio.
 //!
-//! The recorder writes an uncompressed stereo `audio.wav` per meeting — 230 MB per hour — and
-//! nothing ever shrinks it, so a regular user accumulates gigabytes of recordings with no way to
-//! reclaim the space short of deleting meetings. This sweep re-encodes a finalized meeting's WAV as
-//! lossless FLAC (~3x smaller) once it is older than the configured threshold. Being lossless it is
-//! invisible downstream: playback, the offline refine, and re-diarization all read the archived file
-//! and see identical samples.
+//! Re-encodes a finalized meeting's stereo `audio.wav` as lossless FLAC once it is older than the
+//! configured threshold. Being lossless it is invisible downstream. See `docs/architecture.md` for
+//! the sweep's cadence and why it defers while a meeting is recording.
 //!
 //! Best-effort throughout, in the same spirit as [`crate::reconcile`]: a per-meeting failure is
 //! logged and the sweep moves on, and [`hearsay_audio::compress_meeting_audio`] only removes a WAV

@@ -23,8 +23,7 @@ use hearsay_inference::{
     PunctuationModel, Punctuator, SherpaDiarizer, StreamingAsr, StreamingModel,
 };
 use hearsay_orchestrator::{
-    Backend, BackendInstance, Orchestrator, OrchestratorError, RefineResult, RefinedThemSegment,
-    Refiner,
+    Backend, BackendInstance, Orchestrator, OrchestratorError, RefineResult, Refiner,
 };
 
 use crate::summarizer::SubprocessSummarizer;
@@ -118,19 +117,7 @@ impl Refiner for WindowsRefiner {
             Err(hearsay_inference::InferenceError::NoSpeech) => return Ok(RefineResult::default()),
             Err(e) => return Err(OrchestratorError::Backend(format!("refine failed: {e}"))),
         };
-        Ok(RefineResult {
-            segments: output
-                .segments
-                .into_iter()
-                .map(|s| RefinedThemSegment {
-                    ordinal: s.ordinal,
-                    text: s.text,
-                    start_s: s.start_s,
-                    end_s: s.end_s,
-                })
-                .collect(),
-            centroids: output.centroids,
-        })
+        Ok(crate::map_refine_output(output))
     }
 }
 
@@ -190,6 +177,7 @@ fn load_punctuator(models_dir: &Path) -> Option<Punctuator> {
 /// streaming-model load logs the reason and returns [`DisabledEngine`] instead (the app serves;
 /// meetings 503). Call from within the Tokio runtime.
 pub fn build_engine(config: EngineConfig) -> Arc<dyn LiveEngine> {
+    let defaults = config.defaults();
     let EngineConfig {
         pool,
         output_dir,
@@ -197,14 +185,15 @@ pub fn build_engine(config: EngineConfig) -> Arc<dyn LiveEngine> {
         synthetic,
         refine_model,
         refine_timeout: _, // macOS-only: bounds the diarize subprocess; the ONNX diarizer is in-process
-        record,
-        auto_refine,
-        recognition_threshold,
-        inactivity_prompt,
-        inactivity_auto_end,
-        inactivity_prompt_minutes,
-        inactivity_end_minutes,
-        notes_enabled,
+        // The editable-settings defaults are lifted whole by `config.defaults()` above.
+        record: _,
+        auto_refine: _,
+        recognition_threshold: _,
+        inactivity_prompt: _,
+        inactivity_auto_end: _,
+        inactivity_prompt_minutes: _,
+        inactivity_end_minutes: _,
+        notes_enabled: _,
         notes_model,
         notes_prompt,
         notes_binary,
@@ -236,17 +225,7 @@ pub fn build_engine(config: EngineConfig) -> Arc<dyn LiveEngine> {
     let notes_default_model = notes_model.clone();
 
     let orchestrator = Orchestrator::new(pool.clone(), output_dir, backend)
-        .with_defaults(
-            record,
-            auto_refine,
-            recognition_threshold,
-            inactivity_prompt,
-            inactivity_auto_end,
-            inactivity_prompt_minutes,
-            inactivity_end_minutes,
-            notes_enabled,
-            notes_model,
-        )
+        .with_defaults(defaults)
         .with_refiner(Arc::new(WindowsRefiner {
             pool,
             default_model: refine_model,

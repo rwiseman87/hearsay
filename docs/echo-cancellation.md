@@ -319,15 +319,3 @@ hearsay-core/aec  ->  hearsay-backends/aec  ->  hearsay-orchestrator/aec  ->  de
 
 Licensing: `aec-rs` is MIT and the vendored SpeexDSP is BSD-3-Clause — both inside the project's
 MIT/BSD/Apache gate (`make licenses`).
-
-## File reference
-
-| Concern | Location |
-|---|---|
-| Aligner + canceller + tests | `rust/crates/hearsay-orchestrator/src/aec.rs` |
-| Text-level dedup backstop + tests | `rust/crates/hearsay-orchestrator/src/echo_dedup.rs` |
-| Driver (`demux`, raw-record-then-cancel; Them-records / Me-drops in `handle`) | `rust/crates/hearsay-orchestrator/src/pipeline.rs` |
-| Feature declaration | `rust/crates/hearsay-orchestrator/Cargo.toml`, `.../hearsay-backends/Cargo.toml`, `.../hearsay-core/Cargo.toml` |
-| Build wiring (`--features …,aec`) | `Makefile` (`rust-serve`, `dmg`) |
-| SpeexDSP binding (`AecConfig`, `cancel_echo`) | `aec-rs` 1.0.0 |
-| Related audio flow | [pipeline.md](pipeline.md) |

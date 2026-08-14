@@ -47,8 +47,7 @@ const PCM_CHANNEL_CAPACITY: usize = 128;
 /// over), leaving live transcription untouched.
 const REC_CHANNEL_CAPACITY: usize = 512;
 
-/// Contract-fixed capture sample rate (Hz).
-const SAMPLE_RATE: f64 = 16_000.0;
+const SAMPLE_RATE: f64 = hearsay_audio::SAMPLE_RATE as f64;
 
 /// One raw capture chunk handed to the recorder task: `(samples, t0_s, stream)`.
 type RecordChunk = (Vec<f32>, f64, Stream);
@@ -63,12 +62,12 @@ const RESYNC_THRESHOLD_S: f64 = 0.2;
 /// jump cannot force a multi-GB allocation. 5 min of 16 kHz mono — far beyond any real gap. Past
 /// this the timeline diverges by the excess (logged); acceptable, as the recorder re-anchors on
 /// `t0_s` too.
-const MAX_SILENCE_PAD_SAMPLES: usize = 5 * 60 * 16_000;
+const MAX_SILENCE_PAD_SAMPLES: usize = 5 * 60 * hearsay_audio::SAMPLE_RATE as usize;
 
 /// Continuous all-zero mic samples before [`DeadMicMonitor`] reports the signal path dead. 10 s at
 /// 16 kHz: long enough that a legitimately digital-silent stretch (a resync pad, a codec dropout)
 /// never trips it, short enough to catch a muted mic early in a meeting rather than at the end.
-const DEAD_MIC_AFTER_SAMPLES: u64 = 10 * 16_000;
+const DEAD_MIC_AFTER_SAMPLES: u64 = 10 * hearsay_audio::SAMPLE_RATE as u64;
 
 /// How often each stream broadcasts its recent RMS amplitude as a `level` frame (drives the live
 /// input waveform). ~10 Hz: smooth enough for a VU meter, sparse enough that it never crowds the
@@ -1329,9 +1328,8 @@ mod tests {
     }
 
     use chrono::Utc;
-    use hearsay_db::{connect_options, queries, MIGRATOR};
-    use sqlx::sqlite::SqlitePoolOptions;
-    use sqlx::SqlitePool;
+    use hearsay_db::queries;
+    use hearsay_db::test_support::memory_pool;
     use tokio::sync::{broadcast, oneshot, watch};
 
     fn cfg() -> InactivityConfig {
@@ -1341,16 +1339,6 @@ mod tests {
             prompt_after: Duration::from_secs(5 * 60),
             end_after: Duration::from_secs(10 * 60),
         }
-    }
-
-    async fn memory_pool() -> SqlitePool {
-        let pool = SqlitePoolOptions::new()
-            .max_connections(1)
-            .connect_with(connect_options("sqlite::memory:").unwrap())
-            .await
-            .unwrap();
-        MIGRATOR.run(&pool).await.unwrap();
-        pool
     }
 
     #[test]

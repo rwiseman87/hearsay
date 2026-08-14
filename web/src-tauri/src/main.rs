@@ -176,7 +176,7 @@ struct RotatingLog {
 
 impl RotatingLog {
     /// Open (creating/appending to) `path`, rotating immediately if it is already over the cap —
-    /// which is what clears a file that grew unbounded before this existed.
+    /// which also clears a file that grew past the cap.
     fn open(path: std::path::PathBuf, max_bytes: u64) -> Self {
         let mut log = RotatingLog {
             path,
@@ -330,6 +330,10 @@ fn main() {
             let helper = exe_dir.join("hearsay-helper");
             let resource_dir = app.path().resource_dir()?;
             let web_dir = resource_dir.join("web-dist");
+            // The bundled third-party notices. Attribution for the CC BY 4.0 model weights has to
+            // travel with the distributed app, so the file ships as a resource and Settings > About
+            // opens this copy.
+            let notices_path = resource_dir.join("THIRD-PARTY-NOTICES.md");
             // Bundled GGML whisper model for the offline refine; the core defaults to a repo-relative
             // path that doesn't exist in an installed app, so point it at the resource copy. The
             // Windows default is a smaller model — no ANE/Metal on the reference hardware (the
@@ -369,6 +373,10 @@ fn main() {
                 .shell()
                 .sidecar("hearsay-core")?
                 .env("HEARSAY_WEB_DIR", web_dir.to_string_lossy().to_string())
+                .env(
+                    "HEARSAY_THIRD_PARTY_NOTICES",
+                    notices_path.to_string_lossy().to_string(),
+                )
                 .env(
                     "HEARSAY_REFINE_MODEL",
                     refine_model.to_string_lossy().to_string(),

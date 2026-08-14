@@ -4,28 +4,18 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use chrono::Duration as ChronoDuration;
-use sqlx::sqlite::SqlitePoolOptions;
 use sqlx::types::chrono::Utc;
 use sqlx::SqlitePool;
 
 use hearsay_backends::archive::{sweep_once, Sweeper};
 use hearsay_db::models::{Meeting, MeetingStatus};
-use hearsay_db::{connect_options, queries, MIGRATOR};
+use hearsay_db::queries;
+use hearsay_db::test_support::memory_pool;
 
 const FRESH_DAYS: i64 = 1;
 const OLD_DAYS: i64 = 30;
 /// Enough frames to span several encoder blocks.
 const FRAMES: usize = 20_000;
-
-async fn memory_pool() -> SqlitePool {
-    let pool = SqlitePoolOptions::new()
-        .max_connections(1)
-        .connect_with(connect_options("sqlite::memory:").unwrap())
-        .await
-        .unwrap();
-    MIGRATOR.run(&pool).await.unwrap();
-    pool
-}
 
 fn sweeper() -> std::sync::Arc<Sweeper> {
     std::sync::Arc::new(Sweeper::new())

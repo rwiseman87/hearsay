@@ -61,11 +61,9 @@ pub trait Refiner: Send + Sync {
     async fn refine(&self, audio_path: &Path) -> Result<RefineResult, OrchestratorError>;
 }
 
-/// The post-meeting local-LLM summarization of the finalized transcript into a summary + action
-/// items. Behind a trait for the same reason as [`Refiner`]: the orchestrator stays off the ML crates
-/// and testable with fakes; the production impl (in `hearsay-backends`) spawns the out-of-process
-/// `hearsay-notes` sidecar (which owns llama.cpp, kept out of the core to avoid a `ggml` collision
-/// with the whisper refine).
+/// The post-meeting local-LLM summarization of the finalized transcript. Behind a trait for the
+/// same reason as [`Refiner`]: the orchestrator stays off the ML crates and testable with fakes.
+/// The production impl (in `hearsay-backends`) spawns the out-of-process `hearsay-notes` sidecar.
 #[async_trait]
 pub trait Summarizer: Send + Sync {
     /// Summarize the rendered speaker-attributed `transcript` into the note text (the model's reply
@@ -81,8 +79,7 @@ pub struct BackendInstance {
 }
 
 /// Builds a fresh [`BackendInstance`] per `start_meeting`. The production backend spawns capture +
-/// inference
-/// sidecars; tests inject a scripted one.
+/// inference sidecars; tests inject a scripted one.
 pub trait Backend: Send + Sync {
     /// Build the capture source + the Me/Them transcribers for one meeting.
     fn build(&self) -> BackendInstance;
@@ -94,12 +91,10 @@ pub trait Backend: Send + Sync {
         true
     }
 
-    /// Ensure the warm pool is (re)warming for the next meeting: spawn a pair if none is present, and
-    /// evict + re-spawn a pair whose sidecar has died (a warm that lost an ANE race and exited).
-    /// Idempotent and a no-op while a healthy pair is loading. The caller invokes this only when it
-    /// is *safe* to warm — after a meeting's sidecars are torn down, or while idle — never during a
-    /// meeting, when a concurrent warm load would starve the live sidecars on the compute (ANE).
-    /// Default no-op for backends without a warm pool.
+    /// Ensure the warm pool is (re)warming for the next meeting. Idempotent, and a no-op while a
+    /// healthy pair is loading. Call only when it is *safe* to warm — after a meeting's sidecars are
+    /// torn down, or while idle — never during a meeting, where a concurrent warm load would starve
+    /// the live sidecars on the ANE. Default no-op for backends without a warm pool.
     fn ensure_pool_warm(&self) {}
 }
 

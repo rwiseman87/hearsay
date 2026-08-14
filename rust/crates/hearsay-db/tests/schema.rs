@@ -9,21 +9,13 @@ use std::collections::HashMap;
 use chrono::Utc;
 use hearsay_attribution::{centroid_from_bytes, centroid_to_bytes};
 use hearsay_db::models::{MeetingStatus, Stream};
+use hearsay_db::queries;
 use hearsay_db::queries::{NotesResult, RefineResult, RefinedThemSegment};
-use hearsay_db::{connect_options, queries, MIGRATOR};
+use hearsay_db::test_support::memory_pool;
+use hearsay_db::{connect_options, MIGRATOR};
 use sqlx::migrate::Migrator;
 use sqlx::sqlite::SqlitePoolOptions;
 use sqlx::SqlitePool;
-
-async fn memory_pool() -> SqlitePool {
-    let pool = SqlitePoolOptions::new()
-        .max_connections(1)
-        .connect_with(connect_options("sqlite::memory:").unwrap())
-        .await
-        .unwrap();
-    MIGRATOR.run(&pool).await.unwrap();
-    pool
-}
 
 /// Wrap refined segments (no voiceprints) as a [`RefineResult`] for `replace_them_segments`.
 fn refine_result(segments: Vec<RefinedThemSegment>) -> RefineResult {

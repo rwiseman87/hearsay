@@ -98,10 +98,10 @@ the `.app` (see [packaging.md](packaging.md)).
 
 **Notes (optional local LLM).** When enabled (`HEARSAY_NOTES`, default off), stopping a meeting
 generates Markdown notes from the finalized transcript with a local GGUF instruct model (llama.cpp)
-run out-of-process in the `hearsay-notes` sidecar — a separate binary so llama.cpp's `ggml` never
-co-links with the whisper refine's (a collision that slows the refine ~5x). The model's reply is
-stored and rendered verbatim; the user-editable prompt template dictates the format. `make
-rust-serve` and `make dmg` build + bundle the sidecar. Choose the model in Settings > Models, which lists a small catalog
+run out-of-process in the `hearsay-notes` sidecar (see [architecture.md](architecture.md) for why it
+is a separate binary). The model's reply is stored and rendered verbatim; the user-editable prompt
+template dictates the format. `make rust-serve` and `make dmg` build + bundle the sidecar. Choose
+the model in Settings > Models, which lists a small catalog
 and downloads the pick into `HEARSAY_MODELS_DIR` with a SHA-256 check. `HEARSAY_NOTES_MODEL` sets
 the active model path and `HEARSAY_NOTES_PROMPT` the template (its `{transcript}` placeholder is
 filled at generation). Notes are best-effort: a missing model or a generation error never fails
@@ -121,6 +121,9 @@ loopback-safe defaults (`rust/crates/hearsay-core/src/config.rs`). A malformed o
 typo, an unparseable number, an out-of-range threshold) is a warning in development and a startup
 error otherwise, so a misconfigured deploy fails fast instead of silently using a default.
 
+This table is the reference for every environment variable; `Settings` in `config.rs` is the
+compiler-checked source it mirrors.
+
 | Setting | Env | Default |
 |---|---|---|
 | Database URL | `DATABASE_URL` | `sqlite://./outputs/db/hearsay.db` |
@@ -133,23 +136,35 @@ error otherwise, so a misconfigured deploy fails fast instead of silently using 
 | Record meeting audio (`audio.wav`) | `HEARSAY_RECORD` | `true` |
 | Auto-refine at stop | `HEARSAY_AUTO_REFINE` | `false` |
 | Recognition threshold | `HEARSAY_RECOGNITION_THRESHOLD` | `0.6` |
+| Inactivity "still recording?" prompt | `HEARSAY_INACTIVITY_PROMPT` | `true` |
+| Inactivity auto-end | `HEARSAY_INACTIVITY_AUTO_END` | `true` |
+| Minutes of silence before the prompt | `HEARSAY_INACTIVITY_PROMPT_MINUTES` | `5` |
+| Minutes of silence before auto-end | `HEARSAY_INACTIVITY_END_MINUTES` | `10` |
 | Notes (local-LLM summary) | `HEARSAY_NOTES` | `false` |
 | Compress older meeting audio (lossless FLAC) | `HEARSAY_COMPRESS_AUDIO` | `true` |
 | Days before a meeting's audio is compressed | `HEARSAY_COMPRESS_AFTER_DAYS` | `7` |
 | Notes model (GGUF) | `HEARSAY_NOTES_MODEL` | unset until one is downloaded |
 | Notes prompt template | `HEARSAY_NOTES_PROMPT` | built-in template |
+| Notes sidecar path | `HEARSAY_NOTES_PATH` | a `hearsay-notes` sibling of the core executable |
 | Models download dir | `HEARSAY_MODELS_DIR` | `outputs/models` |
 | Shell handshake file | `HEARSAY_HANDSHAKE_PATH` | unset (headless dev prints the URL instead) |
+| Third-party notices file | `HEARSAY_THIRD_PARTY_NOTICES` | `./THIRD-PARTY-NOTICES.md` (the shell points it at the bundled copy) |
 | Bundled FluidAudio models | `HEARSAY_FLUID_MODELS_DIR` | unset (FluidAudio downloads to its cache) |
 | Sherpa models dir (Windows backend) | `HEARSAY_SHERPA_MODELS_DIR` | `outputs/models/sherpa` |
+| Diarize clustering threshold (macOS sidecar) | `HEARSAY_DIARIZE_CLUSTER_THRESHOLD` | `0.7` |
 | Them loopback path (Windows) | `HEARSAY_WIN_LOOPBACK` | `device` (`device` \| `process`) |
 | Environment | `ENVIRONMENT` | `development` |
 
-`HEARSAY_RECORD`, `HEARSAY_AUTO_REFINE`, `HEARSAY_RECOGNITION_THRESHOLD`, the compression settings,
-and the notes settings are the defaults for the editable Settings sections; a stored preference
-overrides them. The
-handshake and FluidAudio paths are injected by the desktop shell and normally unset in
+`HEARSAY_RECORD`, `HEARSAY_AUTO_REFINE`, `HEARSAY_RECOGNITION_THRESHOLD`, the inactivity settings,
+the compression settings, and the notes settings are the defaults for the editable Settings
+sections; a stored preference overrides them, and a Settings-panel change applies without a restart.
+The handshake and FluidAudio paths are injected by the desktop shell and normally unset in
 development. The sherpa and loopback settings apply only on Windows.
+
+Why a particular default is what it is lives with the behavior it governs: audio archival and its
+sweep cadence in [architecture.md](architecture.md), the diarize clustering threshold in
+[voiceprints.md](voiceprints.md), and the out-of-process notes sidecar in
+[architecture.md](architecture.md).
 
 **Audio recording and playback.** When recording is on (the default), each meeting records one
 timeline-accurate stereo `audio.wav` (Me on the left channel, Them on the right). This single file
@@ -255,31 +270,9 @@ make e2e        # browser E2E (Playwright/Chromium) vs the scripted core + vite
 make test-all   # make ci + make probes + make e2e (run everything)
 ```
 
-- **Rust.** Integration tests exercise the assembled axum router with `tower::ServiceExt::oneshot`
-  against an in-memory SQLite database, with the capture routes on `DisabledEngine` (503 / clean
-  close); no helper involved. Pure logic (speaker ordering, segment-speaker assignment, voiceprint
-  matching) is unit-tested directly in `hearsay-attribution`. The pipeline is tested end to end with
-  scripted fakes in `hearsay-orchestrator` (a fake audio source plus stubbed transcribers); the refine
-  uses a stub diarizer. No ML dependencies.
-- **Web.** `web/` uses vitest + jsdom with Testing Library and MSW; tests sit next to the source as
-  `*.test.ts(x)` (config in `web/vite.config.ts`, shared setup in `web/src/test/`). The client layer
-  (`api/client.ts`, `api/ws.ts`, the query hooks, `hooks/useTranscript.ts`) is unit-tested against a
-  stubbed `fetch` / `WebSocket`; MSW backs the component tests that mock the API.
-- **IPC.** `hearsay-ipc`'s golden-fixture tests and the Swift `hearsay-helper selftest` both validate
-  the codec against `shared/fixtures/`.
-- **Browser E2E.** `make e2e` runs Playwright/Chromium against the real React app served by `vite dev`,
-  talking to a real `hearsay-core` booted with the dev-only `HEARSAY_SCRIPTED` flag — a model-free
-  engine (`build_scripted_engine`) that replays a canned meeting and streams it over the live WebSocket.
-  It drives the full flow (start → live transcript → stop → Library → rename speaker → reassign a line
-  → generate notes),
-  asserting exact text. One-time setup: `cd web && npm install && npx playwright install chromium`.
-  Config + spec live in `web/playwright.config.ts` + `web/e2e/`.
-- **Isolation.** Every test that touches disk points `HEARSAY_OUTPUT_DIR` + `DATABASE_URL` at a
-  `tempfile::tempdir()` (or in-memory SQLite), so a run leaves the working tree untouched. Coverage and
-  E2E reports land under the gitignored `outputs/`; `make clean-test` removes them.
-- **Windows.** Windows has no `make`, so the same set is mirrored in `scripts\test-windows.ps1`
-  (`-Target ci|web|tauri|probes|coverage|e2e|all`), running the same commands with the Windows feature
-  set (`sherpa`, plus `vulkan` for the GPU probes).
+One-time setup for `make e2e`: `cd web && npm install && npx playwright install chromium`. Windows
+has no `make`, so the same set is mirrored in `scripts\test-windows.ps1`
+(`-Target ci|web|tauri|probes|coverage|e2e|all`).
 
 ## Troubleshooting
 

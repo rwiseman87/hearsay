@@ -42,6 +42,7 @@ pub fn router() -> Router<AppState> {
         )
         .route("/settings/models", put(update_models).delete(reset_models))
         .route("/settings/reveal", post(reveal_output_dir))
+        .route("/settings/notices", post(open_notices))
 }
 
 /// The local DB file path for display; avoid leaking credentials for a remote DB URL: strip the
@@ -68,36 +69,29 @@ async fn resolve_recording(state: &AppState) -> ApiResult<RecordingSettings> {
     // Resolve each field against its config default rather than a strict struct parse: a row that
     // predates the inactivity fields (only `record`) must still resolve, filling the missing fields
     // from the environment/config default. Mirrors the per-field `resolve_models`.
-    let obj = queries::recording_section(&state.pool).await?;
-    let bool_field = |key: &str, default: bool| {
-        obj.as_ref()
-            .and_then(|o| o.get(key).and_then(serde_json::Value::as_bool))
-            .unwrap_or(default)
-    };
-    let u32_field = |key: &str, default: u32| {
-        obj.as_ref()
-            .and_then(|o| o.get(key).and_then(serde_json::Value::as_u64))
-            .map(|v| v as u32)
-            .unwrap_or(default)
-    };
+    let s = queries::Section::load(&state.pool, SECTION_RECORDING).await?;
     Ok(RecordingSettings {
-        record: bool_field("record", state.settings.record),
-        inactivity_prompt_enabled: bool_field(
+        record: s.bool_field("record", state.settings.record),
+        inactivity_prompt_enabled: s.bool_field(
             "inactivity_prompt_enabled",
             state.settings.inactivity_prompt,
         ),
-        inactivity_auto_end_enabled: bool_field(
+        inactivity_auto_end_enabled: s.bool_field(
             "inactivity_auto_end_enabled",
             state.settings.inactivity_auto_end,
         ),
-        inactivity_prompt_minutes: u32_field(
-            "inactivity_prompt_minutes",
-            state.settings.inactivity_prompt_minutes as u32,
-        ),
-        inactivity_end_minutes: u32_field(
-            "inactivity_end_minutes",
-            state.settings.inactivity_end_minutes as u32,
-        ),
+        inactivity_prompt_minutes: s
+            .u64_field(
+                "inactivity_prompt_minutes",
+                state.settings.inactivity_prompt_minutes,
+            )
+            .min(u64::from(u32::MAX)) as u32,
+        inactivity_end_minutes: s
+            .u64_field(
+                "inactivity_end_minutes",
+                state.settings.inactivity_end_minutes,
+            )
+            .min(u64::from(u32::MAX)) as u32,
     })
 }
 
@@ -144,20 +138,16 @@ async fn resolve_storage(state: &AppState) -> ApiResult<StorageSettings> {
     // `{"output_dir": ...}` row, and a struct parse resolves the absent keys to their *type*
     // defaults (false / 0) — shipping the feature silently disabled on exactly the installs that
     // have the most audio to reclaim. Mirrors the per-field `resolve_recording` / `resolve_models`.
-    let obj = queries::storage_section(&state.pool).await?;
-    let field = |key: &str| obj.as_ref().and_then(|o| o.get(key));
+    let s = queries::Section::load(&state.pool, SECTION_STORAGE).await?;
     Ok(StorageSettings {
-        output_dir: field("output_dir")
-            .and_then(|v| v.as_str())
-            .map(str::to_string)
-            .unwrap_or_else(|| state.settings.output_dir.to_string_lossy().to_string()),
-        compress_audio: field("compress_audio")
-            .and_then(serde_json::Value::as_bool)
-            .unwrap_or(state.settings.compress_audio),
-        compress_after_days: field("compress_after_days")
-            .and_then(serde_json::Value::as_u64)
-            .map(|v| v as u32)
-            .unwrap_or(state.settings.compress_after_days as u32),
+        output_dir: s
+            .path_field("output_dir", &state.settings.output_dir)
+            .to_string_lossy()
+            .to_string(),
+        compress_audio: s.bool_field("compress_audio", state.settings.compress_audio),
+        compress_after_days: s
+            .u64_field("compress_after_days", state.settings.compress_after_days)
+            .min(u64::from(u32::MAX)) as u32,
     })
 }
 
@@ -166,22 +156,18 @@ async fn resolve_models(state: &AppState) -> ApiResult<ModelSettings> {
     // section as a struct: the download manager merges in just `notes_model`, so the stored object is
     // often partial (no `refine_model`), which a strict struct parse would reject. Mirrors the
     // per-field `effective_*` readers in `hearsay-db`.
-    let obj = queries::models_section(&state.pool).await?;
-    let field = |key: &str| {
-        obj.as_ref()
-            .and_then(|o| o.get(key).and_then(|v| v.as_str()))
-            .map(str::to_string)
-    };
+    let s = queries::Section::load(&state.pool, SECTION_MODELS).await?;
     Ok(ModelSettings {
-        refine_model: field("refine_model")
-            .unwrap_or_else(|| state.settings.refine_model.to_string_lossy().to_string()),
-        notes_enabled: obj
-            .as_ref()
-            .and_then(|o| o.get("notes_enabled").and_then(serde_json::Value::as_bool))
-            .unwrap_or(state.settings.notes_enabled),
-        notes_model: field("notes_model")
-            .unwrap_or_else(|| state.settings.notes_model.to_string_lossy().to_string()),
-        notes_prompt: field("notes_prompt").unwrap_or_else(|| state.settings.notes_prompt.clone()),
+        refine_model: s
+            .path_field("refine_model", &state.settings.refine_model)
+            .to_string_lossy()
+            .to_string(),
+        notes_enabled: s.bool_field("notes_enabled", state.settings.notes_enabled),
+        notes_model: s
+            .path_field("notes_model", &state.settings.notes_model)
+            .to_string_lossy()
+            .to_string(),
+        notes_prompt: s.string_field("notes_prompt", &state.settings.notes_prompt),
     })
 }
 
@@ -415,12 +401,35 @@ pub(crate) async fn reveal_output_dir(State(state): State<AppState>) -> ApiResul
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// Open the bundled third-party notices in the OS default handler. Attribution for the CC BY 4.0
+/// model weights has to reach the user from the distributed app, so the notices ship as a bundle
+/// resource and Settings > About opens this copy. Routed through the core for the same reason as
+/// [`reveal_output_dir`].
+#[utoipa::path(
+    post, path = "/api/settings/notices", tag = "settings",
+    responses((status = 204), (status = 503)),
+)]
+pub(crate) async fn open_notices(State(state): State<AppState>) -> ApiResult<StatusCode> {
+    let path = state.settings.notices_path.clone();
+    if !path.is_file() {
+        return Err(ApiError::Unavailable(format!(
+            "third-party notices not found at {}",
+            path.display()
+        )));
+    }
+    tokio::task::spawn_blocking(move || reveal_in_file_manager(&path))
+        .await
+        .map_err(|e| ApiError::Internal(format!("notices task panicked: {e}")))??;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 /// Open `dir` in Finder via an absolute `/usr/bin/open` (no PATH dependency from the bundled app's
-/// minimal process environment). `dir` is app-controlled (the effective recordings dir), never
-/// user-supplied, so there is no argument-injection surface. Errors carry the reason for the UI.
+/// minimal process environment). `dir` is app-controlled (the effective recordings dir or the
+/// bundled notices file), never user-supplied, so there is no argument-injection surface. Errors
+/// carry the reason for the UI.
 #[cfg(target_os = "macos")]
 pub(crate) fn reveal_in_file_manager(dir: &Path) -> ApiResult<()> {
-    tracing::info!(dir = %dir.display(), "reveal: opening recordings dir in Finder");
+    tracing::info!(path = %dir.display(), "reveal: opening in Finder");
     let status = std::process::Command::new("/usr/bin/open")
         .arg(dir)
         .status()
@@ -441,7 +450,7 @@ pub(crate) fn reveal_in_file_manager(dir: &Path) -> ApiResult<()> {
 /// dir), never user-supplied, so there is no argument-injection surface.
 #[cfg(target_os = "windows")]
 pub(crate) fn reveal_in_file_manager(dir: &Path) -> ApiResult<()> {
-    tracing::info!(dir = %dir.display(), "reveal: opening recordings dir in File Explorer");
+    tracing::info!(path = %dir.display(), "reveal: opening in File Explorer");
     let status = std::process::Command::new("explorer")
         .arg(dir)
         .status()
@@ -578,12 +587,29 @@ fn validate_output_dir(input: &str) -> Result<String, ApiError> {
 /// refine time. The GGML magic check (little-endian `0x67676d6c`, the first 4 bytes of every
 /// `ggml-*.bin` whisper model) guards against pointing the refine at an unrelated file.
 fn validate_refine_model(input: &str) -> Result<String, ApiError> {
+    validate_model_file(
+        input,
+        "refine_model",
+        crate::models::GGML_MAGIC,
+        "a GGML whisper model (expected a ggml-*.bin file)",
+    )
+}
+
+/// Resolve a user-supplied model path and prove it is the expected format: expand `~`, require an
+/// absolute path, canonicalize it, and check the leading four magic bytes. `field` names the setting
+/// in the 422 and `expected` describes the format.
+fn validate_model_file(
+    input: &str,
+    field: &str,
+    magic: [u8; 4],
+    expected: &str,
+) -> Result<String, ApiError> {
     let expanded = expand_home(input);
     let path = Path::new(&expanded);
     if !path.is_absolute() {
-        return Err(ApiError::Unprocessable(
-            "refine_model must be an absolute path".into(),
-        ));
+        return Err(ApiError::Unprocessable(format!(
+            "{field} must be an absolute path"
+        )));
     }
     let resolved = std::fs::canonicalize(path)
         .map_err(|_| ApiError::Unprocessable(format!("{expanded} does not exist")))?;
@@ -593,14 +619,13 @@ fn validate_refine_model(input: &str) -> Result<String, ApiError> {
             resolved.display()
         )));
     }
-    let mut magic = [0u8; 4];
+    let mut found = [0u8; 4];
     std::fs::File::open(&resolved)
-        .and_then(|mut f| std::io::Read::read_exact(&mut f, &mut magic))
+        .and_then(|mut f| std::io::Read::read_exact(&mut f, &mut found))
         .map_err(|_| ApiError::Unprocessable(format!("{} is not readable", resolved.display())))?;
-    // Whisper `GGML_FILE_MAGIC` (0x67676d6c) stored little-endian on disk.
-    if magic != [0x6c, 0x6d, 0x67, 0x67] {
+    if found != magic {
         return Err(ApiError::Unprocessable(format!(
-            "{} is not a GGML whisper model (expected a ggml-*.bin file)",
+            "{} is not {expected}",
             resolved.display()
         )));
     }
@@ -613,33 +638,12 @@ fn validate_refine_model(input: &str) -> Result<String, ApiError> {
 /// 0x46`, the first 4 bytes of every `.gguf` model) so pointing the notes step at a whisper `.bin`
 /// or an unrelated file is caught here, not as a cryptic llama.cpp load failure at generate time.
 fn validate_notes_model(input: &str) -> Result<String, ApiError> {
-    let expanded = expand_home(input);
-    let path = Path::new(&expanded);
-    if !path.is_absolute() {
-        return Err(ApiError::Unprocessable(
-            "notes_model must be an absolute path".into(),
-        ));
-    }
-    let resolved = std::fs::canonicalize(path)
-        .map_err(|_| ApiError::Unprocessable(format!("{expanded} does not exist")))?;
-    if !resolved.is_file() {
-        return Err(ApiError::Unprocessable(format!(
-            "{} is not a file",
-            resolved.display()
-        )));
-    }
-    let mut magic = [0u8; 4];
-    std::fs::File::open(&resolved)
-        .and_then(|mut f| std::io::Read::read_exact(&mut f, &mut magic))
-        .map_err(|_| ApiError::Unprocessable(format!("{} is not readable", resolved.display())))?;
-    // GGUF files start with the ASCII bytes "GGUF".
-    if magic != [0x47, 0x47, 0x55, 0x46] {
-        return Err(ApiError::Unprocessable(format!(
-            "{} is not a GGUF model (expected a .gguf file)",
-            resolved.display()
-        )));
-    }
-    Ok(resolved.to_string_lossy().to_string())
+    validate_model_file(
+        input,
+        "notes_model",
+        crate::models::GGUF_MAGIC,
+        "a GGUF model (expected a .gguf file)",
+    )
 }
 
 /// Expand a leading `~/` to `$HOME`; otherwise unchanged.

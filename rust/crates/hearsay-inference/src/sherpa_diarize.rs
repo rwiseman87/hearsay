@@ -20,8 +20,7 @@ use sherpa_onnx::{
 use crate::diarizer::{DiarTurn, Diarization, Diarizer};
 use crate::error::InferenceError;
 
-/// Contract-fixed track sample rate (Hz).
-const SAMPLE_RATE: i32 = 16_000;
+const SAMPLE_RATE: i32 = hearsay_audio::SAMPLE_RATE as i32;
 
 /// Longest audio (samples) handed to the embedder in one call.
 ///

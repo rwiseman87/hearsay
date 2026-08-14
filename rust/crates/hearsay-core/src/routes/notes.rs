@@ -14,6 +14,7 @@ use hearsay_engine::LiveError;
 
 use crate::error::{ApiError, ApiResult};
 use crate::extract::{Json, Path};
+use crate::routes::reexport;
 use crate::schema::{MeetingNotesRead, NotesEdit};
 use crate::state::AppState;
 
@@ -118,8 +119,6 @@ pub(crate) async fn edit_notes(
         .await?
         .ok_or(ApiError::NotFound("no notes for this meeting"))?;
     // Keep notes.md in step with the edit (best-effort; the DB is the source of truth).
-    if let Err(err) = state.engine.export_meeting(id).await {
-        tracing::warn!(error = ?err, meeting_id = %id, "notes edit: re-export failed");
-    }
+    reexport(&state, id, "notes edit").await;
     Ok(Json(notes.into()))
 }

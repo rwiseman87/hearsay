@@ -1,22 +1,11 @@
 //! Startup crash-recovery: a meeting left non-terminal by a hard exit is finalized on boot.
 
-use sqlx::sqlite::SqlitePoolOptions;
 use sqlx::types::chrono::Utc;
-use sqlx::SqlitePool;
 
 use hearsay_backends::reconcile::reconcile_stranded_meetings;
 use hearsay_db::models::MeetingStatus;
-use hearsay_db::{connect_options, queries, MIGRATOR};
-
-async fn memory_pool() -> SqlitePool {
-    let pool = SqlitePoolOptions::new()
-        .max_connections(1)
-        .connect_with(connect_options("sqlite::memory:").unwrap())
-        .await
-        .unwrap();
-    MIGRATOR.run(&pool).await.unwrap();
-    pool
-}
+use hearsay_db::queries;
+use hearsay_db::test_support::memory_pool;
 
 #[tokio::test]
 async fn reconcile_finalizes_a_meeting_left_recording() {
