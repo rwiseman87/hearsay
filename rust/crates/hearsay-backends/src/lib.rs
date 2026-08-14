@@ -23,7 +23,7 @@ use hearsay_engine::LiveEngine;
 use hearsay_orchestrator::testing::{
     chunk, seg, ProgressiveBackend, ProgressivePlan, ScriptedSummarizer,
 };
-use hearsay_orchestrator::{Orchestrator, SegmentKind};
+use hearsay_orchestrator::{Defaults, Orchestrator, RefineResult, RefinedThemSegment, SegmentKind};
 
 pub mod archive;
 #[cfg(target_os = "macos")]
@@ -91,6 +91,42 @@ pub struct EngineConfig {
     pub win_loopback_mode: LoopbackMode,
 }
 
+/// Map the inference crate's refine output onto the orchestrator's `RefineResult`. Identical on
+/// every platform — only how the output is produced differs.
+pub(crate) fn map_refine_output(output: hearsay_inference::RefineOutput) -> RefineResult {
+    RefineResult {
+        segments: output
+            .segments
+            .into_iter()
+            .map(|s| RefinedThemSegment {
+                ordinal: s.ordinal,
+                text: s.text,
+                start_s: s.start_s,
+                end_s: s.end_s,
+            })
+            .collect(),
+        centroids: output.centroids,
+    }
+}
+
+impl EngineConfig {
+    /// The orchestrator defaults this config carries. Every `build_engine` needs exactly this
+    /// subset, so each platform lifts it the same way.
+    pub(crate) fn defaults(&self) -> Defaults {
+        Defaults {
+            record: self.record,
+            auto_refine: self.auto_refine,
+            recognition_threshold: self.recognition_threshold,
+            inactivity_prompt: self.inactivity_prompt,
+            inactivity_auto_end: self.inactivity_auto_end,
+            inactivity_prompt_minutes: self.inactivity_prompt_minutes,
+            inactivity_end_minutes: self.inactivity_end_minutes,
+            notes_enabled: self.notes_enabled,
+            notes_model: self.notes_model.clone(),
+        }
+    }
+}
+
 /// Assemble a deterministic, model-free [`LiveEngine`] that runs the real orchestrator pipeline +
 /// persistence over a canned meeting — emitting its transcript progressively over the live WebSocket
 /// during recording (via [`ProgressiveBackend`]) — instead of touching any capture device, ANE, or
@@ -104,18 +140,9 @@ pub fn build_scripted_engine(config: EngineConfig) -> Arc<dyn LiveEngine> {
     let (summarizer, _) = ScriptedSummarizer::new(
         "Scripted summary for the end-to-end test.\n\n- Ship the browser E2E.",
     );
+    let defaults = config.defaults();
     Orchestrator::new(config.pool, config.output_dir, backend)
-        .with_defaults(
-            config.record,
-            config.auto_refine,
-            config.recognition_threshold,
-            config.inactivity_prompt,
-            config.inactivity_auto_end,
-            config.inactivity_prompt_minutes,
-            config.inactivity_end_minutes,
-            config.notes_enabled,
-            config.notes_model,
-        )
+        .with_defaults(defaults)
         .with_summarizer(summarizer)
         .into_arc()
 }

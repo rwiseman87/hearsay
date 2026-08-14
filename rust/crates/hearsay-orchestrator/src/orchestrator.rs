@@ -28,6 +28,21 @@ use crate::traits::{Backend, Refiner, Summarizer};
 /// while idle, so the "Start" gate can never wedge on an empty/dead pool.
 const WARM_TICK_INTERVAL: Duration = Duration::from_secs(2);
 
+/// Config defaults for the editable settings, passed to [`Orchestrator::with_defaults`]. Named
+/// fields rather than positional arguments: five of the nine are `bool`/`u64`, so a transposed pair
+/// would type-check and silently mis-configure the watchdog or the notes step.
+pub struct Defaults {
+    pub record: bool,
+    pub auto_refine: bool,
+    pub recognition_threshold: f64,
+    pub inactivity_prompt: bool,
+    pub inactivity_auto_end: bool,
+    pub inactivity_prompt_minutes: u64,
+    pub inactivity_end_minutes: u64,
+    pub notes_enabled: bool,
+    pub notes_model: PathBuf,
+}
+
 /// The single active recording session: its meeting id and the running pipeline.
 struct ActiveSession {
     meeting_id: Uuid,
@@ -135,28 +150,16 @@ impl Orchestrator {
     /// Set the config defaults for the editable settings (the values used when the UI has stored no
     /// override). Typically the resolved `Settings` (env/startup). The UI still overrides these per
     /// meeting via the `preferences` table.
-    #[allow(clippy::too_many_arguments)]
-    pub fn with_defaults(
-        mut self,
-        record: bool,
-        auto_refine: bool,
-        recognition_threshold: f64,
-        inactivity_prompt: bool,
-        inactivity_auto_end: bool,
-        inactivity_prompt_minutes: u64,
-        inactivity_end_minutes: u64,
-        notes_enabled: bool,
-        notes_model: PathBuf,
-    ) -> Self {
-        self.default_record = record;
-        self.default_auto_refine = auto_refine;
-        self.default_recognition_threshold = recognition_threshold;
-        self.default_inactivity_prompt = inactivity_prompt;
-        self.default_inactivity_auto_end = inactivity_auto_end;
-        self.default_inactivity_prompt_minutes = inactivity_prompt_minutes;
-        self.default_inactivity_end_minutes = inactivity_end_minutes;
-        self.default_notes_enabled = notes_enabled;
-        self.default_notes_model = notes_model;
+    pub fn with_defaults(mut self, defaults: Defaults) -> Self {
+        self.default_record = defaults.record;
+        self.default_auto_refine = defaults.auto_refine;
+        self.default_recognition_threshold = defaults.recognition_threshold;
+        self.default_inactivity_prompt = defaults.inactivity_prompt;
+        self.default_inactivity_auto_end = defaults.inactivity_auto_end;
+        self.default_inactivity_prompt_minutes = defaults.inactivity_prompt_minutes;
+        self.default_inactivity_end_minutes = defaults.inactivity_end_minutes;
+        self.default_notes_enabled = defaults.notes_enabled;
+        self.default_notes_model = defaults.notes_model;
         self
     }
 
