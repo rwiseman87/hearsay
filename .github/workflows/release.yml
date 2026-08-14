@@ -1,0 +1,105 @@
+name: release
+
+on:
+  push:
+    tags: ['v*']
+  # Dry run: builds and uploads the DMG as a workflow artifact without creating a release.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  gate:
+    uses: ./.github/workflows/ci.yml
+
+  macos:
+    needs: gate
+    runs-on: macos-26
+    timeout-minutes: 120
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          # Full history: the changelog spans the previous tag, and version-check-tag falls back to
+          # `git describe` when GITHUB_REF_NAME is absent.
+          fetch-depth: 0
+          # gh uses an explicit GH_TOKEN and git log/describe are local, so nothing needs the token
+          # persisted into .git/config where later steps could read it.
+          persist-credentials: false
+
+      - uses: ./.github/actions/mac-build-env
+        with:
+          cache-key: release
+
+      - name: Check the tag matches the app version
+        if: github.event_name == 'push'
+        run: make version-check-tag
+
+      - name: Check the app version is consistent
+        if: github.event_name != 'push'
+        run: make version-check
+
+      # stage-release builds the web bundle, the five Swift sidecars and the two Rust binaries, stages
+      # them as Tauri externalBin, then bundles and ad-hoc signs the .app and the DMG.
+      - name: Build the DMG
+        run: make dmg
+
+      - name: Checksum the DMG
+        id: artifact
+        run: |
+          set -euo pipefail
+          version="$(make version)"
+          dir="web/src-tauri/target/release/bundle/dmg"
+          base="Hearsay_${version}_aarch64.dmg"
+          test -f "$dir/$base" || {
+            echo "::error::expected $dir/$base"
+            ls -lR web/src-tauri/target/release/bundle
+            exit 1
+          }
+          hdiutil imageinfo "$dir/$base" > /dev/null
+          ( cd "$dir" && shasum -a 256 "$base" > "$base.sha256" && cat "$base.sha256" )
+          ls -lh "$dir"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "dir=$dir" >> "$GITHUB_OUTPUT"
+          echo "base=$base" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
+        with:
+          name: Hearsay_${{ steps.artifact.outputs.version }}_aarch64_dmg
+          path: |
+            web/src-tauri/target/release/bundle/dmg/*.dmg
+            web/src-tauri/target/release/bundle/dmg/*.sha256
+          if-no-files-found: error
+
+      # Draft, not published: a human reviews the notes and the artifact before anyone can download it.
+      # The static half of the notes lives in .github/release-notes-macos.md.
+      - name: Create the draft release
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+          VERSION: ${{ steps.artifact.outputs.version }}
+          DIR: ${{ steps.artifact.outputs.dir }}
+          BASE: ${{ steps.artifact.outputs.base }}
+        run: |
+          set -euo pipefail
+          notes="$RUNNER_TEMP/notes.md"
+          prev="$(git describe --tags --abbrev=0 "${TAG}^" 2>/dev/null || true)"
+          {
+            printf 'Hearsay %s -- local-first meeting transcriber for macOS.\n\n' "$VERSION"
+            printf 'Requires an Apple Silicon Mac on macOS 14.4 or later.\n'
+            cat .github/release-notes-macos.md
+            printf '\n## Checksum\n\n```\n%s\n```\n' "$(cat "$DIR/$BASE.sha256")"
+            if [ -n "$prev" ]; then
+              printf '\n## Changes since %s\n\n' "$prev"
+              git log --pretty='- %s' "$prev..$TAG"
+            fi
+          } > "$notes"
+          cat "$notes"
+          gh release create "$TAG" \
+            --draft \
+            --title "Hearsay $VERSION" \
+            --notes-file "$notes" \
+            "$DIR/$BASE" "$DIR/$BASE.sha256"
