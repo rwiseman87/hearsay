@@ -16,6 +16,15 @@ what on the far end, and keeps everything on your machine. Nothing is uploaded.
 
 ## First run
 
+The installer does not carry the speech models, so the first launch offers to download them: about
+2.6 GB, once. Nothing starts until you click **Download models**, which is the point — on a metered
+or offline connection you can quit and come back. An interrupted download resumes where it stopped
+rather than starting over.
+
+The download also offers a model for meeting notes. That one is optional and can be added later from
+Settings > Models. Once the required models are in place the screen does not come back; from then on
+Hearsay works with no network at all.
+
 macOS asks for **Microphone** and **System Audio Recording** the first time you start a recording.
 Both are required: without the microphone there is no "Me", and without system audio there is no
 "Them". The prompts block that first start, so click Allow and it continues.

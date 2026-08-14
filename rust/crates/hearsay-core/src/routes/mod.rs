@@ -8,6 +8,7 @@ pub mod models;
 pub mod notes;
 pub mod search;
 pub mod settings;
+pub mod setup;
 pub mod speakers;
 pub mod user_notes;
 pub mod voiceprints;

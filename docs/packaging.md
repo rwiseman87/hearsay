@@ -13,6 +13,8 @@ direct download and internal sharing; recipients clear the macOS quarantine flag
   FluidAudio/ANE sidecars, the `hearsay-notes` LLM sidecar, and the React UI. The shell spawns the
   core (which in turn spawns `hearsay-notes` for the notes step) and points the window at its
   loopback URL.
+- **Models:** not bundled. The macOS installer is about 50 MB; the app downloads its speech models
+  on first run (see [First-run models](#first-run-models)).
 
 ## Prerequisites
 
@@ -58,39 +60,12 @@ target (which `dmg` depends on) then invokes `cargo tauri build` and runs `codes
 --strict` on the bundle to confirm the ad-hoc signature is intact.
 
 `THIRD-PARTY-NOTICES.md` is bundled as a Tauri resource (`Contents/Resources/`), and the shell
-points `HEARSAY_THIRD_PARTY_NOTICES` at it so Settings > About can open it. The bundled speech models
-include CC BY 4.0 weights whose attribution has to travel with the distributed app, so this file
-ships with every build — no staging step, Tauri copies it from the repo root.
+points `HEARSAY_THIRD_PARTY_NOTICES` at it so Settings > About can open it. The speech models the app
+downloads include CC BY 4.0 weights whose attribution has to travel with the app, so this file ships
+with every build — no staging step, Tauri copies it from the repo root.
 
-`stage-release` stages the whisper refine model. `outputs/models/ggml-large-v3-turbo.bin`
-(about 1.5 GB) must be present: the build copies it to `web/src-tauri/models/`, Tauri bundles it
-under `Contents/Resources/models/`, and the shell points `HEARSAY_REFINE_MODEL` at it so "Refine
-speakers" works offline in the installed app. The copy is skipped once staged; remove
-`web/src-tauri/models/*.bin` to refresh it.
-
-`stage-release` also stages the FluidAudio live models (about 1.1 GB: batch and streaming Parakeet
-ASR, the LS-EEND live diarizer, the pyannote refine diarizer, and Silero VAD) so the installer is
-fully self-contained, with no first-run download.
-
-Fetch both model sets before packaging. Neither needs the app to have run:
-
-```sh
-make fetch-refine-model    # whisper refine, from HuggingFace, into outputs/models/
-make fetch-fluid-models    # FluidAudio repos into outputs/models/fluidaudio/Models/
-```
-
-`fetch-fluid-models` copies from your local FluidAudio cache when it is populated and downloads from
-HuggingFace otherwise (`scripts/fetch-fluid-models.sh`), so a machine that has never run Hearsay can
-still package.
-
-`stage-fluid-models` then copies them into the Tauri bundle, the shell points
-`HEARSAY_FLUID_MODELS_DIR` at the bundled copy, and on first launch the core copies each repo into
-FluidAudio's cache (`~/Library/Application Support/FluidAudio/Models/`), where the sidecars find
-them and skip the download. A repo is re-copied into the bundle only when missing; remove
-`web/src-tauri/models/fluidaudio` to force a refresh (for example after a FluidAudio version bump
-changes the model set, pinned in the `FLUID_REPOS` list in the `Makefile` and the manifest in
-`scripts/fetch-fluid-models.sh`). `FLUID_REPOS` names exact subtrees, so only the LS-EEND variant the
-live sidecar loads (`ls-eend/ami`) is bundled rather than the whole repo.
+Nothing about packaging needs a model on the build machine. `make fetch-refine-model` still exists,
+but only for a local `make rust-serve` run (the dev default `HEARSAY_REFINE_MODEL` path).
 
 Artifacts:
 
@@ -120,6 +95,25 @@ Ad-hoc signing is configured by `bundle.macOS.signingIdentity: "-"` in
 `spctl -a -vv` reports the app as rejected; that is expected for a non-notarized build and is
 exactly what the `xattr` step addresses.
 
+## First-run models
+
+The installer carries no models, so the first launch shows a setup screen instead of the app: about
+2.6 GB of speech models (1.1 GB of FluidAudio live models plus the 1.5 GB whisper refine model), with
+an option to fetch a notes model in the same pass. Nothing downloads until the user starts it, which
+is what makes a metered or offline first run survivable — the app simply waits.
+
+- The live models are fetched by the `hearsay-models` sidecar, which calls the same FluidAudio
+  loaders the live sidecars call, so what it prepares cannot drift from what they load. They land in
+  FluidAudio's own cache (`~/Library/Application Support/FluidAudio/Models/`).
+- The refine model is a resumable, SHA-256-verified download into
+  `~/Library/Application Support/com.hearsay.app/models/`, where `HEARSAY_REFINE_MODEL` points.
+- An interrupted download resumes from its `.part` file on the next attempt; quitting mid-download
+  is safe.
+- The core holds back sidecar pre-warming until the models are there, so nothing races the setup run
+  for the same files.
+
+`GET /api/setup` reports what is still missing; the screen clears once nothing is.
+
 ## Where your data lives
 
 The installed app is read-only, so all user data is written under a standard, user-writable
@@ -129,8 +123,8 @@ location keyed by the bundle id `com.hearsay.app`:
 |---|---|
 | Database (meetings, speakers, settings) | `~/Library/Application Support/com.hearsay.app/db/` |
 | Recordings and transcripts (one folder per meeting) | `~/Library/Application Support/com.hearsay.app/recordings/` |
-| Downloaded notes models | `~/Library/Application Support/com.hearsay.app/models/` |
-| FluidAudio model caches (re-creatable) | `~/Library/Application Support/FluidAudio/`, `~/.cache/fluidaudio/` |
+| Downloaded refine and notes models | `~/Library/Application Support/com.hearsay.app/models/` |
+| FluidAudio live models (re-downloadable) | `~/Library/Application Support/FluidAudio/`, `~/.cache/fluidaudio/` |
 | WebView and app caches | `~/Library/Caches/com.hearsay.app`, `~/Library/WebKit/com.hearsay.app`, and similar |
 
 Your recordings and transcripts live outside the `.app`, so deleting the app never deletes them.
@@ -151,8 +145,8 @@ flowchart TD
 - **Erase everything.** Deletes, best-effort:
   - the data directory `~/Library/Application Support/com.hearsay.app/` (database, recordings,
     transcripts, downloaded models),
-  - the FluidAudio model caches; the next launch re-seeds them from the bundled copy (a fast
-    local copy, no re-download),
+  - the FluidAudio model caches; the next launch shows the first-run setup screen again and
+    re-downloads them,
   - the WebView and app caches, saved state, and the preferences plist for `com.hearsay.app`,
   - and runs `tccutil reset All` for `com.hearsay.app` and `com.hearsay.helper`, so a reinstall
     prompts for permissions again.
@@ -198,6 +192,7 @@ Windows specifics:
 - **Settings changes apply from the next meeting.** The effective recording, speaker, storage,
   and notes settings are read at meeting start and stop, so an edit never alters a meeting
   already in progress.
-- **Large DMG.** The refine model (about 1.5 GB) plus the FluidAudio live models (about 1.1 GB)
-  are bundled, so the DMG is roughly 2.6 GB. That is the cost of a fully self-contained, offline
-  install: live transcription and "Refine speakers" work with no first-run download.
+- **The first run needs the network.** The installer is small because the models are not in it, so
+  a machine that is offline on first launch can browse the app but cannot record until the download
+  completes. After that Hearsay is fully offline. (Windows still bundles its smaller model set, so
+  its installer is about 650 MB and needs no first-run download.)

@@ -21,6 +21,7 @@ fn config(pool: SqlitePool, output_dir: PathBuf) -> EngineConfig {
         output_dir,
         helper_path: PathBuf::from("unused"),
         synthetic: false,
+        prewarm: true,
         refine_model: PathBuf::new(),
         refine_timeout: Duration::from_secs(60),
         record: false,

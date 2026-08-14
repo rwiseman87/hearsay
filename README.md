@@ -32,12 +32,15 @@ Runs on macOS (Apple Silicon, 14.4 or later) and Windows (x86_64, Windows 10 200
 There are no prebuilt downloads; you build the installer yourself.
 
 ```sh
-make dmg    # macOS: an ad-hoc-signed Hearsay.app and .dmg, all models bundled
+make dmg    # macOS: an ad-hoc-signed Hearsay.app and .dmg (~50 MB; models download on first run)
 ```
 
 No Apple Developer account is needed. Because the result is not notarized, recipients clear the
 quarantine flag once after installing. Windows builds an NSIS installer via
-`scripts\build-windows.ps1`.
+`scripts\build-windows.ps1`, with its models bundled.
+
+The macOS app downloads its speech models (about 2.6 GB) the first time it runs, and is fully
+offline after that.
 
 Full build, install, data-location, and uninstall steps: **[docs/packaging.md](docs/packaging.md)**.
 

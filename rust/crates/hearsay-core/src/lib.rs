@@ -14,6 +14,7 @@ pub mod openapi;
 pub mod routes;
 pub mod schema;
 pub mod security;
+pub mod setup;
 pub mod state;
 
 use axum::body::Body;
@@ -56,6 +57,7 @@ pub fn create_app(state: AppState) -> Router {
         .merge(routes::models::router())
         .merge(routes::search::router())
         .merge(routes::settings::router())
+        .merge(routes::setup::router())
         .merge(routes::voiceprints::router())
         .route_layer(from_fn_with_state(state.clone(), routes::require_token));
     let api = protected.merge(routes::audio::router());

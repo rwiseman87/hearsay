@@ -20,7 +20,7 @@ Multi-process, local-only (macOS on Apple Silicon 14.4+; Windows on x86_64, Win1
   hints over IPC.
 - **Swift sidecars** (`helper/`, FluidAudio on the Apple Neural Engine) — the audio-AI: `hearsay-live` (live
   Them diarization + Parakeet ASR), `hearsay-me` (live Me VAD + Parakeet), `hearsay-diarize` (post-meeting
-  refine). The core spawns + feeds each over stdio.
+  refine), `hearsay-models` (first-run model download). The core spawns + feeds each over stdio.
 - **Rust core** (`rust/crates/`) — orchestration (spawns the helper + sidecars, routes PCM), speaker
   attribution (clusters + cross-meeting voiceprints + manual labels), the offline refine (whisper),
   optional local-LLM notes (spawned as the `hearsay-notes` sidecar, off by default), Markdown,
@@ -53,7 +53,7 @@ rust/crates/
   hearsay-attribution/  speaker clustering / voiceprint match / segment-speaker assignment (pure logic)
   hearsay-audio/        lossless FLAC archival of the recorded meeting wav (encode + decode + byte-exact verify)
   hearsay-ipc/          binary frame codec + NDJSON control codec (source of truth for the IPC contract) + gen_fixtures bin
-helper/                 SwiftPM: hearsay-{helper,live,me,diarize} executables + HearsayIPC + SidecarIO libraries
+helper/                 SwiftPM: hearsay-{helper,live,me,diarize,models} executables + HearsayIPC + SidecarIO libraries
 web/                    React + TS frontend; web/src-tauri/ is the Tauri desktop shell
 shared/protocol/ipc.md  IPC contract (source of truth)   ·   shared/fixtures/   golden frames (Rust-generated)
 ```
@@ -97,7 +97,7 @@ shared/protocol/ipc.md  IPC contract (source of truth)   ·   shared/fixtures/  
 ## Swift Helper
 
 - SwiftPM package in `helper/`: the `hearsay-helper` capture executable + the FluidAudio/ANE sidecars
-  (`hearsay-{live,me,diarize}`) + the `HearsayIPC` + `SidecarIO` libraries. Deployment macOS 14.4. `make swift-build`
+  (`hearsay-{live,me,diarize,models}`) + the `HearsayIPC` + `SidecarIO` libraries. Deployment macOS 14.4. `make swift-build`
   builds one product per invocation (`swift build` takes a single `--product`, and a bare
   `swift build` pulls in FluidAudio's CLI target).
 - All TCC-guarded native work lives in the capture helper (mic + audio capture); it stays lean (no
@@ -190,9 +190,13 @@ shared/protocol/ipc.md  IPC contract (source of truth)   ·   shared/fixtures/  
 
 ## Distribution
 
-- One **self-contained installer per OS**, no interpreter bundle (Rust removes the hardest packaging
-  step). NOT sandboxed / not App Store (the system-audio tap needs it). `make dmg` builds the
-  ad-hoc-signed, un-notarized DMG; `scripts/build-windows.ps1` builds the NSIS installer.
+- One **installer per OS**, no interpreter bundle (Rust removes the hardest packaging step). NOT
+  sandboxed / not App Store (the system-audio tap needs it). `make dmg` builds the ad-hoc-signed,
+  un-notarized DMG; `scripts/build-windows.ps1` builds the NSIS installer.
+- The macOS installer carries **no models** (~50 MB): the app downloads them on first run behind a
+  setup screen that gates recording (`hearsay-core/src/setup.rs` + the `hearsay-models` sidecar).
+  2.6 GB of models would exceed GitHub's 2 GB release-asset cap. Windows still bundles its smaller
+  sherpa set.
 
 ## Dependency Decisions
 

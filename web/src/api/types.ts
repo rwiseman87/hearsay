@@ -36,3 +36,5 @@ export type ModelCatalog = Schemas["ModelCatalog"];
 export type DownloadState = Schemas["DownloadState"];
 export type PermissionsInfo = Schemas["PermissionsInfo"];
 export type StatusInfo = Schemas["StatusInfo"];
+export type SetupState = Schemas["SetupState"];
+export type SetupStep = Schemas["SetupStep"];

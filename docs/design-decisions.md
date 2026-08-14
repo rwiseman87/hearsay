@@ -24,8 +24,14 @@ access have no usable Rust bindings, and FluidAudio is a Swift package. Those li
 helper and the sidecars; everything else is Rust.
 
 **Tauri rather than Electron.** Tauri uses the system webview — WKWebView on macOS, WebView2 on
-Windows — instead of bundling Chromium. The installer already carries roughly 2.6 GB of models, so
-adding a browser runtime on top is a cost with no offsetting benefit.
+Windows — instead of bundling Chromium. A browser runtime would be the largest thing in an installer
+whose whole point is that it is small enough to host.
+
+**Models downloaded on first run rather than bundled.** The macOS model set is about 2.6 GB, past
+what a GitHub release asset can hold (2 GB), so bundling would rule out the distribution channel
+entirely. Downloading them once at first launch trades the offline-install property for a ~50 MB
+installer; after that first run the app is as offline as it ever was. Windows keeps its (smaller)
+models bundled, since its installer fits comfortably.
 
 **SQLite via SQLx rather than PostgreSQL.** This is a single-user desktop app; running a database
 daemon would be infrastructure with no user. Going through SQLx rather than raw `rusqlite` keeps a

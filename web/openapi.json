@@ -1733,6 +1733,64 @@
         }
       }
     },
+    "/api/setup": {
+      "get": {
+        "tags": [
+          "setup"
+        ],
+        "summary": "Whether first-run model setup is still needed, and how a run is progressing.",
+        "description": "The installer ships no models. `required` stays `true` until the live and refine models are on\ndisk, and the UI blocks recording while it is. `steps` carries per-asset progress during a run,\nand the work a run would do before one starts.",
+        "operationId": "setup_status",
+        "responses": {
+          "200": {
+            "description": "Setup requirement + per-step progress",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SetupState"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "setup"
+        ],
+        "summary": "Start (or retry) first-run model setup.",
+        "description": "Downloads the missing models in the background, plus the notes model named by `notes_model_id`.\nSatisfied steps are skipped, so a retry after a failure resumes rather than starting over. Poll\n`GET /api/setup` for progress.",
+        "operationId": "start_setup",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetupRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Setup has started",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SetupState"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown notes model id"
+          },
+          "409": {
+            "description": "Setup is already running"
+          }
+        }
+      }
+    },
     "/api/status": {
       "get": {
         "tags": [
@@ -3162,6 +3220,99 @@
           }
         }
       },
+      "SetupRequest": {
+        "type": "object",
+        "description": "Request body for starting first-run setup: optionally a notes-model catalog `id` to fetch in the\nsame pass. The notes step is never required.",
+        "properties": {
+          "notes_model_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "SetupState": {
+        "type": "object",
+        "description": "First-run model setup, polled by the UI. `required` is the gate: while it is `true` the app has\nno models to record with, so the setup screen stays up.",
+        "required": [
+          "required",
+          "status",
+          "steps"
+        ],
+        "properties": {
+          "message": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "A human-readable failure reason when `status` is `error`."
+          },
+          "required": {
+            "type": "boolean"
+          },
+          "status": {
+            "$ref": "#/components/schemas/SetupStatus"
+          },
+          "steps": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SetupStep"
+            }
+          }
+        }
+      },
+      "SetupStatus": {
+        "type": "string",
+        "description": "Where first-run model setup stands: `idle` (models missing, no run started), `running`, `ready`\n(every model the app needs is on disk), or `error` (a run failed; retrying resumes it).",
+        "enum": [
+          "idle",
+          "running",
+          "ready",
+          "error"
+        ]
+      },
+      "SetupStep": {
+        "type": "object",
+        "description": "One asset first-run setup fetches: the live speech models, the refine model, or a notes model.\n`total_bytes` is approximate for the live models until the preparation sidecar reports its plan.",
+        "required": [
+          "id",
+          "label",
+          "status",
+          "downloaded_bytes",
+          "total_bytes"
+        ],
+        "properties": {
+          "downloaded_bytes": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "id": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/SetupStepStatus"
+          },
+          "total_bytes": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "SetupStepStatus": {
+        "type": "string",
+        "description": "Where one setup step stands.",
+        "enum": [
+          "pending",
+          "running",
+          "verifying",
+          "done",
+          "error"
+        ]
+      },
       "SpeakerMerge": {
         "type": "object",
         "description": "Combine two of a meeting's speakers: the cluster in the path is folded into `into`.",
@@ -3544,6 +3695,10 @@
     {
       "name": "settings",
       "description": "Editable preferences + live permission status"
+    },
+    {
+      "name": "setup",
+      "description": "First-run model download (the installer ships no models)"
     }
   ]
 }

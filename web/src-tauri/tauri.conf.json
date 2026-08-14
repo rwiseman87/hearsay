@@ -38,11 +38,11 @@
       "binaries/hearsay-helper",
       "binaries/hearsay-live",
       "binaries/hearsay-me",
-      "binaries/hearsay-diarize"
+      "binaries/hearsay-diarize",
+      "binaries/hearsay-models"
     ],
     "resources": {
       "../dist": "web-dist",
-      "models": "models",
       "../../THIRD-PARTY-NOTICES.md": "THIRD-PARTY-NOTICES.md"
     },
     "macOS": {

@@ -574,6 +574,59 @@ pub struct DownloadRequest {
     pub id: String,
 }
 
+/// Where first-run model setup stands: `idle` (models missing, no run started), `running`, `ready`
+/// (every model the app needs is on disk), or `error` (a run failed; retrying resumes it).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SetupStatus {
+    Idle,
+    Running,
+    Ready,
+    Error,
+}
+
+/// Where one setup step stands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SetupStepStatus {
+    Pending,
+    Running,
+    /// Checking the finished download's SHA-256.
+    Verifying,
+    Done,
+    Error,
+}
+
+/// One asset first-run setup fetches: the live speech models, the refine model, or a notes model.
+/// `total_bytes` is approximate for the live models until the preparation sidecar reports its plan.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct SetupStep {
+    pub id: String,
+    pub label: String,
+    pub status: SetupStepStatus,
+    pub downloaded_bytes: i64,
+    pub total_bytes: i64,
+}
+
+/// First-run model setup, polled by the UI. `required` is the gate: while it is `true` the app has
+/// no models to record with, so the setup screen stays up.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct SetupState {
+    pub required: bool,
+    pub status: SetupStatus,
+    pub steps: Vec<SetupStep>,
+    /// A human-readable failure reason when `status` is `error`.
+    pub message: Option<String>,
+}
+
+/// Request body for starting first-run setup: optionally a notes-model catalog `id` to fetch in the
+/// same pass. The notes step is never required.
+#[derive(Debug, Clone, Default, Deserialize, ToSchema)]
+pub struct SetupRequest {
+    #[serde(default)]
+    pub notes_model_id: Option<String>,
+}
+
 /// Read-only build facts for the About panel.
 #[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct AboutInfo {

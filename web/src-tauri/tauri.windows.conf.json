@@ -4,6 +4,7 @@
     "targets": ["nsis"],
     "externalBin": ["binaries/hearsay-core", "binaries/hearsay-notes"],
     "resources": {
+      "models": "models",
       "binaries/onnxruntime.dll": "onnxruntime.dll",
       "binaries/onnxruntime_providers_shared.dll": "onnxruntime_providers_shared.dll",
       "binaries/sherpa-onnx-c-api.dll": "sherpa-onnx-c-api.dll",

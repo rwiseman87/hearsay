@@ -27,7 +27,10 @@ pub struct Settings {
     pub environment: String,
     /// Path to the Swift `hearsay-helper` capture binary; the sidecars resolve as siblings.
     pub helper_path: PathBuf,
-    /// GGML whisper model for the offline refine.
+    /// Dev-only (`HEARSAY_SCRIPTED`): swap the platform backend for the model-free scripted engine.
+    /// It spawns no sidecars, so first-run setup is skipped with it.
+    pub scripted: bool,
+    /// GGML whisper model for the offline refine; defaults into [`Self::models_dir`].
     pub refine_model: PathBuf,
     /// Deadline for the `hearsay-diarize` refine subprocess, so a hung sidecar cannot wedge stop.
     pub refine_timeout: Duration,
@@ -69,10 +72,7 @@ pub struct Settings {
     /// The bundled third-party notices, which Settings > About opens. Defaults to the repo copy for
     /// dev; the desktop shell points it at the bundle resource.
     pub notices_path: PathBuf,
-    /// Bundled FluidAudio live models, seeded into FluidAudio's cache on first launch. `None` in
-    /// headless dev, where FluidAudio downloads them.
-    pub fluid_models_dir: Option<PathBuf>,
-    /// The process's home directory: the base of FluidAudio's default model cache.
+    /// The process's home directory: the base of FluidAudio's model cache.
     pub home_dir: Option<PathBuf>,
     /// Sherpa live/diarize models for the Windows backend. Unused on macOS.
     pub sherpa_models_dir: PathBuf,
@@ -229,6 +229,12 @@ impl Settings {
             .ok()
             .and_then(|p| p.parse().ok())
             .unwrap_or(0);
+        let scripted = environment == "development" && env::var_os("HEARSAY_SCRIPTED").is_some();
+        // Downloaded models live together, so the refine model defaults into the models dir rather
+        // than being named again by whoever sets that dir (the desktop shell, a dev run).
+        let models_dir = PathBuf::from(env_or("HEARSAY_MODELS_DIR", "outputs/models"));
+        let refine_model = env_path("HEARSAY_REFINE_MODEL")
+            .unwrap_or_else(|| models_dir.join(crate::models::DEFAULT_REFINE_FILE));
         let auto_refine = env_bool("HEARSAY_AUTO_REFINE", false, &mut problems);
         let record = env_bool("HEARSAY_RECORD", true, &mut problems);
         let recognition_threshold = env_recognition_threshold(0.6, &mut problems);
@@ -270,10 +276,8 @@ impl Settings {
                 "HEARSAY_HELPER_PATH",
                 "helper/.build/arm64-apple-macosx/debug/hearsay-helper",
             )),
-            refine_model: PathBuf::from(env_or(
-                "HEARSAY_REFINE_MODEL",
-                "outputs/models/ggml-large-v3-turbo.bin",
-            )),
+            scripted,
+            refine_model,
             refine_timeout,
             auto_refine,
             record,
@@ -291,13 +295,12 @@ impl Settings {
                 hearsay_backends::DEFAULT_NOTES_PROMPT,
             ),
             notes_binary: default_notes_binary(),
-            models_dir: PathBuf::from(env_or("HEARSAY_MODELS_DIR", "outputs/models")),
+            models_dir,
             handshake_path: env_path("HEARSAY_HANDSHAKE_PATH"),
             notices_path: PathBuf::from(env_or(
                 "HEARSAY_THIRD_PARTY_NOTICES",
                 "./THIRD-PARTY-NOTICES.md",
             )),
-            fluid_models_dir: env_path("HEARSAY_FLUID_MODELS_DIR"),
             home_dir: env_path("HOME"),
             sherpa_models_dir: PathBuf::from(env_or(
                 "HEARSAY_SHERPA_MODELS_DIR",

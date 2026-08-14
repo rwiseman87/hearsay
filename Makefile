@@ -1,4 +1,4 @@
-.PHONY: help swift-build swift-test rust-build rust-test rust-lint tauri-lint tauri-test rust-fmt test lint fmt codegen codegen-check web-install web-typecheck web-lint web-test web-build web-ci audit licenses version-check ci probes diarize-eval coverage e2e test-all clean-test build package notarize clean serve rust-serve stage-model fetch-fluid-models stage-fluid-models fetch-sherpa-models stage-sherpa-models stage-release mac-app dmg
+.PHONY: help swift-build swift-test rust-build rust-test rust-lint tauri-lint tauri-test rust-fmt test lint fmt codegen codegen-check web-install web-typecheck web-lint web-test web-build web-ci audit licenses version-check ci probes diarize-eval coverage e2e test-all clean-test build package notarize clean serve rust-serve fetch-refine-model fetch-sherpa-models stage-sherpa-models stage-release mac-app dmg
 
 PKG := helper
 RUST := rust
@@ -24,7 +24,7 @@ swift-plist-guard:
 		fi; \
 	done
 
-SWIFT_PRODUCTS := hearsay-helper hearsay-diarize hearsay-live hearsay-me
+SWIFT_PRODUCTS := hearsay-helper hearsay-diarize hearsay-live hearsay-me hearsay-models
 swift-build: swift-plist-guard ## Build the Swift helper executables (one invocation each; a bare 'swift build' pulls in FluidAudio's CLI target)
 	@set -eu; for p in $(SWIFT_PRODUCTS); do \
 		swift build --package-path $(PKG) --product $$p; \
@@ -194,7 +194,7 @@ build notarize: ## Notarized distribution (needs a paid Apple Developer account)
 package: dmg ## Build the distributable DMG (alias for 'dmg')
 
 clean: clean-test ## Remove build artifacts (Swift, Rust, web bundle + deps, Tauri target, staged binaries/models)
-	rm -rf $(PKG)/.build $(RUST)/target web/dist web/node_modules web/src-tauri/target $(STAGE) $(dir $(MODEL_DST))
+	rm -rf $(PKG)/.build $(RUST)/target web/dist web/node_modules web/src-tauri/target $(STAGE) $(MODELS_STAGE)
 
 serve rust-serve: ## Serve the Rust core (SYNTHETIC=1 for no-permission plumbing; needs swift-build + web-build for a live run)
 	@mkdir -p outputs/db
@@ -210,28 +210,21 @@ serve rust-serve: ## Serve the Rust core (SYNTHETIC=1 for no-permission plumbing
 STAGE := web/src-tauri/binaries
 SIDECARS := $(SWIFT_PRODUCTS)
 APP := web/src-tauri/target/release/bundle/macos/Hearsay.app
-# Whisper GGML model bundled for the offline refine (Tauri resource -> Contents/Resources/models/).
+# Where the Windows staging targets put their models. The macOS bundle carries none — the app
+# downloads them on first run (docs/packaging.md).
+MODELS_STAGE := web/src-tauri/models
+# The refine model a dev run loads (the default `HEARSAY_REFINE_MODEL` path).
 REFINE_MODEL := ggml-large-v3-turbo.bin
 MODEL_SRC := outputs/models/$(REFINE_MODEL)
-MODEL_DST := web/src-tauri/models/$(REFINE_MODEL)
 WHISPER_REPO := https://huggingface.co/ggerganov/whisper.cpp/resolve/main
 
-fetch-refine-model: ## Download the whisper refine model into outputs/models/ (needed to package)
+fetch-refine-model: ## Download the whisper refine model into outputs/models/ (for a dev run; the app downloads its own)
 	@if [ -f "$(MODEL_SRC)" ]; then echo "refine model already present"; else \
 		mkdir -p outputs/models; \
 		echo "fetching $(REFINE_MODEL) (about 1.5 GB)..."; \
 		curl -fL --retry 3 -o "$(MODEL_SRC).part" "$(WHISPER_REPO)/$(REFINE_MODEL)"; \
 		mv "$(MODEL_SRC).part" "$(MODEL_SRC)"; \
 	fi
-
-# FluidAudio live models bundled so the installer is self-contained (no first-run HuggingFace
-# download). Only the repos the shipped sidecars actually load: batch Parakeet ASR + streaming
-# unified ASR + LS-EEND diarizer + pyannote (refine) + Silero VAD. The core copies these into
-# FluidAudio's cache dir on first launch, where the sidecars find them and skip the download.
-FLUID_REPOS := parakeet-tdt-0.6b-v3 parakeet-unified-en-0.6b ls-eend/ami speaker-diarization silero-vad
-FLUID_CACHE := $(HOME)/Library/Application Support/FluidAudio/Models
-FLUID_SRC := outputs/models/fluidaudio/Models
-FLUID_DST := web/src-tauri/models/fluidaudio/Models
 
 # Sherpa live/diarize models for the Windows backend: the streaming
 # zipformer + pyannote segmentation + TitaNet-small embedder, all from the sherpa-onnx model zoo
@@ -245,61 +238,6 @@ SHERPA_PUNCT := sherpa-onnx-online-punct-en-2024-08-06
 SHERPA_EMBEDDING := nemo_en_titanet_small.onnx
 SHERPA_SRC := outputs/models/sherpa
 SHERPA_DST := web/src-tauri/models/sherpa
-
-# Stage the ~1.5 GB model, re-copying only when the staged copy is missing or differs from source
-# (byte-compare, not just presence — a truncated/outdated staged model would otherwise ship forever).
-stage-model: ## Stage the refine model into the Tauri bundle, re-copying if it drifts from source
-	@if [ ! -f "$(MODEL_SRC)" ]; then \
-		echo "ERROR: refine model $(MODEL_SRC) not found."; \
-		echo "Download $(REFINE_MODEL) into outputs/models/ before packaging (see docs/packaging.md)."; \
-		exit 1; \
-	fi
-	@mkdir -p $(dir $(MODEL_DST))
-	@if [ ! -f "$(MODEL_DST)" ] || ! cmp -s "$(MODEL_SRC)" "$(MODEL_DST)"; then \
-		echo "staging refine model $(REFINE_MODEL)..."; \
-		cp "$(MODEL_SRC)" "$(MODEL_DST)"; \
-	else \
-		echo "refine model already staged (matches source)"; \
-	fi
-
-# Put the FluidAudio models under outputs/ for packaging: copy from the local FluidAudio cache when a
-# repo is there, otherwise download it from HuggingFace, so a machine that has never run the app can
-# still package.
-fetch-fluid-models: ## Fetch the FluidAudio live models into outputs/ for packaging (cache, else HuggingFace)
-	@mkdir -p "$(FLUID_SRC)"
-	@set -eu; for r in $(FLUID_REPOS); do \
-		if [ -d "$(FLUID_SRC)/$$r" ]; then echo "$$r already fetched"; \
-		elif [ -d "$(FLUID_CACHE)/$$r" ]; then \
-			echo "copying $$r from the FluidAudio cache..."; \
-			mkdir -p "$$(dirname "$(FLUID_SRC)/$$r")"; \
-			cp -R "$(FLUID_CACHE)/$$r" "$(FLUID_SRC)/$$r"; \
-		else \
-			echo "downloading $$r from HuggingFace..."; \
-			scripts/fetch-fluid-models.sh "$(FLUID_SRC)"; \
-		fi; \
-	done
-
-# Stage the FluidAudio live models into the Tauri bundle (re-copying a repo only when it is missing;
-# the model set is pinned to the FluidAudio version, so remove web/src-tauri/models/fluidaudio to
-# force a refresh). Runs as part of stage-release so mac-app/dmg always include them.
-stage-fluid-models: ## Stage the FluidAudio live models into the Tauri bundle
-	@for r in $(FLUID_REPOS); do \
-		if [ ! -d "$(FLUID_SRC)/$$r" ]; then \
-			echo "ERROR: FluidAudio model '$$r' not in $(FLUID_SRC)."; \
-			echo "Run 'make fetch-fluid-models' first (see docs/packaging.md)."; \
-			exit 1; \
-		fi; \
-	done
-	@mkdir -p "$(FLUID_DST)"
-	@set -euo pipefail; for r in $(FLUID_REPOS); do \
-		if [ ! -d "$(FLUID_DST)/$$r" ]; then \
-			echo "staging FluidAudio model $$r..."; \
-			mkdir -p "$$(dirname "$(FLUID_DST)/$$r")"; \
-			cp -R "$(FLUID_SRC)/$$r" "$(FLUID_DST)/$$r"; \
-		else \
-			echo "FluidAudio model $$r already staged"; \
-		fi; \
-	done
 
 fetch-sherpa-models: ## Download the sherpa live/diarize models (Windows backend) into outputs/
 	@mkdir -p "$(SHERPA_SRC)"
@@ -344,7 +282,7 @@ stage-sherpa-models: ## Stage the sherpa models into the Tauri bundle (Windows p
 		fi; \
 	done
 
-stage-release: version-check swift-plist-guard stage-model stage-fluid-models ## Build release binaries + web bundle and stage them for the Tauri bundle
+stage-release: version-check swift-plist-guard ## Build release binaries + web bundle and stage them for the Tauri bundle
 	@test "$$(uname -m)" = "arm64" || { echo "stage-release: Apple-Silicon (arm64) only (got $$(uname -m)); the bundle is Apple-Silicon only"; exit 1; }
 	cd web && npm run build
 	@for p in $(SIDECARS); do \

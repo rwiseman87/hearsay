@@ -90,14 +90,16 @@ types (`TranscriptEvent`, `StatusEvent`, `ResyncEvent`) are modeled in the OpenA
 **ASR and diarization models** live in the Swift sidecars (FluidAudio on the ANE): Parakeet TDT
 for ASR (`hearsay-live`, `hearsay-me`) and pyannote community-1 as CoreML for the offline diarizer
 (`hearsay-diarize`). These are ungated and download plus compile automatically on first use; no
-fetch step, no Hugging Face token.
+fetch step, no Hugging Face token. In the packaged app the same download is driven up front by the
+`hearsay-models` sidecar behind a first-run setup screen, so it happens with a progress bar rather
+than mid-meeting (see [packaging.md](packaging.md)).
 
 **The offline refine** re-transcribes diarized turns with whisper (`hearsay-inference`), which
 needs a GGML model. `make fetch-refine-model` downloads `ggml-large-v3-turbo.bin` into
 `outputs/models/` (the default `HEARSAY_REFINE_MODEL` path). Without it, auto-refine and
 `POST /api/meetings/{id}/rediarize`
-report the model as unavailable rather than failing the meeting. Packaging bundles this model into
-the `.app` (see [packaging.md](packaging.md)).
+report the model as unavailable rather than failing the meeting. The installed app downloads its own
+copy into app-data instead; nothing is bundled.
 
 **Notes (optional local LLM).** When enabled (`HEARSAY_NOTES`, default off), stopping a meeting
 generates Markdown notes from the finalized transcript with a local GGUF instruct model (llama.cpp)
