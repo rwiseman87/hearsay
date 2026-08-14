@@ -1,10 +1,24 @@
 # The transcription pipeline
 
-This document traces a single meeting from audio frames to a finished `transcript.md`. The
-orchestration lives in `hearsay-orchestrator` (`Orchestrator`, `pipeline::spawn`, and one
-`stream_loop` task per stream); the audio AI itself runs in Swift sidecars (FluidAudio on the Apple
-Neural Engine) that the pipeline spawns and feeds. The Rust core relays PCM and persists results
-but runs no live ML of its own; the offline refine uses whisper.
+Traces a single meeting from captured audio frames to a finished `transcript.md`: how PCM becomes
+timestamped, speaker-labelled, persisted transcript lines.
+
+The Rust core relays audio and persists results but runs no live ML of its own. The audio AI runs in
+Swift sidecars that the pipeline spawns and feeds; the offline refine uses whisper.
+
+## Related documents
+
+| Document | Scope |
+|---|---|
+| [architecture.md](architecture.md) | The processes and crates this pipeline runs inside. |
+| [design-decisions.md](design-decisions.md) | Why the pipeline is shaped this way. |
+| [echo-cancellation.md](echo-cancellation.md) | The AEC stage inside `demux`, in depth. |
+| [voiceprints.md](voiceprints.md) | What the refine's speaker recognition does with its output. |
+| [api.md](api.md) | The WebSocket protocol this pipeline broadcasts to. |
+
+Where the code lives: `hearsay-orchestrator` (`Orchestrator`, `pipeline::spawn`, and one
+`stream_loop` task per stream), `hearsay-capture` (the audio source), `helper/Sources/hearsay-live`
+and `hearsay-me` (the live sidecars), `hearsay-inference` (the refine).
 
 ## End-to-end flow
 
@@ -204,23 +218,13 @@ the meeting.
 
 ## Design rationale
 
-- **Why a single `host_ts` clock?** The microphone and system audio come from independent hardware
-  clocks that drift. Stamping both from one monotonic clock in the helper makes cross-stream
-  alignment exact.
-- **Why sidecars on the Neural Engine?** Running live ASR and diarization on the GPU makes the two
-  models contend, and a contended Metal pipeline can enter an unrecoverable error state. On the
-  ANE the two workloads co-schedule with negligible interference and leave the GPU alone. Keeping
-  each model in its own subprocess also keeps the core's live path free of heavyweight ML
-  dependencies.
-- **Why turn-driven Them instead of VAD plus separate diarization?** A VAD cuts on silence, not on
-  speaker change, so a quick exchange lands in one utterance that a single label cannot split. The
-  diarizer's turns are the segments, live and in the refine, so fast turn-taking splits correctly.
-- **Why re-diarize after stop?** The streaming diarizer works online with limited context. A
-  whole-track pass is more accurate and cheap on the ANE, so every meeting can end with
-  authoritative labels, and the same pass recognizes returning people by voiceprint.
-- **Why finals-only on disk, rewritten at finalize?** A live append cannot reorder past writes. The
-  meeting-relative sort produces a readable final document, and re-reading from the database bakes
-  in any names resolved or corrected along the way.
+The reasoning behind this pipeline's shape — the single capture clock, turn-driven Them segmentation
+rather than VAD, where each model runs, why the refine exists, and why the transcript is rewritten
+at stop — is in [design-decisions.md](design-decisions.md).
+
+One point specific to this document: the microphone and system audio come from independent hardware
+clocks that drift apart. Stamping both from one monotonic clock in the helper is what makes the
+cross-stream alignment in stage 2 exact rather than approximate.
 
 ## Validation
 

@@ -7,31 +7,25 @@ both live, diarizes the Them stream into `Speaker N`, and refines the result aft
 an offline re-diarization and re-transcription pass. Everything runs on the user's machine; audio
 never leaves the device.
 
-This document describes the product as built. Related references:
+This document describes the product as built — the shape of the system. For *why* it has that shape,
+see [design-decisions.md](design-decisions.md).
+
+## Related documents
 
 | Document | Scope |
 |---|---|
+| [design-decisions.md](design-decisions.md) | Why these choices, and what they were chosen over. |
 | [pipeline.md](pipeline.md) | The live transcription data flow, stage by stage. |
 | [echo-cancellation.md](echo-cancellation.md) | The AEC stage that cancels Them out of the live Me stream. |
 | [voiceprints.md](voiceprints.md) | Cross-meeting speaker recognition and voiceprint storage. |
-| [api.md](api.md) | REST and WebSocket reference. |
+| [api.md](api.md) | Auth, conventions, meeting audio, and the WebSocket protocol. |
 | [../shared/protocol/ipc.md](../shared/protocol/ipc.md) | The helper/core IPC contract (byte-level source of truth). |
-| [packaging.md](packaging.md) | Building and installing the macOS bundle. |
+| [configuration.md](configuration.md) | Every setting and the runtime overlay. |
 | [development.md](development.md) | Building, running, and testing from source. |
+| [packaging.md](packaging.md) | Building and installing the macOS bundle. |
 
-## Design principles
-
-- **Local-first.** Transcription, diarization, and the optional notes LLM run on-device. The Them
-  stream contains other people's voices, so keeping audio local is a privacy requirement, and it
-  makes the installer self-contained and offline-capable.
-- **Multi-process, split by capability.** Process boundaries follow capability and isolation needs,
-  not features: all TCC-guarded native APIs live in one lean capture helper, each heavy CoreML model
-  runs in its own sidecar process, and the core's live path runs no ML at all.
-- **One contract per boundary.** The helper/core boundary is a fixed binary and NDJSON contract
-  pinned by golden fixtures; the core/UI boundary is an OpenAPI schema that generates the
-  TypeScript types. Both are drift-checked in CI.
-- **The database is the source of truth.** `transcript.md`, `meeting.json`, and `notes.md` are
-  one-way exports rebuilt from the rows; the files are never read back.
+Where the code lives: `rust/crates/` (the workspace, mapped below), `helper/` (the Swift capture
+helper and sidecars), `web/` (the React UI and the Tauri shell).
 
 ## Process topology
 

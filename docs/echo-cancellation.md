@@ -7,10 +7,17 @@ the remote party a second time, attributed to the local user. Two layers remove 
 acoustic echo cancellation (AEC) subtracts the leakage from the Me signal before live transcription,
 and a text-level dedup backstop drops any residual echo that still reaches the transcript.
 
-AEC is `hearsay-orchestrator/src/aec.rs`, driven from the pipeline's `demux` task; the dedup backstop
-is `hearsay-orchestrator/src/echo_dedup.rs`, driven from `handle` (see
-[Text-level dedup](#text-level-dedup-the-backstop)). For the surrounding audio flow see
-[pipeline.md](pipeline.md).
+## Related documents
+
+| Document | Scope |
+|---|---|
+| [pipeline.md](pipeline.md) | The surrounding audio flow; AEC runs inside its `demux` stage. |
+| [design-decisions.md](design-decisions.md) | Why SpeexDSP, and why macOS Voice Processing I/O is not an option. |
+| [architecture.md](architecture.md) | The capture topology that produces the two streams. |
+
+Where the code lives: `hearsay-orchestrator/src/aec.rs` (the canceller, driven from the pipeline's
+`demux` task) and `hearsay-orchestrator/src/echo_dedup.rs` (the text backstop, driven from `handle`;
+see [Text-level dedup](#text-level-dedup-the-backstop)). Built under the `aec` feature.
 
 ## The problem
 
@@ -189,6 +196,9 @@ With `enable_preprocess` on, `aec-rs` wires a `SpeexPreprocessState` to the echo
 frame gets the adaptive-filter subtraction *plus* a residual-echo/noise cleanup pass.
 
 ## Why these choices
+
+System-level framing — SpeexDSP over VPIO, and why a text backstop sits behind the acoustic layer —
+is in [design-decisions.md](design-decisions.md). The choices below are specific to this subsystem.
 
 - **Why AEC at all, given separate streams?** Separate capture does not separate *acoustics*. On
   speakers the mic is a physical summing point: local voice + speaker output. Stream separation

@@ -7,7 +7,9 @@ audio never leaves the machine.
 
 Ships as **one Rust + Tauri application** — a signed installer per OS, no interpreter bundle. The
 Rust core is the single backend and the single source of truth (there is no Python backend).
-Canonical architecture: `docs/architecture.md`. IPC contract: `shared/protocol/ipc.md`.
+Canonical architecture: `docs/architecture.md`. Design rationale: `docs/design-decisions.md`.
+IPC contract: `shared/protocol/ipc.md`. `README.md` is the single documentation index; there is no
+`docs/README.md`.
 
 ## Architecture
 
@@ -122,6 +124,14 @@ shared/protocol/ipc.md  IPC contract (source of truth)   ·   shared/fixtures/  
 - Backend types are codegen'd from the Rust OpenAPI (utoipa, `hearsay-core --dump-openapi`) into
   `web/openapi.json` -> `web/src/api/schema.ts`. `make codegen-check` fails CI on drift, so a feature that
   reaches the frontend but not the shipping core is caught at CI, not at runtime.
+- **The OpenAPI document is the endpoint reference.** Every route carries a doc comment on its
+  handler (first line -> `summary`, the rest -> `description`) and a `description` on each response
+  status. That prose is the documentation -- it reaches `schema.ts` as JSDoc and renders in the
+  console. A new route without it ships an undocumented endpoint, so write it with the handler.
+  `docs/api.md` covers only what a schema cannot express: auth, conventions, the audio byte stream,
+  and the WebSocket protocol.
+- Browsable console at `/docs` under the `api-console` feature + `ENVIRONMENT=development`
+  (`make rust-serve` enables it); off elsewhere so the shipping binary carries no Swagger assets.
 
 ## Testing
 
@@ -202,9 +212,10 @@ shared/protocol/ipc.md  IPC contract (source of truth)   ·   shared/fixtures/  
 
 ## Environment Variables
 
-Every variable, with its default, is tabulated in `docs/development.md` (Configuration). The
-compiler-checked source is `Settings` in `rust/crates/hearsay-core/src/config.rs`; the table mirrors
-it. Rationale for a given default lives with the behavior it governs, not in the table.
+Every variable, with its default, is tabulated in `docs/configuration.md`, alongside the writable
+settings overlay and its validation rules. The compiler-checked source is `Settings` in
+`rust/crates/hearsay-core/src/config.rs`; the table mirrors it. Rationale for a given default lives
+with the behavior it governs, not in the table.
 
 All configuration is resolved from the environment at startup into that one typed struct. A
 malformed override is a warning in development and a hard startup error otherwise.

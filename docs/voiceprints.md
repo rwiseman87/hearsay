@@ -2,12 +2,20 @@
 
 A **voiceprint** is Hearsay's cross-meeting speaker identity: a fixed-length speaker-embedding
 vector that lets the app recognize a returning person in a later meeting without any manual work.
-This document traces a voiceprint end to end — what it is, where it comes from, how it is stored,
-and how it is referenced to name speakers.
+This document traces one end to end — what it is, where it comes from, how it is stored, and how it
+is referenced to name speakers.
 
-The pure logic lives in `hearsay-attribution`; production lives in `hearsay-inference` (plus the
-Swift `hearsay-diarize` sidecar); storage and matching live in `hearsay-db`. For the wider
-transcription flow see [pipeline.md](pipeline.md); for the schema see [architecture.md](architecture.md).
+## Related documents
+
+| Document | Scope |
+|---|---|
+| [architecture.md](architecture.md) | The `clusters` / `identities` schema these rows live in. |
+| [design-decisions.md](design-decisions.md) | Why recognition is offline-only, and how the embedders were chosen. |
+| [pipeline.md](pipeline.md) | The refine pass that produces every centroid. |
+| [user-guide.md](user-guide.md) | Managing stored voices from Settings > Voices. |
+
+Where the code lives: `hearsay-attribution` (pure matching logic), `hearsay-inference` plus the
+Swift `hearsay-diarize` sidecar (production of embeddings), `hearsay-db` (storage and matching).
 
 ## What a voiceprint is
 

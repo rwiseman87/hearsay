@@ -1,22 +1,67 @@
-# hearsay
+# Hearsay
 
-Local-first meeting-note transcriber for macOS (Apple Silicon, macOS 14.4+) and Windows (x86_64, Windows 10 2004+).
-Hearsay captures your microphone and the system audio as separate streams ("Me" and "Them"),
-transcribes both in real time, identifies the remote speakers, and writes Markdown notes.
-Transcription, diarization, and the optional notes LLM all run on-device; audio never leaves the
-machine. It ships as one Rust + Tauri app: a single installer, no interpreter to install.
+A meeting transcriber that runs entirely on your own machine.
 
-The live path works end to end: capture, streaming captions with speaker labels, an offline
-refine that improves diarization and recognizes returning speakers by voiceprint, full-text search,
-transcript and notes editing, per-line speaker reassignment, nested meeting folders, and optional
-local-LLM meeting notes.
+Hearsay records your microphone and your computer's audio output as two separate streams, transcribes
+both as the meeting happens, works out who said what on the far end, and writes Markdown notes.
+Transcription, speaker recognition, and the optional notes model all run on-device — no audio, and
+no transcript, ever leaves the machine.
+
+It ships as one application: a single installer, with no interpreter or runtime to install first.
 
 ![Recording a meeting, watching live captions stream in, reopening it from the library, renaming a speaker, reassigning a line, and generating notes](docs/demo.gif)
+
+## What it does
+
+- **Separates you from everyone else.** Your mic is "Me"; the system audio is "Them". Because they
+  are captured independently, the transcript never confuses the two.
+- **Live captions with speaker labels**, streaming as people talk.
+- **Names the other speakers**, and recognizes them again in later meetings once you have named them
+  a first time.
+- **Corrects easily** — rename a speaker, reassign a single misattributed line, merge two speakers
+  the diarizer split apart, or re-run the whole pass with "Refine speakers".
+- **Plays back in sync**, with the transcript highlighted and click-to-seek.
+- **Searches every transcript** you have ever recorded, full text.
+- **Writes meeting notes** with a local language model, if you want them. Off until you enable it.
+- **Organizes** meetings into nested folders, with your own notes alongside the generated ones.
+
+Runs on macOS (Apple Silicon, 14.4 or later) and Windows (x86_64, Windows 10 2004 or later).
+
+## Install
+
+There are no prebuilt downloads; you build the installer yourself.
+
+```sh
+make dmg    # macOS: an ad-hoc-signed Hearsay.app and .dmg, all models bundled
+```
+
+No Apple Developer account is needed. Because the result is not notarized, recipients clear the
+quarantine flag once after installing. Windows builds an NSIS installer via
+`scripts\build-windows.ps1`.
+
+Full build, install, data-location, and uninstall steps: **[docs/packaging.md](docs/packaging.md)**.
+
+## Run from source
+
+Prerequisites: a Rust toolchain ([rustup](https://rustup.rs/)), Swift (Command Line Tools is
+enough), and Node 20.19+.
+
+```sh
+make swift-build                      # capture helper + the audio-AI sidecars
+(cd web && npm ci && npm run build)   # React UI bundle, served by the core
+make rust-serve                       # prints http://127.0.0.1:<port>/?token=...
+```
+
+Open the printed URL. `SYNTHETIC=1 make rust-serve` drives the whole pipeline with generated audio,
+so nothing prompts for permissions. Details, model downloads, and troubleshooting:
+**[docs/development.md](docs/development.md)**.
+
+## How it works
 
 ```mermaid
 flowchart LR
     Helper["Swift helper<br/>mic + system tap, 16 kHz PCM"]
-    Sidecars["Swift sidecars (ANE)<br/>diarization + ASR"]
+    Sidecars["Swift sidecars<br/>diarization + ASR"]
     Core["Rust core<br/>orchestration, SQLite, REST + WebSocket"]
     UI["React UI in a Tauri window"]
 
@@ -26,47 +71,56 @@ flowchart LR
     Core <-->|"127.0.0.1 + session token"| UI
 ```
 
-The full picture (process topology, crate map, UML diagrams, data model, security model) is in
-[docs/architecture.md](docs/architecture.md).
+One lean Swift helper owns every permission-guarded audio API. The Rust core orchestrates
+everything, stores it, and serves a loopback API to the UI. Each speech model runs in its own
+sidecar process, so a model crash can never cost you the recording.
 
-## Quickstart
-
-Prerequisites: a Rust toolchain ([rustup](https://rustup.rs/)), Swift (Command Line Tools is
-enough), and Node 20.19+.
-
-```sh
-make swift-build                      # capture helper + FluidAudio/ANE sidecars
-(cd web && npm ci && npm run build)   # React UI bundle, served by the core
-make rust-serve                       # prints http://127.0.0.1:<port>/?token=...
-```
-
-Open the printed URL. `SYNTHETIC=1 make rust-serve` drives the whole pipeline with generated audio
-(no permission prompts). See [docs/development.md](docs/development.md) for the dev-server flow,
-model downloads, configuration, and troubleshooting.
-
-## Packaging
-
-`make dmg` builds an ad-hoc-signed `Hearsay.app` and `.dmg` with all models bundled; no Apple
-Developer account required. Because the app is not notarized, recipients clear the quarantine flag
-once after installing. Build steps, install instructions, data locations, and the uninstall flow
-are in [docs/packaging.md](docs/packaging.md).
+The full picture — process topology, crate map, data model, security model —
+is in **[docs/architecture.md](docs/architecture.md)**.
 
 ## Documentation
 
+**Using it**
+
 | Document | Contents |
 |---|---|
-| [docs/architecture.md](docs/architecture.md) | The whole product: processes, crates, trait seams, runtime behavior, data model, security, and the cross-platform (macOS + Windows) architecture. |
-| [docs/pipeline.md](docs/pipeline.md) | The live transcription data flow, from audio frames to the finished transcript. |
-| [docs/api.md](docs/api.md) | REST and WebSocket reference: auth model, endpoints, examples. |
-| [docs/development.md](docs/development.md) | Build, run, test, configure, and troubleshoot from source. |
-| [docs/packaging.md](docs/packaging.md) | Build and install the macOS bundle; uninstall and data erase. |
-| [shared/protocol/ipc.md](shared/protocol/ipc.md) | The helper/core IPC contract (source of truth). |
+| [user-guide.md](docs/user-guide.md) | Recording, fixing speaker labels, search, notes, and every setting. |
+| [packaging.md](docs/packaging.md) | Building the installer, installing, where your data lives, uninstalling. |
+
+**Understanding it**
+
+| Document | Contents |
+|---|---|
+| [architecture.md](docs/architecture.md) | Processes, crates, trait seams, runtime behavior, data model, security. |
+| [design-decisions.md](docs/design-decisions.md) | Why each technology and model was chosen, and over what. |
+| [pipeline.md](docs/pipeline.md) | The live transcription flow, from audio frames to a finished transcript. |
+| [voiceprints.md](docs/voiceprints.md) | Cross-meeting speaker recognition, end to end. |
+| [echo-cancellation.md](docs/echo-cancellation.md) | Cancelling the far end out of your microphone. |
+
+**Building on it**
+
+| Document | Contents |
+|---|---|
+| [development.md](docs/development.md) | Build, run, and troubleshoot from source. |
+| [testing.md](docs/testing.md) | The test suite: every target, and what it covers. |
+
+**Reference**
+
+| Document | Contents |
+|---|---|
+| [api.md](docs/api.md) | Auth, conventions, meeting audio, and the live-transcript WebSocket. |
+| [configuration.md](docs/configuration.md) | Every environment variable and runtime setting. |
+| [ipc.md](shared/protocol/ipc.md) | The helper/core IPC contract. |
+
+Every REST endpoint is documented in the OpenAPI document generated from the code itself: served at
+`/openapi.json`, committed as `web/openapi.json`, and browsable at `/docs` when running
+`make rust-serve`.
 
 ## Repository layout
 
 ```
-rust/crates/       the Rust workspace; hearsay-core is the app binary (see docs/architecture.md)
-helper/            SwiftPM package: the capture helper + the FluidAudio sidecars
+rust/crates/       the Rust workspace; hearsay-core is the app binary
+helper/            SwiftPM package: the capture helper + the audio-AI sidecars
 web/               React + TypeScript UI; web/src-tauri/ is the Tauri desktop shell
 shared/            IPC contract + golden frame fixtures (generated from Rust)
 docs/              project documentation
@@ -74,10 +128,11 @@ docs/              project documentation
 
 ## Conventions
 
-The `Makefile` is the task runner and `make ci` is the local pre-commit gate — run on demand, since
-there is no hosted CI: clippy with warnings denied, rustfmt, the Swift codec self-test, `cargo test`,
-the Tauri shell's lint/tests, codegen and app-version drift checks, dependency-advisory/license audits,
-and the web gate (`tsc`, ESLint, vitest, `vite build`). Full conventions are in [CLAUDE.md](CLAUDE.md).
+The `Makefile` is the task runner and `make ci` is the pre-commit gate — run on demand, since there
+is no hosted CI: clippy with warnings denied, rustfmt, the Swift codec self-test, `cargo test`, the
+Tauri shell's lint and tests, codegen and app-version drift checks, dependency-advisory and license
+audits, and the web gate. `make e2e` runs the browser suite separately. Full conventions are in
+[CLAUDE.md](CLAUDE.md).
 
 ## License
 
