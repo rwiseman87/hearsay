@@ -29,25 +29,26 @@ first build. The version pinned above is the one CI builds with; matching it loc
 
 ## Versioning
 
-`rust/Cargo.toml` is canonical. Four other files repeat the version — `web/src-tauri/Cargo.toml`,
-`web/src-tauri/tauri.conf.json`, `web/package.json`, and `helper/Info.plist` — and the Swift helper
-reads its own from that plist at runtime, so it never needs updating by hand.
+The version in git is a placeholder (`0.0.0`) and no commit ever bumps it. The installer build
+derives the real number from the last release tag and stamps it in, so cutting a release needs no
+version commit — and the lockfiles, which carry the version, never change for a release and never
+invalidate the build cache.
+
+`rust/Cargo.toml` is canonical for the drift check. Four other files repeat the version —
+`web/src-tauri/Cargo.toml`, `web/src-tauri/tauri.conf.json`, `web/package.json`, and
+`helper/Info.plist` — and the Swift helper reads its own from that plist at runtime, so it never
+needs updating by hand.
 
 ```sh
-make version                     # what it is now
-make set-version VERSION=0.2.0   # write all five, then regenerate codegen
-git commit -am "release: v0.2.0"
-git tag v0.2.0
+make version                       # what a local build carries (0.0.0)
+make stamp-version VERSION=0.2.0   # write all five; what the installer build runs
+make set-version VERSION=0.2.0     # the same, plus regenerated codegen
 ```
 
-Bump before building, not during: packaging verifies the version but never changes it. `make dmg`
-and `scripts\build-windows.ps1` both run the drift check first and stop if any file disagrees, so a
-mismatched version cannot reach an installer. `make ci` runs the same check.
-
-Releases are tag-driven: the tag is the request and the committed files are the answer.
-`make version-check-tag` asserts they agree, reading `TAG`, else `GITHUB_REF_NAME`, else the tag on
-`HEAD` — so a build runner and a local check use the same target. Versions are `x.y.z`; that is what
-Cargo and Tauri require and what `CFBundleShortVersionString` expects.
+`make dmg` and `scripts\build-windows.ps1` both run the drift check first and stop if any file
+disagrees, so a mismatched version cannot reach an installer. `make ci` runs the same check.
+Versions are `x.y.z`; that is what Cargo and Tauri require and what `CFBundleShortVersionString`
+expects.
 
 ## Build
 
@@ -82,19 +83,29 @@ Ad-hoc signing is configured by `bundle.macOS.signingIdentity: "-"` in
 
 ## Release pipeline
 
-`.github/workflows/release.yml` builds the macOS installer on a `vX.Y.Z` tag push. It runs the full
-`make ci` gate first — as a separate job, via `workflow_call` on `.github/workflows/ci.yml` — then
-`make version-check-tag`, `make dmg`, and attaches the DMG plus a `.sha256` sidecar to a **draft**
-GitHub Release. Publishing is a manual click, so the notes and the artifact can be checked first. The
-static half of the release notes is `.github/release-notes-macos.md`.
+A release is a promotion, not a build. `.github/workflows/ci.yml` builds the DMG on every merge to
+`main`, stamped with the next patch version off the last tag, and keeps it for 30 days as the
+`hearsay-macos-dmg` workflow artifact. `.github/workflows/promote.yml` is a manual
+`workflow_dispatch`: it takes one of those runs (the newest successful one on `main` by default),
+downloads the artifact, verifies its checksum, and attaches it plus its `.sha256` sidecar to a
+**draft** GitHub Release tagged at the promoted commit. The published DMG is byte-for-byte the one
+CI built — nothing is rebuilt and nothing is re-stamped. Publishing the draft is a manual click, so
+the notes and the artifact get a look first; the static half of the notes is
+`.github/release-notes-macos.md`.
 
-`workflow_dispatch` on the same workflow is a dry run: it builds and uploads the DMG as a workflow
-artifact without creating a release. It is also how the release build cache gets warmed: Actions
-caches are only readable from the ref that wrote them and from the default branch, so an entry saved
-during a tag build is unreachable from the next tag's build. Run the dry run from `main` after a
-dependency bump and every later tag build starts warm.
+For a minor or major release, run `ci` from the Actions tab with the `bump` input set. That produces
+an artifact at the chosen version, which promotes the same way.
 
-The build environment is pinned by `.github/actions/mac-build-env`, shared by both workflows:
+A merge does not re-run the gate its pull request already passed. The `triage` job skips it when the
+merge commit and the merged branch have the same tree — so the pull-request run tested exactly what
+landed — and when nothing in the cargo cache key changed. Anything that moves that key still runs the
+gate on `main`, because a run there is the only thing that writes a cache the next pull request can
+read: Actions caches are readable from the branch that wrote them and from the default branch, never
+sideways between pull requests. The same rule is why the installer is built on `main` and not on the
+pull request.
+
+The build environment is pinned by `.github/actions/mac-build-env`, shared by the gate and the
+installer build (`promote` needs none of it — it moves a file):
 
 | Pin | Value | Why |
 |---|---|---|
@@ -118,7 +129,7 @@ restore does not preserve.
 
 Every action used is GitHub-owned (`actions/*`, MIT) and pinned to a full commit SHA, so no third party
 can change what runs in a build. `persist-credentials: false` on checkout keeps `GITHUB_TOKEN` out of
-`.git/config`: nothing in either workflow pushes, and the release step passes `GH_TOKEN` explicitly.
+`.git/config`: nothing in either workflow pushes, and the promote step passes `GH_TOKEN` explicitly.
 
 Artifacts stay unsigned and un-notarized — the same posture as a local `make dmg`, so recipients still
 clear the quarantine flag as below.
