@@ -93,7 +93,10 @@ jobs:
           # The tag is created here rather than left to the release: a draft release does not create
           # its tag until it is published, and the next installer build reads the tags to pick a
           # version. Claiming it now keeps that monotonic even while the draft sits unpublished.
-          existing="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$tag" --jq .object.sha 2>/dev/null || true)"
+          existing=""
+          if out="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$tag" --jq .object.sha 2>/dev/null)"; then
+            existing="$out"
+          fi
           if [ -z "$existing" ]; then
             gh api "repos/$GITHUB_REPOSITORY/git/refs" \
               -f "ref=refs/tags/$tag" -f "sha=$SHA" --silent
