@@ -58,7 +58,7 @@ pub struct Page<T> {
 }
 
 /// A meeting row for the API.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, ToSchema)]
 pub struct MeetingRead {
     pub id: Uuid,
     pub title: String,
@@ -72,6 +72,12 @@ pub struct MeetingRead {
     pub ended_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    /// Transcribed share (0.0-1.0) of the remote track's audible time at the last refine, or `null`
+    /// if this meeting has never been refined.
+    pub refine_coverage: Option<f64>,
+    /// `true` when the last refine came back too short to trust as complete, so the transcript is
+    /// truncated and worth re-refining. `false` when healthy or never refined.
+    pub refine_incomplete: bool,
 }
 
 impl From<Meeting> for MeetingRead {
@@ -86,6 +92,10 @@ impl From<Meeting> for MeetingRead {
             ended_at: m.ended_at,
             created_at: m.created_at,
             updated_at: m.updated_at,
+            refine_coverage: m.refine_coverage,
+            refine_incomplete: m
+                .refine_coverage
+                .is_some_and(|f| f < hearsay_db::queries::MIN_REFINE_COVERAGE),
         }
     }
 }

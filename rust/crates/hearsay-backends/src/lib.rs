@@ -23,7 +23,9 @@ use hearsay_engine::LiveEngine;
 use hearsay_orchestrator::testing::{
     chunk, seg, ProgressiveBackend, ProgressivePlan, ScriptedSummarizer,
 };
-use hearsay_orchestrator::{Defaults, Orchestrator, RefineResult, RefinedThemSegment, SegmentKind};
+use hearsay_orchestrator::{
+    Defaults, Orchestrator, RefineCoverage, RefineResult, RefinedThemSegment, SegmentKind,
+};
 
 pub mod archive;
 #[cfg(target_os = "macos")]
@@ -109,6 +111,11 @@ pub(crate) fn map_refine_output(output: hearsay_inference::RefineOutput) -> Refi
             })
             .collect(),
         centroids: output.centroids,
+        coverage: output.coverage.map(|c| RefineCoverage {
+            fraction: c.fraction(),
+            recovered_spans: c.recovered.len(),
+            unrecovered_spans: c.unrecovered.len(),
+        }),
     }
 }
 

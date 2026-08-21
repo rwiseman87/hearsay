@@ -53,6 +53,7 @@ pub async fn create_meeting(
         updated_at: now,
         dir: dir.to_string(),
         folder_id: None,
+        refine_coverage: None,
     };
     sqlx::query(
         "INSERT INTO meetings \
@@ -949,13 +950,34 @@ pub struct RefinedThemSegment {
     pub end_s: f64,
 }
 
+/// How much of the Them track the refine transcribed. `fraction` is the share of *audible* time, so
+/// silence does not count against it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RefineCoverage {
+    pub fraction: f64,
+    pub recovered_spans: usize,
+    pub unrecovered_spans: usize,
+}
+
+/// Coverage below which a refine counts as truncated. Stated once; the orchestrator warns on it and
+/// the API flags it to the UI.
+pub const MIN_REFINE_COVERAGE: f64 = 0.8;
+
+impl RefineCoverage {
+    pub fn is_incomplete(&self) -> bool {
+        self.fraction < MIN_REFINE_COVERAGE
+    }
+}
+
 /// The offline refine's output persisted by [`replace_them_segments`]: the re-transcribed segments
 /// plus each speaker's L2-normalized voiceprint by 1-based ordinal (empty when the diarizer emits
-/// none).
+/// none), and how complete the transcription was.
 #[derive(Debug, Clone, Default)]
 pub struct RefineResult {
     pub segments: Vec<RefinedThemSegment>,
     pub centroids: HashMap<i64, Vec<f32>>,
+    /// `None` when no decode ran (a default / no-speech result).
+    pub coverage: Option<RefineCoverage>,
 }
 
 /// The local-LLM summarization step's output, persisted by [`upsert_meeting_notes`]: the model's
@@ -1338,6 +1360,17 @@ pub async fn replace_them_segments(
         .execute(&mut *tx)
         .await?;
     }
+
+    // Left untouched when the refiner reported no coverage.
+    if let Some(coverage) = result.coverage {
+        sqlx::query("UPDATE meetings SET refine_coverage = ?, updated_at = ? WHERE id = ?")
+            .bind(coverage.fraction)
+            .bind(now)
+            .bind(meeting_id)
+            .execute(&mut *tx)
+            .await?;
+    }
+
     tx.commit().await?;
     Ok(())
 }

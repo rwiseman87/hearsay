@@ -24,6 +24,7 @@ const meeting: MeetingRead = {
   folder: "sync",
   folder_id: null,
   status: "finalized",
+  refine_incomplete: false,
   created_at: "2026-07-21T10:00:00Z",
   updated_at: "2026-07-21T10:00:00Z",
   started_at: "2026-07-21T10:00:00Z",
@@ -49,10 +50,14 @@ function segment(
   };
 }
 
-function renderView() {
+function renderView(override: Partial<MeetingRead> = {}) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
-    createElement(QueryClientProvider, { client }, createElement(TranscriptView, { meeting })),
+    createElement(
+      QueryClientProvider,
+      { client },
+      createElement(TranscriptView, { meeting: { ...meeting, ...override } }),
+    ),
   );
 }
 
@@ -113,6 +118,23 @@ beforeEach(() => {
       return HttpResponse.json(segment(currentText, edited, currentLabel, currentCluster));
     }),
   );
+});
+
+describe("TranscriptView truncated-refine notice", () => {
+  it("warns with the coverage percentage and offers a re-refine", async () => {
+    renderView({ refine_incomplete: true, refine_coverage: 0.29 });
+
+    const notice = await screen.findByRole("alert");
+    expect(notice.textContent).toContain("29%");
+    expect(screen.getByRole("button", { name: "Refine again" })).toBeTruthy();
+  });
+
+  it("stays hidden for a healthy refine", async () => {
+    renderView({ refine_incomplete: false, refine_coverage: 0.99 });
+
+    expect(await screen.findByText("original text")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Refine again" })).toBeNull();
+  });
 });
 
 describe("TranscriptView editing", () => {

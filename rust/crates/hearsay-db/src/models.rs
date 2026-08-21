@@ -28,7 +28,7 @@ pub enum Stream {
 }
 
 /// A meeting row.
-#[derive(Debug, Clone, PartialEq, Eq, FromRow)]
+#[derive(Debug, Clone, PartialEq, FromRow)]
 pub struct Meeting {
     pub id: Uuid,
     pub title: String,
@@ -48,6 +48,10 @@ pub struct Meeting {
     /// `folder`, to move it between folders.
     #[sqlx(default)]
     pub folder_id: Option<Uuid>,
+    /// Transcribed share (0.0..=1.0) of the Them track's audible time at the last refine; `None`
+    /// when never refined. A low value means whisper stalled and the transcript is truncated.
+    #[sqlx(default)]
+    pub refine_coverage: Option<f64>,
 }
 
 impl Meeting {

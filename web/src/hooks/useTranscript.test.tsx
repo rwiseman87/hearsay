@@ -45,6 +45,7 @@ const liveMeeting: MeetingRead = {
   folder: "2026/sync",
   folder_id: null,
   status: "recording",
+  refine_incomplete: false,
   created_at: "t",
   updated_at: "t",
   started_at: "t",

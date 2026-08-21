@@ -862,6 +862,23 @@ export function TranscriptView({ meeting, jumpTo }: Props) {
           )}
         </div>
       </header>
+      {!recording && meeting.refine_incomplete ? (
+        <div className="inactivity-banner" role="alert">
+          <span className="inactivity-banner__text">
+            The transcriber stopped part-way through this meeting, so the other side&rsquo;s
+            transcript is incomplete
+            {typeof meeting.refine_coverage === "number"
+              ? ` (about ${Math.round(meeting.refine_coverage * 100)}% of the audio was transcribed)`
+              : ""}
+            . The recording is intact — refining again re-reads it from the audio.
+          </span>
+          <div className="inactivity-banner__actions">
+            <button type="button" onClick={onRefine} disabled={rediarize.isPending}>
+              {rediarize.isPending ? "Refining…" : "Refine again"}
+            </button>
+          </div>
+        </div>
+      ) : null}
       {recording && micSilent ? (
         <div className="inactivity-banner" role="alert">
           <span className="inactivity-banner__text">
