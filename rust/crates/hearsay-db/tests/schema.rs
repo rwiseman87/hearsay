@@ -1037,6 +1037,7 @@ async fn replace_them_segments_stores_and_recognizes_voiceprints() {
             },
         ],
         centroids: HashMap::from([(1, vec![0.9, 0.1, 0.0]), (2, vec![0.0, 0.0, 1.0])]),
+        ..Default::default()
     };
     queries::replace_them_segments(&pool, meeting.id, &result, 0.6)
         .await
@@ -1349,6 +1350,7 @@ async fn recognition_threshold_gates_cross_meeting_match() {
             end_s: 1.0,
         }],
         centroids: HashMap::from([(1, vec![0.9, 0.1, 0.0])]),
+        ..Default::default()
     };
     queries::replace_them_segments(&pool, meeting.id, &result, 0.999)
         .await

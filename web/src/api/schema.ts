@@ -1167,6 +1167,17 @@ export interface components {
             folder_id?: string | null;
             /** Format: uuid */
             id: string;
+            /**
+             * Format: double
+             * @description Transcribed share (0.0-1.0) of the remote track's audible time at the last refine, or `null`
+             *     if this meeting has never been refined.
+             */
+            refine_coverage?: number | null;
+            /**
+             * @description `true` when the last refine came back too short to trust as complete, so the transcript is
+             *     truncated and worth re-refining. `false` when healthy or never refined.
+             */
+            refine_incomplete: boolean;
             /** Format: date-time */
             started_at: string;
             status: components["schemas"]["MeetingStatus"];
@@ -1284,6 +1295,17 @@ export interface components {
                 folder_id?: string | null;
                 /** Format: uuid */
                 id: string;
+                /**
+                 * Format: double
+                 * @description Transcribed share (0.0-1.0) of the remote track's audible time at the last refine, or `null`
+                 *     if this meeting has never been refined.
+                 */
+                refine_coverage?: number | null;
+                /**
+                 * @description `true` when the last refine came back too short to trust as complete, so the transcript is
+                 *     truncated and worth re-refining. `false` when healthy or never refined.
+                 */
+                refine_incomplete: boolean;
                 /** Format: date-time */
                 started_at: string;
                 status: components["schemas"]["MeetingStatus"];

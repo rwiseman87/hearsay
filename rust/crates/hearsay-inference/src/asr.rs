@@ -53,12 +53,58 @@ const LOOP_MAX_REAL_WORDS: usize = 5;
 /// sub-second three-peat is far more likely to be real speech ("yeah, yeah, yeah") than a loop.
 const LOOP_MIN_RETRY_S: f64 = 1.0;
 
+/// Shortest untranscribed span treated as a stalled decode rather than a pause; observed
+/// conversational gaps run to ~20 s.
+const GAP_MIN_S: f64 = 45.0;
+
+/// Recovery passes allowed. With [`MIN_PROGRESS_S`] this bounds the loop.
+const MAX_RECOVERY_PASSES: usize = 3;
+
+/// Transcript a pass must add to earn another.
+const MIN_PROGRESS_S: f64 = 1.0;
+
+/// RMS below which an untranscribed span counts as real silence, not a miss.
+const SILENT_RMS: f64 = 0.005;
+
 /// One transcribed segment. Times are seconds from the start of the given audio.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AsrSegment {
     pub text: String,
     pub start_s: f64,
     pub end_s: f64,
+}
+
+/// What a whole-track decode covered. Whisper returns success even when it stops emitting text
+/// part-way, so this is the only way to tell a quiet meeting from a truncated one.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Coverage {
+    pub track_s: f64,
+    /// Track time above [`SILENT_RMS`] — the time that should yield transcript.
+    pub audible_s: f64,
+    /// Audible time that landed inside a segment.
+    pub transcribed_s: f64,
+    /// Spans re-decoded to recover a stall.
+    pub recovered: Vec<Range<f64>>,
+    /// Audible spans still untranscribed after recovery.
+    pub unrecovered: Vec<Range<f64>>,
+}
+
+impl Coverage {
+    /// Transcribed share of audible time. A silent track counts as covered; the bar for "too low"
+    /// lives once, on `hearsay_db::MIN_REFINE_COVERAGE`.
+    pub fn fraction(&self) -> f64 {
+        if self.audible_s <= 0.0 {
+            return 1.0;
+        }
+        (self.transcribed_s / self.audible_s).clamp(0.0, 1.0)
+    }
+}
+
+/// A whole-track decode: the segments plus what they cover ([`Coverage`]).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Transcription {
+    pub segments: Vec<AsrSegment>,
+    pub coverage: Coverage,
 }
 
 /// A loaded whisper.cpp model. Cheap to clone the handle; `transcribe` creates a fresh state per
@@ -102,11 +148,69 @@ impl WhisperAsr {
 
     /// Transcribe 16 kHz mono `samples` (float in [-1, 1]) into timestamped segments (greedy; the
     /// model's `language`, default English). Timestamps come from whisper's centisecond segment
-    /// bounds. Decoder repetition loops are repaired before the segments are returned
-    /// ([`WhisperAsr::repair_loops`]).
+    /// bounds. Decoder repetition loops are repaired ([`WhisperAsr::repair_loops`]) and stalled
+    /// stretches re-decoded ([`WhisperAsr::recover_gaps`]) before the segments are returned.
     pub fn transcribe(&self, samples: &[f32]) -> Result<Vec<AsrSegment>, InferenceError> {
-        let segments = self.decode(samples, None)?;
-        self.repair_loops(samples, segments)
+        Ok(self.transcribe_track(samples)?.segments)
+    }
+
+    /// [`transcribe`](Self::transcribe) plus the [`Coverage`] it achieved; the refine needs it to
+    /// tell a quiet meeting from a truncated decode.
+    pub fn transcribe_track(&self, samples: &[f32]) -> Result<Transcription, InferenceError> {
+        let decoded = self.decode(samples, None)?;
+        let segments = self.repair_loops(samples, decoded)?;
+        self.recover_gaps(samples, segments)
+    }
+
+    /// Re-decode audible stretches the whole-track pass left empty, prompt-free as
+    /// [`redecode_loop`](Self::redecode_loop) does. A poisoned rolling prompt makes every later
+    /// window emit timestamps and no text, and `whisper_full` still returns success.
+    fn recover_gaps(
+        &self,
+        samples: &[f32],
+        mut segments: Vec<AsrSegment>,
+    ) -> Result<Transcription, InferenceError> {
+        let track_s = samples.len() as f64 / f64::from(SAMPLE_RATE);
+        let mut recovered: Vec<Range<f64>> = Vec::new();
+
+        for _ in 0..MAX_RECOVERY_PASSES {
+            let gaps: Vec<Range<f64>> = untranscribed_spans(&segments, track_s)
+                .into_iter()
+                .filter(|gap| gap.end - gap.start >= GAP_MIN_S)
+                .filter(|gap| span_rms(samples, gap) > SILENT_RMS)
+                .collect();
+            if gaps.is_empty() {
+                break;
+            }
+            let before = transcribed_s(&segments);
+            for gap in gaps {
+                let filled = self.decode(samples, Some(gap.clone()))?;
+                if filled.is_empty() {
+                    continue;
+                }
+                segments.extend(self.repair_loops(samples, filled)?);
+                recovered.push(gap);
+            }
+            segments.sort_by(|a, b| a.start_s.total_cmp(&b.start_s));
+            if transcribed_s(&segments) - before < MIN_PROGRESS_S {
+                break;
+            }
+        }
+
+        let unrecovered: Vec<Range<f64>> = untranscribed_spans(&segments, track_s)
+            .into_iter()
+            .filter(|gap| gap.end - gap.start >= GAP_MIN_S)
+            .filter(|gap| span_rms(samples, gap) > SILENT_RMS)
+            .collect();
+        let (audible_s, transcribed_s) = audible_coverage(samples, &segments, track_s);
+        let coverage = Coverage {
+            track_s,
+            audible_s,
+            transcribed_s,
+            recovered,
+            unrecovered,
+        };
+        Ok(Transcription { segments, coverage })
     }
 
     /// One whisper pass over `samples`. `retry_span` restricts the decode to `[start_s, end_s)` of
@@ -243,6 +347,81 @@ impl WhisperAsr {
         }
         Ok(unrepaired_run(looped, period).to_vec())
     }
+}
+
+/// Merge the segments' (possibly overlapping, possibly unsorted) spans into disjoint ascending ones.
+fn merged_spans(segments: &[AsrSegment]) -> Vec<Range<f64>> {
+    let mut spans: Vec<Range<f64>> = segments
+        .iter()
+        .filter(|s| s.end_s > s.start_s)
+        .map(|s| s.start_s..s.end_s)
+        .collect();
+    spans.sort_by(|a, b| a.start.total_cmp(&b.start));
+    let mut merged: Vec<Range<f64>> = Vec::with_capacity(spans.len());
+    for span in spans {
+        match merged.last_mut() {
+            Some(last) if span.start <= last.end => last.end = last.end.max(span.end),
+            _ => merged.push(span),
+        }
+    }
+    merged
+}
+
+/// The complement of the segments' spans within `0..track_s` — the stretches that produced no text.
+fn untranscribed_spans(segments: &[AsrSegment], track_s: f64) -> Vec<Range<f64>> {
+    let mut gaps = Vec::new();
+    let mut cursor = 0.0_f64;
+    for span in merged_spans(segments) {
+        if span.start > cursor {
+            gaps.push(cursor..span.start);
+        }
+        cursor = cursor.max(span.end);
+    }
+    if cursor < track_s {
+        gaps.push(cursor..track_s);
+    }
+    gaps
+}
+
+/// Total transcribed time (overlaps counted once), for measuring a recovery pass's progress.
+fn transcribed_s(segments: &[AsrSegment]) -> f64 {
+    merged_spans(segments).iter().map(|s| s.end - s.start).sum()
+}
+
+/// Root-mean-square level over `span`, clamped to the buffer. 0.0 for an empty span.
+fn span_rms(samples: &[f32], span: &Range<f64>) -> f64 {
+    let rate = f64::from(SAMPLE_RATE);
+    let start = ((span.start * rate) as usize).min(samples.len());
+    let end = ((span.end * rate) as usize).clamp(start, samples.len());
+    let window = &samples[start..end];
+    if window.is_empty() {
+        return 0.0;
+    }
+    let sum: f64 = window.iter().map(|&s| f64::from(s) * f64::from(s)).sum();
+    (sum / window.len() as f64).sqrt()
+}
+
+/// Audible track time and how much of it landed inside a segment, measured on one-second bins so the
+/// ratio stays meaningful (a segment spanning a pause cannot inflate it past the audible total).
+fn audible_coverage(samples: &[f32], segments: &[AsrSegment], track_s: f64) -> (f64, f64) {
+    let spans = merged_spans(segments);
+    let bins = track_s.ceil() as usize;
+    let mut audible = 0.0;
+    let mut transcribed = 0.0;
+    for bin in 0..bins {
+        let range = bin as f64..((bin + 1) as f64).min(track_s);
+        if span_rms(samples, &range) <= SILENT_RMS {
+            continue;
+        }
+        audible += range.end - range.start;
+        if spans
+            .iter()
+            .any(|s| s.start < range.end && s.end > range.start)
+        {
+            transcribed += range.end - range.start;
+        }
+    }
+    (audible, transcribed)
 }
 
 /// What to keep from a loop run whose isolated re-decode came back no better: the whole run when the
@@ -461,5 +640,82 @@ mod tests {
         assert_eq!(loop_key("  Okay,   WELL! "), "okay well");
         assert_eq!(loop_key("..."), "");
         assert_eq!(loop_key("$800,000."), "800000");
+    }
+
+    fn seg(start_s: f64, end_s: f64) -> AsrSegment {
+        AsrSegment {
+            text: "x".to_string(),
+            start_s,
+            end_s,
+        }
+    }
+
+    #[test]
+    fn merged_spans_unions_overlapping_and_unsorted_segments() {
+        let merged = merged_spans(&[seg(5.0, 8.0), seg(0.0, 2.0), seg(1.0, 3.0), seg(9.0, 9.0)]);
+        // 0-2 and 1-3 merge; 5-8 stays separate; the zero-length segment is dropped.
+        assert_eq!(merged, vec![0.0..3.0, 5.0..8.0]);
+    }
+
+    #[test]
+    fn untranscribed_spans_finds_leading_interior_and_tail_gaps() {
+        let gaps = untranscribed_spans(&[seg(2.0, 4.0), seg(9.0, 10.0)], 20.0);
+        assert_eq!(gaps, vec![0.0..2.0, 4.0..9.0, 10.0..20.0]);
+    }
+
+    #[test]
+    fn untranscribed_spans_is_empty_for_full_coverage() {
+        assert!(untranscribed_spans(&[seg(0.0, 10.0)], 10.0).is_empty());
+    }
+
+    #[test]
+    fn untranscribed_spans_ignores_segments_past_the_track() {
+        // A whisper segment can end past the decoded audio; that must not yield a negative gap.
+        assert!(untranscribed_spans(&[seg(0.0, 12.0)], 10.0).is_empty());
+    }
+
+    #[test]
+    fn span_rms_separates_silence_from_speech() {
+        let mut samples = vec![0.0_f32; 16_000];
+        samples.extend(std::iter::repeat_n(0.5_f32, 16_000));
+        assert!(span_rms(&samples, &(0.0..1.0)) <= SILENT_RMS);
+        assert!(span_rms(&samples, &(1.0..2.0)) > SILENT_RMS);
+        // Past the buffer is empty, not a panic.
+        assert_eq!(span_rms(&samples, &(50.0..60.0)), 0.0);
+    }
+
+    #[test]
+    fn audible_coverage_counts_only_audible_bins() {
+        // 3 s: loud, silent, loud. A segment covers only the first second.
+        let mut samples = vec![0.5_f32; 16_000];
+        samples.extend(std::iter::repeat_n(0.0_f32, 16_000));
+        samples.extend(std::iter::repeat_n(0.5_f32, 16_000));
+        let (audible, transcribed) = audible_coverage(&samples, &[seg(0.0, 1.0)], 3.0);
+        assert_eq!(audible, 2.0, "the silent middle second is not audible time");
+        assert_eq!(transcribed, 1.0);
+    }
+
+    #[test]
+    fn coverage_fraction_treats_a_silent_track_as_covered() {
+        let coverage = Coverage {
+            track_s: 10.0,
+            audible_s: 0.0,
+            transcribed_s: 0.0,
+            recovered: Vec::new(),
+            unrecovered: Vec::new(),
+        };
+        assert_eq!(coverage.fraction(), 1.0);
+    }
+
+    #[test]
+    fn coverage_fraction_reports_the_audible_share() {
+        let coverage = Coverage {
+            track_s: 100.0,
+            audible_s: 80.0,
+            transcribed_s: 20.0,
+            recovered: Vec::new(),
+            unrecovered: Vec::new(),
+        };
+        assert_eq!(coverage.fraction(), 0.25);
     }
 }

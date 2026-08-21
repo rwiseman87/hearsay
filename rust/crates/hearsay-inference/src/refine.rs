@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 use hearsay_attribution::{l2_normalize, max_overlap_turn, order_speakers, SpeakerTurn};
 use serde::Deserialize;
 
-use crate::asr::{AsrSegment, WhisperAsr};
+use crate::asr::{AsrSegment, Coverage, WhisperAsr};
 use crate::diarizer::{DiarTurn, Diarization, Diarizer};
 use crate::error::InferenceError;
 
@@ -42,6 +42,10 @@ pub struct RefinedSegment {
 pub struct RefineOutput {
     pub segments: Vec<RefinedSegment>,
     pub centroids: HashMap<i64, Vec<f32>>,
+    /// What the whole-track whisper pass actually covered. `None` only for a default-constructed
+    /// output (no decode ran). See [`crate::Coverage`] — a short decode returns `Ok`, so this is the
+    /// only signal that the transcript is truncated rather than the meeting quiet.
+    pub coverage: Option<Coverage>,
 }
 
 #[derive(Deserialize)]
@@ -168,18 +172,18 @@ pub fn refine_them_with(
     // path is not thread-safe). `thread::scope` blocks until whisper finishes, so both borrows of
     // `them_samples` are safe.
     let (diarization, asr_result) = thread::scope(|scope| {
-        let asr_handle = scope.spawn(|| asr.transcribe(them_samples));
+        let asr_handle = scope.spawn(|| asr.transcribe_track(them_samples));
         let diarization = diarizer.diarize(them_samples);
         (diarization, asr_handle.join())
     });
     // A diarizer `NoSpeech` / error still waited out the whole (now-discarded) transcription — the
     // scope cannot cancel it mid-run. Propagate it as the no-op the callers expect.
     let diarization = diarization?;
-    let asr_segments = match asr_result {
-        Ok(segments) => segments?,
+    let transcription = match asr_result {
+        Ok(transcription) => transcription?,
         Err(panic) => std::panic::resume_unwind(panic),
     };
-    let segments = assemble_refined_segments(&asr_segments, &diarization.turns);
+    let segments = assemble_refined_segments(&transcription.segments, &diarization.turns);
 
     // Keep a voiceprint only for a speaker that actually appears in the refined segments. Whole-track
     // overlap attribution can leave a speaker whose speech was entirely overlap-dominated with no
@@ -191,6 +195,7 @@ pub fn refine_them_with(
     Ok(RefineOutput {
         segments,
         centroids,
+        coverage: Some(transcription.coverage),
     })
 }
 

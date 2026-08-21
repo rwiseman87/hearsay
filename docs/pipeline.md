@@ -194,6 +194,17 @@ drive the same `LiveEngine::rediarize` implementation. The refine:
   segments long) are therefore re-decoded from the audio alone, with cross-window prompting off,
   which breaks the attractor and recovers the speech the loop wrote over. A re-decode that repeats
   again is treated as genuine repetition and kept,
+- re-decodes stretches the pass left blank. The same cross-window prompting has a second failure
+  mode: once a window's output degenerates, later windows can emit timestamps and no text at all,
+  and because that empty output becomes the next window's prompt the state sustains itself to the
+  end of the track — `whisper_full` still returns success, so a 44-minute meeting can come back with
+  12 minutes of transcript and no error. Untranscribed spans of 45 seconds or more that carry audio
+  above the silence floor are therefore re-decoded prompt-free and spliced back in. The loop is
+  bounded: three passes at most, each must add transcript to earn the next, and silence is never
+  retried,
+- records what fraction of the *audible* Them track ended up transcribed. Below 80% the meeting is
+  flagged `refine_incomplete`, the core logs a warning, and the transcript view offers a re-refine —
+  so a truncated decode is visible instead of passing as a quiet meeting,
 - carries manual renames forward by voting each locked name onto the turn ordinal its old segments
   most overlap, so a re-diarize never drops a manual binding (per-line reassignments, being
   segment-level, are rebuilt only at the cluster level — like manual text edits, a refine discards
