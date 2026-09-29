@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { createElement, type ReactNode } from "react";
-import { describe, expect, it, type Mock, vi } from "vitest";
+import { beforeEach, describe, expect, it, type Mock, vi } from "vitest";
 
 // Mock the one canonical fetch wrapper so the hooks run against scripted responses (no network).
 vi.mock("./client", () => ({
@@ -12,6 +12,8 @@ import { api } from "./client";
 import {
   useDeleteVoiceprint,
   useForgetVoice,
+  useMeeting,
+  useMeetings,
   useMergeSpeakers,
   useReassignSpeaker,
   useRenameIdentity,
@@ -26,6 +28,11 @@ const apiPut = api.put as unknown as Mock;
 const apiPatch = api.patch as unknown as Mock;
 const apiPost = api.post as unknown as Mock;
 const apiDelete = api.delete as unknown as Mock;
+
+// Each test reads its own calls off the wrapper mock, so no test may inherit another's.
+beforeEach(() => {
+  vi.clearAllMocks();
+});
 
 function makeClient() {
   return new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -62,6 +69,56 @@ describe("useSegments pagination", () => {
     expect(apiGet).toHaveBeenCalledTimes(2);
     expect(apiGet.mock.calls[0][0]).toContain("page=1");
     expect(apiGet.mock.calls[1][0]).toContain("page=2");
+  });
+});
+
+describe("useMeetings", () => {
+  it("passes the folder, search and sort filters to the server", async () => {
+    apiGet.mockResolvedValue({ total: 0, page: 2, page_size: 50, items: [] });
+
+    const { result } = renderHook(
+      () => useMeetings({ page: 2, folderId: "f-1", q: " kickoff ", sort: "oldest" }),
+      { wrapper: wrapperFor(makeClient()) },
+    );
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+
+    const url = new URL(apiGet.mock.calls[0][0], "http://localhost");
+    expect(url.searchParams.get("page")).toBe("2");
+    expect(url.searchParams.get("page_size")).toBe("50");
+    expect(url.searchParams.get("folder_id")).toBe("f-1");
+    expect(url.searchParams.get("q")).toBe("kickoff");
+    expect(url.searchParams.get("sort")).toBe("oldest");
+    expect(url.searchParams.get("unfiled")).toBeNull();
+  });
+
+  it("asks for the unfiled bucket by flag, not by a folder id", async () => {
+    apiGet.mockResolvedValue({ total: 0, page: 1, page_size: 50, items: [] });
+
+    const { result } = renderHook(() => useMeetings({ unfiled: true }), {
+      wrapper: wrapperFor(makeClient()),
+    });
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+
+    const url = new URL(apiGet.mock.calls[0][0], "http://localhost");
+    expect(url.searchParams.get("unfiled")).toBe("true");
+    expect(url.searchParams.get("folder_id")).toBeNull();
+  });
+});
+
+describe("useMeeting", () => {
+  it("fetches the open meeting by id rather than finding it in a listed page", async () => {
+    apiGet.mockResolvedValue({ id: "m-99", title: "Deep in the library" });
+
+    const { result } = renderHook(() => useMeeting("m-99"), { wrapper: wrapperFor(makeClient()) });
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+
+    expect(apiGet.mock.calls[0][0]).toBe("/api/meetings/m-99");
+  });
+
+  it("stays idle with no selection", () => {
+    const { result } = renderHook(() => useMeeting(null), { wrapper: wrapperFor(makeClient()) });
+    expect(result.current.fetchStatus).toBe("idle");
+    expect(apiGet).not.toHaveBeenCalled();
   });
 });
 

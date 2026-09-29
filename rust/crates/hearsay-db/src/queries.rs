@@ -7,7 +7,7 @@ use chrono::{DateTime, Utc};
 use hearsay_attribution::{
     assign_segment_speaker, best_identity, centroid_from_bytes, centroid_to_bytes, SpeakerTurn,
 };
-use sqlx::{FromRow, SqlitePool};
+use sqlx::{FromRow, QueryBuilder, Sqlite, SqlitePool};
 use uuid::Uuid;
 
 /// SQL for the known cross-meeting voiceprints: every person named + locked in another meeting with
@@ -29,6 +29,13 @@ pub struct SpeakerRow {
     pub identity_id: Option<Uuid>,
     pub locked: bool,
     pub display_name: Option<String>,
+}
+
+/// How many meetings sit in one folder, or (with a `None` id) in no folder at all.
+#[derive(Debug, Clone, PartialEq, Eq, FromRow)]
+pub struct FolderMeetingCount {
+    pub folder_id: Option<Uuid>,
+    pub meetings: i64,
 }
 
 /// Create a `recording` meeting (with its recordings `dir` pinned in the same statement) and return
@@ -320,24 +327,104 @@ pub async fn create_cluster(
     Ok(cluster)
 }
 
-/// Total meeting count (for the paginated list envelope).
-pub async fn count_meetings(pool: &SqlitePool) -> Result<i64, sqlx::Error> {
-    sqlx::query_scalar("SELECT COUNT(*) FROM meetings")
-        .fetch_one(pool)
-        .await
+/// Which folder bucket a meetings listing covers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FolderScope {
+    #[default]
+    All,
+    Folder(Uuid),
+    Unfiled,
 }
 
-/// One page of meetings, most-recently-started first.
+/// A meetings listing: folder bucket, optional title match, sort direction. The Library's filters
+/// run here rather than over a fetched page, so they cover every meeting however many there are.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MeetingFilter {
+    pub scope: FolderScope,
+    /// Title substring, matched case-insensitively for ASCII (SQLite's default `LIKE`).
+    pub title: Option<String>,
+    pub oldest_first: bool,
+}
+
+impl MeetingFilter {
+    /// Push this filter's `WHERE` clause. Only fixed SQL is written; user values are bound.
+    fn push_where(&self, builder: &mut QueryBuilder<Sqlite>) {
+        builder.push(" WHERE ");
+        match self.scope {
+            // No folder restriction; the constant keeps the title clause below unconditional.
+            FolderScope::All => {
+                builder.push("1 = 1");
+            }
+            FolderScope::Folder(id) => {
+                builder.push("folder_id = ");
+                builder.push_bind(id);
+            }
+            FolderScope::Unfiled => {
+                builder.push("folder_id IS NULL");
+            }
+        }
+        if let Some(title) = &self.title {
+            builder.push(" AND title LIKE ");
+            builder.push_bind(like_pattern(title));
+            builder.push(" ESCAPE '\\'");
+        }
+    }
+}
+
+/// A `LIKE` substring pattern for `text`, with any wildcard the user typed escaped to a literal.
+fn like_pattern(text: &str) -> String {
+    let escaped = text
+        .replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_");
+    format!("%{escaped}%")
+}
+
+/// Meeting count for `filter` (the `total` behind the paginated list envelope).
+pub async fn count_meetings_filtered(
+    pool: &SqlitePool,
+    filter: &MeetingFilter,
+) -> Result<i64, sqlx::Error> {
+    let mut builder = QueryBuilder::<Sqlite>::new("SELECT COUNT(*) FROM meetings");
+    filter.push_where(&mut builder);
+    builder.build_query_scalar::<i64>().fetch_one(pool).await
+}
+
+/// Total meeting count, ignoring any filter.
+pub async fn count_meetings(pool: &SqlitePool) -> Result<i64, sqlx::Error> {
+    count_meetings_filtered(pool, &MeetingFilter::default()).await
+}
+
+/// One page of the meetings matching `filter`, by start time (newest first unless asked otherwise).
 pub async fn list_meetings(
     pool: &SqlitePool,
+    filter: &MeetingFilter,
     limit: i64,
     offset: i64,
 ) -> Result<Vec<Meeting>, sqlx::Error> {
-    sqlx::query_as::<_, Meeting>("SELECT * FROM meetings ORDER BY started_at DESC LIMIT ? OFFSET ?")
-        .bind(limit)
-        .bind(offset)
-        .fetch_all(pool)
-        .await
+    let mut builder = QueryBuilder::<Sqlite>::new("SELECT * FROM meetings");
+    filter.push_where(&mut builder);
+    builder.push(if filter.oldest_first {
+        " ORDER BY started_at ASC LIMIT "
+    } else {
+        " ORDER BY started_at DESC LIMIT "
+    });
+    builder.push_bind(limit);
+    builder.push(" OFFSET ");
+    builder.push_bind(offset);
+    builder.build_query_as::<Meeting>().fetch_all(pool).await
+}
+
+/// Meeting counts grouped by folder, with a `None` id for the unfiled bucket. One grouped scan
+/// backs every sidebar badge, so the badges never depend on which page is on screen.
+pub async fn count_meetings_by_folder(
+    pool: &SqlitePool,
+) -> Result<Vec<FolderMeetingCount>, sqlx::Error> {
+    sqlx::query_as::<_, FolderMeetingCount>(
+        "SELECT folder_id, COUNT(*) AS meetings FROM meetings GROUP BY folder_id",
+    )
+    .fetch_all(pool)
+    .await
 }
 
 /// Delete a meeting (segments + clusters cascade). Returns whether a row was removed.

@@ -1,12 +1,7 @@
-import { useMemo } from "react";
-
-import type { MeetingRead } from "../api/types";
+import { useMeetings } from "../api/hooks";
 import { SearchBox } from "./SearchBox";
 
 interface Props {
-  meetings: MeetingRead[];
-  isLoading: boolean;
-  error: unknown;
   onSelect: (id: string) => void;
   // Open a meeting at a matched moment (drives the dashboard search bar).
   onJump: (meetingId: string, startS: number) => void;
@@ -29,15 +24,12 @@ function relativeDay(iso: string, now: Date): string {
 // The home dashboard, shown when no meeting is selected. A greeting, the global transcript search,
 // and the most recent meetings as a flat list — the folder tree and per-meeting organisation live in
 // the recording flow (the record popover's folder picker), not here.
-export function Dashboard({ meetings, isLoading, error, onSelect, onJump }: Props) {
+export function Dashboard({ onSelect, onJump }: Props) {
   const now = new Date();
-  const recent = useMemo(
-    () =>
-      [...meetings]
-        .sort((a, b) => b.started_at.localeCompare(a.started_at))
-        .slice(0, RECENT_LIMIT),
-    [meetings],
-  );
+  // Only the newest handful is ever shown, so ask for exactly that many.
+  const meetings = useMeetings({ pageSize: RECENT_LIMIT });
+  const recent = meetings.data?.items ?? [];
+  const error = meetings.error;
 
   return (
     <section className="dashboard">
@@ -54,7 +46,7 @@ export function Dashboard({ meetings, isLoading, error, onSelect, onJump }: Prop
       ) : null}
       <div className="dashboard__recent">
         <p className="dashboard__recent-label">Recent</p>
-        {isLoading ? (
+        {meetings.isLoading ? (
           <p className="muted dashboard__recent-empty">Loading…</p>
         ) : recent.length === 0 ? (
           <p className="muted dashboard__recent-empty">No meetings yet.</p>

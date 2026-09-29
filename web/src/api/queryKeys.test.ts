@@ -1,11 +1,22 @@
 import { describe, expect, it } from "vitest";
 
-import { queryKeys } from "./queryKeys";
+import { queryKeys, type MeetingListKey } from "./queryKeys";
+
+const listKey: MeetingListKey = {
+  page: 2,
+  pageSize: 50,
+  folderId: null,
+  unfiled: false,
+  q: "",
+  sort: "newest",
+};
 
 describe("queryKeys factory", () => {
   it("shapes the meeting keys and shares one prefix for invalidation", () => {
     expect(queryKeys.meetings.all).toEqual(["meetings"]);
-    expect(queryKeys.meetings.list(2, 50)).toEqual(["meetings", "list", 2, 50]);
+    expect(queryKeys.meetings.list(listKey)).toEqual(["meetings", "list", listKey]);
+    expect(queryKeys.meetings.counts).toEqual(["meetings", "counts"]);
+    expect(queryKeys.meetings.detail("m1")).toEqual(["meetings", "detail", "m1"]);
     expect(queryKeys.meetings.segments("m1")).toEqual(["meetings", "segments", "m1"]);
     expect(queryKeys.meetings.speakers("m1")).toEqual(["meetings", "speakers", "m1"]);
     expect(queryKeys.meetings.notes("m1")).toEqual(["meetings", "notes", "m1"]);
@@ -13,7 +24,9 @@ describe("queryKeys factory", () => {
 
     // Every meeting sub-key starts with the shared prefix, so invalidating `meetings.all` covers them.
     for (const key of [
-      queryKeys.meetings.list(1, 10),
+      queryKeys.meetings.list(listKey),
+      queryKeys.meetings.counts,
+      queryKeys.meetings.detail("m1"),
       queryKeys.meetings.segments("m1"),
       queryKeys.meetings.speakers("m1"),
       queryKeys.meetings.notes("m1"),

@@ -1,21 +1,21 @@
-import { useMemo, useState, type DragEvent as ReactDragEvent } from "react";
+import { useEffect, useMemo, useState, type DragEvent as ReactDragEvent } from "react";
 
 import { ApiError } from "../api/client";
 import {
+  MEETING_PAGE_SIZE,
   useCreateFolder,
   useDeleteFolder,
   useDeleteMeeting,
   useFolders,
+  useMeetingCounts,
+  useMeetings,
   useMoveMeeting,
   useRenameFolder,
   useRenameMeeting,
 } from "../api/hooks";
-import type { FolderRead, MeetingRead } from "../api/types";
+import type { FolderRead, MeetingRead, MeetingSort } from "../api/types";
 
 interface Props {
-  meetings: MeetingRead[];
-  isLoading: boolean;
-  error: unknown;
   onSelect: (id: string) => void;
 }
 
@@ -24,6 +24,9 @@ const DND_MIME = "application/x-hearsay-meeting";
 const INDENT = 14;
 // Sentinel filter value (distinct from any folder UUID) for the "Unfiled" bucket.
 const UNFILED = "unfiled";
+// Typing pause before the title search goes to the server, so a word is one request, not six.
+const SEARCH_DEBOUNCE_MS = 250;
+const ELLIPSIS = "…" as const;
 
 function errorMessage(error: unknown): string {
   if (error instanceof ApiError || error instanceof Error) return error.message;
@@ -106,12 +109,16 @@ type Editing =
   | null;
 
 // The Library: a full two-pane meetings browser (left = All meetings + the folder tree as filters,
-// right = the filtered meetings grouped by recency). Replaces the old pop-up drawer.
-export function Library({ meetings, isLoading, error, onSelect }: Props) {
-  // Active filter: null = "All meetings", else a folder id.
+// right = one page of the filtered meetings, grouped by recency). The folder bucket, the title
+// search, the sort, and the counts all resolve server-side, so nothing here is capped by how many
+// meetings a single request returns.
+export function Library({ onSelect }: Props) {
+  // Active filter: null = "All meetings", UNFILED, else a folder id.
   const [filter, setFilter] = useState<string | null>(null);
   const [search, setSearch] = useState("");
-  const [sort, setSort] = useState<"newest" | "oldest">("newest");
+  const [query, setQuery] = useState("");
+  const [sort, setSort] = useState<MeetingSort>("newest");
+  const [page, setPage] = useState(1);
   const [editing, setEditing] = useState<Editing>(null);
   const [draft, setDraft] = useState("");
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
@@ -122,6 +129,23 @@ export function Library({ meetings, isLoading, error, onSelect }: Props) {
   const [meetingDraft, setMeetingDraft] = useState("");
   const [confirmDeleteMeeting, setConfirmDeleteMeeting] = useState<string | null>(null);
 
+  useEffect(() => {
+    const timer = setTimeout(() => setQuery(search.trim()), SEARCH_DEBOUNCE_MS);
+    return () => clearTimeout(timer);
+  }, [search]);
+
+  // Changing what is listed starts again at the first page.
+  useEffect(() => setPage(1), [filter, query, sort]);
+
+  const isFolderFilter = filter !== null && filter !== UNFILED;
+  const meetingsQuery = useMeetings({
+    page,
+    folderId: isFolderFilter ? filter : null,
+    unfiled: filter === UNFILED,
+    q: query,
+    sort,
+  });
+  const counts = useMeetingCounts();
   const folders = useFolders();
   const createFolder = useCreateFolder();
   const renameFolder = useRenameFolder();
@@ -135,38 +159,28 @@ export function Library({ meetings, isLoading, error, onSelect }: Props) {
 
   const countByFolder = useMemo(() => {
     const map = new Map<string, number>();
-    for (const meeting of meetings) {
-      if (meeting.folder_id) map.set(meeting.folder_id, (map.get(meeting.folder_id) ?? 0) + 1);
-    }
+    for (const row of counts.data?.folders ?? []) map.set(row.folder_id, row.meetings);
     return map;
-  }, [meetings]);
+  }, [counts.data?.folders]);
 
-  const unfiledCount = useMemo(
-    () => meetings.filter((m) => m.folder_id == null).length,
-    [meetings],
-  );
-
-  const isFolderFilter = filter !== null && filter !== UNFILED;
   const folderName = isFolderFilter
     ? (folderItems.find((f) => f.id === filter)?.name ?? "Folder")
     : null;
   const title =
     filter === null ? "All meetings" : filter === UNFILED ? "Unfiled" : folderName;
 
-  const now = new Date();
-  const query = search.trim().toLowerCase();
-  const visible = meetings
-    .filter((m) =>
-      filter === null ? true : filter === UNFILED ? m.folder_id == null : (m.folder_id ?? null) === filter,
-    )
-    .filter((m) => (query ? m.title.toLowerCase().includes(query) : true))
-    .sort((a, b) =>
-      sort === "newest"
-        ? b.started_at.localeCompare(a.started_at)
-        : a.started_at.localeCompare(b.started_at),
-    );
+  const visible = meetingsQuery.data?.items ?? [];
+  const matched = meetingsQuery.data?.total ?? 0;
+  const pageCount = Math.max(1, Math.ceil(matched / MEETING_PAGE_SIZE));
 
-  // Group the visible meetings into recency buckets, ordered to follow the sort direction.
+  // Deleting the last meeting on the last page (or a shrinking filter) can leave the page past the
+  // end; step back rather than showing an empty list with meetings still behind it.
+  useEffect(() => {
+    if (page > pageCount) setPage(pageCount);
+  }, [page, pageCount]);
+
+  const now = new Date();
+  // Group the listed meetings into recency buckets, ordered to follow the sort direction.
   const groupMap = new Map<number, { label: string; items: MeetingRead[] }>();
   for (const meeting of visible) {
     const bucket = timeBucket(meeting.started_at, now);
@@ -234,7 +248,7 @@ export function Library({ meetings, isLoading, error, onSelect }: Props) {
             </svg>
           </span>
           <span className="library__item-label">All meetings</span>
-          <span className="library__count">{meetings.length}</span>
+          <span className="library__count">{counts.data?.total ?? 0}</span>
         </button>
         <button
           type="button"
@@ -262,7 +276,7 @@ export function Library({ meetings, isLoading, error, onSelect }: Props) {
             </svg>
           </span>
           <span className="library__item-label">Unfiled</span>
-          <span className="library__count">{unfiledCount}</span>
+          <span className="library__count">{counts.data?.unfiled ?? 0}</span>
         </button>
 
         <p className="library__nav-head">Folders</p>
@@ -461,11 +475,11 @@ export function Library({ meetings, isLoading, error, onSelect }: Props) {
         </header>
 
         <div className="library__list">
-          {isLoading ? (
+          {meetingsQuery.isLoading ? (
             <p className="muted library__empty">Loading…</p>
-          ) : error ? (
+          ) : meetingsQuery.error ? (
             <p className="library__error" role="alert">
-              {errorMessage(error)}
+              {errorMessage(meetingsQuery.error)}
             </p>
           ) : groups.length === 0 ? (
             <p className="muted library__empty">
@@ -620,6 +634,53 @@ export function Library({ meetings, isLoading, error, onSelect }: Props) {
             ))
           )}
         </div>
+
+        {matched > 0 ? (
+          <div className="library__footer">
+            <p className="muted library__tally">
+              {matched === 1 ? "1 meeting" : `${matched} meetings`}
+              {pageCount > 1 ? ` · page ${page} of ${pageCount}` : ""}
+            </p>
+            {pageCount > 1 ? (
+              <nav className="library__pager" aria-label="Meeting pages">
+                <button
+                  type="button"
+                  className="library__pager-step"
+                  disabled={page <= 1}
+                  onClick={() => setPage(page - 1)}
+                >
+                  ‹ Prev
+                </button>
+                {pageNumbers(page, pageCount).map((entry, index) =>
+                  entry === ELLIPSIS ? (
+                    <span key={`gap-${index}`} className="library__pager-gap" aria-hidden="true">
+                      {ELLIPSIS}
+                    </span>
+                  ) : (
+                    <button
+                      key={entry}
+                      type="button"
+                      className={"library__pager-page" + (entry === page ? " is-active" : "")}
+                      aria-label={`Page ${entry}`}
+                      aria-current={entry === page ? "page" : undefined}
+                      onClick={() => setPage(entry)}
+                    >
+                      {entry}
+                    </button>
+                  ),
+                )}
+                <button
+                  type="button"
+                  className="library__pager-step"
+                  disabled={page >= pageCount}
+                  onClick={() => setPage(page + 1)}
+                >
+                  Next ›
+                </button>
+              </nav>
+            ) : null}
+          </div>
+        ) : null}
       </div>
     </section>
   );
@@ -627,4 +688,19 @@ export function Library({ meetings, isLoading, error, onSelect }: Props) {
 
 function folderNameFor(folders: FolderRead[], id: string): string | null {
   return folders.find((f) => f.id === id)?.name ?? null;
+}
+
+// Page buttons: always the first and last page, the current one and the two beside it, with the
+// runs between them elided.
+function pageNumbers(current: number, count: number): (number | typeof ELLIPSIS)[] {
+  const wanted = [1, count, current - 1, current, current + 1].filter((n) => n >= 1 && n <= count);
+  const pages = [...new Set(wanted)].sort((a, b) => a - b);
+  const out: (number | typeof ELLIPSIS)[] = [];
+  let previous = 0;
+  for (const n of pages) {
+    if (previous && n - previous > 1) out.push(ELLIPSIS);
+    out.push(n);
+    previous = n;
+  }
+  return out;
 }

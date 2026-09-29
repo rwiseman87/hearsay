@@ -8,7 +8,8 @@ use axum::routing::{get, patch, post, put};
 use axum::Router;
 use uuid::Uuid;
 
-use hearsay_db::queries;
+use hearsay_db::queries::{self, FolderScope, MeetingFilter};
+use serde::Deserialize;
 
 use crate::error::{ApiError, ApiResult};
 use crate::extract::{Json, Path, Query};
@@ -16,8 +17,8 @@ use crate::routes::settings::reveal_in_file_manager;
 use crate::routes::Pagination;
 use crate::routes::{reexport, validated_name};
 use crate::schema::{
-    MeetingCreate, MeetingFolderAssign, MeetingRead, MeetingUpdate, Page, SegmentEdit, SegmentRead,
-    SegmentSpeakerAssign, StatusInfo,
+    FolderMeetingCount, MeetingCounts, MeetingCreate, MeetingFolderAssign, MeetingRead,
+    MeetingSort, MeetingUpdate, Page, SegmentEdit, SegmentRead, SegmentSpeakerAssign, StatusInfo,
 };
 use crate::state::AppState;
 use hearsay_engine::LiveError;
@@ -25,10 +26,65 @@ use hearsay_engine::LiveError;
 /// Max length (chars) of an edited segment's text; longer is rejected at the boundary.
 const MAX_SEGMENT_TEXT_LEN: usize = 20_000;
 
+/// Max length (chars) of the meetings-list title query; longer is rejected at the boundary.
+const MAX_TITLE_QUERY_LEN: usize = 255;
+
+/// Query parameters for the meetings list: the shared pagination pair plus the Library's folder,
+/// title, and sort filters.
+#[derive(Debug, Default, Deserialize)]
+pub(crate) struct MeetingListQuery {
+    page: Option<u32>,
+    page_size: Option<u32>,
+    folder_id: Option<Uuid>,
+    unfiled: Option<bool>,
+    q: Option<String>,
+    sort: Option<MeetingSort>,
+}
+
+impl MeetingListQuery {
+    fn pagination(&self) -> Pagination {
+        Pagination {
+            page: self.page,
+            page_size: self.page_size,
+        }
+    }
+
+    /// Resolve the filter params into a query filter, rejecting contradictory or over-long input.
+    fn filter(&self) -> ApiResult<MeetingFilter> {
+        let unfiled = self.unfiled.unwrap_or(false);
+        let scope = match (self.folder_id, unfiled) {
+            (Some(_), true) => {
+                return Err(ApiError::Unprocessable(
+                    "folder_id and unfiled are mutually exclusive".into(),
+                ))
+            }
+            (Some(id), false) => FolderScope::Folder(id),
+            (None, true) => FolderScope::Unfiled,
+            (None, false) => FolderScope::All,
+        };
+        let title = match self.q.as_deref().map(str::trim) {
+            None | Some("") => None,
+            Some(q) if q.chars().count() > MAX_TITLE_QUERY_LEN => {
+                return Err(ApiError::Unprocessable(format!(
+                    "q exceeds {MAX_TITLE_QUERY_LEN} characters"
+                )))
+            }
+            Some(q) => Some(q.to_string()),
+        };
+        Ok(MeetingFilter {
+            scope,
+            title,
+            oldest_first: self.sort.unwrap_or_default() == MeetingSort::Oldest,
+        })
+    }
+}
+
 /// Routes served under the `/api` prefix (token-gated by the caller).
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/meetings", get(list_meetings).post(start_meeting))
+        // A static segment wins over `/meetings/{id}`, so `counts` is never read as a meeting id.
+        .route("/meetings/counts", get(meeting_counts))
         .route(
             "/meetings/{id}",
             get(get_meeting)
@@ -52,16 +108,19 @@ pub fn router() -> Router<AppState> {
 
 /// Live app readiness, for the UI header.
 ///
-/// Reports whether the transcription sidecars have finished loading their models. A cold start
-/// takes several seconds, so the record control polls this to show a "preparing" state rather than
-/// accepting a start that would stall. Read-only and cheap to poll.
+/// Reports whether the transcription sidecars have finished loading their models, and which meeting
+/// the engine is capturing (`null` when idle). A cold start takes several seconds, so the record
+/// control polls this to show a "preparing" state rather than accepting a start that would stall,
+/// and reads `recording_meeting_id` to know a meeting is already under way. Read-only and cheap to
+/// poll.
 #[utoipa::path(
     get, path = "/api/status", tag = "meetings",
-    responses((status = 200, body = StatusInfo, description = "Current sidecar readiness")),
+    responses((status = 200, body = StatusInfo, description = "Sidecar readiness + the recording meeting")),
 )]
 pub(crate) async fn read_status(State(state): State<AppState>) -> Json<StatusInfo> {
     Json(StatusInfo {
         sidecars_ready: state.engine.sidecars_ready(),
+        recording_meeting_id: state.engine.active_meeting(),
     })
 }
 
@@ -71,20 +130,63 @@ fn unavailable() -> ApiError {
 
 /// List meetings, newest first.
 ///
-/// Backs the Library and Dashboard views.
+/// Backs the Library and Dashboard views. `folder_id`, `unfiled`, and `q` filter in SQL, so the
+/// Library's folder tabs and title search cover every meeting rather than the page on screen, and
+/// `total` counts the matches, not the database. `sort` flips the start-time order.
 #[utoipa::path(
     get, path = "/api/meetings", tag = "meetings",
-    params(("page" = Option<u32>, Query), ("page_size" = Option<u32>, Query)),
-    responses((status = 200, body = Page<MeetingRead>, description = "A page of meetings, newest first")),
+    params(
+        ("page" = Option<u32>, Query), ("page_size" = Option<u32>, Query),
+        ("folder_id" = Option<Uuid>, Query, description = "Only meetings filed under this folder"),
+        ("unfiled" = Option<bool>, Query, description = "Only meetings in no folder; not combinable with folder_id"),
+        ("q" = Option<String>, Query, description = "Title substring, case-insensitive (ASCII), up to 255 characters"),
+        ("sort" = Option<MeetingSort>, Query, description = "Start-time order: newest (default) or oldest"),
+    ),
+    responses(
+        (status = 200, body = Page<MeetingRead>, description = "A page of the matching meetings"),
+        (status = 422, description = "folder_id combined with unfiled, an unknown sort, or an over-long q"),
+    ),
 )]
 pub(crate) async fn list_meetings(
     State(state): State<AppState>,
-    Query(pagination): Query<Pagination>,
+    Query(query): Query<MeetingListQuery>,
 ) -> ApiResult<Json<Page<MeetingRead>>> {
-    let window = pagination.resolve(50, 200);
-    let total = queries::count_meetings(&state.pool).await?;
-    let rows = queries::list_meetings(&state.pool, window.limit, window.offset).await?;
+    let filter = query.filter()?;
+    let window = query.pagination().resolve(50, 200);
+    let total = queries::count_meetings_filtered(&state.pool, &filter).await?;
+    let rows = queries::list_meetings(&state.pool, &filter, window.limit, window.offset).await?;
     Ok(Json(window.page_of(total, rows)))
+}
+
+/// Meeting counts per folder.
+///
+/// The totals behind the Library sidebar's badges: every meeting, the unfiled ones, and one entry
+/// per folder that holds at least one. Counting here rather than over a listed page keeps the badges
+/// right however many meetings the database holds. A folder's count is the meetings filed directly
+/// under it; meetings in a sub-folder count towards that sub-folder.
+#[utoipa::path(
+    get, path = "/api/meetings/counts", tag = "meetings",
+    responses((status = 200, body = MeetingCounts, description = "Meeting counts for the whole database")),
+)]
+pub(crate) async fn meeting_counts(
+    State(state): State<AppState>,
+) -> ApiResult<Json<MeetingCounts>> {
+    let mut counts = MeetingCounts {
+        total: 0,
+        unfiled: 0,
+        folders: Vec::new(),
+    };
+    for row in queries::count_meetings_by_folder(&state.pool).await? {
+        counts.total += row.meetings;
+        match row.folder_id {
+            Some(folder_id) => counts.folders.push(FolderMeetingCount {
+                folder_id,
+                meetings: row.meetings,
+            }),
+            None => counts.unfiled = row.meetings,
+        }
+    }
+    Ok(Json(counts))
 }
 
 /// Start a meeting.

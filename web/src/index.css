@@ -1228,6 +1228,66 @@ button:not(:disabled):hover {
   padding: 4px 28px 28px;
 }
 
+/* The tally + page controls ride at the bottom of the pane, staying put as the list scrolls. */
+.library__footer {
+  position: sticky;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: auto;
+  padding: 10px 28px;
+  border-top: 1px solid var(--border);
+  background: var(--bg);
+}
+
+.library__tally {
+  margin: 0;
+  font-size: var(--fs-sm);
+}
+
+.library__pager {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.library__pager button {
+  min-width: 30px;
+  padding: 5px 9px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: var(--fs-md);
+  cursor: pointer;
+}
+
+/* :not(.is-active) so hovering the page you are on keeps its accent fill; without it the hover
+   background wins on specificity and leaves dark-on-dark text. */
+.library__pager button:hover:not(:disabled):not(.is-active) {
+  background: var(--surface-2);
+}
+
+.library__pager button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.library__pager-page.is-active {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--on-accent);
+  font-weight: 700;
+}
+
+.library__pager-gap {
+  padding: 0 2px;
+  color: var(--muted);
+}
+
 .library__empty {
   margin: 16px 2px;
 }
