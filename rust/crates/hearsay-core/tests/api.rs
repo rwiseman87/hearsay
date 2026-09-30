@@ -43,6 +43,7 @@ fn test_settings(output_dir: PathBuf, web_dir: PathBuf) -> Settings {
         scripted: false,
         refine_model: PathBuf::from("no-model"),
         refine_timeout: std::time::Duration::from_secs(1800),
+        refine_carry_over: false,
         auto_refine: false,
         record: true,
         recognition_threshold: 0.6,

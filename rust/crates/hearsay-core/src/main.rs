@@ -65,6 +65,7 @@ async fn main() -> Result<(), BoxError> {
         prewarm: models_present,
         refine_model: settings.refine_model.clone(),
         refine_timeout: settings.refine_timeout,
+        refine_carry_over: settings.refine_carry_over,
         record: settings.record,
         auto_refine: settings.auto_refine,
         recognition_threshold: settings.recognition_threshold,

@@ -81,6 +81,7 @@ struct WindowsRefiner {
     default_model: PathBuf,
     segmentation_model: PathBuf,
     embedding_model: PathBuf,
+    carry_over: bool,
 }
 
 #[async_trait]
@@ -103,10 +104,11 @@ impl Refiner for WindowsRefiner {
         let audio = audio_path.to_path_buf();
         let segmentation = self.segmentation_model.clone();
         let embedding = self.embedding_model.clone();
+        let carry_over = self.carry_over;
         // whisper + the ONNX diarizer are blocking — run off the async runtime.
         let output = tokio::task::spawn_blocking(move || {
             let diarizer = SherpaDiarizer::load(&segmentation, &embedding)?;
-            hearsay_inference::refine_audio_file_with(&audio, &diarizer, &model)
+            hearsay_inference::refine_audio_file_with(&audio, &diarizer, &model, carry_over)
         })
         .await
         .map_err(|e| OrchestratorError::Backend(format!("refine task panicked: {e}")))?;
@@ -186,6 +188,7 @@ pub fn build_engine(config: EngineConfig) -> Arc<dyn LiveEngine> {
         prewarm: _, // macOS-only: the sherpa models ship with the installer, so nothing to hold back for
         refine_model,
         refine_timeout: _, // macOS-only: bounds the diarize subprocess; the ONNX diarizer is in-process
+        refine_carry_over,
         // The editable-settings defaults are lifted whole by `config.defaults()` above.
         record: _,
         auto_refine: _,
@@ -232,6 +235,7 @@ pub fn build_engine(config: EngineConfig) -> Arc<dyn LiveEngine> {
             default_model: refine_model,
             segmentation_model: sherpa_models_dir.join(SEGMENTATION_MODEL),
             embedding_model: sherpa_models_dir.join(EMBEDDING_MODEL),
+            carry_over: refine_carry_over,
         }));
     let orchestrator = orchestrator.with_summarizer(Arc::new(SubprocessSummarizer {
         pool: notes_pool,

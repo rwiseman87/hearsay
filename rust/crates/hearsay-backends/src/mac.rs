@@ -175,6 +175,7 @@ struct MacRefiner {
     /// resolved from the DB at each refine so a Models-panel change applies with no restart.
     default_model: PathBuf,
     timeout: Duration,
+    carry_over: bool,
 }
 
 #[async_trait]
@@ -192,9 +193,10 @@ impl Refiner for MacRefiner {
         let audio = audio_path.to_path_buf();
         let diarize = self.diarize_path.clone();
         let timeout = self.timeout;
+        let carry_over = self.carry_over;
         // whisper + the diarize subprocess are blocking — run off the async runtime.
         let output = tokio::task::spawn_blocking(move || {
-            hearsay_inference::refine_audio_file(&audio, &diarize, &model, timeout)
+            hearsay_inference::refine_audio_file(&audio, &diarize, &model, timeout, carry_over)
         })
         .await
         .map_err(|e| OrchestratorError::Backend(format!("refine task panicked: {e}")))?;
@@ -228,6 +230,7 @@ pub fn build_engine(config: EngineConfig) -> Arc<dyn LiveEngine> {
         prewarm,
         refine_model,
         refine_timeout,
+        refine_carry_over,
         // The editable-settings defaults are lifted whole by `config.defaults()` above.
         record: _,
         auto_refine: _,
@@ -268,6 +271,7 @@ pub fn build_engine(config: EngineConfig) -> Arc<dyn LiveEngine> {
             diarize_path: helper_path.with_file_name("hearsay-diarize"),
             default_model: refine_model,
             timeout: refine_timeout,
+            carry_over: refine_carry_over,
         }));
     // Always wire the notes summarizer: it runs the local LLM out-of-process in the `hearsay-notes`
     // sidecar, so nothing links llama.cpp into this binary. Notes are available whenever the sidecar

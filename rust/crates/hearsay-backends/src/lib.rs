@@ -74,6 +74,10 @@ pub struct EngineConfig {
     pub refine_model: PathBuf,
     /// Deadline for the refine's diarize step.
     pub refine_timeout: Duration,
+    /// Whether the refine's whisper pass primes each 30-s window with the previous window's text.
+    /// Off by default: measured on a 44-minute meeting it cost 2.4x the decode time and let one
+    /// hallucinated silent window poison every window after it.
+    pub refine_carry_over: bool,
     pub record: bool,
     pub auto_refine: bool,
     pub recognition_threshold: f64,
