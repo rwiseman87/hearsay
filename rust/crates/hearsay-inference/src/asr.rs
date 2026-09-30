@@ -113,6 +113,7 @@ pub struct WhisperAsr {
     ctx: WhisperContext,
     language: String,
     entropy_thold: f32,
+    carry_over: bool,
 }
 
 impl WhisperAsr {
@@ -129,6 +130,7 @@ impl WhisperAsr {
             ctx,
             language: DEFAULT_LANGUAGE.to_string(),
             entropy_thold: DEFAULT_ENTROPY_THOLD,
+            carry_over: true,
         })
     }
 
@@ -136,6 +138,13 @@ impl WhisperAsr {
     /// uses this to measure candidate thresholds against recorded meetings.
     pub fn with_entropy_thold(mut self, thold: f32) -> Self {
         self.entropy_thold = thold;
+        self
+    }
+
+    /// Turn off the prompt whisper carries between 30-s windows, for the whole-track pass as well as
+    /// the span re-decodes. The probe harness uses this to measure what carry-over is worth.
+    pub fn with_carry_over(mut self, carry_over: bool) -> Self {
+        self.carry_over = carry_over;
         self
     }
 
@@ -241,6 +250,8 @@ impl WhisperAsr {
             // repetition attractor: whisper.cpp only drops it once a fallback gate fires, and the
             // gates miss a long repeated phrase. Decoding the span with no prompt at all costs a
             // little cross-window context and reliably breaks the loop.
+            params.set_n_max_text_ctx(0);
+        } else if !self.carry_over {
             params.set_n_max_text_ctx(0);
         }
 

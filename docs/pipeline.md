@@ -186,6 +186,11 @@ drive the same `LiveEngine::rediarize` implementation. The refine:
   transcribe loop — then attributes each ASR segment to the diarizer turn it most overlaps, so the
   transcript follows speaker changes; `replace_them_segments` swaps the live Them segments and
   clusters for the refined, speaker-attributed segments in a single transaction (Me is untouched),
+- decodes with cross-window prompt carry-over off (`HEARSAY_REFINE_CARRY_OVER`, default `false`).
+  Carry-over primes each 30-second window with the previous window's text, which holds context across
+  the seam but makes the decoder's output its own next input. Measured on a 44-minute meeting it cost
+  2.4x the decode time for no gain in unique transcript, and carried one hallucinated silent window
+  into every window after it. The two repairs below defend the meeting that turns it back on,
 - repairs whisper's repetition loops before attribution: whisper primes each 30-second window with
   the text it just produced, so a phrase that starts repeating keeps winning and can run to the end
   of the track. Its built-in gates catch the short cases only — the entropy check reads the last 32

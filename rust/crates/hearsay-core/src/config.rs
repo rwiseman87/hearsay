@@ -34,6 +34,10 @@ pub struct Settings {
     pub refine_model: PathBuf,
     /// Deadline for the `hearsay-diarize` refine subprocess, so a hung sidecar cannot wedge stop.
     pub refine_timeout: Duration,
+    /// Prime each of the refine's 30-s whisper windows with the previous window's text. Off by
+    /// default: measured on a 44-minute meeting it cost 2.4x the decode time for no gain in unique
+    /// transcript, and carried one hallucinated silent window into every window after it.
+    pub refine_carry_over: bool,
     /// Run the offline refine at stop. Off by default: it contends with the next meeting's
     /// sidecars on the ANE. The manual `/rediarize` route works regardless.
     pub auto_refine: bool,
@@ -248,6 +252,7 @@ impl Settings {
         let notes_enabled = env_bool("HEARSAY_NOTES", false, &mut problems);
         let refine_timeout =
             Duration::from_secs(env_u64("HEARSAY_REFINE_TIMEOUT_SECS", 1800, &mut problems));
+        let refine_carry_over = env_bool("HEARSAY_REFINE_CARRY_OVER", false, &mut problems);
         let win_loopback_mode = env_loopback_mode(LoopbackMode::Device, &mut problems);
 
         if !problems.is_empty() {
@@ -279,6 +284,7 @@ impl Settings {
             scripted,
             refine_model,
             refine_timeout,
+            refine_carry_over,
             auto_refine,
             record,
             recognition_threshold,

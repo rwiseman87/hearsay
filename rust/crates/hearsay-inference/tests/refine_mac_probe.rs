@@ -72,6 +72,10 @@ fn refine_mac_probe() {
         asr = asr.with_entropy_thold(thold.parse().unwrap());
         eprintln!("entropy_thold = {thold}");
     }
+    if std::env::var("HEARSAY_PROBE_CARRY_OVER").as_deref() == Ok("0") {
+        asr = asr.with_carry_over(false);
+        eprintln!("carry_over = off");
+    }
     let segments = asr.transcribe(&them).expect("transcribe");
     let total_chars: usize = segments.iter().map(|s| s.text.len()).sum();
     eprintln!(
@@ -107,22 +111,10 @@ fn refine_mac_probe() {
         eprintln!("consecutive x{n}: {:?}", &text[..text.len().min(60)]);
     }
 
-    // A real meeting produces speech, not a decoder repetition loop. This guards both halves of the
-    // anti-loop defence in asr.rs (see hearsay-refine-performance): the entropy_thold that catches a
-    // short looping phrase mid-decode, and the loop repair that re-decodes what the entropy gate is
-    // structurally blind to — a repeated unit of 32+ tokens (one meeting came back with the same
-    // sentence 120 times, another with one phrase 473 times).
     assert!(!them.is_empty(), "extraction produced no Them samples");
     assert!(!segments.is_empty(), "whisper produced no segments");
     assert!(total_chars > 0, "whisper produced empty transcript");
     let (worst_text, max_run) = runs.first().copied().unwrap_or(("", 0));
-    assert!(
-        max_run < LOOP_MIN_CYCLES,
-        "whisper repetition loop survived the refine: {:?} repeated {max_run}x in a row \
-         of {} segments (loop repair or entropy_thold regressed?)",
-        &worst_text[..worst_text.len().min(60)],
-        segments.len()
-    );
     for seg in segments.iter().take(6) {
         eprintln!(
             "  {:7.1}-{:7.1} {:?}",
@@ -173,5 +165,18 @@ fn refine_mac_probe() {
     assert!(
         !refined.segments.is_empty(),
         "refine assembled no Them segments from a non-empty transcript"
+    );
+    // Asserted last so a failing run still reports every stage above it. A real meeting produces
+    // speech, not a decoder repetition loop, and this guards both halves of the anti-loop defence in
+    // asr.rs (see hearsay-refine-performance): the entropy_thold that catches a short looping phrase
+    // mid-decode, and the loop repair that re-decodes what the entropy gate is structurally blind to
+    // — a repeated unit of 32+ tokens (one meeting came back with the same sentence 120 times,
+    // another with one phrase 473 times).
+    assert!(
+        max_run < LOOP_MIN_CYCLES,
+        "whisper repetition loop survived the refine: {:?} repeated {max_run}x in a row \
+         of {} segments (loop repair or entropy_thold regressed?)",
+        &worst_text[..worst_text.len().min(60)],
+        segments.len()
     );
 }

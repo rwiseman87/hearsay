@@ -368,15 +368,16 @@ fn build_centroids(embeddings: &HashMap<i64, Vec<f32>>) -> HashMap<i64, Vec<f32>
 /// Refine a recorded meeting's `audio.wav` end-to-end with any [`Diarizer`]: read the Them (right)
 /// channel, load the whisper model, then re-diarize + re-transcribe. The diarizer-agnostic file
 /// entry — the macOS refiner wraps it with [`SwiftDiarizer`] ([`refine_audio_file`]) and the
-/// Windows refiner with `SherpaDiarizer`. Blocking (whisper) — call via `spawn_blocking` from
-/// async code.
+/// Windows refiner with `SherpaDiarizer`. `carry_over` is whisper's cross-window prompt
+/// ([`WhisperAsr::with_carry_over`]). Blocking (whisper) — call via `spawn_blocking` from async code.
 pub fn refine_audio_file_with(
     audio_path: &Path,
     diarizer: &dyn Diarizer,
     model: &Path,
+    carry_over: bool,
 ) -> Result<RefineOutput, InferenceError> {
     let them = crate::audio::read_them_channel(audio_path)?;
-    let asr = WhisperAsr::load(model)?;
+    let asr = WhisperAsr::load(model)?.with_carry_over(carry_over);
     refine_them_with(&asr, diarizer, &them)
 }
 
@@ -389,11 +390,13 @@ pub fn refine_audio_file(
     diarize_binary: &Path,
     model: &Path,
     timeout: Duration,
+    carry_over: bool,
 ) -> Result<RefineOutput, InferenceError> {
     refine_audio_file_with(
         audio_path,
         &SwiftDiarizer::new(diarize_binary, timeout),
         model,
+        carry_over,
     )
 }
 

@@ -24,6 +24,7 @@ fn config(pool: SqlitePool, output_dir: PathBuf) -> EngineConfig {
         prewarm: true,
         refine_model: PathBuf::new(),
         refine_timeout: Duration::from_secs(60),
+        refine_carry_over: false,
         record: false,
         auto_refine: true,
         recognition_threshold: 0.6,

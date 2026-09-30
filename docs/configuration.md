@@ -33,6 +33,7 @@ source this page mirrors; `hearsay-core/src/routes/settings.rs` implements the w
 | Helper path | `HEARSAY_HELPER_PATH` | `helper/.build/arm64-apple-macosx/debug/hearsay-helper` |
 | Refine model | `HEARSAY_REFINE_MODEL` | `ggml-large-v3-turbo.bin` (`ggml-small.en.bin` on Windows) inside the models dir |
 | Refine timeout (seconds) | `HEARSAY_REFINE_TIMEOUT_SECS` | `1800` |
+| Refine prompt carry-over | `HEARSAY_REFINE_CARRY_OVER` | `false` |
 | Record meeting audio (`audio.wav`) | `HEARSAY_RECORD` | `true` |
 | Auto-refine at stop | `HEARSAY_AUTO_REFINE` | `false` |
 | Recognition threshold | `HEARSAY_RECOGNITION_THRESHOLD` | `0.6` |
