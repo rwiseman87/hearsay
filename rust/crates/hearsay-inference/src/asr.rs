@@ -291,37 +291,12 @@ impl WhisperAsr {
             return Ok(segments);
         }
 
-        let mut repaired: Vec<AsrSegment> = Vec::with_capacity(segments.len());
-        let mut next = 0;
-        for run in runs {
-            repaired.extend_from_slice(&segments[next..run.range.start]);
+        let mut replacements = Vec::with_capacity(runs.len());
+        for run in &runs {
             let looped = &segments[run.range.clone()];
-            let run_end_s = looped[looped.len() - 1].end_s;
-            let mut replacement = self.redecode_loop(samples, looped, run.period)?;
-            next = run.range.end;
-            // Whisper ends a window on a speech boundary, not on the exact sample either side asked
-            // for, so the two decodes overlap at the seam and would transcribe the same audio twice.
-            // Settle it by coverage. First the replacement gives way: a last segment reaching past
-            // the run was cut off by the span, so it holds the truncated first half of an utterance
-            // the next original carries in full. Never drop the whole replacement, and never trim
-            // when the run ends the track and nothing follows to cover that audio.
-            while next < segments.len()
-                && replacement.len() > 1
-                && replacement.last().is_some_and(|s| s.end_s > run_end_s)
-            {
-                replacement.pop();
-            }
-            // Then the originals give way: whatever the replacement still spans, it has already
-            // transcribed — and from audio the loop had drowned out, so it is the better copy.
-            if let Some(replacement_end_s) = replacement.last().map(|s| s.end_s) {
-                while next < segments.len() && segments[next].end_s <= replacement_end_s {
-                    next += 1;
-                }
-            }
-            repaired.extend(replacement);
+            replacements.push(self.redecode_loop(samples, looped, run.period)?);
         }
-        repaired.extend_from_slice(&segments[next..]);
-        Ok(repaired)
+        Ok(splice_runs(&segments, &runs, replacements))
     }
 
     /// The per-run half of [`repair_loops`]: re-decode `looped`'s audio span in isolation and pick
@@ -437,6 +412,50 @@ fn unrepaired_run(looped: &[AsrSegment], period: usize) -> &[AsrSegment] {
     } else {
         looped
     }
+}
+
+/// Put each run's `replacement` in place of the run it was decoded for.
+///
+/// The two sides are separate decodes of overlapping audio — whisper ends a window on a speech
+/// boundary, not on the sample either side asked for — so the seam is settled by coverage, not by
+/// index. Pure — unit-tested without whisper.
+fn splice_runs(
+    segments: &[AsrSegment],
+    runs: &[LoopRun],
+    replacements: Vec<Vec<AsrSegment>>,
+) -> Vec<AsrSegment> {
+    let mut repaired: Vec<AsrSegment> = Vec::with_capacity(segments.len());
+    let mut next = 0;
+    for (i, (run, mut replacement)) in runs.iter().zip(replacements).enumerate() {
+        repaired.extend_from_slice(&segments[next..run.range.start]);
+        let run_end_s = segments[run.range.end - 1].end_s;
+        next = run.range.end;
+        // Each run is replaced from its own audio, so the next run's segments have to survive this
+        // splice; without the cap a long replacement walks `next` past them and the slice above
+        // indexes backwards.
+        let limit = runs
+            .get(i + 1)
+            .map_or(segments.len(), |next_run| next_run.range.start);
+        // First the replacement gives way: a last segment reaching past the run was cut off by the
+        // span, so the next original carries that utterance in full. Never drop the whole
+        // replacement, and never trim when the run ends the track.
+        while next < segments.len()
+            && replacement.len() > 1
+            && replacement.last().is_some_and(|s| s.end_s > run_end_s)
+        {
+            replacement.pop();
+        }
+        // Then the originals give way: the replacement transcribed that audio without the loop
+        // drowning it out, so it is the better copy.
+        if let Some(replacement_end_s) = replacement.last().map(|s| s.end_s) {
+            while next < limit && segments[next].end_s <= replacement_end_s {
+                next += 1;
+            }
+        }
+        repaired.extend(replacement);
+    }
+    repaired.extend_from_slice(&segments[next..]);
+    repaired
 }
 
 /// One run of consecutive segments whose text repeats with a fixed `period`, covering
@@ -640,6 +659,62 @@ mod tests {
         assert_eq!(loop_key("  Okay,   WELL! "), "okay well");
         assert_eq!(loop_key("..."), "");
         assert_eq!(loop_key("$800,000."), "800000");
+    }
+
+    /// A track of one-second segments, so an index doubles as a timestamp.
+    fn track(n: usize) -> Vec<AsrSegment> {
+        (0..n).map(|i| seg(i as f64, i as f64 + 1.0)).collect()
+    }
+
+    fn run(range: Range<usize>) -> LoopRun {
+        LoopRun { range, period: 1 }
+    }
+
+    #[test]
+    fn splice_runs_replaces_a_run_in_place() {
+        let spliced = splice_runs(&track(5), &[run(1..4)], vec![vec![seg(1.0, 4.0)]]);
+        assert_eq!(spliced, vec![seg(0.0, 1.0), seg(1.0, 4.0), seg(4.0, 5.0)]);
+    }
+
+    #[test]
+    fn splice_runs_trims_a_replacement_that_overshoots_the_run() {
+        // The 3.5-5.2 segment was cut off by the span; segment 4 carries that utterance in full.
+        let replacement = vec![seg(1.0, 3.5), seg(3.5, 5.2)];
+        let spliced = splice_runs(&track(6), &[run(1..4)], vec![replacement]);
+        assert_eq!(
+            spliced,
+            vec![seg(0.0, 1.0), seg(1.0, 3.5), seg(4.0, 5.0), seg(5.0, 6.0)]
+        );
+    }
+
+    #[test]
+    fn splice_runs_drops_originals_the_replacement_already_covers() {
+        let spliced = splice_runs(&track(5), &[run(1..4)], vec![vec![seg(1.0, 5.0)]]);
+        assert_eq!(spliced, vec![seg(0.0, 1.0), seg(1.0, 5.0)]);
+    }
+
+    #[test]
+    fn splice_runs_keeps_a_replacement_that_runs_to_the_end_of_the_track() {
+        // Nothing follows the run, so the overshoot is the only copy of that audio.
+        let replacement = vec![seg(1.0, 3.0), seg(3.0, 4.6)];
+        let spliced = splice_runs(&track(4), &[run(1..4)], vec![replacement]);
+        assert_eq!(spliced, vec![seg(0.0, 1.0), seg(1.0, 3.0), seg(3.0, 4.6)]);
+    }
+
+    #[test]
+    fn splice_runs_never_consumes_the_next_runs_first_segment() {
+        // A replacement reaching into the next run used to walk the cursor past that run's start,
+        // and the splice then indexed backwards — the refine died on "slice index starts at 178 but
+        // ends at 176".
+        let spliced = splice_runs(
+            &track(9),
+            &[run(1..4), run(5..8)],
+            vec![vec![seg(1.0, 7.5)], vec![seg(5.0, 8.0)]],
+        );
+        assert_eq!(
+            spliced,
+            vec![seg(0.0, 1.0), seg(1.0, 7.5), seg(5.0, 8.0), seg(8.0, 9.0)]
+        );
     }
 
     fn seg(start_s: f64, end_s: f64) -> AsrSegment {
