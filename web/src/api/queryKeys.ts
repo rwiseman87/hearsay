@@ -1,9 +1,25 @@
+import type { MeetingSort } from "./types";
+
+// Everything that scopes a meetings listing; two calls with the same values share a cache entry.
+export interface MeetingListKey {
+  page: number;
+  pageSize: number;
+  folderId: string | null;
+  unfiled: boolean;
+  q: string;
+  sort: MeetingSort;
+}
+
 // Typed query-key factory. All keys are produced here, never inlined at call
 // sites; the "meetings" prefix lets a single invalidation cover list + segments.
 export const queryKeys = {
   meetings: {
     all: ["meetings"] as const,
-    list: (page: number, pageSize: number) => ["meetings", "list", page, pageSize] as const,
+    // The list is filtered server-side, so the whole filter (not just the page) identifies it.
+    list: (params: MeetingListKey) => ["meetings", "list", params] as const,
+    // Per-folder counts for the sidebar badges: one row set, independent of any listed page.
+    counts: ["meetings", "counts"] as const,
+    detail: (id: string) => ["meetings", "detail", id] as const,
     // All segment pages are fetched under one query (see useSegments), so the key is per-meeting.
     segments: (id: string) => ["meetings", "segments", id] as const,
     speakers: (id: string) => ["meetings", "speakers", id] as const,

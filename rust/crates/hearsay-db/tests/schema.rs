@@ -10,7 +10,9 @@ use chrono::Utc;
 use hearsay_attribution::{centroid_from_bytes, centroid_to_bytes};
 use hearsay_db::models::{MeetingStatus, Stream};
 use hearsay_db::queries;
-use hearsay_db::queries::{NotesResult, RefineResult, RefinedThemSegment};
+use hearsay_db::queries::{
+    FolderScope, MeetingFilter, NotesResult, RefineResult, RefinedThemSegment,
+};
 use hearsay_db::test_support::memory_pool;
 use hearsay_db::{connect_options, MIGRATOR};
 use sqlx::migrate::Migrator;
@@ -152,14 +154,140 @@ async fn list_meetings_paginates_newest_first() {
     }
     assert_eq!(queries::count_meetings(&pool).await.unwrap(), 3);
 
-    let page1 = queries::list_meetings(&pool, 2, 0).await.unwrap();
+    let all = MeetingFilter::default();
+    let page1 = queries::list_meetings(&pool, &all, 2, 0).await.unwrap();
     assert_eq!(
         page1.iter().map(|m| m.title.as_str()).collect::<Vec<_>>(),
         ["newest", "middle"]
     );
-    let page2 = queries::list_meetings(&pool, 2, 2).await.unwrap();
+    let page2 = queries::list_meetings(&pool, &all, 2, 2).await.unwrap();
     assert_eq!(page2.len(), 1);
     assert_eq!(page2[0].title, "oldest");
+
+    let oldest_first = MeetingFilter {
+        oldest_first: true,
+        ..MeetingFilter::default()
+    };
+    let flipped = queries::list_meetings(&pool, &oldest_first, 2, 0)
+        .await
+        .unwrap();
+    assert_eq!(
+        flipped.iter().map(|m| m.title.as_str()).collect::<Vec<_>>(),
+        ["oldest", "middle"]
+    );
+}
+
+#[tokio::test]
+async fn list_meetings_filters_by_folder_and_title() {
+    let pool = memory_pool().await;
+    let now = chrono::Utc::now();
+    let folder = queries::create_folder(&pool, "Clients", None)
+        .await
+        .unwrap();
+    for title in ["Acme sync", "Acme 100% review", "Internal standup"] {
+        let meeting = queries::create_meeting(&pool, title, title, "", now)
+            .await
+            .unwrap();
+        if title.starts_with("Acme") {
+            queries::assign_meeting_folder(&pool, meeting.id, Some(folder.id))
+                .await
+                .unwrap();
+        }
+    }
+
+    let filed = MeetingFilter {
+        scope: FolderScope::Folder(folder.id),
+        ..MeetingFilter::default()
+    };
+    assert_eq!(
+        queries::count_meetings_filtered(&pool, &filed)
+            .await
+            .unwrap(),
+        2
+    );
+
+    let unfiled = MeetingFilter {
+        scope: FolderScope::Unfiled,
+        ..MeetingFilter::default()
+    };
+    let rows = queries::list_meetings(&pool, &unfiled, 50, 0)
+        .await
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].title, "Internal standup");
+
+    // Case-insensitive substring, and scoped to the folder when both are set.
+    let titled = MeetingFilter {
+        scope: FolderScope::Folder(folder.id),
+        title: Some("acme".into()),
+        ..MeetingFilter::default()
+    };
+    assert_eq!(
+        queries::count_meetings_filtered(&pool, &titled)
+            .await
+            .unwrap(),
+        2
+    );
+
+    // A wildcard the user typed matches literally rather than standing for "any characters".
+    let wildcard = MeetingFilter {
+        title: Some("100%".into()),
+        ..MeetingFilter::default()
+    };
+    let rows = queries::list_meetings(&pool, &wildcard, 50, 0)
+        .await
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].title, "Acme 100% review");
+
+    let every_char = MeetingFilter {
+        title: Some("%".into()),
+        ..MeetingFilter::default()
+    };
+    assert_eq!(
+        queries::count_meetings_filtered(&pool, &every_char)
+            .await
+            .unwrap(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn counts_meetings_by_folder_including_the_unfiled_bucket() {
+    let pool = memory_pool().await;
+    let now = chrono::Utc::now();
+    let folder = queries::create_folder(&pool, "Clients", None)
+        .await
+        .unwrap();
+    let empty = queries::create_folder(&pool, "Empty", None).await.unwrap();
+    for title in ["a", "b", "c"] {
+        let meeting = queries::create_meeting(&pool, title, title, "", now)
+            .await
+            .unwrap();
+        if title != "c" {
+            queries::assign_meeting_folder(&pool, meeting.id, Some(folder.id))
+                .await
+                .unwrap();
+        }
+    }
+
+    let counts = queries::count_meetings_by_folder(&pool).await.unwrap();
+    assert_eq!(
+        counts
+            .iter()
+            .find(|c| c.folder_id == Some(folder.id))
+            .map(|c| c.meetings),
+        Some(2)
+    );
+    assert_eq!(
+        counts
+            .iter()
+            .find(|c| c.folder_id.is_none())
+            .map(|c| c.meetings),
+        Some(1)
+    );
+    // A folder holding nothing has no row at all -- the sidebar renders it as zero.
+    assert!(!counts.iter().any(|c| c.folder_id == Some(empty.id)));
 }
 
 #[tokio::test]

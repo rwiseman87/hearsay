@@ -1,16 +1,18 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { api } from "./client";
-import { queryKeys } from "./queryKeys";
+import { queryKeys, type MeetingListKey } from "./queryKeys";
 import type {
   ArchiveState,
   DownloadState,
   FolderCreate,
   FolderRead,
   IdentityRead,
+  MeetingCounts,
   MeetingCreate,
   MeetingNotesRead,
   MeetingRead,
+  MeetingSort,
   ModelCatalog,
   ModelSettings,
   PageFolder,
@@ -32,12 +34,65 @@ import type {
   UserNotesRead,
 } from "./types";
 
-export function useMeetings(page = 1, pageSize = 50) {
+// How a meetings listing is scoped. The folder bucket, the title search, and the sort are applied by
+// the server, so they cover every meeting rather than the page in hand.
+export interface MeetingListParams {
+  page?: number;
+  pageSize?: number;
+  // A folder id, or null for "no folder filter". Pass `unfiled` for the no-folder bucket instead.
+  folderId?: string | null;
+  unfiled?: boolean;
+  q?: string;
+  sort?: MeetingSort;
+}
+
+export const MEETING_PAGE_SIZE = 50;
+
+export function useMeetings(params: MeetingListParams = {}) {
+  const key: MeetingListKey = {
+    page: params.page ?? 1,
+    pageSize: params.pageSize ?? MEETING_PAGE_SIZE,
+    folderId: params.folderId ?? null,
+    unfiled: params.unfiled ?? false,
+    q: params.q?.trim() ?? "",
+    sort: params.sort ?? "newest",
+  };
+  const search = new URLSearchParams({
+    page: String(key.page),
+    page_size: String(key.pageSize),
+    sort: key.sort,
+  });
+  if (key.folderId) search.set("folder_id", key.folderId);
+  if (key.unfiled) search.set("unfiled", "true");
+  if (key.q) search.set("q", key.q);
   return useQuery({
-    queryKey: queryKeys.meetings.list(page, pageSize),
-    queryFn: ({ signal }) =>
-      api.get<PageMeeting>(`/api/meetings?page=${page}&page_size=${pageSize}`, signal),
+    queryKey: queryKeys.meetings.list(key),
+    queryFn: ({ signal }) => api.get<PageMeeting>(`/api/meetings?${search}`, signal),
     refetchInterval: 5_000,
+    // Paging and filtering swap the key; hold the previous page rather than flashing a spinner.
+    placeholderData: keepPreviousData,
+  });
+}
+
+// Meeting counts per folder for the sidebar badges. Counted in SQL over the whole database, so a
+// badge never reports "how many of this folder's meetings happen to be on screen".
+export function useMeetingCounts() {
+  return useQuery({
+    queryKey: queryKeys.meetings.counts,
+    queryFn: ({ signal }) => api.get<MeetingCounts>("/api/meetings/counts", signal),
+    refetchInterval: 5_000,
+  });
+}
+
+// One meeting by id, for the open transcript. Fetched directly rather than found in a listed page —
+// a meeting past the first page is still openable (e.g. from a global search hit). Polls only while
+// it is recording, to catch the transition to finalized.
+export function useMeeting(id: string | null) {
+  return useQuery({
+    queryKey: queryKeys.meetings.detail(id ?? "none"),
+    queryFn: ({ signal }) => api.get<MeetingRead>(`/api/meetings/${id}`, signal),
+    enabled: id !== null,
+    refetchInterval: (query) => (query.state.data?.status === "recording" ? 5_000 : false),
   });
 }
 

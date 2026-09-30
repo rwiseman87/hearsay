@@ -300,6 +300,100 @@ async fn lists_and_gets_meetings_with_the_page_envelope() {
 }
 
 #[tokio::test]
+async fn list_meetings_filters_by_folder_title_and_sort() {
+    let (app, pool, _tmp) = setup().await;
+    let base = chrono::Utc::now();
+    let (_, folder) = send(&app, post("/api/folders", "{\"name\":\"Clients\"}")).await;
+    let folder_id = folder["id"].as_str().unwrap().to_string();
+    for (i, title) in ["Acme sync", "Acme review", "Internal standup"]
+        .iter()
+        .enumerate()
+    {
+        let started = base + chrono::Duration::seconds(i as i64);
+        let meeting = queries::create_meeting(&pool, title, title, "", started)
+            .await
+            .unwrap();
+        if title.starts_with("Acme") {
+            send(
+                &app,
+                put(
+                    &format!("/api/meetings/{}/folder", meeting.id),
+                    &format!("{{\"folder_id\":\"{folder_id}\"}}"),
+                ),
+            )
+            .await;
+        }
+    }
+
+    // `total` counts the matches, not the database -- it is what drives the pager.
+    let (status, body) = send(&app, get(&format!("/api/meetings?folder_id={folder_id}"))).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["total"], 2);
+
+    let (_, body) = send(&app, get("/api/meetings?unfiled=true")).await;
+    assert_eq!(body["total"], 1);
+    assert_eq!(body["items"][0]["title"], "Internal standup");
+
+    let (_, body) = send(&app, get("/api/meetings?q=acme")).await;
+    assert_eq!(body["total"], 2);
+
+    let (_, body) = send(&app, get("/api/meetings?sort=oldest")).await;
+    assert_eq!(body["items"][0]["title"], "Acme sync");
+
+    // A filter applies across pages, not within the page it returns.
+    let (_, body) = send(&app, get("/api/meetings?q=acme&page=2&page_size=1")).await;
+    assert_eq!(body["total"], 2);
+    assert_eq!(body["items"][0]["title"], "Acme sync");
+
+    let (status, _) = send(
+        &app,
+        get(&format!("/api/meetings?folder_id={folder_id}&unfiled=true")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+
+    let (status, _) = send(&app, get("/api/meetings?sort=sideways")).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+
+    let long = "x".repeat(256);
+    let (status, _) = send(&app, get(&format!("/api/meetings?q={long}"))).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+}
+
+#[tokio::test]
+async fn meeting_counts_cover_every_meeting_not_just_a_page() {
+    let (app, pool, _tmp) = setup().await;
+    let (_, folder) = send(&app, post("/api/folders", "{\"name\":\"Clients\"}")).await;
+    let folder_id = folder["id"].as_str().unwrap().to_string();
+    send(&app, post("/api/folders", "{\"name\":\"Empty\"}")).await;
+    for i in 0..3 {
+        let meeting = queries::create_meeting(&pool, "M", "f", "", chrono::Utc::now())
+            .await
+            .unwrap();
+        if i < 2 {
+            send(
+                &app,
+                put(
+                    &format!("/api/meetings/{}/folder", meeting.id),
+                    &format!("{{\"folder_id\":\"{folder_id}\"}}"),
+                ),
+            )
+            .await;
+        }
+    }
+
+    // A static segment, so this is the counts route and not a meeting id.
+    let (status, body) = send(&app, get("/api/meetings/counts")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["total"], 3);
+    assert_eq!(body["unfiled"], 1);
+    let folders = body["folders"].as_array().unwrap();
+    assert_eq!(folders.len(), 1, "a folder with no meetings has no entry");
+    assert_eq!(folders[0]["folder_id"], folder_id.as_str());
+    assert_eq!(folders[0]["meetings"], 2);
+}
+
+#[tokio::test]
 async fn lists_segments_ordered_by_start() {
     let (app, pool, _tmp) = setup().await;
     let meeting = queries::create_meeting(&pool, "M", "f", "", chrono::Utc::now())

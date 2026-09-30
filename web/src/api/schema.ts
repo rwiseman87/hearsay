@@ -150,7 +150,9 @@ export interface paths {
         };
         /**
          * List meetings, newest first.
-         * @description Backs the Library and Dashboard views.
+         * @description Backs the Library and Dashboard views. `folder_id`, `unfiled`, and `q` filter in SQL, so the
+         *     Library's folder tabs and title search cover every meeting rather than the page on screen, and
+         *     `total` counts the matches, not the database. `sort` flips the start-time order.
          */
         get: operations["list_meetings"];
         put?: never;
@@ -160,6 +162,29 @@ export interface paths {
          *     may be active at a time. `title` is optional; omitted, it defaults to a timestamp-derived name.
          */
         post: operations["start_meeting"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/meetings/counts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Meeting counts per folder.
+         * @description The totals behind the Library sidebar's badges: every meeting, the unfiled ones, and one entry
+         *     per folder that holds at least one. Counting here rather than over a listed page keeps the badges
+         *     right however many meetings the database holds. A folder's count is the meetings filed directly
+         *     under it; meetings in a sub-folder count towards that sub-folder.
+         */
+        get: operations["meeting_counts"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -879,9 +904,11 @@ export interface paths {
         };
         /**
          * Live app readiness, for the UI header.
-         * @description Reports whether the transcription sidecars have finished loading their models. A cold start
-         *     takes several seconds, so the record control polls this to show a "preparing" state rather than
-         *     accepting a start that would stall. Read-only and cheap to poll.
+         * @description Reports whether the transcription sidecars have finished loading their models, and which meeting
+         *     the engine is capturing (`null` when idle). A cold start takes several seconds, so the record
+         *     control polls this to show a "preparing" state rather than accepting a start that would stall,
+         *     and reads `recording_meeting_id` to know a meeting is already under way. Read-only and cheap to
+         *     poll.
          */
         get: operations["read_status"];
         put?: never;
@@ -1055,6 +1082,13 @@ export interface components {
             /** Format: uuid */
             parent_id?: string | null;
         };
+        /** @description How many meetings one folder holds directly (meetings in its sub-folders count for those). */
+        FolderMeetingCount: {
+            /** Format: uuid */
+            folder_id: string;
+            /** Format: int64 */
+            meetings: number;
+        };
         /**
          * @description An organizational folder for meetings (a node in the nested folder tree). `parent_id` is `null`
          *     for a root folder.
@@ -1112,6 +1146,21 @@ export interface components {
             rms: number;
             /** @description The stream this level is for (`me` or `them`). */
             stream: string;
+        };
+        /** @description Meeting counts for the Library sidebar, over the whole database rather than a listed page. */
+        MeetingCounts: {
+            /** @description One entry per folder holding at least one meeting; a folder with none is absent. */
+            folders: components["schemas"]["FolderMeetingCount"][];
+            /**
+             * Format: int64
+             * @description Every meeting, filed or not.
+             */
+            total: number;
+            /**
+             * Format: int64
+             * @description Meetings in no folder.
+             */
+            unfiled: number;
         };
         /** @description Start a meeting. `title` defaults to a timestamp-derived name when omitted. */
         MeetingCreate: {
@@ -1185,6 +1234,11 @@ export interface components {
             /** Format: date-time */
             updated_at: string;
         };
+        /**
+         * @description Start-time order for a meetings listing.
+         * @enum {string}
+         */
+        MeetingSort: "newest" | "oldest";
         /**
          * @description Lifecycle state of a meeting (lowercase on the wire): `recording` while live, `refining` while the
          *     post-stop refine + transcript write run in the background, then `finalized`.
@@ -1651,6 +1705,12 @@ export interface components {
          *     immediately) and `false` while they are still loading after launch.
          */
         StatusInfo: {
+            /**
+             * Format: uuid
+             * @description The meeting the engine is capturing right now, or `null` when idle. The record control gates
+             *     on this rather than scanning the meetings list, which only ever holds one page.
+             */
+            recording_meeting_id?: string | null;
             sidecars_ready: boolean;
         };
         /** @description Read-only storage facts shown alongside the editable storage section. */
@@ -2050,6 +2110,14 @@ export interface operations {
             query?: {
                 page?: number;
                 page_size?: number;
+                /** @description Only meetings filed under this folder */
+                folder_id?: string;
+                /** @description Only meetings in no folder; not combinable with folder_id */
+                unfiled?: boolean;
+                /** @description Title substring, case-insensitive (ASCII), up to 255 characters */
+                q?: string;
+                /** @description Start-time order: newest (default) or oldest */
+                sort?: components["schemas"]["MeetingSort"];
             };
             header?: never;
             path?: never;
@@ -2057,7 +2125,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description A page of meetings, newest first */
+            /** @description A page of the matching meetings */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -2065,6 +2133,13 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["Page_MeetingRead"];
                 };
+            };
+            /** @description folder_id combined with unfiled, an unknown sort, or an over-long q */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };
@@ -2110,6 +2185,26 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+        };
+    };
+    meeting_counts: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Meeting counts for the whole database */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MeetingCounts"];
+                };
             };
         };
     };
@@ -3334,7 +3429,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Current sidecar readiness */
+            /** @description Sidecar readiness + the recording meeting */
             200: {
                 headers: {
                     [name: string]: unknown;

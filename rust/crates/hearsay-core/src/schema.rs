@@ -123,6 +123,24 @@ impl From<Folder> for FolderRead {
     }
 }
 
+/// Meeting counts for the Library sidebar, over the whole database rather than a listed page.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct MeetingCounts {
+    /// Every meeting, filed or not.
+    pub total: i64,
+    /// Meetings in no folder.
+    pub unfiled: i64,
+    /// One entry per folder holding at least one meeting; a folder with none is absent.
+    pub folders: Vec<FolderMeetingCount>,
+}
+
+/// How many meetings one folder holds directly (meetings in its sub-folders count for those).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct FolderMeetingCount {
+    pub folder_id: Uuid,
+    pub meetings: i64,
+}
+
 /// A meeting's generated notes for the API: the model's reply as verbatim Markdown `content`, and
 /// which model produced them. The prompt template dictates the note's format, so there is no
 /// structured summary/action-item shape.
@@ -370,6 +388,15 @@ impl From<Identity> for IdentityRead {
             email: i.email,
         }
     }
+}
+
+/// Start-time order for a meetings listing.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum MeetingSort {
+    #[default]
+    Newest,
+    Oldest,
 }
 
 /// Start a meeting. `title` defaults to a timestamp-derived name when omitted.
@@ -674,6 +701,9 @@ pub struct SettingsRead {
 #[derive(Debug, Clone, Copy, Serialize, ToSchema)]
 pub struct StatusInfo {
     pub sidecars_ready: bool,
+    /// The meeting the engine is capturing right now, or `null` when idle. The record control gates
+    /// on this rather than scanning the meetings list, which only ever holds one page.
+    pub recording_meeting_id: Option<Uuid>,
 }
 
 // Live-transcript WebSocket frames. The socket is not itself an OpenAPI operation, but the frames it

@@ -6,14 +6,15 @@ use utoipa::{Modify, OpenApi};
 
 use crate::schema::{
     AboutInfo, ArchiveState, CaptureHealthEvent, CaptureStateEvent, CatalogEntry, DownloadRequest,
-    DownloadState, DownloadStatus, FolderCreate, FolderRead, FolderReparent, FolderUpdate,
-    IdentityRead, IdentityRename, LevelEvent, MeetingCreate, MeetingFolderAssign, MeetingNotesRead,
-    MeetingRead, MeetingStatus, MeetingUpdate, ModelCatalog, ModelSettings, ModelsInfo, NotesEdit,
-    PermissionsInfo, PromptEvent, RecordingSettings, ResyncEvent, SearchHit, SegmentEdit,
-    SegmentRead, SegmentSpeakerAssign, SettingsRead, SetupRequest, SetupState, SetupStatus,
-    SetupStep, SetupStepStatus, SpeakerMerge, SpeakerRead, SpeakerRename, SpeakerSettings,
-    StatusEvent, StatusInfo, StorageInfo, StorageSettings, Stream, TranscriptEvent, UserNotesRead,
-    UserNotesWrite, VoiceprintRead, VoiceprintSampleRead,
+    DownloadState, DownloadStatus, FolderCreate, FolderMeetingCount, FolderRead, FolderReparent,
+    FolderUpdate, IdentityRead, IdentityRename, LevelEvent, MeetingCounts, MeetingCreate,
+    MeetingFolderAssign, MeetingNotesRead, MeetingRead, MeetingSort, MeetingStatus, MeetingUpdate,
+    ModelCatalog, ModelSettings, ModelsInfo, NotesEdit, PermissionsInfo, PromptEvent,
+    RecordingSettings, ResyncEvent, SearchHit, SegmentEdit, SegmentRead, SegmentSpeakerAssign,
+    SettingsRead, SetupRequest, SetupState, SetupStatus, SetupStep, SetupStepStatus, SpeakerMerge,
+    SpeakerRead, SpeakerRename, SpeakerSettings, StatusEvent, StatusInfo, StorageInfo,
+    StorageSettings, Stream, TranscriptEvent, UserNotesRead, UserNotesWrite, VoiceprintRead,
+    VoiceprintSampleRead,
 };
 
 /// Registers the session-token scheme so an API console can offer an "Authorize" box, and so the
@@ -73,6 +74,7 @@ stream with `Range` support), and `/`, which serves the UI with the token inject
     security(("session_token" = [])),
     paths(
         crate::routes::meetings::list_meetings,
+        crate::routes::meetings::meeting_counts,
         crate::routes::meetings::start_meeting,
         crate::routes::meetings::get_meeting,
         crate::routes::meetings::update_meeting,
@@ -127,6 +129,9 @@ stream with `Range` support), and `/`, which serves the UI with the token inject
     components(schemas(
         MeetingRead,
         MeetingStatus,
+        MeetingSort,
+        MeetingCounts,
+        FolderMeetingCount,
         Stream,
         SegmentRead,
         SegmentEdit,

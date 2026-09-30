@@ -1,7 +1,6 @@
-import { lazy, Suspense, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
 
-import { useMeetings, useSetup, useStatus } from "./api/hooks";
-import type { MeetingRead } from "./api/types";
+import { useMeeting, useSetup, useStatus } from "./api/hooks";
 import { Dashboard } from "./components/Dashboard";
 import { Library } from "./components/Library";
 import { LiveRecording } from "./components/LiveRecording";
@@ -21,15 +20,22 @@ export function App() {
   const [showRecord, setShowRecord] = useState(false);
   // The Library (meetings browser) is a full main-area view, shown when no meeting is open.
   const [library, setLibrary] = useState(false);
-  const meetings = useMeetings();
-  const items = meetings.data?.items ?? [];
-  const selected: MeetingRead | null = items.find((m) => m.id === selectedId) ?? null;
-  const recording = items.some((m) => m.status === "recording");
+  // The open meeting is fetched by id rather than found in a listed page, so opening one works
+  // however far down the library it sits (a global-search hit, say).
+  const meeting = useMeeting(selectedId);
+  const selected = meeting.data ?? null;
   // Poll live-engine readiness from app launch (not just when the record popover opens), so the
   // sidecars' model load overlaps with browsing and the popover reflects readiness immediately. An
   // errored probe reads as ready so a status-endpoint problem never bricks Start.
   const status = useStatus();
   const sidecarsReady = status.isError || (status.data?.sidecars_ready ?? false);
+  const recording = status.data?.recording_meeting_id != null;
+
+  // A selection that no longer resolves (the meeting was deleted) falls back to the previous view
+  // rather than stranding an empty main area.
+  useEffect(() => {
+    if (meeting.isError) setSelectedId(null);
+  }, [meeting.isError]);
 
   // A pending "jump to this moment" from a global search result. The nonce makes each jump distinct
   // so repeated jumps to the same meeting/time re-trigger the scroll in TranscriptView.
@@ -68,20 +74,9 @@ export function App() {
           searchActive={showSearch}
         />
         {selected == null && library ? (
-          <Library
-            meetings={items}
-            isLoading={meetings.isLoading}
-            error={meetings.error}
-            onSelect={setSelectedId}
-          />
+          <Library onSelect={setSelectedId} />
         ) : selected == null ? (
-          <Dashboard
-            meetings={items}
-            isLoading={meetings.isLoading}
-            error={meetings.error}
-            onSelect={setSelectedId}
-            onJump={onJump}
-          />
+          <Dashboard onSelect={setSelectedId} onJump={onJump} />
         ) : selected.status === "recording" ? (
           <LiveRecording meeting={selected} />
         ) : (

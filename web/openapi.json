@@ -342,7 +342,7 @@
           "meetings"
         ],
         "summary": "List meetings, newest first.",
-        "description": "Backs the Library and Dashboard views.",
+        "description": "Backs the Library and Dashboard views. `folder_id`, `unfiled`, and `q` filter in SQL, so the\nLibrary's folder tabs and title search cover every meeting rather than the page on screen, and\n`total` counts the matches, not the database. `sort` flips the start-time order.",
         "operationId": "list_meetings",
         "parameters": [
           {
@@ -364,11 +364,48 @@
               "format": "int32",
               "minimum": 0
             }
+          },
+          {
+            "name": "folder_id",
+            "in": "query",
+            "description": "Only meetings filed under this folder",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "unfiled",
+            "in": "query",
+            "description": "Only meetings in no folder; not combinable with folder_id",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "description": "Title substring, case-insensitive (ASCII), up to 255 characters",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "sort",
+            "in": "query",
+            "description": "Start-time order: newest (default) or oldest",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/MeetingSort"
+            }
           }
         ],
         "responses": {
           "200": {
-            "description": "A page of meetings, newest first",
+            "description": "A page of the matching meetings",
             "content": {
               "application/json": {
                 "schema": {
@@ -376,6 +413,9 @@
                 }
               }
             }
+          },
+          "422": {
+            "description": "folder_id combined with unfiled, an unknown sort, or an over-long q"
           }
         }
       },
@@ -415,6 +455,28 @@
           },
           "503": {
             "description": "Capture engine unavailable"
+          }
+        }
+      }
+    },
+    "/api/meetings/counts": {
+      "get": {
+        "tags": [
+          "meetings"
+        ],
+        "summary": "Meeting counts per folder.",
+        "description": "The totals behind the Library sidebar's badges: every meeting, the unfiled ones, and one entry\nper folder that holds at least one. Counting here rather than over a listed page keeps the badges\nright however many meetings the database holds. A folder's count is the meetings filed directly\nunder it; meetings in a sub-folder count towards that sub-folder.",
+        "operationId": "meeting_counts",
+        "responses": {
+          "200": {
+            "description": "Meeting counts for the whole database",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MeetingCounts"
+                }
+              }
+            }
           }
         }
       }
@@ -1797,11 +1859,11 @@
           "meetings"
         ],
         "summary": "Live app readiness, for the UI header.",
-        "description": "Reports whether the transcription sidecars have finished loading their models. A cold start\ntakes several seconds, so the record control polls this to show a \"preparing\" state rather than\naccepting a start that would stall. Read-only and cheap to poll.",
+        "description": "Reports whether the transcription sidecars have finished loading their models, and which meeting\nthe engine is capturing (`null` when idle). A cold start takes several seconds, so the record\ncontrol polls this to show a \"preparing\" state rather than accepting a start that would stall,\nand reads `recording_meeting_id` to know a meeting is already under way. Read-only and cheap to\npoll.",
         "operationId": "read_status",
         "responses": {
           "200": {
-            "description": "Current sidecar readiness",
+            "description": "Sidecar readiness + the recording meeting",
             "content": {
               "application/json": {
                 "schema": {
@@ -2123,6 +2185,24 @@
           }
         }
       },
+      "FolderMeetingCount": {
+        "type": "object",
+        "description": "How many meetings one folder holds directly (meetings in its sub-folders count for those).",
+        "required": [
+          "folder_id",
+          "meetings"
+        ],
+        "properties": {
+          "folder_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "meetings": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
       "FolderRead": {
         "type": "object",
         "description": "An organizational folder for meetings (a node in the nested folder tree). `parent_id` is `null`\nfor a root folder.",
@@ -2241,6 +2321,34 @@
           "stream": {
             "type": "string",
             "description": "The stream this level is for (`me` or `them`)."
+          }
+        }
+      },
+      "MeetingCounts": {
+        "type": "object",
+        "description": "Meeting counts for the Library sidebar, over the whole database rather than a listed page.",
+        "required": [
+          "total",
+          "unfiled",
+          "folders"
+        ],
+        "properties": {
+          "folders": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/FolderMeetingCount"
+            },
+            "description": "One entry per folder holding at least one meeting; a folder with none is absent."
+          },
+          "total": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Every meeting, filed or not."
+          },
+          "unfiled": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Meetings in no folder."
           }
         }
       },
@@ -2373,6 +2481,14 @@
             "format": "date-time"
           }
         }
+      },
+      "MeetingSort": {
+        "type": "string",
+        "description": "Start-time order for a meetings listing.",
+        "enum": [
+          "newest",
+          "oldest"
+        ]
       },
       "MeetingStatus": {
         "type": "string",
@@ -3449,6 +3565,14 @@
           "sidecars_ready"
         ],
         "properties": {
+          "recording_meeting_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "The meeting the engine is capturing right now, or `null` when idle. The record control gates\non this rather than scanning the meetings list, which only ever holds one page."
+          },
           "sidecars_ready": {
             "type": "boolean"
           }

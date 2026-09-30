@@ -77,7 +77,9 @@ said later.
 
 The **home** view lists recent meetings. **Meetings** in the left rail opens the full Library, where
 you can sort newest or oldest, filter by title, and organize meetings into folders and sub-folders.
-Meetings not filed anywhere appear under **Unfiled**.
+Meetings not filed anywhere appear under **Unfiled**. The count beside each folder is its whole
+contents, and the title filter searches every meeting — both run over the full library, not the page
+you are looking at. Long libraries are paged 50 at a time, with the page controls along the bottom.
 
 Deleting a folder never deletes meetings — they move back to the root.
 
