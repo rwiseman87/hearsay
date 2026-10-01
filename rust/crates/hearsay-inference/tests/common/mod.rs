@@ -18,11 +18,6 @@ pub fn outputs(rel: &str) -> PathBuf {
     repo("outputs").join(rel)
 }
 
-/// The sherpa model tree (`outputs/models/sherpa/`) joined with `rel`.
-pub fn sherpa_model(rel: &str) -> PathBuf {
-    outputs("models/sherpa").join(rel)
-}
-
 /// This crate's own directory joined with `rel`, for committed fixtures under `tests/`.
 pub fn crate_rel(rel: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(rel)

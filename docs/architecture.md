@@ -1,7 +1,6 @@
 # Architecture
 
-Hearsay is a local-first meeting transcriber for macOS (Apple Silicon, macOS 14.4 or later) and
-Windows (x86_64, Windows 10 2004 or later; see [Cross-platform architecture](#cross-platform-architecture)). It captures the
+Hearsay is a local-first meeting transcriber for macOS (Apple Silicon, macOS 14.4 or later). It captures the
 local microphone ("Me") and the system audio output ("Them") as separate 16 kHz streams, transcribes
 both live, diarizes the Them stream into `Speaker N`, and refines the result after the meeting with
 an offline re-diarization and re-transcription pass. Everything runs on the user's machine; audio
@@ -131,10 +130,10 @@ flowchart BT
 | `hearsay-engine` | The neutral `LiveEngine` trait and the `DisabledEngine` placeholder the API test suite runs against. Exists so the core and the orchestrator can share the seam without a dependency cycle. |
 | `hearsay-orchestrator` | Implements `LiveEngine`: creates the meeting row and folder, drives an `AudioSource`, routes each stream's PCM to its `Transcriber`, records the stereo `audio.wav`, persists and broadcasts segments, and runs the refine and notes steps after stop. Ships scripted test fakes. |
 | `hearsay-capture` | `AudioSource` implementations. On macOS, `SwiftHelperSource` spawns `hearsay-helper` and pumps its socket traffic; also hosts the TCC permissions probe. |
-| `hearsay-inference` | In-process ML, all offline: the whisper refine (GGML; CPU, or Metal/Vulkan/CUDA by feature) and the feature-gated sherpa-onnx modules for the Windows path (`sherpa` feature). The llama.cpp notes summarizer runs out-of-process in the `hearsay-notes` sidecar, reusing the pure prompt/parse logic from `hearsay-notes-prompt`. |
+| `hearsay-inference` | In-process ML, all offline: the whisper refine (GGML; CPU, or Metal by feature). The llama.cpp notes summarizer runs out-of-process in the `hearsay-notes` sidecar, reusing the pure prompt/parse logic from `hearsay-notes-prompt`. |
 | `hearsay-notes-prompt` | Dependency-free prompt construction and reply parsing for the notes step, shared by `hearsay-backends` (the `SubprocessSummarizer`) and the `hearsay-notes` sidecar so the sidecar never pulls in `hearsay-inference` → whisper. |
 | `hearsay-notes` | The standalone notes-LLM sidecar binary: owns llama.cpp (`llama-cpp-2`), spawned by the core over stdio (JSON in, JSON out). The only process that links llama's vendored `ggml`. |
-| `hearsay-backends` | Platform backend wiring behind the engine seam: `MacBackend` (warm sidecar pool), `MacRefiner`, the `SubprocessSummarizer` (spawns `hearsay-notes`), startup reconciliation, the periodic audio-archival sweep, and `build_engine`. `WindowsBackend` and `WindowsRefiner` sit behind the same seam. |
+| `hearsay-backends` | Platform backend wiring behind the engine seam: `MacBackend` (warm sidecar pool), `MacRefiner`, the `SubprocessSummarizer` (spawns `hearsay-notes`), startup reconciliation, the periodic audio-archival sweep, and `build_engine`. |
 | `hearsay-core` | The application binary: the axum HTTP + WebSocket API, security middleware, the served UI, OpenAPI generation, and the composition root that calls `build_engine`. Depends only on the seam, never on the concrete backend crates directly. |
 
 The Tauri shell (`web/src-tauri/`) is a separate crate outside the workspace; it spawns the
@@ -238,16 +237,12 @@ classDiagram
     class ProcessTranscriber {
         <<hearsay-orchestrator>>
     }
-    class SherpaTranscriber {
-        <<hearsay-backends, sherpa feature>>
-    }
     Backend <|.. MacBackend
     MacBackend *-- SidecarPool
     Refiner <|.. MacRefiner
     Summarizer <|.. SubprocessSummarizer
     AudioSource <|.. SwiftHelperSource
     Transcriber <|.. ProcessTranscriber
-    Transcriber <|.. SherpaTranscriber
 ```
 
 Notable implementation points, each verifiable in the named file:
@@ -550,25 +545,3 @@ core therefore treats its port as untrusted and gates it three ways
 Privacy posture: raw audio retention is a single per-meeting recording that can be turned off in
 Settings (turning it off also disables the refine, which reads it), deleting a meeting removes both
 the rows and the folder, and the app collects no telemetry.
-
-## Cross-platform architecture
-
-Hearsay runs on macOS and Windows as the same Rust + Tauri app with per-OS code only at the edges.
-Roughly 90 percent of the codebase is platform-neutral.
-
-| Layer | Technology | Shared or per-OS |
-|---|---|---|
-| Shell and distribution | Tauri v2 (installer, system webview, signing) | Shared configuration, two build targets |
-| Frontend | React + TypeScript over the loopback API | Shared |
-| Core | axum, SQLx/SQLite, OpenAPI codegen, orchestration | Shared |
-| Capture | macOS: Swift helper. Windows: in-process WASAPI loopback + mic (`wasapi` crate), behind the same `AudioSource` trait | Per-OS, thin |
-| Live transcription | macOS: FluidAudio sidecars. Windows: a pure-Rust streaming transcriber (`SherpaTranscriber`, already present behind the `sherpa` feature) | Per-OS engine behind the `Transcriber` trait |
-| Offline refine | whisper (GGML) with a per-OS acceleration feature: Metal on macOS, Vulkan/CUDA for Windows | Shared code, per-OS acceleration |
-
-Constraints the Windows design targets: a 16 GB laptop with integrated graphics (Core Ultra
-225U-class reference hardware), no discrete GPU assumed, and the same local-only rule. Model sizes
-are tiered by detected hardware, so faster machines run larger refine models.
-
-Both engines sit behind the same trait seams, so each OS selects its own without the other's cost:
-the sherpa modules compile only under the `sherpa` feature, and the macOS bundle therefore carries
-no onnxruntime.

@@ -133,8 +133,7 @@ Names you set by hand are carried across. Per-line reassignments and hand-edited
 a refine rebuilds the transcript from the audio. If you have made line-level edits, Hearsay warns
 first: *"Discard N edits?"*.
 
-Refining is worth doing whenever the live labels are messy. On Windows the live transcript has no
-speaker labels at all, so a refine is how you get them.
+Refining is worth doing whenever the live labels are messy.
 
 ### Recognition across meetings
 

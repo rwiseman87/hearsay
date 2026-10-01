@@ -1,7 +1,7 @@
 //! Offline ASR via whisper.cpp (`whisper-rs`). Loads a GGML model once and transcribes 16 kHz mono
 //! PCM into timestamped segments. This is the offline path — the accuracy-verification harness and
-//! the orchestrator's post-meeting refine. GPU acceleration (Metal / Vulkan / CUDA) is a
-//! `whisper-rs` Cargo feature; with none enabled it runs on CPU.
+//! the orchestrator's post-meeting refine. GPU acceleration (Metal) is the
+//! `metal` Cargo feature; without it the model runs on CPU.
 
 use std::ops::Range;
 use std::path::Path;

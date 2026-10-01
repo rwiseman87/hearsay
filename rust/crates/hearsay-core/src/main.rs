@@ -52,9 +52,9 @@ async fn main() -> Result<(), BoxError> {
     if !models_present {
         tracing::info!("models missing: first-run setup required before recording");
     }
-    // Assemble the platform backend behind the neutral LiveEngine seam (macOS: capture helper +
-    // live sidecars + whisper refine; Windows: WASAPI capture + the sherpa path). `build_engine`
-    // installs the orchestrator's self-reference (so a capture death finalizes the meeting); the
+    // Assemble the backend behind the neutral LiveEngine seam (capture helper + live sidecars +
+    // whisper refine). `build_engine` installs the orchestrator's self-reference (so a capture death
+    // finalizes the meeting); the
     // binary holds only the trait object. Config defaults seed it; the editable Settings panels
     // override per meeting.
     let engine_config = EngineConfig {
@@ -77,8 +77,6 @@ async fn main() -> Result<(), BoxError> {
         notes_model: settings.notes_model.clone(),
         notes_prompt: settings.notes_prompt.clone(),
         notes_binary: settings.notes_binary.clone(),
-        sherpa_models_dir: settings.sherpa_models_dir.clone(),
-        win_loopback_mode: settings.win_loopback_mode,
     };
     // Dev-only: `HEARSAY_SCRIPTED` swaps the real platform backend for a deterministic, model-free
     // engine that replays a canned meeting (see `hearsay_backends::build_scripted_engine`), so the

@@ -319,7 +319,7 @@ pub struct VoiceprintSampleRead {
     /// Whether the name on this cluster was set by hand. Only locked samples are recognition
     /// candidates in later meetings.
     pub locked: bool,
-    /// Embedding length: 256 on macOS (FluidAudio), 192 on Windows (sherpa). Samples of different
+    /// Embedding length (256 from FluidAudio). Samples of different
     /// lengths never match each other.
     pub dimension: i64,
 }

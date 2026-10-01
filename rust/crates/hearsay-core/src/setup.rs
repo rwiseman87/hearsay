@@ -434,12 +434,6 @@ fn live_models_present(cache: Option<&Path>) -> bool {
         .all(|repo| dir_has_entries(&cache.join(repo)))
 }
 
-/// Windows bundles its sherpa models, so there is nothing to fetch.
-#[cfg(not(target_os = "macos"))]
-fn live_models_present(_cache: Option<&Path>) -> bool {
-    true
-}
-
 /// The refine model the app will load: the stored override, else the config default. Setup fetches
 /// that file, not the default.
 async fn effective_refine(pool: &SqlitePool, default: &Path) -> PathBuf {

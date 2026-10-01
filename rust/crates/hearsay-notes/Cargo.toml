@@ -23,10 +23,7 @@ encoding_rs = "0.8.35"
 serde = { workspace = true }
 serde_json = { workspace = true }
 
-# Per-OS GPU acceleration for the notes LLM, selected by the installer/build to match the whisper
-# refine's backend: `metal` on Apple Silicon, `vulkan` on the Intel Arc iGPU, `cuda` on NVIDIA.
+# GPU acceleration for the notes LLM: `metal` on Apple Silicon (matches the whisper refine).
 # Default = portable CPU.
 [features]
 metal = ["llama-cpp-2/metal"]
-vulkan = ["llama-cpp-2/vulkan"]
-cuda = ["llama-cpp-2/cuda"]

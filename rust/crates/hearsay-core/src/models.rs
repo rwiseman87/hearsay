@@ -102,12 +102,8 @@ const CATALOG: &[Model] = &[
 ];
 
 /// The refine model an install uses when nothing overrides it: the file [`Settings::refine_model`]
-/// defaults to, and the one first-run setup fetches. Windows takes a smaller model — no ANE/Metal on
-/// the reference hardware.
-#[cfg(not(windows))]
+/// defaults to, and the one first-run setup fetches.
 pub(crate) const DEFAULT_REFINE_FILE: &str = "ggml-large-v3-turbo.bin";
-#[cfg(windows)]
-pub(crate) const DEFAULT_REFINE_FILE: &str = "ggml-small.en.bin";
 
 /// Refine models setup can fetch, keyed by file name — an install pointed at some other model skips
 /// the step rather than fetching one it will never load. Sizes + SHA256 are HuggingFace's LFS oid.
@@ -118,13 +114,6 @@ const REFINE_SOURCES: &[Source] = &[
         file: "ggml-large-v3-turbo.bin",
         sha256: "1fc70f774d38eb169993ac391eea357ef47c88757ef72ee5943879b7e8e2bc69",
         size_bytes: 1_624_555_275,
-    },
-    // The Windows default, bundled today; here so an install that loses it can fetch it back.
-    Source {
-        repo: "ggerganov/whisper.cpp",
-        file: "ggml-small.en.bin",
-        sha256: "c6138d6d58ecc8322097e0f987c32f1be8bb0a18532a3f88f734d1bbf9c41e5d",
-        size_bytes: 487_614_201,
     },
 ];
 

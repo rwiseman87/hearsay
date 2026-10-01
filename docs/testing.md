@@ -32,18 +32,13 @@ This document maps the targets to what they test and the suite to where it lives
 | `web-ci` | `web-install` + `web-typecheck` (tsc) + `web-lint` (eslint) + `web-test` + `web-build` | the web UI type-checks, lints, unit/component-tests, and builds | no |
 | `web-test` | `vitest` (jsdom) | the client layer + hooks + MSW-mocked components (also folded into `web-ci`) | no |
 | **`make e2e`** | build the core, then Playwright/Chromium vs the scripted core + `vite dev` | the real React app → real core → real pipeline over a live WebSocket | no (Chromium once) |
-| **`make probes`** | `cargo test -- --ignored` on `hearsay-inference` (metal), `hearsay-notes` (metal), `hearsay-backends`, `hearsay-capture` | the ML paths: whisper refine + diarize, the notes LLM, the live pipeline, capture | **yes** |
+| **`make probes`** | `cargo test -- --ignored` on `hearsay-inference` (metal), `hearsay-notes` (metal), `hearsay-backends`, `hearsay-capture` | the ML paths: whisper refine + diarize, the notes LLM | **yes** |
 | **`make diarize-eval`** | `swift-build`, then the `diarization_accuracy` gate over the local labeled corpus | `hearsay-diarize` speaker-count + DER vs the committed baseline (AMI, plus any local recordings added to the corpus; audio stays local). The same test self-skips inside `make ci`; re-baseline an intentional change with `HEARSAY_UPDATE_DIAR_BASELINE=1` | **yes** |
 | `make coverage` | `cargo-llvm-cov` + vitest v8 → `outputs/coverage/` | report-only; the "what's untested" view | no |
 | **`make test-all`** | `ci` + `probes` + `e2e` | everything, on a fully-equipped box | yes |
 | `make clean-test` | `rm -rf outputs/coverage outputs/e2e` | (removes report dirs; test *data* auto-cleans via tempdirs) | no |
 
-`make ci` + `make e2e` is the complete deterministic suite on a machine without the models. Windows
-has no `make`, so the same set is mirrored in `scripts\test-windows.ps1`
-(`-Target ci|web|tauri|probes|coverage|e2e|all`) with the Windows feature set. Its Rust-building
-targets (`ci`, `probes`, `coverage`, `all`) share the installer build's prerequisites — CMake,
-LLVM/libclang, and, unless `-NoVulkan`, the Vulkan SDK + Ninja + Windows long paths — preflighted for
-both scripts by `scripts\windows-build-env.ps1`.
+`make ci` + `make e2e` is the complete deterministic suite on a machine without the models.
 
 ## The suite by layer
 
@@ -62,7 +57,7 @@ both scripts by `scripts\windows-build-env.ps1`.
 | **Browser E2E** | real UI → real core (scripted engine) → real pipeline: start → live transcript → stop → Library → rename speaker → reassign a line → generate notes, asserting exact text; the storage panel round-tripping the archival policy; and a meeting whose audio exists only as FLAC serving, seeking, and playing in a real browser | `web/e2e/*.spec.ts` | `e2e` |
 | **IPC parity** | the codec against golden fixtures, in **both** languages | `hearsay-ipc/tests/golden_fixtures.rs` + Swift `selftest` | `rust-test`, `swift-test` |
 | **Regression locks** | `insta` snapshot of the markdown export; `proptest` for the IPC codec round-trip + voiceprint `cosine`; codegen-drift diff | across the crates above + `codegen-check` | `rust-test`, `codegen-check` |
-| **Model/hardware probes** | whisper refine + `hearsay-diarize` (`refine_mac_probe`, `transcribe`, embed-cap), the notes LLM (`summarize`), the live pipeline (`streaming_pipeline`), synthetic capture | `*/tests/*probe*.rs`, `hearsay-{notes,backends,capture}/tests/` (all `#[ignore]`d) | `probes` |
+| **Model/hardware probes** | whisper refine + `hearsay-diarize` (`refine_mac_probe`, `transcribe`), the notes LLM (`summarize`) | `hearsay-inference/tests/`, `hearsay-notes/tests/` (all `#[ignore]`d) | `probes` |
 
 ## Fakes and seams
 
@@ -94,22 +89,11 @@ the one case that spawns a real process, managed by Playwright's `webServer` con
 coverage (`outputs/coverage/`) and Playwright reports/traces (`outputs/e2e/`) — land only under the
 gitignored `outputs/`; `make clean-test` removes them.
 
-## Platform parity (macOS / Windows)
-
-Hearsay is one codebase with per-OS edges: ~90% is shared and must behave identically; capture, live
-ASR/diarization, the refine GPU, and packaging differ by design. The shared surface — core API, DB, orchestrator, attribution,
-notes-prompt, markdown, the full-stack HTTP/WS test, and the browser E2E — runs the **same tests on both
-OSes** and is the parity backbone. The real differences are asserted where they are real: capture
-(`SwiftHelperSource` vs `WasapiSource`), live ASR/diarization (FluidAudio/ANE vs `sherpa`), and the
-refine GPU (`metal` vs `vulkan`/CPU) are covered per-OS by unit tests for the pure logic and by
-`make probes` for the model paths. IPC codec parity and the Swift `selftest` are macOS-only by design
-(no Swift/helper on Windows). Windows runs the whole set through `scripts\test-windows.ps1`.
-
 ## Running the probes
 
 `make probes` is not model-free: each probe hard-requires a downloaded model, and some need an input
 WAV supplied via environment variable (a bare `make probes` fails on the first such probe by design).
-Point them at real inputs — for example the refine decomposition probe:
+Point them at real inputs, for example:
 
 The archival sweep compresses meetings under the dev output dir once they are old enough, so a corpus
 recording may be `audio.flac` rather than `audio.wav`. The refine and `WavFileSource` read either;

@@ -8,8 +8,6 @@ use std::net::IpAddr;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use hearsay_backends::LoopbackMode;
-
 /// Resolved settings for one process.
 #[derive(Debug, Clone)]
 pub struct Settings {
@@ -78,10 +76,6 @@ pub struct Settings {
     pub notices_path: PathBuf,
     /// The process's home directory: the base of FluidAudio's model cache.
     pub home_dir: Option<PathBuf>,
-    /// Sherpa live/diarize models for the Windows backend. Unused on macOS.
-    pub sherpa_models_dir: PathBuf,
-    /// Which WASAPI loopback path captures Them on Windows. Unused on macOS.
-    pub win_loopback_mode: LoopbackMode,
 }
 
 fn env_or(key: &str, default: impl Into<String>) -> String {
@@ -108,13 +102,10 @@ fn default_notes_binary() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(name))
 }
 
-/// The sidecar's file name, carrying the platform executable suffix (`hearsay-notes` on macOS,
-/// `hearsay-notes.exe` on Windows — what both the Tauri bundler and cargo's target dir produce).
-/// The suffix is not cosmetic: the summarizer probes the path with `is_file()` before spawning, and
-/// an extension-less path never resolves on Windows, so notes fail with "sidecar not found" against
-/// a sidecar sitting right next to the core.
+/// The sidecar's file name. The summarizer probes the resolved path with `is_file()` before
+/// spawning, so it has to match what the packager stages beside the core.
 fn notes_binary_name() -> String {
-    format!("hearsay-notes{}", env::consts::EXE_SUFFIX)
+    "hearsay-notes".to_string()
 }
 
 /// Parse a boolean env var (`1`/`true`/`yes`/`on` -> true, `0`/`false`/`no`/`off` -> false,
@@ -146,22 +137,6 @@ fn env_u64(key: &str, default: u64, problems: &mut Vec<String>) -> u64 {
         Ok(value) => value,
         Err(_) => {
             problems.push(format!("{key}={raw:?} is not a non-negative integer"));
-            default
-        }
-    }
-}
-
-/// Parse the Windows loopback-mode env var (`HEARSAY_WIN_LOOPBACK`); `default` when unset. A
-/// set-but-unrecognized value is recorded in `problems` instead of falling back silently.
-fn env_loopback_mode(default: LoopbackMode, problems: &mut Vec<String>) -> LoopbackMode {
-    const KEY: &str = "HEARSAY_WIN_LOOPBACK";
-    let Ok(raw) = env::var(KEY) else {
-        return default;
-    };
-    match raw.parse::<LoopbackMode>() {
-        Ok(mode) => mode,
-        Err(err) => {
-            problems.push(format!("{KEY}: {err}"));
             default
         }
     }
@@ -253,7 +228,6 @@ impl Settings {
         let refine_timeout =
             Duration::from_secs(env_u64("HEARSAY_REFINE_TIMEOUT_SECS", 1800, &mut problems));
         let refine_carry_over = env_bool("HEARSAY_REFINE_CARRY_OVER", false, &mut problems);
-        let win_loopback_mode = env_loopback_mode(LoopbackMode::Device, &mut problems);
 
         if !problems.is_empty() {
             if environment == "development" {
@@ -308,11 +282,6 @@ impl Settings {
                 "./THIRD-PARTY-NOTICES.md",
             )),
             home_dir: env_path("HOME"),
-            sherpa_models_dir: PathBuf::from(env_or(
-                "HEARSAY_SHERPA_MODELS_DIR",
-                "outputs/models/sherpa",
-            )),
-            win_loopback_mode,
         })
     }
 
@@ -329,14 +298,12 @@ mod tests {
     use super::{bind_allowed, is_loopback_bind, notes_binary_name};
 
     /// The notes sidecar is found by an `is_file()` probe in the summarizer, so the name the core
-    /// resolves has to match what the packager stages beside it — `hearsay-notes.exe` on Windows.
+    /// resolves has to match what the packager stages beside it.
     /// Staging it the way the bundler does and probing the resolved path exercises that predicate.
     #[test]
     fn notes_sidecar_resolves_to_the_staged_binary() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let staged = dir
-            .path()
-            .join(format!("hearsay-notes{}", std::env::consts::EXE_SUFFIX));
+        let staged = dir.path().join("hearsay-notes");
         std::fs::write(&staged, b"").expect("stage sidecar");
         assert!(dir.path().join(notes_binary_name()).is_file());
     }

@@ -1512,7 +1512,7 @@ struct VoiceprintJoinRow {
 
 /// One stored voiceprint: the centroid on a single meeting's cluster. `locked` is what decides
 /// whether it is actually a recognition candidate (see `KNOWN_VOICEPRINTS_SQL`); `dimension` is the
-/// embedding length, which differs per platform (256 macOS / FluidAudio, 192 Windows / sherpa) and
+/// embedding length (256 from FluidAudio) and
 /// never cross-matches, since `cosine` returns 0.0 on a length mismatch.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VoiceprintSample {

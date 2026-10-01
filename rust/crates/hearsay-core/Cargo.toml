@@ -34,16 +34,9 @@ tower = { version = "0.5.3", features = ["util"] }
 ureq = "3.3.0"
 sha2 = "0.10.9"
 
-# GPU backends for the offline whisper refine, forwarded through `hearsay-backends` to
-# `hearsay-inference`'s whisper-rs. Off by default (CPU); the macOS bundle + `rust-serve` build with
-# `metal` (see the Makefile) — a large win on Apple Silicon. vulkan/cuda cover the Windows and Linux
-# builds; enable one per target (building a backend the host lacks fails).
+# `metal` forwards through `hearsay-backends` to `hearsay-inference`'s whisper-rs (the macOS bundle
+# and `rust-serve` build with it, see the Makefile). Off by default (CPU).
 [features]
-# The cross-platform (Windows) sherpa-onnx live/diarize path; required by the Windows backend
-# (`--features sherpa` there), off by default so the macOS bundle never links onnxruntime. The local
-# notes LLM is no longer a feature of the core: it runs out-of-process in the `hearsay-notes` sidecar
-# (built separately with its own `metal`/`vulkan` accel), so llama.cpp never links here with whisper.
-sherpa = ["hearsay-backends/sherpa"]
 # The browsable Swagger UI console at /docs, for working against the API by hand. Off by default:
 # `vendored` embeds ~1.6 MB of JS/CSS into the binary at COMPILE time, so a runtime check alone
 # would still ship the assets. `make rust-serve` turns it on; the packaged app does not. The mount
@@ -52,8 +45,6 @@ sherpa = ["hearsay-backends/sherpa"]
 api-console = ["dep:utoipa-swagger-ui"]
 aec = ["hearsay-backends/aec"]
 metal = ["hearsay-backends/metal"]
-vulkan = ["hearsay-backends/vulkan"]
-cuda = ["hearsay-backends/cuda"]
 
 [dev-dependencies]
 tempfile = { workspace = true }

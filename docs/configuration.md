@@ -31,7 +31,7 @@ source this page mirrors; `hearsay-core/src/routes/settings.rs` implements the w
 | Web bundle dir | `HEARSAY_WEB_DIR` | `./web/dist` |
 | Bind host / port | `HEARSAY_SERVER_HOST` / `HEARSAY_SERVER_PORT` | `127.0.0.1` / `0` (OS-assigned) |
 | Helper path | `HEARSAY_HELPER_PATH` | `helper/.build/arm64-apple-macosx/debug/hearsay-helper` |
-| Refine model | `HEARSAY_REFINE_MODEL` | `ggml-large-v3-turbo.bin` (`ggml-small.en.bin` on Windows) inside the models dir |
+| Refine model | `HEARSAY_REFINE_MODEL` | `ggml-large-v3-turbo.bin` inside the models dir |
 | Refine timeout (seconds) | `HEARSAY_REFINE_TIMEOUT_SECS` | `1800` |
 | Refine prompt carry-over | `HEARSAY_REFINE_CARRY_OVER` | `false` |
 | Record meeting audio (`audio.wav`) | `HEARSAY_RECORD` | `true` |
@@ -50,13 +50,11 @@ source this page mirrors; `hearsay-core/src/routes/settings.rs` implements the w
 | Models download dir | `HEARSAY_MODELS_DIR` | `outputs/models` |
 | Shell handshake file | `HEARSAY_HANDSHAKE_PATH` | unset (headless dev prints the URL instead) |
 | Third-party notices file | `HEARSAY_THIRD_PARTY_NOTICES` | `./THIRD-PARTY-NOTICES.md` (the shell points it at the bundled copy) |
-| Sherpa models dir (Windows backend) | `HEARSAY_SHERPA_MODELS_DIR` | `outputs/models/sherpa` |
 | Diarize clustering threshold (macOS sidecar) | `HEARSAY_DIARIZE_CLUSTER_THRESHOLD` | `0.7` |
-| Them loopback path (Windows) | `HEARSAY_WIN_LOOPBACK` | `device` (`device` \| `process`) |
 | Environment | `ENVIRONMENT` | `development` |
 
 The handshake and FluidAudio paths are injected by the desktop shell and are normally unset in
-development. The sherpa and loopback settings apply only on Windows.
+development.
 
 ## The writable overlay
 

@@ -223,22 +223,9 @@ is in [design-decisions.md](design-decisions.md). The choices below are specific
   is not `Send` by default. `demux` is the single owner and Tokio never polls that future from two
   threads at once, so a narrow `unsafe impl Send for SendAec` is sound and no lock is needed
   (`aec.rs`).
-- **Why is the Windows mic opened RAW?** Because otherwise there is nothing to cancel *linearly*.
-  A normally-opened WASAPI capture stream arrives through the APO chain — "Audio enhancements",
-  vendor noise suppression and AGC, and on most laptops the OEM's own echo canceller — which makes
-  Me a nonlinear, time-varying function of the acoustic field. An adaptive linear filter cannot
-  model that, so Speex cancels almost nothing and every remote utterance leaks into Me anyway.
-  Measured on one laptop as the best ERLE *any* linear canceller could reach (an offline
-  least-squares FIR, 200 ms fit, speakers, user silent): **1.7 dB** with enhancements on and the
-  stream processed, **16.8 dB** with them manually off, and **17.3 dB** with them left on but the
-  stream opened RAW. So RAW recovers the full ~15 dB without the user having to find the "Audio
-  enhancements" checkbox — which matters because it is on by default. `wasapi_source.rs` therefore
-  opens Me with `StreamOption::Raw`, falling back to the processed stream only if the endpoint
-  refuses (logged, so a degraded mic is diagnosable rather than silent).
-  Only Me: the loopback reference is a digital copy of the render mix with no APO chain in front of
-  it. Note the ceiling keeps climbing to ~17 dB out at 300 ms of filter, which is why `FILTER_TAIL`
-  is sized at 4800 and not the crate default — the echo path through a laptop chassis has a long
-  reverb tail, and a 50 ms fit understates what is cancellable by ~10 dB.
+- **Why is `FILTER_TAIL` 4800 and not the crate default?** The echo path through a laptop chassis has
+  a long reverb tail: the best ERLE any linear canceller could reach keeps climbing out to about
+  300 ms of filter, and a 50 ms fit understates what is cancellable by roughly 10 dB.
 
 ## Text-level dedup: the backstop
 
@@ -319,12 +306,10 @@ through the crates:
 hearsay-core/aec  ->  hearsay-backends/aec  ->  hearsay-orchestrator/aec  ->  dep:aec-rs
 ```
 
-- **On** in `make rust-serve` and `make dmg` / `make mac-app` (`--features metal,aec`); the Windows
-  package build adds it alongside `sherpa`/`vulkan`.
+- **On** in `make rust-serve` and `make dmg` / `make mac-app` (`--features metal,aec`).
 - **Off** by default (plain `cargo test`, `cargo build`), where `EchoCanceller` is the passthrough
   stub — so the default build and CI need no C toolchain.
-- Building the feature compiles vendored SpeexDSP with `cc` + `cmake` + `bindgen` (on Windows,
-  `bindgen` needs LLVM). Each platform's build treats AEC as a graceful add-on: if it is not built
+- Building the feature compiles vendored SpeexDSP with `cc` + `cmake` + `bindgen`. The build treats AEC as a graceful add-on: if it is not built
   in, capture and transcription still work, just without echo removal.
 
 Licensing: `aec-rs` is MIT and the vendored SpeexDSP is BSD-3-Clause — both inside the project's

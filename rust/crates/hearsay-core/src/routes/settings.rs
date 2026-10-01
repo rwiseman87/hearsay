@@ -509,29 +509,6 @@ pub(crate) fn reveal_in_file_manager(dir: &Path) -> ApiResult<()> {
     }
 }
 
-/// Open `dir` in File Explorer. `explorer` resolves through the system PATH (always present for a
-/// Win32 process). Explorer is known to exit nonzero even on success, so only a failed launch is an
-/// error; the exit status is logged, not checked. `dir` is app-controlled (the effective recordings
-/// dir), never user-supplied, so there is no argument-injection surface.
-#[cfg(target_os = "windows")]
-pub(crate) fn reveal_in_file_manager(dir: &Path) -> ApiResult<()> {
-    tracing::info!(path = %dir.display(), "reveal: opening in File Explorer");
-    let status = std::process::Command::new("explorer")
-        .arg(dir)
-        .status()
-        .map_err(|e| ApiError::Unavailable(format!("could not launch explorer: {e}")))?;
-    tracing::debug!(%status, "explorer exited");
-    Ok(())
-}
-
-/// Placeholder for targets with no file manager to drive.
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
-pub(crate) fn reveal_in_file_manager(_dir: &Path) -> ApiResult<()> {
-    Err(ApiError::Unavailable(
-        "revealing the recordings folder is not supported on this platform".into(),
-    ))
-}
-
 /// Serialize a settings section to JSON and upsert its `preferences` row.
 async fn store_section<T: serde::Serialize>(
     state: &AppState,

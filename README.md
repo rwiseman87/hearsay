@@ -25,7 +25,7 @@ It ships as one application: a single installer, with no interpreter or runtime 
 - **Writes meeting notes** with a local language model, if you want them. Off until you enable it.
 - **Organizes** meetings into nested folders, with your own notes alongside the generated ones.
 
-Runs on macOS (Apple Silicon, 14.4 or later) and Windows (x86_64, Windows 10 2004 or later).
+Runs on macOS (Apple Silicon, 14.4 or later).
 
 ## Install
 
@@ -36,8 +36,7 @@ make dmg    # macOS: an ad-hoc-signed Hearsay.app and .dmg (~50 MB; models downl
 ```
 
 No Apple Developer account is needed. Because the result is not notarized, recipients clear the
-quarantine flag once after installing. Windows builds an NSIS installer via
-`scripts\build-windows.ps1`, with its models bundled.
+quarantine flag once after installing.
 
 The macOS app downloads its speech models (about 2.6 GB) the first time it runs, and is fully
 offline after that.

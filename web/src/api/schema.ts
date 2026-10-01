@@ -935,7 +935,7 @@ export interface paths {
          *
          *     `active_count` is the subset recognition actually uses (a sample counts only once its name was
          *     set by hand), so `active_count: 0` means "saved, matching nothing yet". `dimension` is the
-         *     embedding length — 256 on macOS, 192 on Windows — and samples of different lengths never match
+         *     embedding length (256 from FluidAudio) — and samples of different lengths never match
          *     each other.
          */
         get: operations["list_voiceprints"];
@@ -1818,7 +1818,7 @@ export interface components {
         VoiceprintSampleRead: {
             /**
              * Format: int64
-             * @description Embedding length: 256 on macOS (FluidAudio), 192 on Windows (sherpa). Samples of different
+             * @description Embedding length (256 from FluidAudio). Samples of different
              *     lengths never match each other.
              */
             dimension: number;

@@ -1,4 +1,4 @@
-.PHONY: help swift-plist-guard swift-build swift-test rust-build rust-test rust-lint tauri-lint tauri-test rust-fmt test lint fmt codegen codegen-check web-install web-typecheck web-lint web-test web-build web-ci audit licenses version-check version stamp-version set-version ci probes diarize-eval coverage e2e test-all clean-test build package notarize clean serve rust-serve fetch-refine-model fetch-sherpa-models stage-sherpa-models stage-release mac-app dmg
+.PHONY: help swift-plist-guard swift-build swift-test rust-build rust-test rust-lint tauri-lint tauri-test rust-fmt test lint fmt codegen codegen-check web-install web-typecheck web-lint web-test web-build web-ci audit licenses version-check version stamp-version set-version ci probes diarize-eval coverage e2e test-all clean-test build package notarize clean serve rust-serve fetch-refine-model stage-release mac-app dmg
 
 PKG := helper
 RUST := rust
@@ -151,8 +151,7 @@ ci: lint test tauri-test web-ci codegen-check version-check audit licenses ## Fu
 
 # On-demand test suite (docs/testing.md). `make ci` above is the fast deterministic gate; the targets
 # below are the model/hardware probes, coverage, and the "run everything" aggregate — run when you want
-# on a box that has the models + ANE/GPU. Nothing here is automatic (no timers, no hooks). Windows has
-# no `make`, so the same set is mirrored in scripts\test-windows.ps1.
+# on a box that has the models + ANE/GPU. Nothing here is automatic (no timers, no hooks).
 probes: ## Model/hardware tests (the #[ignore]d refine/notes/live probes). Needs the models + ANE/GPU.
 	cargo test --manifest-path $(RUST)/Cargo.toml -p hearsay-inference --features metal -- --ignored
 	cargo test --manifest-path $(RUST)/Cargo.toml -p hearsay-notes --features metal -- --ignored
@@ -192,8 +191,8 @@ build notarize: ## Notarized distribution (needs a paid Apple Developer account)
 
 package: dmg ## Build the distributable DMG (alias for 'dmg')
 
-clean: clean-test ## Remove build artifacts (Swift, Rust, web bundle + deps, Tauri target, staged binaries/models)
-	rm -rf $(PKG)/.build $(RUST)/target web/dist web/node_modules web/src-tauri/target $(STAGE) $(MODELS_STAGE)
+clean: clean-test ## Remove build artifacts (Swift, Rust, web bundle + deps, Tauri target, staged binaries)
+	rm -rf $(PKG)/.build $(RUST)/target web/dist web/node_modules web/src-tauri/target $(STAGE)
 
 serve rust-serve: ## Serve the Rust core (SYNTHETIC=1 for no-permission plumbing; needs swift-build + web-build for a live run)
 	@mkdir -p outputs/db
@@ -209,9 +208,6 @@ serve rust-serve: ## Serve the Rust core (SYNTHETIC=1 for no-permission plumbing
 STAGE := web/src-tauri/binaries
 SIDECARS := $(SWIFT_PRODUCTS)
 APP := web/src-tauri/target/release/bundle/macos/Hearsay.app
-# Where the Windows staging targets put their models. The macOS bundle carries none — the app
-# downloads them on first run (docs/packaging.md).
-MODELS_STAGE := web/src-tauri/models
 # The refine model a dev run loads (the default `HEARSAY_REFINE_MODEL` path).
 REFINE_MODEL := ggml-large-v3-turbo.bin
 MODEL_SRC := outputs/models/$(REFINE_MODEL)
@@ -224,62 +220,6 @@ fetch-refine-model: ## Download the whisper refine model into outputs/models/ (f
 		curl -fL --retry 3 -o "$(MODEL_SRC).part" "$(WHISPER_REPO)/$(REFINE_MODEL)"; \
 		mv "$(MODEL_SRC).part" "$(MODEL_SRC)"; \
 	fi
-
-# Sherpa live/diarize models for the Windows backend: the streaming
-# zipformer + pyannote segmentation + TitaNet-small embedder, all from the sherpa-onnx model zoo
-# ("recongition" is the real upstream release-tag spelling). Fetch works from any host with
-# curl+tar; scripts/build-windows.ps1 does the same on the Windows machine.
-SHERPA_RELEASE := https://github.com/k2-fsa/sherpa-onnx/releases/download
-SHERPA_STREAMING := sherpa-onnx-streaming-zipformer-en-2023-06-21
-SHERPA_SEGMENTATION := sherpa-onnx-pyannote-segmentation-3-0
-# Restores case + punctuation on the streaming zipformer's bare uppercase output.
-SHERPA_PUNCT := sherpa-onnx-online-punct-en-2024-08-06
-SHERPA_EMBEDDING := nemo_en_titanet_small.onnx
-SHERPA_SRC := outputs/models/sherpa
-SHERPA_DST := web/src-tauri/models/sherpa
-
-fetch-sherpa-models: ## Download the sherpa live/diarize models (Windows backend) into outputs/
-	@mkdir -p "$(SHERPA_SRC)"
-	@set -euo pipefail; for a in $(SHERPA_STREAMING) $(SHERPA_SEGMENTATION) $(SHERPA_PUNCT); do \
-		if [ -d "$(SHERPA_SRC)/$$a" ]; then \
-			echo "sherpa model $$a already fetched"; \
-		else \
-			echo "fetching sherpa model $$a..."; \
-			tag=asr-models; \
-			if [ "$$a" = "$(SHERPA_SEGMENTATION)" ]; then tag=speaker-segmentation-models; fi; \
-			if [ "$$a" = "$(SHERPA_PUNCT)" ]; then tag=punctuation-models; fi; \
-			curl -fL "$(SHERPA_RELEASE)/$$tag/$$a.tar.bz2" | tar xjf - -C "$(SHERPA_SRC)"; \
-		fi; \
-	done
-	@if [ -f "$(SHERPA_SRC)/$(SHERPA_EMBEDDING)" ]; then \
-		echo "sherpa model $(SHERPA_EMBEDDING) already fetched"; \
-	else \
-		echo "fetching sherpa model $(SHERPA_EMBEDDING)..."; \
-		curl -fL -o "$(SHERPA_SRC)/$(SHERPA_EMBEDDING)" \
-			"$(SHERPA_RELEASE)/speaker-recongition-models/$(SHERPA_EMBEDDING)"; \
-	fi
-
-stage-sherpa-models: ## Stage the sherpa models into the Tauri bundle (Windows packaging)
-	@for m in $(SHERPA_STREAMING) $(SHERPA_SEGMENTATION) $(SHERPA_PUNCT) $(SHERPA_EMBEDDING); do \
-		if [ ! -e "$(SHERPA_SRC)/$$m" ]; then \
-			echo "ERROR: sherpa model '$$m' not in $(SHERPA_SRC)."; \
-			echo "Run 'make fetch-sherpa-models' first."; \
-			exit 1; \
-		fi; \
-	done
-	@mkdir -p "$(SHERPA_DST)"
-	@set -euo pipefail; for m in $(SHERPA_STREAMING) $(SHERPA_SEGMENTATION) $(SHERPA_PUNCT) $(SHERPA_EMBEDDING); do \
-		if [ -e "$(SHERPA_DST)/$$m" ]; then \
-			echo "sherpa model $$m already staged"; \
-		elif [ "$$m" = "$(SHERPA_STREAMING)" ]; then \
-			echo "staging sherpa model $$m (int8 only)..."; \
-			mkdir -p "$(SHERPA_DST)/$$m"; \
-			cp "$(SHERPA_SRC)/$$m"/*.int8.onnx "$(SHERPA_SRC)/$$m"/tokens.txt "$(SHERPA_DST)/$$m/"; \
-		else \
-			echo "staging sherpa model $$m..."; \
-			cp -R "$(SHERPA_SRC)/$$m" "$(SHERPA_DST)/$$m"; \
-		fi; \
-	done
 
 stage-release: version-check swift-plist-guard web-install ## Build release binaries + web bundle and stage them for the Tauri bundle
 	@test "$$(uname -m)" = "arm64" || { echo "stage-release: Apple-Silicon (arm64) only (got $$(uname -m)); the bundle is Apple-Silicon only"; exit 1; }

@@ -157,8 +157,8 @@ fn parse_diarization(stdout: &[u8]) -> Result<Diarization, InferenceError> {
 /// L2-normalized into a stored centroid. Transcribing whole-track (rather than slicing the track at
 /// turn boundaries and transcribing each turn alone) gives whisper full context and never skips
 /// inter-turn audio, so no speech is dropped. The diarizer-agnostic refine entry — the Swift sidecar
-/// ([`SwiftDiarizer`], via [`refine_them`]) or `SherpaDiarizer` plugs in. Blocking (whisper) — call
-/// via `spawn_blocking` from async code.
+/// ([`SwiftDiarizer`], via [`refine_them`]) or a scripted diarizer plugs in. Blocking (whisper) —
+/// call via `spawn_blocking` from async code.
 pub fn refine_them_with(
     asr: &WhisperAsr,
     diarizer: &dyn Diarizer,
@@ -166,11 +166,10 @@ pub fn refine_them_with(
 ) -> Result<RefineOutput, InferenceError> {
     // Diarize and transcribe are independent reads of the same immutable buffer, so overlap them:
     // whisper runs on a scoped thread (its `WhisperContext` is `Sync`, and each `transcribe` builds a
-    // fresh `WhisperState`) while the diarizer runs on the calling thread. On macOS the diarizer is a
+    // fresh `WhisperState`) while the diarizer runs on the calling thread. The diarizer is a
     // sleep-polled subprocess and whisper is on Metal, so the diarize duration fills the GPU's
-    // otherwise-idle time instead of running before it. The diarizer stays on one thread (the sherpa
-    // path is not thread-safe). `thread::scope` blocks until whisper finishes, so both borrows of
-    // `them_samples` are safe.
+    // otherwise-idle time instead of running before it. `thread::scope` blocks until whisper
+    // finishes, so both borrows of `them_samples` are safe.
     let (diarization, asr_result) = thread::scope(|scope| {
         let asr_handle = scope.spawn(|| asr.transcribe_track(them_samples));
         let diarization = diarizer.diarize(them_samples);
@@ -367,9 +366,9 @@ fn build_centroids(embeddings: &HashMap<i64, Vec<f32>>) -> HashMap<i64, Vec<f32>
 /// `None` for an empty vector; a zero vector is returned unchanged.
 /// Refine a recorded meeting's `audio.wav` end-to-end with any [`Diarizer`]: read the Them (right)
 /// channel, load the whisper model, then re-diarize + re-transcribe. The diarizer-agnostic file
-/// entry — the macOS refiner wraps it with [`SwiftDiarizer`] ([`refine_audio_file`]) and the
-/// Windows refiner with `SherpaDiarizer`. `carry_over` is whisper's cross-window prompt
-/// ([`WhisperAsr::with_carry_over`]). Blocking (whisper) — call via `spawn_blocking` from async code.
+/// entry — the refiner wraps it with [`SwiftDiarizer`] ([`refine_audio_file`]). `carry_over` is
+/// whisper's cross-window prompt ([`WhisperAsr::with_carry_over`]). Blocking (whisper) — call via
+/// `spawn_blocking` from async code.
 pub fn refine_audio_file_with(
     audio_path: &Path,
     diarizer: &dyn Diarizer,

@@ -729,8 +729,7 @@ struct PromptEvent<'a> {
 }
 
 /// A capture-health notice pushed to WebSocket subscribers:
-/// `{"kind":"capture_health","stream":"me","state":"silent"}`. The Windows counterpart of the
-/// macOS helper's `tap_health` event.
+/// `{"kind":"capture_health","stream":"me","state":"silent"}`.
 #[derive(Serialize)]
 struct CaptureHealthEvent<'a> {
     kind: &'a str,

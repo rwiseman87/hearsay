@@ -16,22 +16,21 @@ constraint that decided it.
 
 **A Rust core rather than a Python backend.** Shipping CPython inside a signed, notarized desktop
 app is the hardest part of packaging one: the interpreter, the native wheels, and the code-signing
-rules interact badly, and the result is fragile. A Rust core is a single self-contained binary per
-OS with no interpreter to install, and roughly 90 percent of it is shared between macOS and Windows.
+rules interact badly, and the result is fragile. A Rust core is a single self-contained binary
+with no interpreter to install.
 
 **Swift only where the OS requires it.** Core Audio process taps, `AVAudioEngine`, and CoreML/ANE
 access have no usable Rust bindings, and FluidAudio is a Swift package. Those live in the capture
 helper and the sidecars; everything else is Rust.
 
-**Tauri rather than Electron.** Tauri uses the system webview — WKWebView on macOS, WebView2 on
-Windows — instead of bundling Chromium. A browser runtime would be the largest thing in an installer
+**Tauri rather than Electron.** Tauri uses the system webview — WKWebView — instead of
+bundling Chromium. A browser runtime would be the largest thing in an installer
 whose whole point is that it is small enough to host.
 
 **Models downloaded on first run rather than bundled.** The macOS model set is about 2.6 GB, past
 what a GitHub release asset can hold (2 GB), so bundling would rule out the distribution channel
 entirely. Downloading them once at first launch trades the offline-install property for a ~50 MB
-installer; after that first run the app is as offline as it ever was. Windows keeps its (smaller)
-models bundled, since its installer fits comfortably.
+installer; after that first run the app is as offline as it ever was.
 
 **SQLite via SQLx rather than PostgreSQL.** This is a single-user desktop app; running a database
 daemon would be infrastructure with no user. Going through SQLx rather than raw `rusqlite` keeps a
@@ -39,46 +38,22 @@ later move to a server cheap without paying for it now.
 
 ## Model selection
 
-Per stage, per OS. The two platforms run different engines because the ANE is a macOS-only
-accelerator, and the trait seams (`Transcriber`, `Diarizer`, `Refiner`) keep them interchangeable.
+Per stage. The trait seams (`Transcriber`, `Diarizer`, `Refiner`) keep each engine interchangeable.
 
-| Stage | macOS | Windows |
-|---|---|---|
-| Live ASR | Parakeet TDT 0.6b, on the ANE | streaming zipformer (sherpa-onnx) |
-| Casing and punctuation | emitted by Parakeet | a second model, `sherpa-onnx-online-punct-en` |
-| Live diarization | FluidAudio streaming diarizer (LS-EEND), on CPU | **none** — live text is speaker-less |
-| Offline diarization | pyannote community-1, CoreML | pyannote segmentation 3.0 (sherpa-onnx) |
-| Speaker embeddings | wespeaker_v2, 256-d | TitaNet-small, 192-d |
-| Me VAD | Silero | — |
-| Offline refine ASR | whisper `ggml-large-v3-turbo` | whisper `ggml-small.en` |
-| Notes | local GGUF instruct model via llama.cpp | same |
+| Stage | Model |
+|---|---|
+| Live ASR | Parakeet TDT 0.6b, on the ANE |
+| Live diarization | FluidAudio streaming diarizer (LS-EEND), on CPU |
+| Offline diarization | pyannote community-1, CoreML |
+| Speaker embeddings | wespeaker_v2, 256-d |
+| Me VAD | Silero |
+| Offline refine ASR | whisper `ggml-large-v3-turbo` |
+| Notes | local GGUF instruct model via llama.cpp |
 
 **Why not whisper for the live path?** whisper decodes in 30-second windows, so it cannot emit the
-growing partial transcripts a live caption view needs. Parakeet and the streaming zipformer are
+growing partial transcripts a live caption view needs. Parakeet is
 streaming-native. whisper earns its place in the offline refine, where whole-file context is an
 advantage rather than a latency problem.
-
-**Why a separate punctuation model on Windows?** The streaming zipformer emits bare uppercase text
-with no punctuation, so the sherpa tier needs a second pass to make the transcript readable.
-Parakeet emits punctuated, cased text directly. That is a concrete quality gap between the tiers,
-not just a speed difference.
-
-**Why FluidAudio stays the macOS accuracy tier.** Diarization tuning on the sherpa path was
-exhausted under the dependency license gate and still plateaus: on a known-two-speaker clip it
-settles on about three speakers across every clustering threshold that does not over-cluster badly,
-where FluidAudio returns a clean two. The residual over-split is cleaned up afterwards by a
-consolidation pass over whole-speaker centroids, which separate far better than sherpa's per-window
-ones — a Windows-side repair, not a reason to change macOS.
-
-**Why pyannote segmentation 3.0 on the sherpa path.** It is the only segmentation model in the
-sherpa-onnx zoo under a permissive license. The better-performing Rev "reverb" models are
-Non-Production/non-commercial, which the project's MIT/BSD/Apache-only dependency policy rules out.
-The license gate picked the model here, not the benchmark.
-
-**Why TitaNet-small for embeddings on that path.** It beat CAM++ as the embedder in the same
-evaluation. The two embedding spaces are not interchangeable with the macOS one: a 256-d wespeaker
-vector and a 192-d TitaNet vector are never compared, and a length mismatch is skipped rather than
-scored, so voiceprints never cross-match between platforms.
 
 **Why greedy decoding on the refine.** Beam search is too slow on `large-v3` for a pass that already
 runs over the whole meeting.
@@ -86,8 +61,7 @@ runs over the whole meeting.
 ## Streaming versus offline
 
 **Live diarization is deliberately approximate; accuracy work targets the offline refine.** A
-streaming diarizer runs online with limited context, so it over- and under-merges — and on Windows
-there is no live diarization at all, only speaker-less text. A whole-track pass after the meeting
+streaming diarizer runs online with limited context, so it over- and under-merges. A whole-track pass after the meeting
 clusters globally, handles overlap properly, and is cheap on the ANE, so every meeting can end with
 better labels than it streamed with. This is why "Refine speakers" exists as a user-facing action,
 and why live label quality is not treated as a defect.

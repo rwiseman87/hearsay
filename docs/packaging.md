@@ -45,7 +45,7 @@ make stamp-version VERSION=0.2.0   # write all five; what the installer build ru
 make set-version VERSION=0.2.0     # the same, plus regenerated codegen
 ```
 
-`make dmg` and `scripts\build-windows.ps1` both run the drift check first and stop if any file
+`make dmg` runs the drift check first and stop if any file
 disagrees, so a mismatched version cannot reach an installer. `make ci` runs the same check.
 Versions are `x.y.z`; that is what Cargo and Tauri require and what `CFBundleShortVersionString`
 expects.
@@ -210,38 +210,6 @@ flowchart TD
   The erase is confirmed through a native dialog driven by the shell (not the web page), and it
   cannot be undone. The app then quits so you can drag `Hearsay.app` to the Trash.
 
-## Windows installer
-
-The Windows bundle is an unsigned NSIS installer built on a Windows x86_64 machine:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File scripts\build-windows.ps1              # default: Vulkan (GPU) + AEC
-powershell -ExecutionPolicy Bypass -File scripts\build-windows.ps1 -NoVulkan     # CPU-only build
-```
-
-Vulkan and AEC are on by default; opt out with `-NoVulkan` / `-NoAec` (and `-SkipModels` to reuse an
-already-staged model set).
-
-The script checks the app version for drift first (the PowerShell half of `make version-check`), then
-fetches and stages the models (the sherpa live/diarize set plus `ggml-small.en.bin`
-for the refine), builds the web bundle, `hearsay-core.exe` (features `sherpa`, plus `vulkan`/`aec`
-unless disabled), and the `hearsay-notes.exe` sidecar (built separately with matching `vulkan` so
-llama.cpp never co-links with the core's whisper), then runs `cargo tauri build --bundles nsis`.
-`tauri.windows.conf.json` narrows the bundle for Windows: NSIS only, and `hearsay-core` +
-`hearsay-notes` as the external binaries (no Swift sidecars). The installer lands in
-`web/src-tauri/target/release/bundle/nsis/`.
-
-Windows specifics:
-
-- **Unsigned**: SmartScreen shows "Windows protected your PC" — More info > Run anyway.
-- **WebView2**: the installer bootstraps Microsoft's WebView2 runtime if it is missing
-  (preinstalled on Windows 11 and current Windows 10).
-- **Data locations**: database, recordings, and downloaded models live under
-  `%APPDATA%\com.hearsay.app\`; WebView state under `%LOCALAPPDATA%\com.hearsay.app\`. "Erase
-  all data" removes both (Windows has no per-app permission grants to reset).
-- **Quit during a meeting**: Windows has no SIGTERM-style graceful stop yet, so a meeting active
-  at quit is finalized by the next launch's startup reconciliation instead of at exit.
-
 ## Known limitations
 
 - **Not notarized.** By design; recipients run the `xattr` quarantine strip once.
@@ -250,5 +218,4 @@ Windows specifics:
   already in progress.
 - **The first run needs the network.** The installer is small because the models are not in it, so
   a machine that is offline on first launch can browse the app but cannot record until the download
-  completes. After that Hearsay is fully offline. (Windows still bundles its smaller model set, so
-  its installer is about 650 MB and needs no first-run download.)
+  completes. After that Hearsay is fully offline.

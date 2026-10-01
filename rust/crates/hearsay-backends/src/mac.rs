@@ -243,9 +243,6 @@ pub fn build_engine(config: EngineConfig) -> Arc<dyn LiveEngine> {
         notes_model,
         notes_prompt,
         notes_binary,
-        // Windows-only fields; the mac backend has no use for them.
-        sherpa_models_dir: _,
-        win_loopback_mode: _,
     } = config;
     let backend = Arc::new(MacBackend::new(helper_path.clone(), synthetic));
     // Spawn the first sidecar pair now so its models start loading before the first meeting instead

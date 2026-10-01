@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use sqlx::SqlitePool;
 
-use hearsay_backends::{build_scripted_engine, EngineConfig, LoopbackMode};
+use hearsay_backends::{build_scripted_engine, EngineConfig};
 use hearsay_db::models::{MeetingStatus, Stream};
 use hearsay_db::queries;
 use hearsay_db::test_support::memory_pool;
@@ -36,8 +36,6 @@ fn config(pool: SqlitePool, output_dir: PathBuf) -> EngineConfig {
         notes_model: PathBuf::new(),
         notes_prompt: String::new(),
         notes_binary: PathBuf::from("unused"),
-        sherpa_models_dir: PathBuf::new(),
-        win_loopback_mode: LoopbackMode::Device,
     }
 }
 

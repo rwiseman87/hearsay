@@ -1881,7 +1881,7 @@
           "voiceprints"
         ],
         "summary": "The voice roster: people who have a stored voiceprint, with all of their samples.",
-        "description": "Lists only people who **have** an embedding. Someone named in a meeting that was never refined\nhas no centroid and is therefore absent — they are still a known person on `GET /api/identities`,\njust not a voice. Clearing someone's last sample drops them from this list, so `sample_count` is\nalways at least 1.\n\n`active_count` is the subset recognition actually uses (a sample counts only once its name was\nset by hand), so `active_count: 0` means \"saved, matching nothing yet\". `dimension` is the\nembedding length — 256 on macOS, 192 on Windows — and samples of different lengths never match\neach other.",
+        "description": "Lists only people who **have** an embedding. Someone named in a meeting that was never refined\nhas no centroid and is therefore absent — they are still a known person on `GET /api/identities`,\njust not a voice. Clearing someone's last sample drops them from this list, so `sample_count` is\nalways at least 1.\n\n`active_count` is the subset recognition actually uses (a sample counts only once its name was\nset by hand), so `active_count: 0` means \"saved, matching nothing yet\". `dimension` is the\nembedding length (256 from FluidAudio) — and samples of different lengths never match\neach other.",
         "operationId": "list_voiceprints",
         "parameters": [
           {
@@ -3775,7 +3775,7 @@
           "dimension": {
             "type": "integer",
             "format": "int64",
-            "description": "Embedding length: 256 on macOS (FluidAudio), 192 on Windows (sherpa). Samples of different\nlengths never match each other."
+            "description": "Embedding length (256 from FluidAudio). Samples of different\nlengths never match each other."
           },
           "id": {
             "type": "string",

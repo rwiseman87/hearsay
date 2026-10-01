@@ -1,6 +1,6 @@
 # Hearsay
 
-Local-first meeting-note transcriber for macOS and Windows. Captures the local mic and system
+Local-first meeting-note transcriber for macOS. Captures the local mic and system
 audio as **separate** streams ("Me" vs "Them"), transcribes in real time, identifies the remote
 speakers, and streams Markdown notes. Transcription, diarization, and the notes LLM all run on-device;
 audio never leaves the machine.
@@ -13,7 +13,7 @@ IPC contract: `shared/protocol/ipc.md`. `README.md` is the single documentation 
 
 ## Architecture
 
-Multi-process, local-only (macOS on Apple Silicon 14.4+; Windows on x86_64, Win10 2004+):
+Multi-process, local-only (macOS on Apple Silicon 14.4+):
 
 - **Swift capture helper** (`helper/`) — the ONLY process that touches guarded native APIs (the Core
   Audio process tap and the microphone via AVAudioEngine). A lean PCM streamer; streams PCM and device
@@ -45,7 +45,7 @@ rust/crates/
   hearsay-db/           SQLite via SQLx: models, queries, migrations/ (forward-only .sql)
   hearsay-orchestrator/ capture routing + Transcriber/AudioSource seams + pipeline + markdown/recorder + notes seam (implements LiveEngine)
   hearsay-engine/       LiveEngine trait seam + DisabledEngine placeholder (no dependency cycle)
-  hearsay-backends/     per-OS backend wiring: MacBackend/MacRefiner + SubprocessSummarizer + build_engine (rediarize + notes)
+  hearsay-backends/     backend wiring: MacBackend/MacRefiner + SubprocessSummarizer + build_engine (rediarize + notes)
   hearsay-capture/      AudioSource trait + SwiftHelperSource (spawns hearsay-helper) + the TCC permissions probe
   hearsay-inference/    whisper offline ASR + the refine (whisper-rs; no llama — see hearsay-notes)
   hearsay-notes/        the local-LLM notes sidecar (llama-cpp-2); spawned by the core, kept out of its binary
@@ -196,23 +196,22 @@ shared/protocol/ipc.md  IPC contract (source of truth)   ·   shared/fixtures/  
 
 ## Distribution
 
-- One **installer per OS**, no interpreter bundle (Rust removes the hardest packaging step). NOT
+- One **installer**, no interpreter bundle (Rust removes the hardest packaging step). NOT
   sandboxed / not App Store (the system-audio tap needs it). `make dmg` builds the ad-hoc-signed,
-  un-notarized DMG; `scripts/build-windows.ps1` builds the NSIS installer.
+  un-notarized DMG.
 - The macOS installer carries **no models** (~50 MB): the app downloads them on first run behind a
   setup screen that gates recording (`hearsay-core/src/setup.rs` + the `hearsay-models` sidecar).
-  2.6 GB of models would exceed GitHub's 2 GB release-asset cap. Windows still bundles its smaller
-  sherpa set.
+  2.6 GB of models would exceed GitHub's 2 GB release-asset cap.
 
 ## Dependency Decisions
 
 - Rust core canonical: a single self-contained artifact with no interpreter bundle,
-  ~90% shared across macOS + Windows, with the loopback API + OpenAPI codegen as the one source of
+  with the loopback API + OpenAPI codegen as the one source of
   truth.
 - Persistence: local-first SQLite via SQLx + forward-only SQL migrations. Single-user desktop app, so
   there is no database server to run.
 - macOS inference uses the Swift/FluidAudio (ANE) sidecars for live ASR + diarization; the offline
-  refine is whisper (`hearsay-inference`). Windows uses the sherpa-onnx live path behind the same seams.
+  refine is whisper (`hearsay-inference`).
 
 ## Environment Variables
 

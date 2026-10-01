@@ -61,8 +61,6 @@ fn test_settings(output_dir: PathBuf, web_dir: PathBuf) -> Settings {
         handshake_path: None,
         notices_path: PathBuf::from("no-notices"),
         home_dir: None,
-        sherpa_models_dir: PathBuf::from("no-sherpa-models"),
-        win_loopback_mode: Default::default(),
     }
 }
 
@@ -1380,8 +1378,6 @@ async fn reads_settings_with_config_defaults_and_about() {
     assert!(body["about"]["app_version"].is_string());
 }
 
-// Windows has no capture helper -- `win_permissions` returns `available: true` -- so this
-// helper-missing degradation is macOS-specific.
 #[cfg(target_os = "macos")]
 #[tokio::test]
 async fn permissions_probe_degrades_when_helper_missing() {
