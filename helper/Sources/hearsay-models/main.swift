@@ -60,7 +60,7 @@ final class Reporter: @unchecked Sendable {
     private let lock = NSLock()
     private var lastPercent: [String: Int] = [:]
 
-    func report(_ step: String, _ progress: DownloadUtils.DownloadProgress) {
+    func report(_ step: String, _ progress: DownloadProgress) {
         let phase: String
         switch progress.phase {
         case .listing: phase = "listing"
@@ -76,7 +76,7 @@ final class Reporter: @unchecked Sendable {
     }
 }
 
-func handler(_ step: String) -> DownloadUtils.ProgressHandler {
+func handler(_ step: String) -> ProgressHandler {
     { progress in Reporter.shared.report(step, progress) }
 }
 
