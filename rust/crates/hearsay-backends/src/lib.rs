@@ -3,7 +3,7 @@
 //!
 //! `build_engine` takes an `EngineConfig` and returns an `Arc<dyn LiveEngine>` — all
 //! `hearsay-core`'s binary needs. It wires the Swift `hearsay-helper` capture + the FluidAudio
-//! live sidecars + the whisper offline refine. The HTTP crate keeps depending only on the neutral
+//! live sidecars + the offline refine. The HTTP crate keeps depending only on the neutral
 //! seam. [`probe_permissions`] is re-exported so the API's Permissions panel reaches the prober
 //! without a direct `hearsay-capture` dependency.
 
@@ -50,14 +50,8 @@ pub struct EngineConfig {
     /// Pre-warm the transcription sidecars at boot. False until the models are on disk; setup
     /// releases it with `LiveEngine::start_prewarm`.
     pub prewarm: bool,
-    /// Config-default GGML whisper model for the offline refine (the Models panel overrides it).
-    pub refine_model: PathBuf,
-    /// Deadline for the refine's diarize step.
+    /// Deadline for the refine sidecar run (diarize + transcribe).
     pub refine_timeout: Duration,
-    /// Whether the refine's whisper pass primes each 30-s window with the previous window's text.
-    /// Off by default: measured on a 44-minute meeting it cost 2.4x the decode time and let one
-    /// hallucinated silent window poison every window after it.
-    pub refine_carry_over: bool,
     pub record: bool,
     pub auto_refine: bool,
     pub recognition_threshold: f64,
@@ -71,7 +65,7 @@ pub struct EngineConfig {
     /// Config-default notes prompt template (the Models panel overrides it).
     pub notes_prompt: String,
     /// The `hearsay-notes` sidecar binary (a sibling of the core) that runs the local-LLM notes step
-    /// out-of-process, so llama.cpp never links into the core alongside whisper.
+    /// out-of-process, so llama.cpp never links into the core.
     pub notes_binary: PathBuf,
 }
 
@@ -92,8 +86,7 @@ pub(crate) fn map_refine_output(output: hearsay_inference::RefineOutput) -> Refi
         centroids: output.centroids,
         coverage: output.coverage.map(|c| RefineCoverage {
             fraction: c.fraction(),
-            recovered_spans: c.recovered.len(),
-            unrecovered_spans: c.unrecovered.len(),
+            uncovered_spans: c.uncovered.len(),
         }),
     }
 }

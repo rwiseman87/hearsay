@@ -10,7 +10,6 @@ import {
   useModelCatalog,
   usePermissions,
   useRenameIdentity,
-  useResetModels,
   useSettings,
   useStartDownload,
   useUpdateModels,
@@ -471,22 +470,16 @@ function ModelsPanel() {
   const qc = useQueryClient();
   const settings = useSettings();
   const update = useUpdateModels();
-  const reset = useResetModels();
   const catalog = useModelCatalog();
   const download = useDownloadStatus();
   const startDownload = useStartDownload();
   const models = settings.data?.models;
   const info = settings.data?.models_info;
-  const [path, setPath] = useState("");
   const [notesPath, setNotesPath] = useState("");
   const [notesPrompt, setNotesPrompt] = useState("");
   const [selectedId, setSelectedId] = useState("");
 
   // Re-sync the inputs when the server values change; depend on the primitives, not the objects.
-  const refineModel = models?.refine_model;
-  useEffect(() => {
-    if (refineModel !== undefined) setPath(refineModel);
-  }, [refineModel]);
   const notesModel = models?.notes_model;
   useEffect(() => {
     if (notesModel !== undefined) setNotesPath(notesModel);
@@ -521,7 +514,7 @@ function ModelsPanel() {
 
   if (settings.isLoading || !models || !info) return <p className="muted">Loading…</p>;
 
-  const busy = update.isPending || reset.isPending;
+  const busy = update.isPending;
   const notesEnabled = models.notes_enabled ?? false;
   const storedNotesModel = models.notes_model ?? "";
   const storedNotesPrompt = models.notes_prompt ?? "";
@@ -530,38 +523,15 @@ function ModelsPanel() {
   const effectiveNotesPrompt = storedNotesPrompt || info.default_notes_prompt;
 
   // Every save PUTs the whole `models` section (the server full-replaces it), so carry the other
-  // fields through untouched — a refine-model save must not wipe a downloaded notes model, a notes
-  // toggle must not disturb the refine model, and none of them may drop a saved prompt.
+  // fields through untouched — a notes toggle must not wipe a downloaded notes model or a saved prompt.
   const commit = (patch: Partial<ModelSettings>) =>
     update.mutate({
-      refine_model: models.refine_model,
       notes_enabled: notesEnabled,
       notes_model: storedNotesModel,
       notes_prompt: storedNotesPrompt,
       ...patch,
     });
 
-  const onSave = () => {
-    const trimmed = path.trim();
-    if (trimmed) commit({ refine_model: trimmed });
-  };
-
-  // Native open-file dialog (desktop only — the shell surfaces it via Tauri IPC). Picking a file
-  // applies it immediately; the core still validates the GGML magic before persisting.
-  const onBrowse = async () => {
-    let picked: string | null;
-    try {
-      picked = await invoke<string | null>("pick_refine_model");
-    } catch {
-      return; // picker unavailable — the text input remains the fallback
-    }
-    if (picked) {
-      setPath(picked);
-      commit({ refine_model: picked });
-    }
-  };
-
-  const isDefault = models.refine_model === info.default_refine_model;
   const selected = catalogItems?.find((m) => m.id === selectedId);
   const downloading = dlStatus === "downloading" || dlStatus === "verifying";
 
@@ -569,62 +539,6 @@ function ModelsPanel() {
     <div className="settings__panel">
       <h3 className="settings__panel-title">Models</h3>
       <div className="settings__field">
-        <span className="settings__row-label">Refine transcription model</span>
-        <div className="settings__inline">
-          <input
-            value={path}
-            spellCheck={false}
-            disabled={busy}
-            aria-label="Refine transcription model path"
-            onChange={(event) => setPath(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === "Enter") onSave();
-            }}
-          />
-          {IS_DESKTOP ? (
-            <button type="button" onClick={() => void onBrowse()} disabled={busy}>
-              Choose…
-            </button>
-          ) : null}
-          <button type="button" onClick={onSave} disabled={busy || path.trim() === models.refine_model}>
-            {update.isPending ? "Checking…" : "Save"}
-          </button>
-        </div>
-        <span className="settings__row-hint muted">
-          Absolute path to a downloaded GGML whisper model (a <code>ggml-*.bin</code> file). Used
-          only for the post-meeting refine — the higher-accuracy re-transcription behind the “Refine
-          speakers” button and auto-refine. Live transcription is unaffected. Applies to your next
-          refine.
-        </span>
-        {!info.refine_model_exists ? (
-          <p className="settings__error" role="alert">
-            The current model file was not found on disk. Refining will fail until this points at an
-            existing model.
-          </p>
-        ) : null}
-      </div>
-      <dl className="settings__facts">
-        <div>
-          <dt>Bundled default</dt>
-          <dd>
-            <code>{info.default_refine_model}</code>
-            {isDefault ? (
-              <span className="settings__row-hint muted"> — in use</span>
-            ) : (
-              <button
-                type="button"
-                className="settings__link-btn"
-                disabled={busy}
-                onClick={() => reset.mutate()}
-              >
-                {reset.isPending ? "Resetting…" : "Reset to default"}
-              </button>
-            )}
-          </dd>
-        </div>
-      </dl>
-
-      <div className="settings__field settings__field--divided">
         <label className="settings__row">
           <input
             type="checkbox"

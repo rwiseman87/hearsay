@@ -32,9 +32,9 @@ This document maps the targets to what they test and the suite to where it lives
 | `web-ci` | `web-install` + `web-typecheck` (tsc) + `web-lint` (eslint) + `web-test` + `web-build` | the web UI type-checks, lints, unit/component-tests, and builds | no |
 | `web-test` | `vitest` (jsdom) | the client layer + hooks + MSW-mocked components (also folded into `web-ci`) | no |
 | **`make e2e`** | build the core, then Playwright/Chromium vs the scripted core + `vite dev` | the real React app → real core → real pipeline over a live WebSocket | no (Chromium once) |
-| **`make probes`** | `cargo test -- --ignored` on `hearsay-inference` (metal), `hearsay-notes` (metal), `hearsay-backends`, `hearsay-capture` | the ML paths: whisper refine + diarize, the notes LLM | **yes** |
+| **`make probes`** | `cargo test -- --ignored` on `hearsay-notes` (metal) | the notes LLM | **yes** |
 | **`make diarize-eval`** | `swift-build`, then the `diarization_accuracy` gate over the local labeled corpus | `hearsay-diarize` speaker-count + DER vs the committed baseline (AMI, plus any local recordings added to the corpus; audio stays local). The same test self-skips inside `make ci`; re-baseline an intentional change with `HEARSAY_UPDATE_DIAR_BASELINE=1` | **yes** |
-| **`make wer-eval`** | `swift-build`, then the `hearsay-eval` `asr_accuracy` gate | the offline refine (whisper + `hearsay-diarize`) scored with WER and cpWER against the committed reference transcript, plus RTF in the run report; self-skips when the audio, whisper model or sidecar is absent. Re-baseline with `HEARSAY_UPDATE_EVAL_BASELINE=1` | **yes** |
+| **`make wer-eval`** | `swift-build`, then the `hearsay-eval` `asr_accuracy` gate | the offline refine (`hearsay-diarize` with Parakeet Ultra) scored with WER and cpWER against the committed reference transcript, plus RTF in the run report; self-skips when the audio or sidecar is absent. Gated on Parakeet Ultra: WER 0.163 / cpWER 0.225 on AMI ES2004a near-field, 0.238 / 0.301 far-field. Re-baseline with `HEARSAY_UPDATE_EVAL_BASELINE=1` | **yes** |
 | **`make live-eval`** | `swift-build`, then the `hearsay-eval` `live_eval` gate (`HEARSAY_LIVE_EVAL=1`) | `hearsay-me` and `hearsay-live` fed the corpus concurrently at real-time pace; WER and cpWER gated, final-delay percentiles reported. A 10-minute window takes about 10 minutes; `HEARSAY_EVAL_SPEED=0` feeds unpaced (WER only) | **yes** |
 | **`make eval`** | `diarize-eval` + `wer-eval` + `live-eval` | every accuracy and latency eval | **yes** |
 | `make coverage` | `cargo-llvm-cov` + vitest v8 → `outputs/coverage/` | report-only; the "what's untested" view | no |
@@ -60,7 +60,7 @@ This document maps the targets to what they test and the suite to where it lives
 | **Browser E2E** | real UI → real core (scripted engine) → real pipeline: start → live transcript → stop → Library → rename speaker → reassign a line → generate notes, asserting exact text; the storage panel round-tripping the archival policy; and a meeting whose audio exists only as FLAC serving, seeking, and playing in a real browser | `web/e2e/*.spec.ts` | `e2e` |
 | **IPC parity** | the codec against golden fixtures, in **both** languages | `hearsay-ipc/tests/golden_fixtures.rs` + Swift `selftest` | `rust-test`, `swift-test` |
 | **Regression locks** | `insta` snapshot of the markdown export; `proptest` for the IPC codec round-trip + voiceprint `cosine`; codegen-drift diff | across the crates above + `codegen-check` | `rust-test`, `codegen-check` |
-| **Model/hardware probes** | whisper refine + `hearsay-diarize` (`refine_mac_probe`, `transcribe`), the notes LLM (`summarize`) | `hearsay-inference/tests/`, `hearsay-notes/tests/` (all `#[ignore]`d) | `probes` |
+| **Model/hardware probes** | the notes LLM (`summarize`) | `hearsay-notes/tests/` (`#[ignore]`d) | `probes` |
 
 ## Fakes and seams
 
@@ -94,28 +94,17 @@ gitignored `outputs/`; `make clean-test` removes them.
 
 ## Running the probes
 
-`make probes` is not model-free: each probe hard-requires a downloaded model, and some need an input
-WAV supplied via environment variable (a bare `make probes` fails on the first such probe by design).
-Point them at real inputs, for example:
-
-The archival sweep compresses meetings under the dev output dir once they are old enough, so a corpus
-recording may be `audio.flac` rather than `audio.wav`. The refine and `WavFileSource` read either;
-point `HEARSAY_BENCH_WAV` at whichever the folder holds.
+`make probes` is not model-free: the notes probe hard-requires a downloaded GGUF model (a bare
+`make probes` fails by design). Point it at one:
 
 ```sh
-HEARSAY_BENCH_WAV=outputs/recordings/<meeting>/audio.wav \
-HEARSAY_REFINE_MODEL=outputs/models/ggml-large-v3-turbo.bin \
-HEARSAY_DIARIZE_BIN=helper/.build/arm64-apple-macosx/release/hearsay-diarize \
 HEARSAY_NOTES_MODEL=outputs/models/<instruct>.gguf \
 make probes
 ```
 
-The GPU-backed probes that ship their own fixtures (e.g. `refines_real_meeting_them_track`,
-`summarize`) need only the models; the WAV/diarizer vars are for the decomposition/benchmark probes.
-The refine's anti-loop defence is pinned in `hearsay-inference/tests/refine_mac_probe.rs`, which fails
-on any run of back-to-back identical segments, so a whisper repetition-attractor regression surfaces
-here. The detector it guards (`find_loop_runs`) is pure and unit-tested in `hearsay-inference`'s lib
-tests, which need no model.
+The archival sweep compresses meetings under the dev output dir once they are old enough, so a corpus
+recording may be `audio.flac` rather than `audio.wav`. The refine and `WavFileSource` read either;
+point `HEARSAY_BENCH_WAV` at whichever the folder holds when running the evals.
 
 ## Accuracy and latency evals
 
@@ -143,13 +132,10 @@ and `der`), and the runners live in `hearsay-eval` (plus the diarization gate in
   skipped, not failed, when a run used a different one (`HEARSAY_EVAL_MAX_S`,
   `HEARSAY_EVAL_LIVE_MAX_S`). Latency and RTF are machine-dependent, so they are reported in
   `outputs/eval/<run>/*.json` and not gated.
-- **Comparing ASR backends.** `HEARSAY_EVAL_ASR=parakeet:<v2|v3|ultra|redux|phonon2>` scores the
-  `hearsay-diarize --asr` Parakeet batch ASR (each word attributed to the diarizer turn it overlaps)
-  on the same metrics instead of the whisper refine. Those runs are report-only: never gated, never
+- **Comparing ASR backends.** `HEARSAY_EVAL_ASR=<v2|v3|ultra|redux|phonon2>` scores another
+  `hearsay-diarize --asr` Parakeet model (each word attributed to the diarizer turn it overlaps)
+  on the same metrics instead of the gated Ultra. Those runs are report-only: never gated, never
   written to the baseline. The first run of a model downloads it into the FluidAudio cache.
-- **Whisper model.** `HEARSAY_REFINE_MODEL`, else `outputs/models/ggml-large-v3-turbo.bin`
-  (`make fetch-refine-model`). `HEARSAY_EVAL_CARRY_OVER=1` turns prompt carry-over on, matching the
-  setting's non-default state.
 
 ## Not covered (by design)
 

@@ -155,8 +155,8 @@ let mut centroids = build_centroids(&diarization.embeddings);  // l2_normalize p
 centroids.retain(|ordinal, _| present.contains(ordinal));
 ```
 
-Whisper is not involved in embeddings at all — it only re-transcribes the track; the ASR text is
-then attributed to whichever diarizer turn it most overlaps.
+The ASR is not involved in embeddings at all: the refine transcribes the track with Parakeet Ultra and
+the ASR text is then attributed to whichever diarizer turn it most overlaps.
 
 ## 2. Where voiceprints are stored
 

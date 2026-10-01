@@ -1,9 +1,5 @@
-//! Drives a live Swift sidecar (`hearsay-me` or `hearsay-live`) over its stdio protocol and records
-//! every emitted segment with the wall-clock instant it arrived.
-//!
-//! Protocol (see `hearsay-orchestrator`'s `ProcessTranscriber` and `SidecarIO`): stdin takes
-//! `<u32 LE n><n x f32 LE>` frames of 16 kHz mono PCM and EOF finalizes; stdout emits NDJSON, with a
-//! single `{"ready":true}` once the models are loaded and then one object per segment.
+//! Drives a live Swift sidecar over its stdio protocol (`<u32 LE n><n x f32 LE>` frames in, NDJSON out)
+//! and records every emitted segment with its wall-clock arrival.
 
 use std::io::{BufRead, BufReader, Write};
 use std::path::Path;

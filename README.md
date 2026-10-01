@@ -38,7 +38,7 @@ make dmg    # macOS: an ad-hoc-signed Hearsay.app and .dmg (~50 MB; models downl
 No Apple Developer account is needed. Because the result is not notarized, recipients clear the
 quarantine flag once after installing.
 
-The macOS app downloads its speech models (about 2.6 GB) the first time it runs, and is fully
+The macOS app downloads its speech models (about 1.3 GB) the first time it runs, and is fully
 offline after that.
 
 Full build, install, data-location, and uninstall steps: **[docs/packaging.md](docs/packaging.md)**.

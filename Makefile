@@ -1,4 +1,4 @@
-.PHONY: help swift-plist-guard swift-build swift-test rust-build rust-test rust-lint tauri-lint tauri-test rust-fmt test lint fmt codegen codegen-check web-install web-typecheck web-lint web-test web-build web-ci audit licenses version-check version stamp-version set-version ci probes diarize-eval wer-eval live-eval eval coverage e2e test-all clean-test build package notarize clean serve rust-serve fetch-refine-model stage-release mac-app dmg
+.PHONY: help swift-plist-guard swift-build swift-test rust-build rust-test rust-lint tauri-lint tauri-test rust-fmt test lint fmt codegen codegen-check web-install web-typecheck web-lint web-test web-build web-ci audit licenses version-check version stamp-version set-version ci probes diarize-eval wer-eval live-eval eval coverage e2e test-all clean-test build package notarize clean serve rust-serve stage-release mac-app dmg
 
 PKG := helper
 RUST := rust
@@ -152,20 +152,17 @@ ci: lint test tauri-test web-ci codegen-check version-check audit licenses ## Fu
 # On-demand test suite (docs/testing.md). `make ci` above is the fast deterministic gate; the targets
 # below are the model/hardware probes, coverage, and the "run everything" aggregate — run when you want
 # on a box that has the models + ANE/GPU. Nothing here is automatic (no timers, no hooks).
-probes: ## Model/hardware tests (the #[ignore]d refine/notes/live probes). Needs the models + ANE/GPU.
-	cargo test --manifest-path $(RUST)/Cargo.toml -p hearsay-inference --features metal -- --ignored
+probes: ## Model/hardware tests (the #[ignore]d notes probes). Needs the models + ANE/GPU.
 	cargo test --manifest-path $(RUST)/Cargo.toml -p hearsay-notes --features metal -- --ignored
-	cargo test --manifest-path $(RUST)/Cargo.toml -p hearsay-backends -- --ignored
-	cargo test --manifest-path $(RUST)/Cargo.toml -p hearsay-capture -- --ignored
 
 diarize-eval: swift-build ## Diarization accuracy gate: run hearsay-diarize over the local labeled corpus and check speaker-count + DER vs the committed baseline. Self-skips (never fails) when the audio/sidecar are absent, so the same test is safe in `make ci`; here it builds the sidecar and runs it for real with output. Point at a private recording with HEARSAY_DIARIZE_CORPUS + HEARSAY_DIARIZE_BASELINE; re-baseline an intentional change with HEARSAY_UPDATE_DIAR_BASELINE=1.
 	cargo test --manifest-path $(RUST)/Cargo.toml -p hearsay-inference --test diarization_accuracy diarization_accuracy_gate -- --nocapture
 
-wer-eval: swift-build ## Offline transcript accuracy gate: run the refine (whisper + hearsay-diarize) over the local labeled corpus and check WER + cpWER vs the committed baseline. Self-skips when the audio, whisper model or sidecar is absent. Re-baseline: HEARSAY_UPDATE_EVAL_BASELINE=1.
-	cargo test --manifest-path $(RUST)/Cargo.toml -p hearsay-eval --features metal --test asr_accuracy -- --nocapture
+wer-eval: swift-build ## Offline transcript accuracy gate: run the refine (hearsay-diarize with Parakeet Ultra) over the local labeled corpus and check WER + cpWER vs the committed baseline. Self-skips when the audio or sidecar is absent. Re-baseline: HEARSAY_UPDATE_EVAL_BASELINE=1.
+	cargo test --manifest-path $(RUST)/Cargo.toml -p hearsay-eval --test asr_accuracy -- --nocapture
 
 live-eval: swift-build ## Live accuracy + latency: feed the corpus to hearsay-me/-live at real-time pace (10-minute window by default) and check WER/cpWER vs the baseline; reports final-delay percentiles. HEARSAY_EVAL_SPEED=0 feeds unpaced.
-	HEARSAY_LIVE_EVAL=1 cargo test --manifest-path $(RUST)/Cargo.toml -p hearsay-eval --features metal --test live_eval -- --nocapture
+	HEARSAY_LIVE_EVAL=1 cargo test --manifest-path $(RUST)/Cargo.toml -p hearsay-eval --test live_eval -- --nocapture
 
 eval: diarize-eval wer-eval live-eval ## Every accuracy/latency eval (diarization, offline transcript, live)
 
@@ -205,30 +202,17 @@ clean: clean-test ## Remove build artifacts (Swift, Rust, web bundle + deps, Tau
 serve rust-serve: ## Serve the Rust core (SYNTHETIC=1 for no-permission plumbing; needs swift-build + web-build for a live run)
 	@mkdir -p outputs/db
 	# Build the notes sidecar so the core (which spawns it as a `hearsay-notes` sibling) resolves it in
-	# dev. Separate binary + separate build so llama.cpp never co-links with whisper (a ggml collision
-	# that slows the refine ~5x); the core is built WITHOUT a notes feature.
+	# dev. Separate binary so a llama.cpp crash cannot take down the core; the core is built WITHOUT a
+	# notes feature.
 	cargo build --manifest-path $(RUST)/Cargo.toml -p hearsay-notes --features metal
 	HEARSAY_SERVER_PORT=$(RUST_PORT) DATABASE_URL="$(RUST_DB)" \
-		cargo run --manifest-path $(RUST)/Cargo.toml -p hearsay-core --features metal,aec,api-console $(if $(SYNTHETIC),-- --synthetic)
+		cargo run --manifest-path $(RUST)/Cargo.toml -p hearsay-core --features aec,api-console $(if $(SYNTHETIC),-- --synthetic)
 
 # Distribution staging: build RELEASE binaries + web bundle, then copy them where Tauri's
 # `externalBin` expects them (`<name>-<target-triple>`). Shared by `mac-app` and `dmg`.
 STAGE := web/src-tauri/binaries
 SIDECARS := $(SWIFT_PRODUCTS)
 APP := web/src-tauri/target/release/bundle/macos/Hearsay.app
-# The refine model a dev run loads (the default `HEARSAY_REFINE_MODEL` path).
-REFINE_MODEL := ggml-large-v3-turbo.bin
-MODEL_SRC := outputs/models/$(REFINE_MODEL)
-WHISPER_REPO := https://huggingface.co/ggerganov/whisper.cpp/resolve/main
-
-fetch-refine-model: ## Download the whisper refine model into outputs/models/ (for a dev run; the app downloads its own)
-	@if [ -f "$(MODEL_SRC)" ]; then echo "refine model already present"; else \
-		mkdir -p outputs/models; \
-		echo "fetching $(REFINE_MODEL) (about 1.5 GB)..."; \
-		curl -fL --retry 3 -o "$(MODEL_SRC).part" "$(WHISPER_REPO)/$(REFINE_MODEL)"; \
-		mv "$(MODEL_SRC).part" "$(MODEL_SRC)"; \
-	fi
-
 stage-release: version-check swift-plist-guard web-install ## Build release binaries + web bundle and stage them for the Tauri bundle
 	@test "$$(uname -m)" = "arm64" || { echo "stage-release: Apple-Silicon (arm64) only (got $$(uname -m)); the bundle is Apple-Silicon only"; exit 1; }
 	cd web && npm run build
@@ -236,9 +220,8 @@ stage-release: version-check swift-plist-guard web-install ## Build release bina
 		swift build -c release --package-path $(PKG) --product $$p; \
 	done
 	# The core is built WITHOUT notes; the notes LLM ships as its own `hearsay-notes` sidecar so
-	# llama.cpp never co-links with whisper (a ggml collision that slows the refine ~5x). Both get the
-	# same `metal` accel.
-	cargo build --release --manifest-path $(RUST)/Cargo.toml -p hearsay-core --features metal,aec
+	# a llama.cpp crash is isolated from the core. The sidecar gets `metal` accel.
+	cargo build --release --manifest-path $(RUST)/Cargo.toml -p hearsay-core --features aec
 	cargo build --release --manifest-path $(RUST)/Cargo.toml -p hearsay-notes --features metal
 	@mkdir -p $(STAGE)
 	cp $(RUST)/target/release/hearsay-core $(STAGE)/hearsay-core-aarch64-apple-darwin

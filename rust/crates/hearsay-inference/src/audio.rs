@@ -1,4 +1,4 @@
-//! Minimal WAV reading for the offline ASR path: a 16 kHz mono `f32` buffer, downmixing stereo.
+//! Minimal WAV reading for the offline refine path: a 16 kHz mono `f32` buffer, downmixing stereo.
 
 use std::path::Path;
 

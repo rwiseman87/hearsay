@@ -67,8 +67,7 @@ points `HEARSAY_THIRD_PARTY_NOTICES` at it so Settings > About can open it. The 
 downloads include CC BY 4.0 weights whose attribution has to travel with the app, so this file ships
 with every build — no staging step, Tauri copies it from the repo root.
 
-Nothing about packaging needs a model on the build machine. `make fetch-refine-model` still exists,
-but only for a local `make rust-serve` run (the dev default `HEARSAY_REFINE_MODEL` path).
+Nothing about packaging needs a model on the build machine.
 
 Artifacts:
 
@@ -115,7 +114,7 @@ installer build (`promote` needs none of it — it moves a file):
 | Node | `24.19.0` | Its bundled npm (11.17.0) decides which lockfile tree `npm ci` demands, so the patch version is pinned and `web/package-lock.json` is generated with that npm. Local development needs only >= 20.19.0 (`web/package.json`). |
 | `cargo-audit` / `cargo-deny` / `tauri-cli` | 0.22.2 / 0.20.2 / 2.11.4 | The Makefile assumes all three on `PATH`; none ship on the runner. |
 
-The runner leaves about 14 GB free and this build compiles whisper.cpp, llama.cpp and SpeexDSP from
+The runner leaves about 14 GB free and this build compiles llama.cpp and SpeexDSP from
 source, so the setup action deletes the unused Xcode installations before building.
 
 Three caches, all `actions/cache`: the pinned cargo tools (keyed on the setup action itself, so a
@@ -154,15 +153,15 @@ exactly what the `xattr` step addresses.
 ## First-run models
 
 The installer carries no models, so the first launch shows a setup screen instead of the app: about
-2.6 GB of speech models (1.1 GB of FluidAudio live models plus the 1.5 GB whisper refine model), with
-an option to fetch a notes model in the same pass. Nothing downloads until the user starts it, which
-is what makes a metered or offline first run survivable — the app simply waits.
+1.3 GB of speech models (the FluidAudio set: Silero VAD ~1 MB, diarizer ~34 MB, LS-EEND ~43 MB, Parakeet
+Ultra ~614 MB, Parakeet unified streaming ~582 MB), with an option to fetch a notes model in the same
+pass. Nothing downloads until the user starts it, which is what makes a metered or offline first run survivable — the app simply waits.
 
-- The live models are fetched by the `hearsay-models` sidecar, which calls the same FluidAudio
+- The models are fetched by the `hearsay-models` sidecar, which calls the same FluidAudio
   loaders the live sidecars call, so what it prepares cannot drift from what they load. They land in
   FluidAudio's own cache (`~/Library/Application Support/FluidAudio/Models/`).
-- The refine model is a resumable, SHA-256-verified download into
-  `~/Library/Application Support/com.hearsay.app/models/`, where `HEARSAY_REFINE_MODEL` points.
+- Setup carries a models revision; a build that changes the model set re-runs the setup screen on
+  upgrade rather than failing later at first use.
 - An interrupted download resumes from its `.part` file on the next attempt; quitting mid-download
   is safe.
 - The core holds back sidecar pre-warming until the models are there, so nothing races the setup run

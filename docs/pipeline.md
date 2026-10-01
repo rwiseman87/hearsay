@@ -4,7 +4,7 @@ Traces a single meeting from captured audio frames to a finished `transcript.md`
 timestamped, speaker-labelled, persisted transcript lines.
 
 The Rust core relays audio and persists results but runs no live ML of its own. The audio AI runs in
-Swift sidecars that the pipeline spawns and feeds; the offline refine uses whisper.
+Swift sidecars that the pipeline spawns and feeds; the offline refine runs one Swift sidecar that diarizes and transcribes with Parakeet Ultra.
 
 ## Related documents
 
@@ -180,34 +180,15 @@ handles overlap better. The refine runs automatically at stop when auto-refine i
 and on demand from the "Refine speakers" button (`POST /api/meetings/{id}/rediarize`). Both paths
 drive the same `LiveEngine::rediarize` implementation. The refine:
 
-- diarizes the whole Them track (the right channel of the recording) with the `hearsay-diarize`
-  sidecar, which returns speaker turns and each speaker's mean voiceprint,
-- transcribes the whole Them track in one whisper pass (`hearsay-inference`) — not a per-turn
-  transcribe loop — then attributes each ASR segment to the diarizer turn it most overlaps, so the
-  transcript follows speaker changes; `replace_them_segments` swaps the live Them segments and
-  clusters for the refined, speaker-attributed segments in a single transaction (Me is untouched),
-- decodes with cross-window prompt carry-over off (`HEARSAY_REFINE_CARRY_OVER`, default `false`).
-  Carry-over primes each 30-second window with the previous window's text, which holds context across
-  the seam but makes the decoder's output its own next input. Measured on a 44-minute meeting it cost
-  2.4x the decode time for no gain in unique transcript, and carried one hallucinated silent window
-  into every window after it. The two repairs below defend the meeting that turns it back on,
-- repairs whisper's repetition loops before attribution: whisper primes each 30-second window with
-  the text it just produced, so a phrase that starts repeating keeps winning and can run to the end
-  of the track. Its built-in gates catch the short cases only — the entropy check reads the last 32
-  tokens, so a longer repeated unit scores like ordinary speech, and an attractor is confident enough
-  to clear the average-logprob gate. Runs of three or more repeating segments (cycles up to three
-  segments long) are therefore re-decoded from the audio alone, with cross-window prompting off,
-  which breaks the attractor and recovers the speech the loop wrote over. A re-decode that repeats
-  again is treated as genuine repetition and kept,
-- re-decodes stretches the pass left blank. The same cross-window prompting has a second failure
-  mode: once a window's output degenerates, later windows can emit timestamps and no text at all,
-  and because that empty output becomes the next window's prompt the state sustains itself to the
-  end of the track — `whisper_full` still returns success, so a 44-minute meeting can come back with
-  12 minutes of transcript and no error. Untranscribed spans of 45 seconds or more that carry audio
-  above the silence floor are therefore re-decoded prompt-free and spliced back in. The loop is
-  bounded: three passes at most, each must add transcript to earn the next, and silence is never
-  retried,
-- records what fraction of the *audible* Them track ended up transcribed. Below 80% the meeting is
+- runs one `hearsay-diarize <wav> --asr ultra` sidecar over the whole Them track (the right channel of
+  the recording). The sidecar diarizes (pyannote community-1) and transcribes with Parakeet Ultra on
+  the Apple Neural Engine, returning speaker turns, each speaker's mean voiceprint, and word-level
+  timestamps. The track is transcribed whole, not per turn,
+- attributes each word to the diarizer turn it overlaps most (ties go to the shorter turn), then
+  merges consecutive words in the same turn into a segment, so the transcript follows speaker
+  changes; `replace_them_segments` swaps the live Them segments and clusters for the refined,
+  speaker-attributed segments in a single transaction (Me is untouched),
+- records what fraction of the *audible* Them track ended up transcribed (audible-vs-transcribed seconds). Below 80% the meeting is
   flagged `refine_incomplete`, the core logs a warning, and the transcript view offers a re-refine —
   so a truncated decode is visible instead of passing as a quiet meeting,
 - carries manual renames forward by voting each locked name onto the turn ordinal its old segments

@@ -428,22 +428,15 @@ async fn run_auto_refine(
     }
 }
 
-/// Warn when the refine stalled or came back short; without this a truncated transcript ships
+/// Warn when the refine came back short; without this a truncated transcript ships
 /// looking complete. `replace_them_segments` persists the same number for the UI.
 fn report_coverage(meeting: &Meeting, coverage: Option<queries::RefineCoverage>) {
     let Some(coverage) = coverage else { return };
-    if coverage.recovered_spans > 0 {
-        tracing::warn!(
-            meeting = %meeting.id,
-            recovered_spans = coverage.recovered_spans,
-            "refine: whisper stalled mid-track; re-decoded the silent spans without prompt carry-over"
-        );
-    }
     if coverage.is_incomplete() {
         tracing::warn!(
             meeting = %meeting.id,
             coverage = format!("{:.0}%", coverage.fraction * 100.0),
-            unrecovered_spans = coverage.unrecovered_spans,
+            uncovered_spans = coverage.uncovered_spans,
             "refine transcribed only part of the audible track; transcript is incomplete"
         );
     }
@@ -480,7 +473,7 @@ async fn write_transcript(pool: &SqlitePool, output_dir: &Path, meeting: &Meetin
 }
 
 /// Generate + persist + write a meeting's notes with `summarizer`, acquiring the shared ANE gate for
-/// the GPU-heavy generation (llama.cpp runs on the same GPU as whisper). `default_enabled` /
+/// the GPU-heavy generation (llama.cpp shares the GPU with the live sidecars). `default_enabled` /
 /// `default_model` are the config defaults behind the effective `models`-section values; the stored
 /// `model` label is the effective notes model's file name (the summarizer resolves it itself to
 /// load). A meeting with no segments is a no-op. Shared by the manual "Generate notes" route and the
@@ -624,7 +617,7 @@ impl LiveEngine for Orchestrator {
         let task_meeting = meeting.clone();
         let handle = tokio::spawn(async move {
             if let Some((refiner, threshold)) = refine {
-                // Serialize the refine's ANE work (diarize + whisper) against any live meeting on the
+                // Serialize the refine's ANE work (diarize + transcribe) against any live meeting on the
                 // shared permit: hold it only for the refine (waiting if a meeting currently holds
                 // it), released before the transcript write (disk, not ANE). Deadlock-free — the live
                 // side always releases at stop, this always releases when the refine returns.

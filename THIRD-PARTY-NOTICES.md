@@ -11,8 +11,8 @@ Licensed under CC BY 4.0: https://creativecommons.org/licenses/by/4.0/
 
 Each of these components was format-converted for use in Hearsay. No other changes were made.
 
-- **Parakeet TDT 0.6B v3** — © NVIDIA Corporation. Converted to Core ML by FluidInference
-  (`FluidInference/parakeet-tdt-0.6b-v3-coreml`, from `nvidia/parakeet-tdt-0.6b-v3`).
+- **Parakeet Ultra** — © moondream, based on NVIDIA Parakeet TDT 0.6B v3 (© NVIDIA Corporation).
+  Converted to Core ML by FluidInference (`FluidInference/parakeet-ultra-coreml`).
 - **Parakeet unified EN 0.6B** — © NVIDIA Corporation. Converted to Core ML by FluidInference
   (`FluidInference/parakeet-unified-en-0.6b-coreml`).
 - **pyannote segmentation 3.0 with WeSpeaker v2 speaker embeddings** — © Hervé Bredin and
@@ -31,10 +31,7 @@ The following components are licensed under the MIT License:
 - **LS-EEND** (Core ML conversion `FluidInference/ls-eend-coreml`)
 - **Silero VAD** — © Silero Team (`snakers4/silero-vad`; Core ML conversion
   `FluidInference/silero-vad-coreml`)
-- **Whisper** — © OpenAI (ggml conversion `large-v3-turbo`)
-- **whisper.cpp / ggml** — © Georgi Gerganov and contributors
 - **llama.cpp** — © Georgi Gerganov and contributors
-- **ONNX Runtime** — © Microsoft Corporation
 - **Tauri** — © 2017 - Present Tauri Apps Contributors
 
 Permission is hereby granted, free of charge, to any person obtaining a copy of this software and
@@ -71,7 +68,7 @@ is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND
 implied. See the License for the specific language governing permissions and limitations under the
 License.
 
-Model weights converted to Core ML or ONNX for use in Hearsay are modified from their original
+Model weights converted to Core ML for use in Hearsay are modified from their original
 distributed form; no other changes were made.
 
 ---

@@ -34,8 +34,6 @@ tower = { version = "0.5.3", features = ["util"] }
 ureq = "3.3.0"
 sha2 = "0.10.9"
 
-# `metal` forwards through `hearsay-backends` to `hearsay-inference`'s whisper-rs (the macOS bundle
-# and `rust-serve` build with it, see the Makefile). Off by default (CPU).
 [features]
 # The browsable Swagger UI console at /docs, for working against the API by hand. Off by default:
 # `vendored` embeds ~1.6 MB of JS/CSS into the binary at COMPILE time, so a runtime check alone
@@ -44,7 +42,6 @@ sha2 = "0.10.9"
 # the console in a shipping configuration either.
 api-console = ["dep:utoipa-swagger-ui"]
 aec = ["hearsay-backends/aec"]
-metal = ["hearsay-backends/metal"]
 
 [dev-dependencies]
 tempfile = { workspace = true }

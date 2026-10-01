@@ -25,7 +25,7 @@ runs:
       env:
         XCODE_APP: /Applications/Xcode_26.3.app
 
-    # The image ships seven Xcodes and leaves ~14 GB free; this build compiles whisper.cpp, llama.cpp
+    # The image ships seven Xcodes and leaves ~14 GB free; this build compiles llama.cpp
     # and SpeexDSP from source and needs the room. Runs after the select above so the toolchain in use
     # is never the one being deleted.
     - name: Reclaim disk space

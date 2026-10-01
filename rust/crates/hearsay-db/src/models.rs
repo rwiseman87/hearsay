@@ -49,7 +49,7 @@ pub struct Meeting {
     #[sqlx(default)]
     pub folder_id: Option<Uuid>,
     /// Transcribed share (0.0..=1.0) of the Them track's audible time at the last refine; `None`
-    /// when never refined. A low value means whisper stalled and the transcript is truncated.
+    /// when never refined. A low value means the transcript is truncated.
     #[sqlx(default)]
     pub refine_coverage: Option<f64>,
 }

@@ -50,9 +50,9 @@ pub trait Transcriber: Send {
 }
 
 /// The post-meeting offline refine of the Them track. Behind a trait so the orchestrator does not
-/// depend on `hearsay-inference` (whisper.cpp / cmake) and stays testable with fakes; the
+/// depend on `hearsay-inference` and stays testable with fakes; the
 /// production impl (in the `hearsay-core` binary) wraps `hearsay_inference::refine_audio_file`
-/// (re-diarize via the Swift `hearsay-diarize` sidecar + re-transcribe with whisper).
+/// (one Swift `hearsay-diarize` sidecar run that re-diarizes and re-transcribes).
 #[async_trait]
 pub trait Refiner: Send + Sync {
     /// Re-diarize + re-transcribe the Them channel of `audio_path` (the stereo `audio.wav`),

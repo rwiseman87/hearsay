@@ -1,5 +1,5 @@
-//! First-run model setup: the live models via the `hearsay-models` sidecar, the whisper refine
-//! model (and optionally a notes model) via the shared downloader. Drives `GET/POST /api/setup`.
+//! First-run model setup: the FluidAudio models (live and refine) via the `hearsay-models` sidecar,
+//! and optionally a notes model via the shared downloader. Drives `GET/POST /api/setup`.
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -14,19 +14,22 @@ use crate::models;
 use crate::schema::{DownloadStatus, SetupState, SetupStatus, SetupStep, SetupStepStatus};
 use hearsay_engine::LiveEngine;
 
+/// Bump when the model set changes: installs with an older recorded revision re-run first-run setup.
+const MODELS_REVISION: u64 = 1;
+
 /// FluidAudio's cache layout: one directory per repo. A name that drifts only costs a redundant
-/// prepare run — the persisted completion flag is what stops setup repeating.
+/// prepare run — the persisted completion revision is what stops setup repeating.
 #[cfg(target_os = "macos")]
 const FLUID_REPOS: &[&str] = &[
-    "silero-vad",
+    "silero-vad/silero-vad-unified-256ms-v6.2.1.mlmodelc",
     "speaker-diarization",
     "ls-eend/ami",
-    "parakeet-tdt-0.6b-v3",
+    "parakeet-ultra",
     "parakeet-unified-en-0.6b",
 ];
 
 /// Stand-in total until the sidecar's `plan` line arrives with the real per-step weights.
-const LIVE_APPROX_BYTES: i64 = 1_121 * 1_048_576;
+const LIVE_APPROX_BYTES: i64 = 1_274 * 1_048_576;
 
 const MB: i64 = 1_048_576;
 
@@ -36,10 +39,9 @@ pub enum StartError {
     Busy,
 }
 
-/// One unit of work in a run. `Refine` carries the directory the refine loads from.
+/// One unit of work in a run.
 enum Step {
     Live,
-    Refine(&'static models::Source, PathBuf),
     Notes(&'static models::Source),
 }
 
@@ -79,8 +81,8 @@ impl SetupManager {
     }
 
     /// Whether every model the app needs is on disk.
-    pub fn models_present(&self, refine_model: &Path) -> bool {
-        present(self.skip, self.fluid_cache.as_deref(), refine_model)
+    pub fn models_present(&self) -> bool {
+        present(self.skip, self.fluid_cache.as_deref())
     }
 
     fn live_present(&self) -> bool {
@@ -88,10 +90,9 @@ impl SetupManager {
     }
 
     /// What the UI polls: whether setup is still needed, plus the run's per-step progress.
-    pub async fn status(&self, pool: &SqlitePool, default_refine: &Path) -> SetupState {
-        let refine = effective_refine(pool, default_refine).await;
+    pub async fn status(&self, pool: &SqlitePool) -> SetupState {
         let run = self.state.lock().unwrap_or_else(|e| e.into_inner()).clone();
-        let complete = self.models_present(&refine) || self.recorded_complete(pool).await;
+        let complete = self.models_present() || self.recorded_complete(pool).await;
 
         match run.status {
             // `required` tracks the models, not the run, so a failure still blocks recording — and a
@@ -112,11 +113,7 @@ impl SetupManager {
             _ => SetupState {
                 required: true,
                 status: SetupStatus::Idle,
-                steps: self
-                    .plan(&refine, None)
-                    .into_iter()
-                    .map(|(s, _)| s)
-                    .collect(),
+                steps: self.plan(None).into_iter().map(|(s, _)| s).collect(),
                 message: None,
             },
         }
@@ -127,7 +124,6 @@ impl SetupManager {
     pub fn start(
         self: &Arc<Self>,
         pool: SqlitePool,
-        default_refine: PathBuf,
         notes_model_id: Option<String>,
         engine: Arc<dyn LiveEngine>,
     ) -> Result<SetupState, StartError> {
@@ -147,8 +143,7 @@ impl SetupManager {
 
         let manager = self.clone();
         tokio::spawn(async move {
-            let refine = effective_refine(&pool, &default_refine).await;
-            let (steps, work): (Vec<_>, Vec<_>) = manager.plan(&refine, notes).into_iter().unzip();
+            let (steps, work): (Vec<_>, Vec<_>) = manager.plan(notes).into_iter().unzip();
             {
                 let mut run = manager.state.lock().unwrap_or_else(|e| e.into_inner());
                 run.steps = steps;
@@ -161,30 +156,13 @@ impl SetupManager {
     /// What a run would do — only what is missing. The reported step and the work that fills it are
     /// produced together: `run_steps` indexes the progress by position, so they cannot be two lists
     /// that drift apart.
-    fn plan(
-        &self,
-        refine: &Path,
-        notes: Option<&'static models::Source>,
-    ) -> Vec<(SetupStep, Step)> {
+    fn plan(&self, notes: Option<&'static models::Source>) -> Vec<(SetupStep, Step)> {
         let mut plan = Vec::new();
         if !self.live_present() {
             plan.push((
                 pending_step("live", "Speech models", LIVE_APPROX_BYTES),
                 Step::Live,
             ));
-        }
-        if !models::is_ggml(refine) {
-            if let Some(source) = models::refine_source(refine) {
-                let dir = refine
-                    .parent()
-                    .filter(|p| !p.as_os_str().is_empty())
-                    .map(Path::to_path_buf)
-                    .unwrap_or_else(|| self.models_dir.clone());
-                plan.push((
-                    pending_step("refine", "Refine model", source.size_bytes()),
-                    Step::Refine(source, dir),
-                ));
-            }
         }
         if let Some(source) = notes {
             plan.push((
@@ -202,7 +180,6 @@ impl SetupManager {
             self.set_step_status(index, SetupStepStatus::Running);
             let outcome = match step {
                 Step::Live => self.run_prepare(index).await,
-                Step::Refine(source, dir) => self.download(index, source, dir.clone(), None).await,
                 Step::Notes(source) => {
                     let dir = self.models_dir.clone();
                     self.download(index, source, dir, Some(&pool)).await
@@ -220,7 +197,7 @@ impl SetupManager {
                 }
             }
         }
-        if let Err(err) = hearsay_db::queries::set_models_ready(&pool).await {
+        if let Err(err) = hearsay_db::queries::set_models_ready(&pool, MODELS_REVISION).await {
             tracing::warn!(error = ?err, "could not record setup completion");
         }
         {
@@ -364,7 +341,7 @@ impl SetupManager {
     /// Whether a prior run recorded that setup finished — what keeps a drifted [`FLUID_REPOS`] name
     /// from gating the app forever on models it already has.
     async fn recorded_complete(&self, pool: &SqlitePool) -> bool {
-        hearsay_db::queries::models_ready(pool)
+        hearsay_db::queries::models_ready(pool, MODELS_REVISION)
             .await
             .unwrap_or(false)
     }
@@ -405,16 +382,12 @@ impl SetupManager {
 /// The boot probe: whether every model is on disk, which decides whether the engine may pre-warm.
 /// Runs before there is an [`AppState`](crate::AppState) to ask, and answers the same rule the
 /// manager's [`models_present`](SetupManager::models_present) does.
-pub fn models_present(settings: &Settings, refine_model: &Path) -> bool {
-    present(
-        settings.scripted,
-        fluid_cache(settings).as_deref(),
-        refine_model,
-    )
+pub fn models_present(settings: &Settings) -> bool {
+    present(settings.scripted, fluid_cache(settings).as_deref())
 }
 
-fn present(skip: bool, cache: Option<&Path>, refine_model: &Path) -> bool {
-    skip || (live_models_present(cache) && models::is_ggml(refine_model))
+fn present(skip: bool, cache: Option<&Path>) -> bool {
+    skip || live_models_present(cache)
 }
 
 fn fluid_cache(settings: &Settings) -> Option<PathBuf> {
@@ -432,14 +405,6 @@ fn live_models_present(cache: Option<&Path>) -> bool {
     FLUID_REPOS
         .iter()
         .all(|repo| dir_has_entries(&cache.join(repo)))
-}
-
-/// The refine model the app will load: the stored override, else the config default. Setup fetches
-/// that file, not the default.
-async fn effective_refine(pool: &SqlitePool, default: &Path) -> PathBuf {
-    hearsay_db::queries::effective_refine_model(pool, default)
-        .await
-        .unwrap_or_else(|_| default.to_path_buf())
 }
 
 /// Mutate one step under the lock. An index past the end is ignored, so a progress line arriving

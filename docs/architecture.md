@@ -38,17 +38,17 @@ flowchart TB
     subgraph bundle["Hearsay.app (ad-hoc signed, not sandboxed)"]
         shell["Tauri shell (web/src-tauri)<br/>window + child-process lifecycle"]
         webview["WKWebView<br/>React + TypeScript UI"]
-        core["hearsay-core (Rust)<br/>axum HTTP + WebSocket on 127.0.0.1<br/>orchestration, SQLite, whisper refine"]
+        core["hearsay-core (Rust)<br/>axum HTTP + WebSocket on 127.0.0.1<br/>orchestration, SQLite, refine attribution"]
         helper["hearsay-helper (Swift)<br/>Core Audio tap + AVAudioEngine mic<br/>lean PCM streamer, no ML"]
         live["hearsay-live (Swift, ANE)<br/>Them: streaming diarization + Parakeet ASR"]
         me["hearsay-me (Swift, ANE)<br/>Me: streaming VAD + Parakeet ASR"]
-        diarize["hearsay-diarize (Swift, ANE)<br/>offline refine diarizer + voiceprints"]
+        diarize["hearsay-diarize (Swift, ANE)<br/>offline refine: diarization + Parakeet Ultra ASR + voiceprints"]
         notes["hearsay-notes (Rust)<br/>llama.cpp notes LLM, burst per generate"]
     end
     subgraph disk["Data at rest (user-writable, outside the bundle)"]
         db[("SQLite database<br/>WAL, foreign keys")]
         meetings["Per-meeting folders<br/>audio.wav or audio.flac, transcript.md, meeting.json, notes.md"]
-        models["Model files<br/>whisper GGML, notes GGUF, FluidAudio cache"]
+        models["Model files<br/>notes GGUF, FluidAudio cache"]
     end
 
     shell -->|"navigates with the token"| webview
@@ -69,11 +69,11 @@ flowchart TB
 | Process | Role | Why a separate process |
 |---|---|---|
 | Tauri shell (`hearsay-app`) | Owns the OS window, spawns exactly one child (`hearsay-core`), stops it gracefully on quit, and hosts the native commands the UI can invoke (erase-all-data with a native confirm dialog, quit, model file picker, and the inactivity OS notification). | The desktop entry point; it never touches the Swift processes. |
-| `hearsay-core` | The single backend: loopback HTTP + WebSocket API, SQLite persistence, meeting orchestration, speaker attribution, and the offline whisper refine. Spawns and supervises the helper, sidecars, and the `hearsay-notes` LLM sidecar. | The composition root; the only ML it runs in-process is the offline whisper refine, never live — the notes LLM runs out-of-process in `hearsay-notes` (see below). |
+| `hearsay-core` | The single backend: loopback HTTP + WebSocket API, SQLite persistence, meeting orchestration, speaker attribution, and the offline refine (word-to-speaker attribution over the `hearsay-diarize` output). Spawns and supervises the helper, sidecars, and the `hearsay-notes` LLM sidecar. | The composition root; it runs no ML in-process; the notes LLM runs out-of-process in `hearsay-notes` (see below). |
 | `hearsay-helper` | The only process that touches TCC-guarded native APIs: the Core Audio process tap (system audio, configured global-except-self) and the microphone. Resamples both to 16 kHz mono and stamps both with one monotonic clock. | Confines the permission surface, and keeps the capture binary free of CoreML so a model problem can never take down capture. |
 | `hearsay-live` / `hearsay-me` | The live audio AI (FluidAudio on the Apple Neural Engine): streaming diarization plus Parakeet ASR for Them, streaming VAD plus Parakeet for Me. One process per stream, one meeting per process. | Each model owns its address space; a crash is contained and the warm pool replaces the pair. |
-| `hearsay-diarize` | The offline refine diarizer: given the recorded Them track, returns speaker turns and per-speaker voiceprint embeddings. | Same CoreML isolation; runs as a burst after the meeting, never live. |
-| `hearsay-notes` | The optional local-LLM notes step (llama.cpp): given the finalized transcript, returns the verbatim Markdown notes over stdio. | llama's vendored `ggml` must not co-link with the whisper refine's (a ~5x refine slowdown), so it runs out-of-process as a burst sidecar. |
+| `hearsay-diarize` | The offline refine: given the recorded Them track, diarizes it (pyannote community-1) and transcribes it with Parakeet Ultra (`--asr ultra`), returning speaker turns, per-speaker voiceprint embeddings, and word-level timestamps. | Same CoreML isolation; runs as a burst after the meeting, never live. |
+| `hearsay-notes` | The optional local-LLM notes step (llama.cpp): given the finalized transcript, returns the verbatim Markdown notes over stdio. | A llama.cpp crash or memory blowup must not take down the core, which owns live capture and the database, so it runs out-of-process as a burst sidecar. | |
 | `hearsay-models` | First-run model preparation: downloads the FluidAudio models the live and refine sidecars load, reporting progress as NDJSON. The installer ships no models. | It calls the same FluidAudio loaders those sidecars call, so what it fetches cannot drift from what they load — which a hand-maintained file manifest in Rust could not guarantee. |
 
 ## Rust crate map
@@ -91,7 +91,7 @@ flowchart BT
     engine["hearsay-engine<br/>LiveEngine seam"]
     orch["hearsay-orchestrator<br/>pipeline, recorder, traits"]
     cap["hearsay-capture<br/>SwiftHelperSource, TCC probe"]
-    inf["hearsay-inference<br/>whisper refine (no llama)"]
+    inf["hearsay-inference<br/>refine: drive hearsay-diarize + attribute words"]
     notesprompt["hearsay-notes-prompt<br/>prompt build + reply parse, no deps"]
     back["hearsay-backends<br/>MacBackend, MacRefiner,<br/>reconcile + archive sweep"]
     core["hearsay-core<br/>axum API, composition root"]
@@ -125,13 +125,13 @@ flowchart BT
 |---|---|
 | `hearsay-ipc` | The binary media-frame codec (28-byte little-endian header) and the NDJSON control codec. Source of truth for `shared/protocol/ipc.md`; generates the golden fixtures both languages validate in CI. |
 | `hearsay-attribution` | Pure attribution logic: speaker ordering, segment-speaker assignment, cosine voiceprint matching. No dependencies; unit-tested in isolation. |
-| `hearsay-audio` | Lossless FLAC archival of the recorded meeting WAV: a bounded-memory streaming encoder, a block-at-a-time decoder, and the byte-exact verifier that must pass before the original is deleted. Also resolves which form a meeting's recording is in. Ships `restore` and `repair_header` examples for un-archiving a library and for fixing the STREAMINFO of files written before the frame-size range was populated. No first-party dependencies, so every consumer can depend on it without pulling in whisper or the orchestrator. |
+| `hearsay-audio` | Lossless FLAC archival of the recorded meeting WAV: a bounded-memory streaming encoder, a block-at-a-time decoder, and the byte-exact verifier that must pass before the original is deleted. Also resolves which form a meeting's recording is in. Ships `restore` and `repair_header` examples for un-archiving a library and for fixing the STREAMINFO of files written before the frame-size range was populated. No first-party dependencies, so every consumer can depend on it without pulling in the orchestrator. |
 | `hearsay-db` | Persistence: SQLite via SQLx (WAL, `busy_timeout`, foreign keys), UUID primary keys, forward-only migrations, the attribution policy (vote and recognition), FTS transcript search, folders, notes, and settings queries. |
 | `hearsay-engine` | The neutral `LiveEngine` trait and the `DisabledEngine` placeholder the API test suite runs against. Exists so the core and the orchestrator can share the seam without a dependency cycle. |
 | `hearsay-orchestrator` | Implements `LiveEngine`: creates the meeting row and folder, drives an `AudioSource`, routes each stream's PCM to its `Transcriber`, records the stereo `audio.wav`, persists and broadcasts segments, and runs the refine and notes steps after stop. Ships scripted test fakes. |
 | `hearsay-capture` | `AudioSource` implementations. On macOS, `SwiftHelperSource` spawns `hearsay-helper` and pumps its socket traffic; also hosts the TCC permissions probe. |
-| `hearsay-inference` | In-process ML, all offline: the whisper refine (GGML; CPU, or Metal by feature). The llama.cpp notes summarizer runs out-of-process in the `hearsay-notes` sidecar, reusing the pure prompt/parse logic from `hearsay-notes-prompt`. |
-| `hearsay-notes-prompt` | Dependency-free prompt construction and reply parsing for the notes step, shared by `hearsay-backends` (the `SubprocessSummarizer`) and the `hearsay-notes` sidecar so the sidecar never pulls in `hearsay-inference` → whisper. |
+| `hearsay-inference` | The offline refine: drives the `hearsay-diarize` sidecar, attributes each Parakeet word to a diarizer turn, and guards transcript coverage; no ML runs in-process. The llama.cpp notes summarizer runs out-of-process in the `hearsay-notes` sidecar, reusing the pure prompt/parse logic from `hearsay-notes-prompt`. |
+| `hearsay-notes-prompt` | Dependency-free prompt construction and reply parsing for the notes step, shared by `hearsay-backends` (the `SubprocessSummarizer`) and the `hearsay-notes` sidecar so the sidecar never pulls in `hearsay-inference`. |
 | `hearsay-eval` | Test-only accuracy and latency evals (`make wer-eval`, `make live-eval`): reference-transcript and corpus loading, the non-regression baseline gate, and a driver that feeds the live sidecars over stdio. Scoring is the pure `hearsay-attribution` metrics. Not linked into the app. |
 | `hearsay-notes` | The standalone notes-LLM sidecar binary: owns llama.cpp (`llama-cpp-2`), spawned by the core over stdio (JSON in, JSON out). The only process that links llama's vendored `ggml`. |
 | `hearsay-backends` | Platform backend wiring behind the engine seam: `MacBackend` (warm sidecar pool), `MacRefiner`, the `SubprocessSummarizer` (spawns `hearsay-notes`), startup reconciliation, the periodic audio-archival sweep, and `build_engine`. |

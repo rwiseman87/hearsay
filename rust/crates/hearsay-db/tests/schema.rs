@@ -2006,3 +2006,20 @@ async fn migrations_upgrade_a_populated_older_db_with_data_intact() {
     assert_eq!(hits.len(), 1);
     assert_eq!(hits[0].meeting_id, meeting.id);
 }
+
+#[tokio::test]
+async fn models_ready_is_tied_to_the_model_set_revision() {
+    let pool = memory_pool().await;
+    assert!(!queries::models_ready(&pool, 1).await.unwrap());
+
+    queries::set_models_ready(&pool, 1).await.unwrap();
+    assert!(queries::models_ready(&pool, 1).await.unwrap());
+    // A build whose model set moved on re-opens setup on this install.
+    assert!(!queries::models_ready(&pool, 2).await.unwrap());
+
+    // The boolean flag older builds recorded is not a revision, so it never satisfies one.
+    queries::set_preference(&pool, queries::SECTION_SETUP, r#"{"models_ready":true}"#)
+        .await
+        .unwrap();
+    assert!(!queries::models_ready(&pool, 1).await.unwrap());
+}

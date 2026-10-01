@@ -1,10 +1,5 @@
-//! Word error rate and concatenated-permutation WER (cpWER): the transcript-accuracy counterpart of
-//! [`crate::eval`]'s diarization metrics. Pure logic — no I/O, no ML — so it is unit-tested without
-//! any audio.
-//!
-//! [`normalize`] turns text into the comparable word list both sides are scored on. [`word_errors`]
-//! is the plain WER (speaker-agnostic); [`cpwer`] additionally scores speaker attribution by
-//! assigning each hypothesis speaker to the reference speaker that minimizes the total error.
+//! Word error rate and concatenated-permutation WER (cpWER), pure logic with no I/O. [`normalize`]
+//! builds the compared word lists; [`cpwer`] matches each hypothesis speaker to a reference speaker.
 
 use std::collections::BTreeMap;
 

@@ -27,9 +27,9 @@ helper and the sidecars; everything else is Rust.
 bundling Chromium. A browser runtime would be the largest thing in an installer
 whose whole point is that it is small enough to host.
 
-**Models downloaded on first run rather than bundled.** The macOS model set is about 2.6 GB, past
-what a GitHub release asset can hold (2 GB), so bundling would rule out the distribution channel
-entirely. Downloading them once at first launch trades the offline-install property for a ~50 MB
+**Models downloaded on first run rather than bundled.** The macOS model set is about 1.3 GB (Silero VAD, diarizer,
+LS-EEND, Parakeet Ultra, Parakeet unified streaming; plus an optional notes model), close enough to
+what a GitHub release asset can hold (2 GB) that bundling would crowd out the distribution channel. Downloading them once at first launch trades the offline-install property for a ~50 MB
 installer; after that first run the app is as offline as it ever was.
 
 **SQLite via SQLx rather than PostgreSQL.** This is a single-user desktop app; running a database
@@ -42,21 +42,31 @@ Per stage. The trait seams (`Transcriber`, `Diarizer`, `Refiner`) keep each engi
 
 | Stage | Model |
 |---|---|
-| Live ASR | Parakeet TDT 0.6b, on the ANE |
+| Live ASR | Parakeet (unified streaming for partials, Ultra for batch finals), on the ANE |
 | Live diarization | FluidAudio streaming diarizer (LS-EEND), on CPU |
 | Offline diarization | pyannote community-1, CoreML |
 | Speaker embeddings | wespeaker_v2, 256-d |
 | Me VAD | Silero |
-| Offline refine ASR | whisper `ggml-large-v3-turbo` |
+| Offline refine ASR | Parakeet Ultra, on the ANE (`hearsay-diarize --asr ultra`) |
 | Notes | local GGUF instruct model via llama.cpp |
 
-**Why not whisper for the live path?** whisper decodes in 30-second windows, so it cannot emit the
-growing partial transcripts a live caption view needs. Parakeet is
-streaming-native. whisper earns its place in the offline refine, where whole-file context is an
-advantage rather than a latency problem.
+**Why Parakeet for the refine.** The refine diarizes and transcribes in one sidecar run, and each
+transcribed word is attributed to the diarizer turn it overlaps most (ties go to the shorter turn),
+so the speaker boundaries and the words come from one pass over one set of timestamps. Parakeet
+Ultra also measured better than the alternatives on the AMI ES2004a meeting (WER / cpWER, lower is
+better):
 
-**Why greedy decoding on the refine.** Beam search is too slow on `large-v3` for a pass that already
-runs over the whole meeting.
+| ASR | Near-field | Far-field |
+|---|---|---|
+| whisper large-v3-turbo | 0.214 / 0.271 | 0.299 / 0.343 |
+| Parakeet v3 | 0.170 / 0.230 | 0.255 / 0.313 |
+| Parakeet Ultra | 0.163 / 0.222 | 0.239 / 0.305 |
+| Parakeet Phonon-2 | 0.226 / 0.276 | n/a |
+
+Phonon-2 requires macOS 15, above the app's 14.4 floor. The gated figures in `make wer-eval` are the
+Ultra row (`shared/eval/baseline-asr.json`). Because Parakeet decodes the track without a text
+prompt carried between windows, it has no repetition-loop or silent-stall failure mode to repair;
+a coverage guard (audible versus transcribed seconds) still flags a truncated transcript.
 
 ## Streaming versus offline
 
@@ -85,12 +95,12 @@ time and rewrites the file, which also bakes in any names resolved along the way
 **Parakeet on the ANE, the streaming diarizer on CPU.** Two models contending for the Neural Engine
 interfere with each other, so the live diarizer is loaded CPU-only on purpose and leaves the ANE to
 the ASR. Running the live models on the GPU instead is worse still: a contended Metal pipeline can
-enter an unrecoverable error state, and the GPU is left free for the offline whisper refine.
+enter an unrecoverable error state, and the GPU stays free for the notes LLM.
 
-**The notes LLM in its own process.** llama.cpp and whisper.cpp each vendor `ggml`, and co-linking
-them slows the refine by roughly 5x. `hearsay-notes` is therefore a standalone binary the core
-spawns over stdio, and the shared prompt-building and reply-parsing logic lives in the
-dependency-free `hearsay-notes-prompt` crate so the sidecar never pulls in whisper.
+**The notes LLM in its own process.** llama.cpp generation holds gigabytes resident and can crash or
+stall, which must not cost a live recording. `hearsay-notes` is therefore a standalone binary the
+core spawns over stdio, and the shared prompt-building and reply-parsing logic lives in the
+dependency-free `hearsay-notes-prompt` crate so the sidecar stays free of the refine's dependencies.
 
 **Each CoreML model in its own sidecar.** A model crash is contained to that process rather than
 taking down capture, and the capture helper stays free of CoreML entirely — so a model problem can

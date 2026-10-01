@@ -58,7 +58,7 @@ do {
     async let streamReady: Void = streamManager.loadModels()
     // Batch ASR: load + ANE-warm in the background; not awaited before ready.
     asrTask = Task {
-        let models = try await AsrModels.downloadAndLoad(version: .v3)
+        let models = try await AsrModels.downloadAndLoad(version: .ultra)
         let manager = AsrManager(config: .default, models: models)
         if var state = try? TdtDecoderState() {
             _ = try? await manager.transcribe(

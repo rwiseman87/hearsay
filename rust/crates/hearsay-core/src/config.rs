@@ -28,14 +28,8 @@ pub struct Settings {
     /// Dev-only (`HEARSAY_SCRIPTED`): swap the platform backend for the model-free scripted engine.
     /// It spawns no sidecars, so first-run setup is skipped with it.
     pub scripted: bool,
-    /// GGML whisper model for the offline refine; defaults into [`Self::models_dir`].
-    pub refine_model: PathBuf,
     /// Deadline for the `hearsay-diarize` refine subprocess, so a hung sidecar cannot wedge stop.
     pub refine_timeout: Duration,
-    /// Prime each of the refine's 30-s whisper windows with the previous window's text. Off by
-    /// default: measured on a 44-minute meeting it cost 2.4x the decode time for no gain in unique
-    /// transcript, and carried one hallucinated silent window into every window after it.
-    pub refine_carry_over: bool,
     /// Run the offline refine at stop. Off by default: it contends with the next meeting's
     /// sidecars on the ANE. The manual `/rediarize` route works regardless.
     pub auto_refine: bool,
@@ -64,8 +58,8 @@ pub struct Settings {
     /// Prompt template for the notes step; its `{transcript}` placeholder is filled with the
     /// finalized transcript. Read fresh at each generate, like `notes_model`.
     pub notes_prompt: String,
-    /// Path to the `hearsay-notes` sidecar. Out-of-process so llama.cpp never links into the core
-    /// alongside whisper — see `docs/architecture.md`.
+    /// Path to the `hearsay-notes` sidecar. Out-of-process so a llama.cpp crash or stall cannot take
+    /// down the core — see `docs/architecture.md`.
     pub notes_binary: PathBuf,
     /// Root the download manager writes models into and references them from.
     pub models_dir: PathBuf,
@@ -209,11 +203,7 @@ impl Settings {
             .and_then(|p| p.parse().ok())
             .unwrap_or(0);
         let scripted = environment == "development" && env::var_os("HEARSAY_SCRIPTED").is_some();
-        // Downloaded models live together, so the refine model defaults into the models dir rather
-        // than being named again by whoever sets that dir (the desktop shell, a dev run).
         let models_dir = PathBuf::from(env_or("HEARSAY_MODELS_DIR", "outputs/models"));
-        let refine_model = env_path("HEARSAY_REFINE_MODEL")
-            .unwrap_or_else(|| models_dir.join(crate::models::DEFAULT_REFINE_FILE));
         let auto_refine = env_bool("HEARSAY_AUTO_REFINE", false, &mut problems);
         let record = env_bool("HEARSAY_RECORD", true, &mut problems);
         let recognition_threshold = env_recognition_threshold(0.6, &mut problems);
@@ -227,7 +217,6 @@ impl Settings {
         let notes_enabled = env_bool("HEARSAY_NOTES", false, &mut problems);
         let refine_timeout =
             Duration::from_secs(env_u64("HEARSAY_REFINE_TIMEOUT_SECS", 1800, &mut problems));
-        let refine_carry_over = env_bool("HEARSAY_REFINE_CARRY_OVER", false, &mut problems);
 
         if !problems.is_empty() {
             if environment == "development" {
@@ -256,9 +245,7 @@ impl Settings {
                 "helper/.build/arm64-apple-macosx/debug/hearsay-helper",
             )),
             scripted,
-            refine_model,
             refine_timeout,
-            refine_carry_over,
             auto_refine,
             record,
             recognition_threshold,

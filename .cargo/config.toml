@@ -1,6 +1,6 @@
 # Pin the macOS deployment target for the entire Rust build. Without this,
-# whisper-rs/llama-cpp-2 invoke cmake/cc, which default to the host SDK
-# (e.g. 26.5) and stamp the vendored ggml/whisper/llama objects with that
+# llama-cpp-2 and aec-rs invoke cmake/cc, which default to the host SDK
+# (e.g. 26.5) and stamp the vendored ggml/llama/SpeexDSP objects with that
 # minos. The resulting binary then aborts with a dyld "symbol not found"
 # (SIGABRT) at launch on any older macOS. 14.4 matches the app's declared
 # floor (helper/Package.swift, web/src-tauri/tauri.conf.json).

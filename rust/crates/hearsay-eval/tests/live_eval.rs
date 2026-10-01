@@ -1,13 +1,6 @@
-//! Live transcription accuracy and latency (`make live-eval`): feed a labeled local track to the real
-//! `hearsay-me` and `hearsay-live` sidecars at real-time pace, concurrently as they run in a meeting,
-//! and score what they emit against the committed reference transcript.
-//!
-//! The same mixed track goes to both: `hearsay-me` transcribes it as the Me stream (WER) and
-//! `hearsay-live` as the Them stream (WER, plus cpWER over its diarizer speaker slots). WER and cpWER
-//! are gated against `baseline-live.json`; the final-delay percentiles and counts go in the run
-//! report only, since they depend on the machine. Self-skips (never fails) when audio or a sidecar is
-//! absent. `HEARSAY_EVAL_SPEED` sets the pace (default 1.0, real time; 0 feeds unpaced, which is fast
-//! but makes latency meaningless). Re-baseline with `HEARSAY_UPDATE_EVAL_BASELINE=1`.
+//! Live accuracy and latency gate (`make live-eval`): feeds the corpus to `hearsay-me` and
+//! `hearsay-live` concurrently at real-time pace, gating WER/cpWER and reporting final-delay latency.
+//! Opt-in (`HEARSAY_LIVE_EVAL=1`); `HEARSAY_EVAL_SPEED=0` feeds unpaced, which skips latency.
 
 use std::collections::BTreeMap;
 use std::path::Path;

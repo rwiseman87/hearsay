@@ -306,7 +306,7 @@ through the crates:
 hearsay-core/aec  ->  hearsay-backends/aec  ->  hearsay-orchestrator/aec  ->  dep:aec-rs
 ```
 
-- **On** in `make rust-serve` and `make dmg` / `make mac-app` (`--features metal,aec`).
+- **On** in `make rust-serve` and `make dmg` / `make mac-app` (`--features aec`).
 - **Off** by default (plain `cargo test`, `cargo build`), where `EchoCanceller` is the passthrough
   stub — so the default build and CI need no C toolchain.
 - Building the feature compiles vendored SpeexDSP with `cc` + `cmake` + `bindgen`. The build treats AEC as a graceful add-on: if it is not built

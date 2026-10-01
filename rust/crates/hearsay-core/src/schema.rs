@@ -527,12 +527,11 @@ pub struct StorageInfo {
     pub uncompressed_bytes: i64,
 }
 
-/// Models: the offline-refine whisper model path plus the optional local-LLM notes step (enable +
+/// Models: the optional local-LLM notes step (enable +
 /// its GGUF model). Editable section; each effective value is the stored override, else the config
 /// default. Live transcription is the FluidAudio/ANE sidecars and is not configured here.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ModelSettings {
-    pub refine_model: String,
     /// Generate meeting notes at stop (the optional local-LLM notes step).
     /// `#[serde(default)]` so a `models` row written before notes existed still deserializes.
     #[serde(default)]
@@ -552,8 +551,6 @@ pub struct ModelSettings {
 /// (reset targets) and whether each effective model file currently resolves on disk.
 #[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct ModelsInfo {
-    pub default_refine_model: String,
-    pub refine_model_exists: bool,
     pub default_notes_model: String,
     pub notes_model_exists: bool,
     /// The built-in default notes prompt template (the reset target + the effective value when the
@@ -634,8 +631,8 @@ pub enum SetupStepStatus {
     Error,
 }
 
-/// One asset first-run setup fetches: the live speech models, the refine model, or a notes model.
-/// `total_bytes` is approximate for the live models until the preparation sidecar reports its plan.
+/// One asset first-run setup fetches: the FluidAudio speech models, or a notes model.
+/// `total_bytes` is approximate for the speech models until the preparation sidecar reports its plan.
 #[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct SetupStep {
     pub id: String,

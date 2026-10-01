@@ -152,14 +152,10 @@ async fn resolve_storage(state: &AppState) -> ApiResult<StorageSettings> {
 async fn resolve_models(state: &AppState) -> ApiResult<ModelSettings> {
     // Resolve each field independently against its config default rather than deserializing the whole
     // section as a struct: the download manager merges in just `notes_model`, so the stored object is
-    // often partial (no `refine_model`), which a strict struct parse would reject. Mirrors the
-    // per-field `effective_*` readers in `hearsay-db`.
+    // often partial, which a strict struct parse would reject. Mirrors the per-field `effective_*`
+    // readers in `hearsay-db`.
     let s = queries::Section::load(&state.pool, SECTION_MODELS).await?;
     Ok(ModelSettings {
-        refine_model: s
-            .path_field("refine_model", &state.settings.refine_model)
-            .to_string_lossy()
-            .to_string(),
         notes_enabled: s.bool_field("notes_enabled", state.settings.notes_enabled),
         notes_model: s
             .path_field("notes_model", &state.settings.notes_model)
@@ -171,8 +167,6 @@ async fn resolve_models(state: &AppState) -> ApiResult<ModelSettings> {
 
 fn models_info(state: &AppState, effective: &ModelSettings) -> ModelsInfo {
     ModelsInfo {
-        default_refine_model: state.settings.refine_model.to_string_lossy().to_string(),
-        refine_model_exists: Path::new(&effective.refine_model).is_file(),
         default_notes_model: state.settings.notes_model.to_string_lossy().to_string(),
         // An empty notes_model is "unset", not "missing file" — report it as not-resolving.
         notes_model_exists: !effective.notes_model.is_empty()
@@ -381,24 +375,6 @@ pub(crate) async fn update_models(
     State(state): State<AppState>,
     Json(body): Json<ModelSettings>,
 ) -> ApiResult<Json<ModelSettings>> {
-    // Only validate the refine model when it actually changes. The client echoes the current value
-    // back when it is only editing the notes fields (one PUT covers the whole `models` section), and
-    // the effective refine model may be the bundled default — a relative path the absolute-path check
-    // would reject. `reset_models` (DELETE) is the channel for reverting to that default.
-    let current = resolve_models(&state).await?;
-    let refine_input = body.refine_model.trim().to_string();
-    let refine_model = if refine_input == current.refine_model {
-        refine_input
-    } else if refine_input.is_empty() {
-        return Err(ApiError::Unprocessable(
-            "refine_model must not be empty".into(),
-        ));
-    } else {
-        tokio::task::spawn_blocking(move || validate_refine_model(&refine_input))
-            .await
-            .map_err(|e| ApiError::Internal(format!("refine_model validation panicked: {e}")))??
-    };
-
     // The notes model is optional: empty means "not chosen yet" (the notes step stays unavailable
     // until one is downloaded/selected). Validate the file only when a path is provided.
     let notes_input = body.notes_model.trim().to_string();
@@ -420,7 +396,6 @@ pub(crate) async fn update_models(
     }
 
     let stored = ModelSettings {
-        refine_model,
         notes_enabled: body.notes_enabled,
         notes_model,
         notes_prompt,
@@ -630,20 +605,6 @@ fn validate_output_dir(input: &str) -> Result<String, ApiError> {
     Ok(resolved.to_string_lossy().to_string())
 }
 
-/// Resolve `input` to an absolute, existing, readable GGML whisper model file or a 422. The refine
-/// loads this model at each run, so reject a bad path at the boundary (empty, non-absolute, missing,
-/// a directory, or not a whisper model) instead of surfacing a cryptic whisper load failure at
-/// refine time. The GGML magic check (little-endian `0x67676d6c`, the first 4 bytes of every
-/// `ggml-*.bin` whisper model) guards against pointing the refine at an unrelated file.
-fn validate_refine_model(input: &str) -> Result<String, ApiError> {
-    validate_model_file(
-        input,
-        "refine_model",
-        crate::models::GGML_MAGIC,
-        "a GGML whisper model (expected a ggml-*.bin file)",
-    )
-}
-
 /// Resolve a user-supplied model path and prove it is the expected format: expand `~`, require an
 /// absolute path, canonicalize it, and check the leading four magic bytes. `field` names the setting
 /// in the 422 and `expected` describes the format.
@@ -683,8 +644,8 @@ fn validate_model_file(
 
 /// Resolve `input` to an absolute, existing, readable GGUF file or a 422 — the notes step loads this
 /// model with llama.cpp at each run, so reject a bad path at the boundary. Same shape as
-/// [`validate_refine_model`] but checks the **GGUF** magic (the ASCII bytes `GGUF` = `0x47 0x47 0x55
-/// 0x46`, the first 4 bytes of every `.gguf` model) so pointing the notes step at a whisper `.bin`
+/// `validate_model_file` but checks the **GGUF** magic (the ASCII bytes `GGUF` = `0x47 0x47 0x55
+/// 0x46`, the first 4 bytes of every `.gguf` model) so pointing the notes step at a non-GGUF file
 /// or an unrelated file is caught here, not as a cryptic llama.cpp load failure at generate time.
 fn validate_notes_model(input: &str) -> Result<String, ApiError> {
     validate_model_file(

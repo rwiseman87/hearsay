@@ -7,7 +7,6 @@ fn main() {
         tauri_build::AppManifest::new().commands(&[
             "erase_all_data",
             "quit_app",
-            "pick_refine_model",
             "notify_still_recording",
         ]),
     ))

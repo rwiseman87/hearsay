@@ -20,15 +20,15 @@ Multi-process, local-only (macOS on Apple Silicon 14.4+):
   hints over IPC.
 - **Swift sidecars** (`helper/`, FluidAudio on the Apple Neural Engine) — the audio-AI: `hearsay-live` (live
   Them diarization + Parakeet ASR), `hearsay-me` (live Me VAD + Parakeet), `hearsay-diarize` (post-meeting
-  refine), `hearsay-models` (first-run model download). The core spawns + feeds each over stdio.
+  refine: diarization + Parakeet Ultra ASR in one pass), `hearsay-models` (first-run model download).
+  The core spawns + feeds each over stdio.
 - **Rust core** (`rust/crates/`) — orchestration (spawns the helper + sidecars, routes PCM), speaker
-  attribution (clusters + cross-meeting voiceprints + manual labels), the offline refine (whisper),
-  optional local-LLM notes (spawned as the `hearsay-notes` sidecar, off by default), Markdown,
-  persistence, and a loopback axum HTTP + WebSocket API. The whisper refine is the only ML it runs
-  in-process; the notes LLM (llama.cpp) runs out-of-process because llama's and whisper's vendored
-  `ggml` collide when co-linked (a ~5x refine slowdown).
+  attribution (clusters + cross-meeting voiceprints + manual labels), the offline refine (drives the
+  `hearsay-diarize` sidecar and attributes each Parakeet word to a diarizer turn), optional local-LLM
+  notes (spawned as the `hearsay-notes` sidecar, off by default), Markdown, persistence, and a loopback axum HTTP + WebSocket API. The core runs no ML in-process; the notes LLM
+  (llama.cpp) runs out-of-process for crash isolation.
 - **Rust notes sidecar** (`hearsay-notes`) — the local-LLM notes step (llama.cpp), a standalone binary
-  the core spawns over stdio. Separate process for the `ggml` reason above; the pure
+  the core spawns over stdio. Separate process for crash isolation; the pure
   prompt/parse logic is shared via the dependency-free `hearsay-notes-prompt` crate.
 - **Web UI** (`web/`) — typed React frontend served by the core, shown in a Tauri WKWebView window. The
   **Tauri shell** (`web/src-tauri/`) bundles + spawns the core, and bundles the Swift sidecars + the
@@ -47,7 +47,7 @@ rust/crates/
   hearsay-engine/       LiveEngine trait seam + DisabledEngine placeholder (no dependency cycle)
   hearsay-backends/     backend wiring: MacBackend/MacRefiner + SubprocessSummarizer + build_engine (rediarize + notes)
   hearsay-capture/      AudioSource trait + SwiftHelperSource (spawns hearsay-helper) + the TCC permissions probe
-  hearsay-inference/    whisper offline ASR + the refine (whisper-rs; no llama — see hearsay-notes)
+  hearsay-inference/    the offline refine: drives `hearsay-diarize`, word-to-speaker attribution, coverage guard (no ML in-process)
   hearsay-notes/        the local-LLM notes sidecar (llama-cpp-2); spawned by the core, kept out of its binary
   hearsay-notes-prompt/ dependency-free prompt build + reply parse, shared by the core default + the notes sidecar
   hearsay-eval/         test-only accuracy + latency evals (WER/cpWER gate, live sidecar driver); see docs/testing.md
@@ -205,7 +205,8 @@ shared/protocol/ipc.md  IPC contract (source of truth)   ·   shared/fixtures/  
   un-notarized DMG.
 - The macOS installer carries **no models** (~50 MB): the app downloads them on first run behind a
   setup screen that gates recording (`hearsay-core/src/setup.rs` + the `hearsay-models` sidecar).
-  2.6 GB of models would exceed GitHub's 2 GB release-asset cap.
+  The FluidAudio model set is about 1.3 GB (plus an optional notes model); bundling it would approach
+  GitHub's 2 GB release-asset cap.
 
 ## Dependency Decisions
 
@@ -215,7 +216,7 @@ shared/protocol/ipc.md  IPC contract (source of truth)   ·   shared/fixtures/  
 - Persistence: local-first SQLite via SQLx + forward-only SQL migrations. Single-user desktop app, so
   there is no database server to run.
 - macOS inference uses the Swift/FluidAudio (ANE) sidecars for live ASR + diarization; the offline
-  refine is whisper (`hearsay-inference`).
+  refine is the same sidecar family (`hearsay-diarize`: community-1 diarization + Parakeet Ultra ASR).
 
 ## Environment Variables
 

@@ -6,7 +6,7 @@ publish = false
 
 # Lossless FLAC archival for the recorded meeting WAV — the codec half of the storage sweep, kept as
 # a dependency-free leaf so every consumer (the refine reader, the orchestrator's path checks, the
-# core's playback route, and the sweep itself) can depend on it without pulling in whisper or the
+# core's playback route, and the sweep itself) can depend on it without pulling in the
 # orchestrator.
 [dependencies]
 hound = { workspace = true }

@@ -18,8 +18,7 @@ make swift-build                      # build hearsay-helper + the FluidAudio/AN
 ```
 
 There is no interpreter to install: the core is a single Rust binary. The Swift sidecars' CoreML
-models download automatically on first use; the whisper refine model is a separate download (see
-[Models](#models)).
+models, including the refine's, download automatically on first use (see [Models](#models)).
 
 ## Make targets
 
@@ -40,7 +39,7 @@ The `Makefile` is the task runner.
 | `make stamp-version VERSION=x.y.z` | Write the version into the five files without codegen; what the release build runs. |
 | `make ci` | The full gate: lint, tests, codegen drift, version check, audit, licenses, web CI. Must stay green. |
 | `make web-ci` | The web gate: `npm ci`, `tsc`, ESLint, vitest (unit/component tests), `vite build`. |
-| `make rust-serve` (alias `serve`) | Build the `hearsay-notes` sidecar (`metal`) and run the core (`metal,aec`); the core spawns the sidecar for notes. |
+| `make rust-serve` (alias `serve`) | Build the `hearsay-notes` sidecar (`metal`) and run the core (`aec`); the core spawns the sidecar for notes. |
 | `make dmg` | Build the unsigned, ad-hoc-signed `.dmg` (see [packaging.md](packaging.md)). |
 
 ## Running
@@ -87,19 +86,19 @@ types (`TranscriptEvent`, `StatusEvent`, `ResyncEvent`) are modeled in the OpenA
 
 ## Models
 
-**ASR and diarization models** live in the Swift sidecars (FluidAudio on the ANE): Parakeet TDT
-for ASR (`hearsay-live`, `hearsay-me`) and pyannote community-1 as CoreML for the offline diarizer
-(`hearsay-diarize`). These are ungated and download plus compile automatically on first use; no
+**ASR and diarization models** live in the Swift sidecars (FluidAudio on the ANE): Parakeet
+for live ASR (`hearsay-live`, `hearsay-me`), and pyannote community-1 as CoreML plus Parakeet Ultra for
+the offline refine (`hearsay-diarize`). These are ungated and download plus compile automatically on first use; no
 fetch step, no Hugging Face token. In the packaged app the same download is driven up front by the
 `hearsay-models` sidecar behind a first-run setup screen, so it happens with a progress bar rather
 than mid-meeting (see [packaging.md](packaging.md)).
 
-**The offline refine** re-transcribes diarized turns with whisper (`hearsay-inference`), which
-needs a GGML model. `make fetch-refine-model` downloads `ggml-large-v3-turbo.bin` into
-`outputs/models/` (the default `HEARSAY_REFINE_MODEL` path). Without it, auto-refine and
-`POST /api/meetings/{id}/rediarize`
-report the model as unavailable rather than failing the meeting. The installed app downloads its own
-copy into app-data instead; nothing is bundled.
+**The offline refine** runs one `hearsay-diarize <wav> --asr ultra` sidecar over the Them track: it
+diarizes (pyannote community-1) and transcribes with Parakeet Ultra, and `hearsay-inference`
+attributes each word to a speaker turn. The Ultra model is fetched by the same first-use download as
+the other FluidAudio models (`make swift-build` builds the sidecar; no separate fetch step). Until
+it is present, auto-refine and `POST /api/meetings/{id}/rediarize` report the model as unavailable
+rather than failing the meeting.
 
 **Notes (optional local LLM).** When enabled (`HEARSAY_NOTES`, default off), stopping a meeting
 generates Markdown notes from the finalized transcript with a local GGUF instruct model (llama.cpp)
@@ -178,7 +177,7 @@ One-time setup for `make e2e`: `cd web && npm install && npx playwright install 
   `make swift-build`. The default capture-helper path is
   `helper/.build/arm64-apple-macosx/debug/hearsay-helper` (override with `HEARSAY_HELPER_PATH`);
   the sidecars are located as its siblings.
-- **The refine reports the model missing.** Run `make fetch-refine-model`, or point
-  `HEARSAY_REFINE_MODEL` at an existing copy.
+- **The refine reports the model missing.** Finish first-run setup so the FluidAudio
+  models, including Parakeet Ultra, are downloaded.
 - **Speakers over- or under-merge.** The live labels are approximate; run "Refine speakers" for a
   more accurate whole-track re-diarization. Manual renames are carried across it.

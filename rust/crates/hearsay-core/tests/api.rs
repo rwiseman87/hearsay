@@ -41,9 +41,7 @@ fn test_settings(output_dir: PathBuf, web_dir: PathBuf) -> Settings {
         environment: "test".into(),
         helper_path: PathBuf::from("no-helper"),
         scripted: false,
-        refine_model: PathBuf::from("no-model"),
         refine_timeout: std::time::Duration::from_secs(1800),
-        refine_carry_over: false,
         auto_refine: false,
         record: true,
         recognition_threshold: 0.6,
@@ -2004,81 +2002,45 @@ async fn validates_output_dir_on_storage_update() {
 }
 
 #[tokio::test]
-async fn models_section_reports_default_and_missing_file() {
-    let (app, _pool, _tmp) = setup().await;
-    let (status, body) = send(&app, get("/api/settings")).await;
+async fn reset_models_reverts_the_notes_overrides_to_defaults() {
+    let (app, _pool, tmp) = setup().await;
+    let gguf = tmp.path().join("qwen3.gguf");
+    std::fs::write(&gguf, [0x47, 0x47, 0x55, 0x46, 0, 0, 0, 0]).unwrap();
+    let gguf_arg = serde_json::to_string(&gguf.to_string_lossy()).unwrap();
+    let (status, _) = send(
+        &app,
+        put(
+            "/api/settings/models",
+            &format!("{{\"notes_enabled\":true,\"notes_model\":{gguf_arg}}}"),
+        ),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
-    // `setup()` sets refine_model to "no-model" (no override stored, no file on disk).
-    assert_eq!(body["models"]["refine_model"], "no-model");
-    assert_eq!(body["models_info"]["default_refine_model"], "no-model");
-    assert_eq!(body["models_info"]["refine_model_exists"], false);
+
+    // DELETE clears the stored overrides, reverting to the config defaults.
+    let (status, body) = send(&app, del("/api/settings/models")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["notes_enabled"], false);
+    assert_eq!(body["notes_model"], "no-notes-model");
 }
 
 #[tokio::test]
-async fn validates_refine_model_and_round_trips_override() {
-    let (app, _pool, tmp) = setup().await;
-
-    // A relative path is rejected (must be absolute).
-    let (status, _) = send(
-        &app,
-        put("/api/settings/models", "{\"refine_model\":\"model.bin\"}"),
-    )
-    .await;
-    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
-
-    // A nonexistent absolute path is rejected at the boundary (422, not a DB 500).
-    let (status, _) = send(
-        &app,
-        put(
-            "/api/settings/models",
-            "{\"refine_model\":\"/no/such/model.bin\"}",
-        ),
-    )
-    .await;
-    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
-
-    // A real file that is not a GGML whisper model is rejected on the magic check.
-    let not_ggml = tmp.path().join("not-a-model.bin");
-    std::fs::write(&not_ggml, b"this is not ggml").unwrap();
-    let arg = serde_json::to_string(&not_ggml.to_string_lossy()).unwrap();
-    let (status, _) = send(
-        &app,
-        put(
-            "/api/settings/models",
-            &format!("{{\"refine_model\":{arg}}}"),
-        ),
-    )
-    .await;
-    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
-
-    // A file with the GGML magic (0x67676d6c, little-endian) is accepted and canonicalized.
-    let model = tmp.path().join("ggml-test.bin");
-    std::fs::write(&model, [0x6c, 0x6d, 0x67, 0x67, 0, 0, 0, 0]).unwrap();
-    let arg = serde_json::to_string(&model.to_string_lossy()).unwrap();
+async fn a_legacy_refine_model_field_is_ignored() {
+    // A `models` row (or a client) from before the refine model was removed still carries
+    // `refine_model`; it must neither fail to parse nor reappear in the response.
+    let (app, _pool, _tmp) = setup().await;
     let (status, body) = send(
         &app,
         put(
             "/api/settings/models",
-            &format!("{{\"refine_model\":{arg}}}"),
+            "{\"refine_model\":\"/old/ggml.bin\",\"notes_enabled\":false,\"notes_model\":\"\"}",
         ),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    let stored = body["refine_model"].as_str().unwrap().to_string();
-    assert!(!stored.is_empty());
-
-    // The override now wins on the next read and the file resolves.
+    assert!(body.get("refine_model").is_none());
     let (_status, body) = send(&app, get("/api/settings")).await;
-    assert_eq!(body["models"]["refine_model"], stored);
-    assert_eq!(body["models_info"]["refine_model_exists"], true);
-
-    // DELETE clears the override, reverting to the config default (even though it is a bare name).
-    let del = del("/api/settings/models");
-    let (status, body) = send(&app, del).await;
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(body["refine_model"], "no-model");
-    let (_status, body) = send(&app, get("/api/settings")).await;
-    assert_eq!(body["models"]["refine_model"], "no-model");
+    assert!(body["models"].get("refine_model").is_none());
 }
 
 #[tokio::test]
@@ -2103,11 +2065,6 @@ async fn settings_models_section_carries_notes_fields() {
 async fn validates_notes_model_on_models_update() {
     let (app, _pool, tmp) = setup().await;
 
-    // A real refine model so the refine field validates; the notes field is what we're exercising.
-    let refine = tmp.path().join("ggml-test.bin");
-    std::fs::write(&refine, [0x6c, 0x6d, 0x67, 0x67, 0, 0, 0, 0]).unwrap();
-    let refine_arg = serde_json::to_string(&refine.to_string_lossy()).unwrap();
-
     // A non-GGUF notes model is rejected on the magic check (422, not a DB 500).
     let not_gguf = tmp.path().join("not-a-model.gguf");
     std::fs::write(&not_gguf, b"this is not gguf").unwrap();
@@ -2116,9 +2073,7 @@ async fn validates_notes_model_on_models_update() {
         &app,
         put(
             "/api/settings/models",
-            &format!(
-                "{{\"refine_model\":{refine_arg},\"notes_enabled\":true,\"notes_model\":{notes_arg}}}"
-            ),
+            &format!("{{\"notes_enabled\":true,\"notes_model\":{notes_arg}}}"),
         ),
     )
     .await;
@@ -2132,9 +2087,7 @@ async fn validates_notes_model_on_models_update() {
         &app,
         put(
             "/api/settings/models",
-            &format!(
-                "{{\"refine_model\":{refine_arg},\"notes_enabled\":true,\"notes_model\":{gguf_arg}}}"
-            ),
+            &format!("{{\"notes_enabled\":true,\"notes_model\":{gguf_arg}}}"),
         ),
     )
     .await;
@@ -2152,13 +2105,12 @@ async fn validates_notes_model_on_models_update() {
 async fn notes_prompt_round_trips_and_caps_length() {
     let (app, _pool, _tmp) = setup().await;
 
-    // A custom prompt is stored and wins on the next read. `refine_model` echoes the current config
-    // default (equal to current, so no file is needed to pass validation); notes_model stays empty.
+    // A custom prompt is stored and wins on the next read; notes_model stays empty.
     let (status, body) = send(
         &app,
         put(
             "/api/settings/models",
-            "{\"refine_model\":\"no-model\",\"notes_enabled\":false,\"notes_model\":\"\",\"notes_prompt\":\"Recap:\\n{transcript}\"}",
+            "{\"notes_enabled\":false,\"notes_model\":\"\",\"notes_prompt\":\"Recap:\\n{transcript}\"}",
         ),
     )
     .await;
@@ -2174,7 +2126,7 @@ async fn notes_prompt_round_trips_and_caps_length() {
         put(
             "/api/settings/models",
             &format!(
-                "{{\"refine_model\":\"no-model\",\"notes_enabled\":false,\"notes_model\":\"\",\"notes_prompt\":\"{huge}\"}}"
+                "{{\"notes_enabled\":false,\"notes_model\":\"\",\"notes_prompt\":\"{huge}\"}}"
             ),
         ),
     )
@@ -2238,7 +2190,7 @@ async fn models_catalog_lists_curated_models_and_download_starts_idle() {
 
 #[tokio::test]
 async fn settings_tolerates_a_partial_models_section_from_a_download() {
-    // A completed download merges in only `notes_model` (no `refine_model`), leaving the stored
+    // A completed download merges in only `notes_model`, leaving the stored
     // `models` section partial. `GET /settings` must resolve each field against its default rather
     // than failing to deserialize the section (which would 500 an otherwise-default install).
     let (app, pool, _tmp) = setup().await;
@@ -2249,8 +2201,8 @@ async fn settings_tolerates_a_partial_models_section_from_a_download() {
     let (status, body) = send(&app, get("/api/settings")).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["models"]["notes_model"], "/models/qwen3.gguf");
-    // `refine_model` falls back to the config default, not an error.
-    assert_eq!(body["models"]["refine_model"], "no-model");
+    // The fields the download did not write fall back to their config defaults, not an error.
+    assert_eq!(body["models"]["notes_enabled"], false);
 }
 
 #[tokio::test]
@@ -2263,7 +2215,7 @@ async fn download_unknown_model_is_404() {
 
 #[tokio::test]
 async fn setup_reports_the_work_left_when_models_are_missing() {
-    // `setup()` has no FluidAudio cache and points `refine_model` at a nonexistent file, so the
+    // `setup()` has no FluidAudio cache, so the
     // installer-ships-no-models state is exactly what these settings describe.
     let (app, _pool, _tmp) = setup().await;
 
@@ -2272,12 +2224,10 @@ async fn setup_reports_the_work_left_when_models_are_missing() {
     assert_eq!(body["required"], true);
     assert_eq!(body["status"], "idle");
     let steps = body["steps"].as_array().unwrap();
-    // The live models are always the first thing a run fetches; the refine model is skipped here
-    // because "no-model" is not a file name the catalog knows.
+    // The FluidAudio speech models (live and refine) are the one step a run fetches here.
     assert_eq!(steps[0]["id"], "live");
     assert_eq!(steps[0]["status"], "pending");
     assert!(steps[0]["total_bytes"].as_i64().unwrap() > 0);
-    assert!(steps.iter().all(|s| s["id"] != "refine"));
 }
 
 #[tokio::test]

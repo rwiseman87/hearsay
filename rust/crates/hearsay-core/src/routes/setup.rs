@@ -18,7 +18,7 @@ pub fn router() -> Router<AppState> {
 
 /// Whether first-run model setup is still needed, and how a run is progressing.
 ///
-/// The installer ships no models. `required` stays `true` until the live and refine models are on
+/// The installer ships no models. `required` stays `true` until the speech models are on
 /// disk, and the UI blocks recording while it is. `steps` carries per-asset progress during a run,
 /// and the work a run would do before one starts.
 #[utoipa::path(
@@ -26,12 +26,7 @@ pub fn router() -> Router<AppState> {
     responses((status = 200, body = SetupState, description = "Setup requirement + per-step progress")),
 )]
 pub(crate) async fn setup_status(State(state): State<AppState>) -> Json<SetupState> {
-    Json(
-        state
-            .setup
-            .status(&state.pool, &state.settings.refine_model)
-            .await,
-    )
+    Json(state.setup.status(&state.pool).await)
 }
 
 /// Start (or retry) first-run model setup.
@@ -52,12 +47,10 @@ pub(crate) async fn start_setup(
     State(state): State<AppState>,
     Json(req): Json<SetupRequest>,
 ) -> ApiResult<Json<SetupState>> {
-    match state.setup.start(
-        state.pool.clone(),
-        state.settings.refine_model.clone(),
-        req.notes_model_id,
-        state.engine.clone(),
-    ) {
+    match state
+        .setup
+        .start(state.pool.clone(), req.notes_model_id, state.engine.clone())
+    {
         Ok(snapshot) => Ok(Json(snapshot)),
         Err(StartError::UnknownModel) => Err(ApiError::NotFound("unknown model id")),
         Err(StartError::Busy) => Err(ApiError::Conflict("setup is already running".into())),

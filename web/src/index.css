@@ -604,13 +604,6 @@ button:not(:disabled):hover {
   white-space: nowrap;
 }
 
-/* A subsection break within a panel (e.g. the notes controls below the refine model). */
-.settings__field--divided {
-  margin-top: 8px;
-  padding-top: 18px;
-  border-top: 1px solid var(--border);
-}
-
 .settings__download {
   display: flex;
   flex-direction: column;

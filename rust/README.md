@@ -13,15 +13,14 @@ warnings denied, rustfmt, `cargo test`, codegen drift, `cargo audit`, `cargo den
 ```sh
 make swift-build                      # build hearsay-helper + the FluidAudio sidecars (once)
 (cd web && npm ci && npm run build)   # build web/dist (once)
-make rust-serve                       # runs hearsay-core (--features metal,aec,api-console); prints a ?token= URL
+make rust-serve                       # runs hearsay-core (--features aec,api-console); prints a ?token= URL
 ```
 
 `make rust-serve` binds `127.0.0.1` on `RUST_PORT` (default 8799) and prints
 `open: http://127.0.0.1:<port>/?token=<token>`. Start a meeting and Me/Them captions stream in
 live with speaker diarization; "Refine speakers" after stop runs the offline re-diarize and
 higher-accuracy re-transcription. `SYNTHETIC=1 make rust-serve` drives the pipeline with generated
-audio (no microphone, no TCC prompts). `HEARSAY_HELPER_PATH`, `HEARSAY_REFINE_MODEL`, and
-`HEARSAY_NOTES_MODEL` override the helper and model paths.
+audio (no microphone, no TCC prompts). `HEARSAY_HELPER_PATH` and `HEARSAY_NOTES_MODEL` override the helper and notes model paths.
 
 ## Crate map
 
@@ -39,9 +38,9 @@ graph. Edges below are `path` dependencies (diagrammed there).
 | `hearsay-orchestrator` | Implements `LiveEngine`: creates the meeting row and folder, drives an `AudioSource`, routes each stream's 16 kHz PCM to its `Transcriber`, records the stereo `audio.wav`, persists and broadcasts partials and finals, and runs the refine and notes off the operation lock at stop. Ships the scripted `testing` fakes. |
 | `hearsay-backends` | Backend wiring behind the engine seam: `MacBackend` (warm sidecar pool), `MacRefiner`, the `SubprocessSummarizer` (spawns the `hearsay-notes` sidecar), startup reconciliation, and `build_engine`. |
 | `hearsay-capture` | Audio capture behind the `AudioSource` trait. On macOS, `SwiftHelperSource` drives the Swift `hearsay-helper` (Core Audio tap plus microphone) over the `hearsay-ipc` sockets. Also hosts the TCC permissions probe. |
-| `hearsay-inference` | Local ML, all offline: the whisper ASR (`whisper-rs`, GGML; CPU plus the `metal` feature) and the refine (the `hearsay-diarize` sidecar plus whisper re-transcription).  No llama.cpp — the notes LLM lives in `hearsay-notes`. |
+| `hearsay-inference` | The offline refine: drives the `hearsay-diarize` sidecar (community-1 diarization + Parakeet Ultra ASR), attributes each word to a diarizer turn, and guards transcript coverage. No ML runs in-process. |
 | `hearsay-notes` | The local-LLM notes sidecar: a standalone binary that owns llama.cpp (`llama-cpp-2`), spawned by the core over stdio (JSON in, JSON out). |
-| `hearsay-notes-prompt` | Dependency-free prompt construction + reply parsing for the notes step, shared by the core's config default and the sidecar (so the sidecar never pulls `hearsay-inference` → whisper). |
+| `hearsay-notes-prompt` | Dependency-free prompt construction + reply parsing for the notes step, shared by the core's config default and the sidecar (so the sidecar never pulls `hearsay-inference`). |
 | `hearsay-eval` | Accuracy and latency evals, test-only: corpus and reference-transcript loading, the baseline gate, a driver that feeds the live sidecars over stdio and timestamps what they emit, and the `asr_accuracy` / `live_eval` tests behind `make wer-eval` / `make live-eval`. Scoring is pure `hearsay-attribution` (`word_errors`, `cpwer`, `percentiles`). |
 | `hearsay-core` | The application binary: the axum HTTP and WebSocket API (loopback plus per-session token), the served React UI, and the composition root. Depends on `hearsay-engine`, `hearsay-backends`, `hearsay-db`, and `hearsay-ipc`; the concrete backends stay hidden behind the seam. |
 
@@ -53,12 +52,9 @@ but is linted and CVE/license-gated in `make ci`. Build the app with `make dmg` 
 
 ## Cargo features
 
-- `metal`: GPU acceleration for the whisper refine. The `hearsay-notes` sidecar takes the same
-  accel via its own `metal` feature (built separately). The macOS bundle builds `metal`; the default
-  is portable CPU.
 - `aec`: acoustic echo cancellation (SpeexDSP via `aec-rs`) on the live Me stream, using the Them
   tap as the far-end reference. `make rust-serve` and the release bundle build it (`--features
-  metal,aec`); the raw pre-AEC audio is what the recorder and offline refine read. See
+  aec`); the raw pre-AEC audio is what the recorder and offline refine read. See
   [`../docs/echo-cancellation.md`](../docs/echo-cancellation.md).
 - `api-console`: the browsable Swagger UI at `/docs`, for working against the API by hand. Off by
   default — the vendored assets are embedded at compile time, so a runtime check alone would still
@@ -66,7 +62,7 @@ but is linted and CVE/license-gated in `make ci`. Build the app with `make dmg` 
   `ENVIRONMENT=development`. See [`../docs/api.md`](../docs/api.md).
 
 The notes LLM is not a core feature: it ships as the standalone `hearsay-notes` sidecar (built with
-its own `metal` feature), so llama.cpp never links into the core with whisper. `make
+its own `metal` feature for GPU acceleration), so a llama.cpp crash cannot take down the core. `make
 rust-serve` and `make dmg` build and bundle it; it is off at runtime unless `HEARSAY_NOTES` or the
 Settings toggle turns it on.
 

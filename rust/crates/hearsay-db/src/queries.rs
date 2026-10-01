@@ -1042,8 +1042,7 @@ pub struct RefinedThemSegment {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct RefineCoverage {
     pub fraction: f64,
-    pub recovered_spans: usize,
-    pub unrecovered_spans: usize,
+    pub uncovered_spans: usize,
 }
 
 /// Coverage below which a refine counts as truncated. Stated once; the orchestrator warns on it and
@@ -1920,20 +1919,8 @@ pub async fn effective_compression(
     ))
 }
 
-/// Effective offline-refine whisper model: the stored `models` override, else `default` (the
-/// bundled model from config). Read fresh at each refine, so pointing the `models` section at a
-/// larger downloaded model takes effect on the next refine/rediarize with no restart.
-pub async fn effective_refine_model(
-    pool: &SqlitePool,
-    default: &Path,
-) -> Result<PathBuf, sqlx::Error> {
-    Ok(Section::load(pool, SECTION_MODELS)
-        .await?
-        .path_field("refine_model", default))
-}
-
 /// Set the `models` section's `notes_model` to `path` (what the download manager calls on a
-/// completed download), preserving the section's other fields (`refine_model`, `notes_enabled`) by
+/// completed download), preserving the section's other fields (`notes_enabled`) by
 /// merging into the stored object rather than overwriting it.
 pub async fn set_notes_model(pool: &SqlitePool, path: &str) -> Result<(), sqlx::Error> {
     // Atomic single-statement merge (not read-modify-write): `json_set` updates only `$.notes_model`
@@ -1958,17 +1945,25 @@ pub async fn set_notes_model(pool: &SqlitePool, path: &str) -> Result<(), sqlx::
     Ok(())
 }
 
-/// Whether first-run model setup has completed on this install. Paired with the on-disk probe in
-/// `hearsay-core`'s setup manager, which covers an install that already had its models.
-pub async fn models_ready(pool: &SqlitePool) -> Result<bool, sqlx::Error> {
+/// Whether first-run model setup completed for model-set `revision`. A recorded revision older than
+/// the build's re-opens setup, so an update that changes the model set cannot leave an install
+/// silently downloading a model at first use. Paired with the on-disk probe in `hearsay-core`'s setup
+/// manager, which covers an install that already has its models.
+pub async fn models_ready(pool: &SqlitePool, revision: u64) -> Result<bool, sqlx::Error> {
     Ok(Section::load(pool, SECTION_SETUP)
         .await?
-        .bool_field("models_ready", false))
+        .u64_field("models_revision", 0)
+        == revision)
 }
 
-/// Record that first-run model setup finished.
-pub async fn set_models_ready(pool: &SqlitePool) -> Result<(), sqlx::Error> {
-    set_preference(pool, SECTION_SETUP, r#"{"models_ready":true}"#).await
+/// Record that first-run model setup finished for model-set `revision`.
+pub async fn set_models_ready(pool: &SqlitePool, revision: u64) -> Result<(), sqlx::Error> {
+    set_preference(
+        pool,
+        SECTION_SETUP,
+        &format!(r#"{{"models_revision":{revision}}}"#),
+    )
+    .await
 }
 
 /// Effective notes settings from the same `models` section: `(notes_enabled, notes_model)`. Each

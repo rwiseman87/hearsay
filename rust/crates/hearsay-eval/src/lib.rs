@@ -1,14 +1,8 @@
-//! Shared plumbing for the accuracy and latency evals (`make wer-eval`, `make live-eval`): corpus and
-//! reference-transcript loading, audio windowing, the non-regression gate against a committed
-//! baseline, and run reports.
-//!
-//! Scoring itself is the pure `hearsay_attribution::{word_errors, cpwer, percentiles}`. The audio
-//! stays local and is never committed; the manifest, the reference transcript and the baselines
-//! under `shared/eval/` are. The diarization-only gate lives in `hearsay-inference`
-//! (`make diarize-eval`) and is not duplicated here.
+//! Shared plumbing for the accuracy and latency evals: corpus and transcript loading, windowing, the
+//! baseline gate, and run reports. Scoring is the pure `hearsay_attribution` metrics; audio stays
+//! local, while the manifest, transcript and baselines under `shared/eval/` are committed.
 
 pub mod live;
-pub mod parakeet;
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -102,15 +96,6 @@ pub fn resolve_sidecar(env_var: &str, name: &str) -> Option<PathBuf> {
         .into_iter()
         .map(|profile| repo_root().join(format!("helper/.build/{profile}/{name}")))
         .find(|p| p.exists())
-}
-
-/// The whisper model the refine runs: `HEARSAY_REFINE_MODEL`, else the shipped default under the
-/// output dir (`make fetch-refine-model`). `None` when absent.
-pub fn resolve_refine_model() -> Option<PathBuf> {
-    let path = std::env::var_os("HEARSAY_REFINE_MODEL")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| output_dir().join("models/ggml-large-v3-turbo.bin"));
-    path.exists().then_some(path)
 }
 
 pub fn load_corpus() -> Corpus {

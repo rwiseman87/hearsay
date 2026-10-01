@@ -1,20 +1,17 @@
-//! Local-only inference for Hearsay: the offline whisper ASR/refine.
-//!
-//! [`WhisperAsr`] loads a GGML whisper model and transcribes 16 kHz mono audio into timestamped
-//! segments (whisper.cpp via `whisper-rs`; CPU by default, Metal GPU accel is the `metal` Cargo
-//! feature); it backs the orchestrator's post-meeting refine.
+//! Local-only inference for Hearsay: the offline refine, one `hearsay-diarize` FluidAudio sidecar
+//! run that diarizes and transcribes the Them track, plus the attribution of each word to a speaker
+//! and the coverage guard over the result. All the ML runs in the sidecar, on the Apple Neural
+//! Engine; this crate owns the subprocess contract and the pure logic around it.
 
-mod asr;
 mod audio;
-mod diarizer;
+mod coverage;
 mod error;
 mod refine;
 
-pub use asr::{AsrSegment, Coverage, Transcription, WhisperAsr, DEFAULT_LANGUAGE, LOOP_MIN_CYCLES};
 pub use audio::{read_them_channel, read_wav_mono_16k, SAMPLE_RATE};
-pub use diarizer::{DiarTurn, Diarization, Diarizer};
+pub use coverage::Coverage;
 pub use error::InferenceError;
 pub use refine::{
-    refine_audio_file, refine_audio_file_with, refine_them, refine_them_with, RefineOutput,
-    RefinedSegment, SwiftDiarizer,
+    diarize, refine_audio_file, refine_them, DiarTurn, Diarization, RefineOutput, RefinedSegment,
+    ASR_MODEL,
 };

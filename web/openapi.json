@@ -1801,7 +1801,7 @@
           "setup"
         ],
         "summary": "Whether first-run model setup is still needed, and how a run is progressing.",
-        "description": "The installer ships no models. `required` stays `true` until the live and refine models are on\ndisk, and the UI blocks recording while it is. `steps` carries per-asset progress during a run,\nand the work a run would do before one starts.",
+        "description": "The installer ships no models. `required` stays `true` until the speech models are on\ndisk, and the UI blocks recording while it is. `steps` carries per-asset progress during a run,\nand the work a run would do before one starts.",
         "operationId": "setup_status",
         "responses": {
           "200": {
@@ -2532,10 +2532,7 @@
       },
       "ModelSettings": {
         "type": "object",
-        "description": "Models: the offline-refine whisper model path plus the optional local-LLM notes step (enable +\nits GGUF model). Editable section; each effective value is the stored override, else the config\ndefault. Live transcription is the FluidAudio/ANE sidecars and is not configured here.",
-        "required": [
-          "refine_model"
-        ],
+        "description": "Models: the optional local-LLM notes step (enable +\nits GGUF model). Editable section; each effective value is the stored override, else the config\ndefault. Live transcription is the FluidAudio/ANE sidecars and is not configured here.",
         "properties": {
           "notes_enabled": {
             "type": "boolean",
@@ -2548,9 +2545,6 @@
           "notes_prompt": {
             "type": "string",
             "description": "User-editable prompt template for the notes step (its `{transcript}` placeholder is filled\nwith the finalized transcript). Empty means \"use the built-in default\"\n(`ModelsInfo::default_notes_prompt`). `#[serde(default)]` so a `models` row written before the\nprompt existed still deserializes."
-          },
-          "refine_model": {
-            "type": "string"
           }
         }
       },
@@ -2558,8 +2552,6 @@
         "type": "object",
         "description": "Read-only model facts shown alongside the editable models section: the bundled/config defaults\n(reset targets) and whether each effective model file currently resolves on disk.",
         "required": [
-          "default_refine_model",
-          "refine_model_exists",
           "default_notes_model",
           "notes_model_exists",
           "default_notes_prompt"
@@ -2572,13 +2564,7 @@
             "type": "string",
             "description": "The built-in default notes prompt template (the reset target + the effective value when the\neditable `notes_prompt` is empty)."
           },
-          "default_refine_model": {
-            "type": "string"
-          },
           "notes_model_exists": {
-            "type": "boolean"
-          },
-          "refine_model_exists": {
             "type": "boolean"
           }
         }
@@ -3416,7 +3402,7 @@
       },
       "SetupStep": {
         "type": "object",
-        "description": "One asset first-run setup fetches: the live speech models, the refine model, or a notes model.\n`total_bytes` is approximate for the live models until the preparation sidecar reports its plan.",
+        "description": "One asset first-run setup fetches: the FluidAudio speech models, or a notes model.\n`total_bytes` is approximate for the speech models until the preparation sidecar reports its plan.",
         "required": [
           "id",
           "label",

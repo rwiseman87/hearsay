@@ -277,22 +277,6 @@ fn notify_still_recording(
         .map_err(|e| e.to_string())
 }
 
-/// Open a native file picker for the offline-refine whisper model and return the chosen absolute
-/// path (or `None` if the user cancels). Filtered to GGML `.bin` models. Async so it runs off the
-/// main thread — the blocking picker dispatches the panel to the main run loop and waits, which
-/// would deadlock on the main thread (this is the plugin's documented pattern). The shell only
-/// surfaces the chooser; the picked path is handed to the core's `PUT /api/settings/models`, which
-/// validates it (GGML magic) and persists it.
-#[tauri::command]
-async fn pick_refine_model(app: tauri::AppHandle) -> Option<String> {
-    app.dialog()
-        .file()
-        .add_filter("GGML whisper model", &["bin"])
-        .blocking_pick_file()
-        .and_then(|path| path.into_path().ok())
-        .map(|path| path.to_string_lossy().to_string())
-}
-
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
@@ -302,7 +286,6 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             erase_all_data,
             quit_app,
-            pick_refine_model,
             notify_still_recording
         ])
         .setup(|app| {

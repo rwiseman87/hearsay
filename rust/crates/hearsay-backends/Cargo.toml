@@ -21,13 +21,8 @@ sqlx = { workspace = true }
 chrono = { workspace = true }
 uuid = { workspace = true }
 
-# GPU backends for the offline whisper refine, forwarded from `hearsay-core` through to
-# `hearsay-inference`'s whisper-rs so `make dmg`'s `--features metal` still reaches whisper. Off by
-# default (CPU). The notes LLM is out-of-process (`hearsay-notes`), so its GPU
-# accel is a feature of that crate, not forwarded here.
 [features]
 aec = ["hearsay-orchestrator/aec"]
-metal = ["hearsay-inference/metal"]
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

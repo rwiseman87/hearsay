@@ -657,9 +657,9 @@ export function useUpdateStorage() {
   });
 }
 
-// Update the `models` section (refine whisper model + the notes toggle/model). The server validates
-// any changed model file (absolute, exists, correct magic) and returns the canonicalized section, so
-// a 200 means the refine model resolves; a non-empty notes model likewise resolves (empty = unset).
+// Update the `models` section (the notes toggle/model/prompt). The server validates a changed model
+// file and returns the canonicalized section, so a non-empty notes model that returns 200 resolves
+// (empty = unset).
 // Callers send the whole section — the server full-replaces it — so never omit a field you mean to
 // keep. Patch the cache from the returned section.
 export function useUpdateModels() {
@@ -668,24 +668,7 @@ export function useUpdateModels() {
     mutationFn: (body: ModelSettings) => api.put<ModelSettings>("/api/settings/models", body),
     onSuccess: (models) => {
       // Patch the section for instant input feedback, then refetch for authoritative `models_info`:
-      // a notes-only change echoes the (possibly non-existent, bundled) refine path back unchanged,
-      // which the server accepts without re-checking, so we can't assume either file resolves.
-      qc.setQueryData<SettingsRead>(queryKeys.settings.all, (old) =>
-        old ? { ...old, models } : old,
-      );
-      qc.invalidateQueries({ queryKey: queryKeys.settings.all });
-    },
-  });
-}
-
-// Clear the refine-model override, reverting to the bundled default. Separate from the PUT because
-// the default may be a relative/bundled path the PUT's absolute-path validation would reject. Refetch
-// settings so models_info.refine_model_exists reflects whether the default resolves on this install.
-export function useResetModels() {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: () => api.delete<ModelSettings>("/api/settings/models"),
-    onSuccess: (models) => {
+      // the notes model file may not resolve, so we can't assume it does.
       qc.setQueryData<SettingsRead>(queryKeys.settings.all, (old) =>
         old ? { ...old, models } : old,
       );

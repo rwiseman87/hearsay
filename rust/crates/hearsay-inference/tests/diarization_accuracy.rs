@@ -4,9 +4,9 @@
 //! plain `cargo test` safe inside `make ci` yet runs for real via `make diarize-eval` on a dev machine.
 //!
 //! It measures the **diarizer stage only** (the `Speaker N` turns FluidAudio emits), not the
-//! whisper-transcribed refine: DER and speaker count are properties of the diarization turns, so
-//! dropping whisper isolates exactly the diarization signal and removes whisper's cost +
-//! nondeterminism. The whisper-dependent assembled-refine view stays in `refine_mac_probe`.
+//! transcribed refine: DER and speaker count are properties of the diarization turns, so running the
+//! sidecar without `--asr` isolates exactly the diarization signal. The transcript accuracy of the
+//! assembled refine is scored by `make wer-eval`.
 //!
 //! Ground truth (committed): `diarization_corpus.json` names each reference by its speaker count and an
 //! optional hand-labeled RTTM; `diarization_baseline.json` pins the current-config metrics. The audio
@@ -21,7 +21,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use hearsay_attribution::{der, speaker_count, SpeakerTurn};
-use hearsay_inference::{read_them_channel, read_wav_mono_16k, Diarizer, SwiftDiarizer};
+use hearsay_inference::{diarize, read_them_channel, read_wav_mono_16k};
 use serde::{Deserialize, Serialize};
 
 /// Forgiveness collar (s) around reference boundaries, matching the common AMI scoring convention.
@@ -121,9 +121,7 @@ fn diarization_accuracy_gate() {
         }
         .expect("read reference audio");
 
-        let diarization = SwiftDiarizer::new(&diarize_bin, DIARIZE_TIMEOUT)
-            .diarize(&them)
-            .expect("diarize reference");
+        let diarization = diarize(&diarize_bin, &them, DIARIZE_TIMEOUT).expect("diarize reference");
         let hyp: Vec<SpeakerTurn> = diarization
             .turns
             .iter()

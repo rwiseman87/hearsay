@@ -46,14 +46,12 @@ async fn main() -> Result<(), BoxError> {
 
     let bind = format!("{}:{}", settings.server_host, settings.server_port);
     // Whether this launch has its models, which gates pre-warming (see `LiveEngine::start_prewarm`).
-    let refine_model =
-        hearsay_db::queries::effective_refine_model(&pool, &settings.refine_model).await?;
-    let models_present = hearsay_core::setup::models_present(&settings, &refine_model);
+    let models_present = hearsay_core::setup::models_present(&settings);
     if !models_present {
         tracing::info!("models missing: first-run setup required before recording");
     }
     // Assemble the backend behind the neutral LiveEngine seam (capture helper + live sidecars +
-    // whisper refine). `build_engine` installs the orchestrator's self-reference (so a capture death
+    // offline refine). `build_engine` installs the orchestrator's self-reference (so a capture death
     // finalizes the meeting); the
     // binary holds only the trait object. Config defaults seed it; the editable Settings panels
     // override per meeting.
@@ -63,9 +61,7 @@ async fn main() -> Result<(), BoxError> {
         helper_path: settings.helper_path.clone(),
         synthetic,
         prewarm: models_present,
-        refine_model: settings.refine_model.clone(),
         refine_timeout: settings.refine_timeout,
-        refine_carry_over: settings.refine_carry_over,
         record: settings.record,
         auto_refine: settings.auto_refine,
         recognition_threshold: settings.recognition_threshold,

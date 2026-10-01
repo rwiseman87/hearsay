@@ -1,8 +1,8 @@
 //! The post-meeting notes summarizer, shared by every platform backend: resolve the effective GGUF
 //! notes model + prompt, then run the summarization in the standalone `hearsay-notes` sidecar over
-//! stdio (JSON in, JSON out). The sidecar is a separate process on purpose — it owns llama.cpp, whose
-//! vendored `ggml` would otherwise co-link with whisper.cpp's in the core and degrade the whisper
-//! refine ~5x. Always compiled (it links no ML); notes are simply unavailable at runtime when the
+//! stdio (JSON in, JSON out). The sidecar is a separate process on purpose — it owns llama.cpp, so a
+//! crash, stall or memory blowup in generation cannot take down the core, which owns live capture and
+//! the meeting database. Always compiled (it links no ML); notes are simply unavailable at runtime when the
 //! sidecar binary or a notes model is missing. Wired into the orchestrator so a meeting can
 //! auto-generate notes at stop and the manual "Generate notes" route can drive the same path.
 

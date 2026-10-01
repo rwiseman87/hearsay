@@ -876,7 +876,7 @@ export interface paths {
         };
         /**
          * Whether first-run model setup is still needed, and how a run is progressing.
-         * @description The installer ships no models. `required` stays `true` until the live and refine models are on
+         * @description The installer ships no models. `required` stays `true` until the speech models are on
          *     disk, and the UI blocks recording while it is. `steps` carries per-asset progress during a run,
          *     and the work a run would do before one starts.
          */
@@ -1255,7 +1255,7 @@ export interface components {
             models_dir: string;
         };
         /**
-         * @description Models: the offline-refine whisper model path plus the optional local-LLM notes step (enable +
+         * @description Models: the optional local-LLM notes step (enable +
          *     its GGUF model). Editable section; each effective value is the stored override, else the config
          *     default. Live transcription is the FluidAudio/ANE sidecars and is not configured here.
          */
@@ -1274,7 +1274,6 @@ export interface components {
              *     prompt existed still deserializes.
              */
             notes_prompt?: string;
-            refine_model: string;
         };
         /**
          * @description Read-only model facts shown alongside the editable models section: the bundled/config defaults
@@ -1287,9 +1286,7 @@ export interface components {
              *     editable `notes_prompt` is empty).
              */
             default_notes_prompt: string;
-            default_refine_model: string;
             notes_model_exists: boolean;
-            refine_model_exists: boolean;
         };
         /** @description A manual notes edit: replace the Markdown `content`. Validated at the boundary (length-bounded). */
         NotesEdit: {
@@ -1627,8 +1624,8 @@ export interface components {
          */
         SetupStatus: "idle" | "running" | "ready" | "error";
         /**
-         * @description One asset first-run setup fetches: the live speech models, the refine model, or a notes model.
-         *     `total_bytes` is approximate for the live models until the preparation sidecar reports its plan.
+         * @description One asset first-run setup fetches: the FluidAudio speech models, or a notes model.
+         *     `total_bytes` is approximate for the speech models until the preparation sidecar reports its plan.
          */
         SetupStep: {
             /** Format: int64 */

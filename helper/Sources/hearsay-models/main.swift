@@ -85,7 +85,7 @@ let plan = [
     PlanStep(id: "vad", label: "Voice activity", weight: 1),
     PlanStep(id: "diarizer", label: "Speaker diarization", weight: 34),
     PlanStep(id: "ls-eend", label: "Live speaker turns", weight: 43),
-    PlanStep(id: "parakeet-v3", label: "Transcription", weight: 461),
+    PlanStep(id: "parakeet-ultra", label: "Transcription", weight: 614),
     PlanStep(id: "parakeet-unified", label: "Live transcription", weight: 582),
 ]
 emitLine(Plan(steps: plan))
@@ -113,8 +113,8 @@ await run("ls-eend") {
         variant: .ami, stepSize: .step500ms, computeUnits: .cpuOnly,
         progressHandler: handler("ls-eend"))
 }
-await run("parakeet-v3") {
-    _ = try await AsrModels.download(version: .v3, progressHandler: handler("parakeet-v3"))
+await run("parakeet-ultra") {
+    _ = try await AsrModels.download(version: .ultra, progressHandler: handler("parakeet-ultra"))
 }
 await run("parakeet-unified") {
     let manager = StreamingUnifiedAsrManager()
