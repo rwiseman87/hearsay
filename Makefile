@@ -1,4 +1,4 @@
-.PHONY: help swift-plist-guard swift-build swift-test rust-build rust-test rust-lint tauri-lint tauri-test rust-fmt test lint fmt codegen codegen-check web-install web-typecheck web-lint web-test web-build web-ci audit licenses version-check version stamp-version set-version ci probes diarize-eval coverage e2e test-all clean-test build package notarize clean serve rust-serve fetch-refine-model stage-release mac-app dmg
+.PHONY: help swift-plist-guard swift-build swift-test rust-build rust-test rust-lint tauri-lint tauri-test rust-fmt test lint fmt codegen codegen-check web-install web-typecheck web-lint web-test web-build web-ci audit licenses version-check version stamp-version set-version ci probes diarize-eval wer-eval live-eval eval coverage e2e test-all clean-test build package notarize clean serve rust-serve fetch-refine-model stage-release mac-app dmg
 
 PKG := helper
 RUST := rust
@@ -160,6 +160,14 @@ probes: ## Model/hardware tests (the #[ignore]d refine/notes/live probes). Needs
 
 diarize-eval: swift-build ## Diarization accuracy gate: run hearsay-diarize over the local labeled corpus and check speaker-count + DER vs the committed baseline. Self-skips (never fails) when the audio/sidecar are absent, so the same test is safe in `make ci`; here it builds the sidecar and runs it for real with output. Point at a private recording with HEARSAY_DIARIZE_CORPUS + HEARSAY_DIARIZE_BASELINE; re-baseline an intentional change with HEARSAY_UPDATE_DIAR_BASELINE=1.
 	cargo test --manifest-path $(RUST)/Cargo.toml -p hearsay-inference --test diarization_accuracy diarization_accuracy_gate -- --nocapture
+
+wer-eval: swift-build ## Offline transcript accuracy gate: run the refine (whisper + hearsay-diarize) over the local labeled corpus and check WER + cpWER vs the committed baseline. Self-skips when the audio, whisper model or sidecar is absent. Re-baseline: HEARSAY_UPDATE_EVAL_BASELINE=1.
+	cargo test --manifest-path $(RUST)/Cargo.toml -p hearsay-eval --features metal --test asr_accuracy -- --nocapture
+
+live-eval: swift-build ## Live accuracy + latency: feed the corpus to hearsay-me/-live at real-time pace (10-minute window by default) and check WER/cpWER vs the baseline; reports final-delay percentiles. HEARSAY_EVAL_SPEED=0 feeds unpaced.
+	HEARSAY_LIVE_EVAL=1 cargo test --manifest-path $(RUST)/Cargo.toml -p hearsay-eval --features metal --test live_eval -- --nocapture
+
+eval: diarize-eval wer-eval live-eval ## Every accuracy/latency eval (diarization, offline transcript, live)
 
 coverage: ## Coverage report (cargo-llvm-cov + vitest v8) into outputs/coverage/ (report-only)
 	@command -v cargo-llvm-cov >/dev/null 2>&1 || { echo "cargo-llvm-cov not installed: run 'cargo install cargo-llvm-cov'"; exit 1; }

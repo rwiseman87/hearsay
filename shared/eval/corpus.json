@@ -1,0 +1,12 @@
+{
+  "_doc": "Transcript-accuracy corpus for `make wer-eval` / `make live-eval`. Audio stays LOCAL and is NOT committed; only this manifest, the reference transcripts, and the baseline-*.json files are. Each entry: name, audio (absolute, or relative to HEARSAY_OUTPUT_DIR / repo outputs/), channel (mono = an already-mono track such as AMI; them = right channel of a stereo Hearsay audio.wav), transcript (relative to shared/eval/). Point HEARSAY_EVAL_CORPUS at a private manifest to score local recordings without committing them.",
+  "_ami_attribution": "AMI Meeting Corpus meeting ES2004a, (c) University of Edinburgh, licensed CC BY 4.0 (https://groups.inf.ed.ac.uk/ami/corpus/). The transcript is generated from the AMI public manual annotations by scripts/ami_words_to_json.py. Fetch the audio locally (not committed) with: curl -sSL http://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/ES2004a/audio/ES2004a.Mix-Headset.wav -o outputs/ami/ES2004a.Mix-Headset.wav ; fetch the annotations with: curl -sSL https://groups.inf.ed.ac.uk/ami/AMICorpusAnnotations/ami_public_manual_1.6.2.zip -o outputs/ami/annotations/ami_manual.zip",
+  "references": [
+    {
+      "name": "ami-ES2004a-mixheadset",
+      "audio": "ami/ES2004a.Mix-Headset.wav",
+      "channel": "mono",
+      "transcript": "ES2004a.utterances.json"
+    }
+  ]
+}

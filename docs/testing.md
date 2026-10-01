@@ -34,6 +34,9 @@ This document maps the targets to what they test and the suite to where it lives
 | **`make e2e`** | build the core, then Playwright/Chromium vs the scripted core + `vite dev` | the real React app → real core → real pipeline over a live WebSocket | no (Chromium once) |
 | **`make probes`** | `cargo test -- --ignored` on `hearsay-inference` (metal), `hearsay-notes` (metal), `hearsay-backends`, `hearsay-capture` | the ML paths: whisper refine + diarize, the notes LLM | **yes** |
 | **`make diarize-eval`** | `swift-build`, then the `diarization_accuracy` gate over the local labeled corpus | `hearsay-diarize` speaker-count + DER vs the committed baseline (AMI, plus any local recordings added to the corpus; audio stays local). The same test self-skips inside `make ci`; re-baseline an intentional change with `HEARSAY_UPDATE_DIAR_BASELINE=1` | **yes** |
+| **`make wer-eval`** | `swift-build`, then the `hearsay-eval` `asr_accuracy` gate | the offline refine (whisper + `hearsay-diarize`) scored with WER and cpWER against the committed reference transcript, plus RTF in the run report; self-skips when the audio, whisper model or sidecar is absent. Re-baseline with `HEARSAY_UPDATE_EVAL_BASELINE=1` | **yes** |
+| **`make live-eval`** | `swift-build`, then the `hearsay-eval` `live_eval` gate (`HEARSAY_LIVE_EVAL=1`) | `hearsay-me` and `hearsay-live` fed the corpus concurrently at real-time pace; WER and cpWER gated, final-delay percentiles reported. A 10-minute window takes about 10 minutes; `HEARSAY_EVAL_SPEED=0` feeds unpaced (WER only) | **yes** |
+| **`make eval`** | `diarize-eval` + `wer-eval` + `live-eval` | every accuracy and latency eval | **yes** |
 | `make coverage` | `cargo-llvm-cov` + vitest v8 → `outputs/coverage/` | report-only; the "what's untested" view | no |
 | **`make test-all`** | `ci` + `probes` + `e2e` | everything, on a fully-equipped box | yes |
 | `make clean-test` | `rm -rf outputs/coverage outputs/e2e` | (removes report dirs; test *data* auto-cleans via tempdirs) | no |
@@ -113,6 +116,36 @@ The refine's anti-loop defence is pinned in `hearsay-inference/tests/refine_mac_
 on any run of back-to-back identical segments, so a whisper repetition-attractor regression surfaces
 here. The detector it guards (`find_loop_runs`) is pure and unit-tested in `hearsay-inference`'s lib
 tests, which need no model.
+
+## Accuracy and latency evals
+
+`make eval` measures what the unit tests cannot: how accurate and how fast the shipped models are on
+real speech. The metrics are pure Rust in `hearsay-attribution` (`word_errors`, `cpwer`, `percentiles`,
+and `der`), and the runners live in `hearsay-eval` (plus the diarization gate in `hearsay-inference`).
+
+| Eval | Measures | Scored against |
+|---|---|---|
+| `diarize-eval` | speaker count, DER | the AMI RTTM |
+| `wer-eval` | WER, cpWER, RTF of the refine | `shared/eval/ES2004a.utterances.json` |
+| `live-eval` | live WER, cpWER, final delay | the same transcript |
+
+- **Data.** The audio is local and never committed (`outputs/ami/`, fetched with the `curl` commands
+  recorded in `shared/eval/corpus.json`). Committed: the manifest, the reference transcript, and the
+  baselines `shared/eval/baseline-*.json`. The transcript is generated from the AMI public manual
+  annotations (CC BY 4.0) by `uv run scripts/ami_words_to_json.py`. Score private recordings by
+  pointing `HEARSAY_EVAL_CORPUS` at a manifest outside the repo.
+- **Scoring.** Text is lowercased, punctuation and fillers (`uh`, `um`, `mm-hmm`) are dropped, digit
+  strings are spelled out, and `ok` is unified with `okay`. WER compares all speakers merged in start
+  order; cpWER matches each hypothesis speaker to the reference speaker that minimizes total errors, so
+  a merged or split speaker is charged.
+- **Gating.** Every gated metric is lower-is-better and may not exceed its baseline by more than 0.01
+  (0.02 for live). A new reference or metric fails until baselined. A baseline records its window and is
+  skipped, not failed, when a run used a different one (`HEARSAY_EVAL_MAX_S`,
+  `HEARSAY_EVAL_LIVE_MAX_S`). Latency and RTF are machine-dependent, so they are reported in
+  `outputs/eval/<run>/*.json` and not gated.
+- **Whisper model.** `HEARSAY_REFINE_MODEL`, else `outputs/models/ggml-large-v3-turbo.bin`
+  (`make fetch-refine-model`). `HEARSAY_EVAL_CARRY_OVER=1` turns prompt carry-over on, matching the
+  setting's non-default state.
 
 ## Not covered (by design)
 

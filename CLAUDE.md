@@ -50,7 +50,8 @@ rust/crates/
   hearsay-inference/    whisper offline ASR + the refine (whisper-rs; no llama — see hearsay-notes)
   hearsay-notes/        the local-LLM notes sidecar (llama-cpp-2); spawned by the core, kept out of its binary
   hearsay-notes-prompt/ dependency-free prompt build + reply parse, shared by the core default + the notes sidecar
-  hearsay-attribution/  speaker clustering / voiceprint match / segment-speaker assignment (pure logic)
+  hearsay-eval/         test-only accuracy + latency evals (WER/cpWER gate, live sidecar driver); see docs/testing.md
+  hearsay-attribution/  speaker clustering / voiceprint match / segment-speaker assignment + DER/WER/cpWER eval metrics (pure logic)
   hearsay-audio/        lossless FLAC archival of the recorded meeting wav (encode + decode + byte-exact verify)
   hearsay-ipc/          binary frame codec + NDJSON control codec (source of truth for the IPC contract) + gen_fixtures bin
 helper/                 SwiftPM: hearsay-{helper,live,me,diarize,models} executables + HearsayIPC + SidecarIO libraries
@@ -77,6 +78,9 @@ shared/protocol/ipc.md  IPC contract (source of truth)   ·   shared/fixtures/  
   `make fmt`, `make codegen`, `make codegen-check`, `make web-ci`, `make audit`, `make licenses`, `make ci`,
   `make diarize-eval` (offline diarization accuracy gate: speaker-count + DER vs a committed baseline over a
   local labeled corpus; self-skips inside `make ci` when the audio/sidecar are absent).
+  `make wer-eval` (offline transcript WER + cpWER vs a committed baseline; self-skips without audio/model/sidecar),
+  `make live-eval` (live sidecars at real-time pace: WER/cpWER gate + final-delay report; opt-in, ~10 min),
+  `make eval` (all three). See `docs/testing.md`.
 - `make ci` is the gate and must stay green (`ci: lint test tauri-test web-ci codegen-check version-check
   audit licenses`): `clippy -D warnings` + `rustfmt --check` + Swift `selftest` + `cargo test` + the Tauri
   shell's clippy/tests + the web gate (`tsc` + ESLint + vitest + `vite build`) + codegen-drift check +

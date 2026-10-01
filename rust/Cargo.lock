@@ -982,6 +982,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "hearsay-eval"
+version = "0.0.0"
+dependencies = [
+ "hearsay-attribution",
+ "hearsay-inference",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "hearsay-inference"
 version = "0.0.0"
 dependencies = [

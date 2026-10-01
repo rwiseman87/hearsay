@@ -42,6 +42,7 @@ graph. Edges below are `path` dependencies (diagrammed there).
 | `hearsay-inference` | Local ML, all offline: the whisper ASR (`whisper-rs`, GGML; CPU plus the `metal` feature) and the refine (the `hearsay-diarize` sidecar plus whisper re-transcription).  No llama.cpp — the notes LLM lives in `hearsay-notes`. |
 | `hearsay-notes` | The local-LLM notes sidecar: a standalone binary that owns llama.cpp (`llama-cpp-2`), spawned by the core over stdio (JSON in, JSON out). |
 | `hearsay-notes-prompt` | Dependency-free prompt construction + reply parsing for the notes step, shared by the core's config default and the sidecar (so the sidecar never pulls `hearsay-inference` → whisper). |
+| `hearsay-eval` | Accuracy and latency evals, test-only: corpus and reference-transcript loading, the baseline gate, a driver that feeds the live sidecars over stdio and timestamps what they emit, and the `asr_accuracy` / `live_eval` tests behind `make wer-eval` / `make live-eval`. Scoring is pure `hearsay-attribution` (`word_errors`, `cpwer`, `percentiles`). |
 | `hearsay-core` | The application binary: the axum HTTP and WebSocket API (loopback plus per-session token), the served React UI, and the composition root. Depends on `hearsay-engine`, `hearsay-backends`, `hearsay-db`, and `hearsay-ipc`; the concrete backends stay hidden behind the seam. |
 
 The Tauri shell lives at `../web/src-tauri/` (`tauri.conf.json` plus `src/main.rs`): it bundles
