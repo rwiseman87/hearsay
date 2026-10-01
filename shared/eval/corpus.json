@@ -7,6 +7,12 @@
       "audio": "ami/ES2004a.Mix-Headset.wav",
       "channel": "mono",
       "transcript": "ES2004a.utterances.json"
+    },
+    {
+      "name": "ami-ES2004a-sdm",
+      "audio": "ami/ES2004a.Array1-01.wav",
+      "channel": "mono",
+      "transcript": "ES2004a.utterances.json"
     }
   ]
 }

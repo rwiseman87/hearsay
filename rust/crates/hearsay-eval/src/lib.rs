@@ -8,6 +8,7 @@
 //! (`make diarize-eval`) and is not duplicated here.
 
 pub mod live;
+pub mod parakeet;
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -90,14 +91,14 @@ pub fn resolve_audio(audio: &str) -> PathBuf {
     }
 }
 
-/// A Swift sidecar binary: the path in `env_var` if set (and present), else the newest-looking build
+/// A Swift sidecar binary: the path in `env_var` if set (and present), else the `make swift-build` (debug) build, then release
 /// under `helper/.build/`. `None` when absent, so a test can skip instead of failing.
 pub fn resolve_sidecar(env_var: &str, name: &str) -> Option<PathBuf> {
     if let Some(bin) = std::env::var_os(env_var) {
         let path = PathBuf::from(bin);
         return path.exists().then_some(path);
     }
-    ["release", "debug"]
+    ["debug", "release"]
         .into_iter()
         .map(|profile| repo_root().join(format!("helper/.build/{profile}/{name}")))
         .find(|p| p.exists())

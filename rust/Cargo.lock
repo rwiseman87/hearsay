@@ -987,8 +987,10 @@ version = "0.0.0"
 dependencies = [
  "hearsay-attribution",
  "hearsay-inference",
+ "hound",
  "serde",
  "serde_json",
+ "tempfile",
 ]
 
 [[package]]

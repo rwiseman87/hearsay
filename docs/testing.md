@@ -143,6 +143,10 @@ and `der`), and the runners live in `hearsay-eval` (plus the diarization gate in
   skipped, not failed, when a run used a different one (`HEARSAY_EVAL_MAX_S`,
   `HEARSAY_EVAL_LIVE_MAX_S`). Latency and RTF are machine-dependent, so they are reported in
   `outputs/eval/<run>/*.json` and not gated.
+- **Comparing ASR backends.** `HEARSAY_EVAL_ASR=parakeet:<v2|v3|ultra|redux|phonon2>` scores the
+  `hearsay-diarize --asr` Parakeet batch ASR (each word attributed to the diarizer turn it overlaps)
+  on the same metrics instead of the whisper refine. Those runs are report-only: never gated, never
+  written to the baseline. The first run of a model downloads it into the FluidAudio cache.
 - **Whisper model.** `HEARSAY_REFINE_MODEL`, else `outputs/models/ggml-large-v3-turbo.bin`
   (`make fetch-refine-model`). `HEARSAY_EVAL_CARRY_OVER=1` turns prompt carry-over on, matching the
   setting's non-default state.

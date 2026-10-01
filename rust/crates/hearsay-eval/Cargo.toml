@@ -9,6 +9,8 @@ hearsay-attribution = { path = "../hearsay-attribution" }
 hearsay-inference = { path = "../hearsay-inference" }
 serde = { workspace = true }
 serde_json = { workspace = true }
+hound = { workspace = true }
+tempfile = { workspace = true }
 
 # `metal` runs the whisper refine on the GPU, as the shipped app does; the eval targets in the
 # Makefile enable it so measured RTF matches what users see.

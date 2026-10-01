@@ -4,6 +4,10 @@
     "ami-ES2004a-mixheadset": {
       "cpwer": 0.2707,
       "wer": 0.2136
+    },
+    "ami-ES2004a-sdm": {
+      "cpwer": 0.3431,
+      "wer": 0.2989
     }
   }
 }
