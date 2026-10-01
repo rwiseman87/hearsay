@@ -236,7 +236,8 @@ filter — so `EchoCanceller` leaves a residual, and a loud remote party can sti
 layer that catches that residual, working on the *transcript* rather than the signal.
 
 The rule: drop a Me **final** whose text is an echo of concurrent Them speech. The Them stream task
-records each finalized Them segment (`record_them`) as a candidate; before a Me final is persisted
+records each finalized Them segment (`record_them`) and the open turn's latest partial
+(`record_them_partial`) as candidates; before a Me final is persisted
 or broadcast, the Me stream task checks it against the recorded window (`is_echo`). A single
 `EchoDedup` is shared between the two tasks behind the same `Arc<Mutex<…>>` pattern as the
 last-activity clock.
@@ -246,14 +247,21 @@ than a miss:
 
 - **Length gate** — a final under `min_tokens` (4) is never dropped, so backchannels ("yeah",
   "right") always survive.
-- **Concurrency gate** — only Them finals overlapping the Me final's window (`window_s` = 1.5 s of
-  slack each side) are candidates; echo is roughly concurrent with its reference.
-- **Coverage gate** — the concurrent Them finals are pooled, in time order, into one reference
-  sequence, and the drop fires only when the longest common subsequence covers `similarity` (0.8) of
-  the Me final's tokens. Normalizing by the *Me* length means a Me line is dropped only when it is
-  almost entirely echo: a real Me utterance that merely quotes a short Them phrase, or Me talking
-  over Them (double-talk), stays under threshold and is kept. Pooling handles Them being endpointed
-  into several finals across a span the Me echo covers as one.
+- **Concurrency gate** — only Them entries (finals and the open partial) overlapping the Me final's
+  window (`window_s` = 1.5 s of slack each side) are candidates; echo is roughly concurrent with its
+  reference.
+- **Coverage gate** — the concurrent Them entries are pooled, in time order, into one reference
+  sequence, and the drop fires only when the longest common contiguous run of tokens covers
+  `similarity` (0.8) of the Me final's tokens. A scattered in-order match does not count, so short
+  genuine Me speech made of common words stays even when a long Them text happens to contain those
+  words. Normalizing by the *Me* length means a Me line is dropped only when it is almost entirely
+  echo: a real Me utterance that merely quotes a short Them phrase, or Me talking over Them
+  (double-talk), stays under threshold and is kept. Pooling handles Them being endpointed into
+  several finals across a span the Me echo covers as one.
+- **Partials** — a Them final lands only when the diarizer closes the turn, which can be long after
+  speech starts, while a Me echo finalizes after a short silence. The open turn's partial text
+  covers that gap. One partial is held at a time (a newer partial replaces it), and a final for the
+  same turn supersedes it, so the text is never pooled twice.
 
 Two properties keep it safe alongside AEC:
 
@@ -263,10 +271,10 @@ Two properties keep it safe alongside AEC:
 - **It is pure and always on.** No C toolchain, no `aec` feature, no new dependency — it runs (and
   is unit-tested) in the default build, and it helps even when AEC is not compiled in.
 
-It relies on Them finalizing before its Me echo, which the physics favors: Them is tapped
-*pre-speaker*, so its ASR runs earlier and on cleaner audio than the mic echo, which the playout +
-acoustic round trip delays. A Them final that lands *after* its Me echo is not caught — an accepted
-limitation of a streaming backstop.
+It relies on the Them text existing (as a final or a partial) before its Me echo finalizes, which
+the physics favors: Them is tapped *pre-speaker*, so its ASR runs earlier and on cleaner audio than
+the mic echo, which the playout + acoustic round trip delays. Them text that is not yet emitted when
+the Me echo finalizes is not caught — an accepted limitation of a streaming backstop.
 
 ## Guardrails and edge cases
 

@@ -25,7 +25,7 @@ let package = Package(
         .target(name: "SidecarIO"),
         .executableTarget(
             name: "hearsay-helper",
-            dependencies: ["HearsayIPC"],
+            dependencies: ["HearsayIPC", "SidecarIO"],
             // The capture executable drives real-time Core Audio / AVAudioEngine
             // callbacks across threads with explicit lock discipline and
             // @unchecked Sendable. Swift 6 strict-concurrency flags those

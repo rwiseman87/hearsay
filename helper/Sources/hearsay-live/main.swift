@@ -205,9 +205,12 @@ func reanchorPartial(to sample: Int) async {
     try? await stream.reset()
 }
 
+let inbox = FrameQueue(prefix: "hearsay-live")
+inbox.start()
+
 reading: while true {
     let samples: [Float]
-    switch readAudioFrame() {
+    switch inbox.next() {
     case .eof: break reading
     case .empty: continue reading
     case .oversize(let n):

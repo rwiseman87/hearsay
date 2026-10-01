@@ -152,9 +152,12 @@ note("warmup complete")
 emitReady()  // models loaded + ANE warmed: lets the core tell a slow first-run download from a hang
 // and lets the prewarm pool know the sidecar is hot.
 
+let inbox = FrameQueue(prefix: "hearsay-me")
+inbox.start()
+
 reading: while true {
     let samples: [Float]
-    switch readAudioFrame() {
+    switch inbox.next() {
     case .eof: break reading
     case .empty: continue reading
     case .oversize(let n):

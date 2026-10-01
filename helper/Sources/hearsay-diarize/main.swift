@@ -18,6 +18,8 @@ import Foundation
 // clean JSON. The Rust core (`POST /api/meetings/{id}/rediarize`) invokes this as a subprocess.
 // `--asr <v2|v3|ultra|redux|phonon2>` additionally runs FluidAudio's Parakeet batch ASR over the same
 // file and adds `"asr":{"model","processing_s","words":[{"word","start_s","end_s","confidence"}]}`.
+// `--diarizer <pyannote|nemotron3[-preset]|sortformer[-offline]|lseend-<variant>[-<step>ms]>` is an
+// experimental, opt-in comparison mode (`make diarizer-eval`); the production paths never take it.
 // CoreML models auto-download from public HuggingFace repos on first run.
 
 struct Turn: Codable {
@@ -72,12 +74,14 @@ func emitErrorAndExit(_ message: String) -> Never {
 }
 
 let args = CommandLine.arguments
-guard args.count == 2 || (args.count == 4 && args[2] == "--asr") else {
-    FileHandle.standardError.write(Data("usage: hearsay-diarize <wav> [--asr v2|v3|ultra|redux|phonon2]\n".utf8))
+guard args.count == 2 || (args.count == 4 && (args[2] == "--asr" || args[2] == "--diarizer")) else {
+    FileHandle.standardError.write(
+        Data("usage: hearsay-diarize <wav> [--asr v2|v3|ultra|redux|phonon2 | --diarizer <engine>]\n".utf8))
     exit(2)
 }
 let wavPath = args[1]
-let asrModelName: String? = args.count == 4 ? args[3] : nil
+let asrModelName: String? = args.count == 4 && args[2] == "--asr" ? args[3] : nil
+let experimentalEngine: String? = args.count == 4 && args[2] == "--diarizer" ? args[3] : nil
 guard FileManager.default.fileExists(atPath: wavPath) else {
     emitErrorAndExit("no such file: \(wavPath)")
 }
@@ -128,6 +132,89 @@ func asrVersion(_ name: String) -> AsrModelVersion? {
     }
 }
 
+func timelineTurns(_ timeline: DiarizerTimeline) -> [Turn] {
+    timeline.speakers.values
+        .flatMap { speaker in
+            speaker.finalizedSegments.map {
+                Turn(speaker: "S\(speaker.index + 1)", startS: Double($0.startTime), endS: Double($0.endTime))
+            }
+        }
+        .sorted { $0.startS < $1.startS }
+}
+
+func lseendVariant(_ name: String) -> LSEENDVariant? {
+    switch name {
+    case "ami": return .ami
+    case "callhome": return .callhome
+    case "dih2": return .dihard2
+    case "dih3": return .dihard3
+    default: return nil
+    }
+}
+
+/// Experimental engines for `--diarizer`, scored by `make diarizer-eval`. Emits the same JSON shape
+/// as the shipped path; engines without voiceprints leave `speakers` empty.
+func runExperimental(engine: String, url: URL, durationS: Double) async throws -> Output {
+    let parts = engine.split(separator: "-", maxSplits: 1).map(String.init)
+    let family = parts[0]
+    let variant = parts.count > 1 ? parts[1] : ""
+    let samples = try AudioConverter().resampleAudioFile(url)
+    var turns: [Turn] = []
+    var speakers: [SpeakerEmbedding] = []
+
+    switch family {
+    case "pyannote":
+        var config = OfflineDiarizerConfig.default
+        config.clustering.threshold = 0.7
+        let env = ProcessInfo.processInfo.environment
+        config.clustering.numSpeakers = env["HEARSAY_DIARIZE_NUM_SPEAKERS"].flatMap { Int($0) }
+        config.clustering.maxSpeakers = env["HEARSAY_DIARIZE_MAX_SPEAKERS"].flatMap { Int($0) }
+        let result = try await OfflineDiarizerManager(config: config).process(url)
+        turns = result.segments.map {
+            Turn(speaker: $0.speakerId, startS: Double($0.startTimeSeconds), endS: Double($0.endTimeSeconds))
+        }
+        speakers = (result.speakerDatabase ?? [:]).map { SpeakerEmbedding(speaker: $0.key, embedding: $0.value) }
+    case "nemotron3":
+        // Variant is a Nemotron3Config preset name; the offline preset is the default.
+        guard let config = Nemotron3Config.preset(named: variant.isEmpty ? "offline" : variant) else {
+            emitErrorAndExit("unknown nemotron3 preset: \(variant)")
+        }
+        let models = try await Nemotron3Models.loadFromHuggingFace(config: config)
+        let (probabilities, frames) = try Nemotron3Diarizer(config: config, models: models).processComplete(samples)
+        turns = Nemotron3Diarizer.segments(probabilities: probabilities, frameCount: frames).map {
+            Turn(speaker: "S\($0.speakerIndex + 1)", startS: Double($0.startSeconds), endS: Double($0.endSeconds))
+        }
+    case "sortformer":
+        if variant == "offline" {
+            let diarizer = OfflineSortformerDiarizer()
+            try await diarizer.initializeFromHuggingFace()
+            turns = timelineTurns(try diarizer.processComplete(samples))
+        } else {
+            let config = SortformerConfig.balancedV2_1
+            let models = try await SortformerModels.loadFromHuggingFace(config: config)
+            let diarizer = SortformerDiarizer(config: config)
+            diarizer.initialize(models: models)
+            turns = timelineTurns(try diarizer.processComplete(samples))
+        }
+    case "lseend":
+        // "lseend-<ami|callhome|dih2|dih3>[-<100|200|300|400|500>ms]"; the step defaults to the live 500 ms.
+        let tail = variant.split(separator: "-").map(String.init)
+        guard let lsVariant = tail.first.flatMap(lseendVariant) else {
+            emitErrorAndExit("unknown lseend variant: \(variant)")
+        }
+        let step = LSEENDStepSize.allCases.first { $0.description == (tail.count > 1 ? tail[1] : "500ms") }
+        guard let step else { emitErrorAndExit("unknown lseend step: \(variant)") }
+        let model = try await LSEENDModel.loadFromHuggingFace(
+            variant: lsVariant, stepSize: step, computeUnits: .cpuOnly)
+        turns = timelineTurns(try LSEENDDiarizer(model: model).processComplete(samples, sourceSampleRate: 16_000))
+    default:
+        emitErrorAndExit("unknown diarizer: \(engine)")
+    }
+    return Output(
+        sampleRate: 16_000, durationS: durationS, speakerCount: Set(turns.map { $0.speaker }).count,
+        turns: turns, speakers: speakers, asr: nil)
+}
+
 do {
     let url = URL(fileURLWithPath: wavPath)
     // Duration from the file header (frames / sample rate) — no need to decode the whole track just
@@ -135,6 +222,15 @@ do {
     let file = try AVAudioFile(forReading: url)
     let fileRate = file.fileFormat.sampleRate
     let durationS = fileRate > 0 ? Double(file.length) / fileRate : 0
+
+    if let engine = experimentalEngine {
+        let output = try await runExperimental(engine: engine, url: url, durationS: durationS)
+        let encoder = JSONEncoder()
+        encoder.keyEncodingStrategy = .convertToSnakeCase
+        resultOutput.write(try encoder.encode(output))
+        resultOutput.write(Data("\n".utf8))
+        exit(0)
+    }
 
     var config = OfflineDiarizerConfig.default
     // Clustering threshold (Euclidean distance on unit embeddings). FluidAudio's 0.6 default

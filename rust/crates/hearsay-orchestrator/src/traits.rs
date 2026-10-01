@@ -3,6 +3,7 @@
 //! with fakes ([`crate::testing`]) before `hearsay-capture` / `hearsay-inference` exist.
 
 use std::path::Path;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use tokio::sync::{mpsc, oneshot};
@@ -22,6 +23,13 @@ pub trait AudioSource: Send {
     /// Stop capture (idempotent). Closes the channel returned by [`start`](Self::start).
     async fn stop(&mut self);
 }
+
+/// Delays before each restart of a dead sidecar; the length is the per-stream retry budget.
+pub const RESPAWN_BACKOFF: [Duration; 3] = [
+    Duration::from_secs(1),
+    Duration::from_secs(2),
+    Duration::from_secs(4),
+];
 
 /// A streaming audio-AI sidecar for one stream (VAD/diarization + ASR): feed the stream's PCM in,
 /// read the NDJSON segments it emits.
@@ -46,6 +54,28 @@ pub trait Transcriber: Send {
     /// [`start`](Self::start).
     fn ready_signal(&mut self) -> Option<oneshot::Receiver<()>> {
         None
+    }
+
+    /// Whether [`respawn`](Self::respawn) can replace a dead sidecar mid-meeting. `false` (the
+    /// default) means a death ends this stream's live transcription for the meeting.
+    fn can_respawn(&self) -> bool {
+        false
+    }
+
+    /// Whether the sidecar's stdin pipe has failed (a write error), so it needs replacing.
+    fn is_broken(&self) -> bool {
+        false
+    }
+
+    /// Delays before each successive restart attempt; its length is the retry budget.
+    fn respawn_backoff(&self) -> &[Duration] {
+        &RESPAWN_BACKOFF
+    }
+
+    /// Replace a dead sidecar with a fresh one and return its segment channel. The new sidecar's
+    /// segment times restart at 0 at its first received sample.
+    async fn respawn(&mut self) -> Result<mpsc::Receiver<SidecarSegment>, OrchestratorError> {
+        Err(OrchestratorError::Backend("respawn unsupported".into()))
     }
 }
 

@@ -1,4 +1,4 @@
-.PHONY: help swift-plist-guard swift-build swift-test rust-build rust-test rust-lint tauri-lint tauri-test rust-fmt test lint fmt codegen codegen-check web-install web-typecheck web-lint web-test web-build web-ci audit licenses version-check version stamp-version set-version ci probes diarize-eval wer-eval live-eval eval coverage e2e test-all clean-test build package notarize clean serve rust-serve stage-release mac-app dmg
+.PHONY: help swift-plist-guard swift-build swift-test rust-build rust-test rust-lint tauri-lint tauri-test rust-fmt test lint fmt codegen codegen-check web-install web-typecheck web-lint web-test web-build web-ci audit licenses version-check version stamp-version set-version ci probes diarize-eval wer-eval diarizer-eval live-eval eval coverage e2e test-all clean-test build package notarize clean serve rust-serve stage-release mac-app dmg
 
 PKG := helper
 RUST := rust
@@ -160,6 +160,9 @@ diarize-eval: swift-build ## Diarization accuracy gate: run hearsay-diarize over
 
 wer-eval: swift-build ## Offline transcript accuracy gate: run the refine (hearsay-diarize with Parakeet Ultra) over the local labeled corpus and check WER + cpWER vs the committed baseline. Self-skips when the audio or sidecar is absent. Re-baseline: HEARSAY_UPDATE_EVAL_BASELINE=1.
 	cargo test --manifest-path $(RUST)/Cargo.toml -p hearsay-eval --test asr_accuracy -- --nocapture
+
+diarizer-eval: swift-build ## Report-only diarizer comparison: run each candidate engine (pyannote, Nemotron 3, Sortformer, LS-EEND) over AMI ES2004a near/far-field and print speaker count, DER breakdown and RTF. Slow and downloads models; HEARSAY_DIARIZER_ENGINES=a,b restricts the engines.
+	HEARSAY_DIARIZER_EVAL=1 cargo test --manifest-path $(RUST)/Cargo.toml -p hearsay-eval --test diarizer_compare -- --nocapture
 
 live-eval: swift-build ## Live accuracy + latency: feed the corpus to hearsay-me/-live at real-time pace (10-minute window by default) and check WER/cpWER vs the baseline; reports final-delay percentiles. HEARSAY_EVAL_SPEED=0 feeds unpaced.
 	HEARSAY_LIVE_EVAL=1 cargo test --manifest-path $(RUST)/Cargo.toml -p hearsay-eval --test live_eval -- --nocapture

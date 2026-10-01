@@ -49,6 +49,101 @@ public func readAudioFrame(maxSamples: Int = maxInputSamples) -> FrameResult {
     return .samples(samples)
 }
 
+/// Upper bound on queued audio in a `FrameQueue`: 60 s of 16 kHz mono.
+public let maxQueuedSamples = 60 * 16_000
+
+/// Drains stdin on its own thread into a bounded queue, so slow inference is latency, not pipe
+/// backpressure. Delivery is in order; overflow drops the oldest queued samples.
+public final class FrameQueue: @unchecked Sendable {
+    private let cond = NSCondition()
+    private var items: [FrameResult] = []
+    private var queuedSamples = 0
+    private var droppedTotal = 0
+    private var droppedUnreported = 0
+    private var lastReport: UInt64 = 0
+    private let maxSamples: Int
+    private let prefix: String
+    private let reportIntervalNs: UInt64 = 5_000_000_000
+
+    public init(prefix: String, maxSamples: Int = maxQueuedSamples) {
+        self.prefix = prefix
+        self.maxSamples = maxSamples
+    }
+
+    /// Total samples dropped to overflow so far.
+    public var droppedSamples: Int {
+        cond.lock()
+        defer { cond.unlock() }
+        return droppedTotal
+    }
+
+    /// Start the reader thread; it stops after pushing `.eof` or `.oversize`.
+    public func start(read: @escaping @Sendable () -> FrameResult = { readAudioFrame() }) {
+        let thread = Thread { [self] in
+            while true {
+                let result = read()
+                push(result)
+                switch result {
+                case .eof, .oversize: return
+                default: continue
+                }
+            }
+        }
+        thread.name = "\(prefix)-stdin"
+        thread.start()
+    }
+
+    func push(_ result: FrameResult) {
+        var report: Int?
+        cond.lock()
+        if case .samples(let s) = result {
+            var index = 0
+            while queuedSamples + s.count > maxSamples, index < items.count {
+                if case .samples(let old) = items[index] {
+                    queuedSamples -= old.count
+                    droppedTotal += old.count
+                    droppedUnreported += old.count
+                    items.remove(at: index)
+                } else {
+                    index += 1
+                }
+            }
+            queuedSamples += s.count
+            let now = DispatchTime.now().uptimeNanoseconds
+            if droppedUnreported > 0, now &- lastReport >= reportIntervalNs {
+                report = droppedUnreported
+                droppedUnreported = 0
+                lastReport = now
+            }
+        }
+        items.append(result)
+        cond.signal()
+        cond.unlock()
+        if let report {
+            writeError(
+                prefix,
+                "input queue overflow: dropped \(String(format: "%.1f", Double(report) / 16_000)) s of audio (inference is behind)"
+            )
+        }
+    }
+
+    /// Block until the next frame is available. After `.eof` / `.oversize` it keeps returning it.
+    public func next() -> FrameResult {
+        cond.lock()
+        defer { cond.unlock() }
+        while items.isEmpty { cond.wait() }
+        let result = items[0]
+        switch result {
+        case .eof, .oversize: return result
+        case .samples(let s):
+            queuedSamples -= s.count
+            items.removeFirst()
+        case .empty: items.removeFirst()
+        }
+        return result
+    }
+}
+
 /// Encode `value` as one NDJSON line to stdout. A dead core closes our stdout mid-write; SIGPIPE is
 /// ignored (each sidecar calls `signal(SIGPIPE, SIG_IGN)`), so the write throws and we treat it as
 /// stdin EOF (nothing more to stream) and exit cleanly.

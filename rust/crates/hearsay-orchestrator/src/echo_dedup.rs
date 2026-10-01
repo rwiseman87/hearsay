@@ -2,33 +2,33 @@
 //!
 //! The acoustic canceller ([`crate::aec`]) cannot fully cancel cheap laptop speakers, so residual
 //! Them audio still reaches `hearsay-me` and is transcribed as the local user. This module drops a
-//! Me *final* whose text echoes a recently transcribed Them final — the transcript-level complement
+//! Me *final* whose text echoes recently transcribed Them speech — the transcript-level complement
 //! to AEC's signal-level work. It touches only live Me finals, never the archive or the offline
 //! refine. See `docs/echo-cancellation.md`.
 //!
 //! ## Streaming order
 //!
-//! Only finalized Them segments are recorded as candidates. The physics favors this: Them is tapped
-//! *pre-speaker*, so its ASR runs earlier and on cleaner audio than the Me echo, which is delayed by
-//! the playout + acoustic round trip. By the time a Me echo finalizes, the matching Them final is
-//! almost always already recorded. A Them final that arrives *after* its Me echo is not caught — an
-//! accepted limitation of a streaming backstop.
+//! Them finals and Them partials are recorded as candidates. A Them final lands only when the
+//! diarizer closes the turn, which can be long after speech starts, while a Me echo finalizes after
+//! a short silence; the open turn's latest partial text covers that window. The partial slot holds
+//! one entry (a new partial replaces the old) and a final for the same turn supersedes it.
 
 use std::collections::VecDeque;
 
 /// Tuning for [`EchoDedup`]. Defaults are deliberately conservative: short utterances are never
-/// dropped (so backchannels like "yeah" / "right" survive) and only a near-complete, in-order text
-/// match inside a concurrent time window counts as an echo.
+/// dropped (so backchannels like "yeah" / "right" survive) and only a near-complete, contiguous
+/// text match inside a concurrent time window counts as an echo.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct EchoDedupConfig {
     /// A Me final shorter than this many tokens is never treated as an echo.
     pub min_tokens: usize,
-    /// Fraction of the Me final's tokens that must appear, in order, in the concurrent Them text.
+    /// Fraction of the Me final's tokens that must form one contiguous run in the concurrent Them
+    /// text.
     pub similarity: f64,
-    /// Slack (seconds) on each side when deciding whether a Them final is concurrent with the Me
+    /// Slack (seconds) on each side when deciding whether a Them entry is concurrent with the Me
     /// final — covers playout + acoustic + ASR-endpoint skew between the two streams.
     pub window_s: f64,
-    /// How long (seconds) a Them final stays a candidate reference after it ends.
+    /// How long (seconds) a Them entry stays a candidate reference after it ends.
     pub retain_s: f64,
 }
 
@@ -49,10 +49,12 @@ struct ThemEntry {
     tokens: Vec<String>,
 }
 
-/// A rolling window of recent Them finals, matched against incoming Me finals.
+/// A rolling window of recent Them finals plus the open turn's partial, matched against incoming Me
+/// finals.
 pub(crate) struct EchoDedup {
     cfg: EchoDedupConfig,
     recent: VecDeque<ThemEntry>,
+    partial: Option<ThemEntry>,
     /// The latest segment end time seen on either stream, i.e. "now" in meeting time. Drives pruning.
     latest_s: f64,
 }
@@ -62,18 +64,37 @@ impl EchoDedup {
         Self {
             cfg,
             recent: VecDeque::new(),
+            partial: None,
             latest_s: 0.0,
         }
     }
 
-    /// Record a finalized Them segment as a candidate echo source.
+    /// Record a finalized Them segment as a candidate echo source, superseding the open partial.
     pub fn record_them(&mut self, start_s: f64, end_s: f64, text: &str) {
+        if self.partial.as_ref().is_some_and(|p| p.start_s < end_s) {
+            self.partial = None;
+        }
         let tokens = normalize(text);
         if tokens.is_empty() {
             return;
         }
         self.latest_s = self.latest_s.max(end_s);
         self.recent.push_back(ThemEntry {
+            start_s,
+            end_s,
+            tokens,
+        });
+        self.prune();
+    }
+
+    /// Record the open Them turn's partial text, replacing the previous partial.
+    pub fn record_them_partial(&mut self, start_s: f64, end_s: f64, text: &str) {
+        let tokens = normalize(text);
+        if tokens.is_empty() {
+            return;
+        }
+        self.latest_s = self.latest_s.max(end_s);
+        self.partial = Some(ThemEntry {
             start_s,
             end_s,
             tokens,
@@ -91,11 +112,11 @@ impl EchoDedup {
             return false;
         }
 
-        // Pool the tokens of every concurrent Them final, in time order, into one reference
-        // sequence: Them may have been endpointed into several finals across the span the Me echo
-        // covers as a single final.
+        // Pool the tokens of every concurrent Them entry, in time order (finals, then the open
+        // partial), into one reference sequence: Them may have been endpointed into several finals
+        // across the span the Me echo covers as a single final.
         let mut pool: Vec<&str> = Vec::new();
-        for e in &self.recent {
+        for e in self.recent.iter().chain(self.partial.iter()) {
             if e.start_s <= end_s + self.cfg.window_s && e.end_s >= start_s - self.cfg.window_s {
                 pool.extend(e.tokens.iter().map(String::as_str));
             }
@@ -105,7 +126,7 @@ impl EchoDedup {
         }
 
         let me_refs: Vec<&str> = me.iter().map(String::as_str).collect();
-        let covered = lcs_len(&me_refs, &pool) as f64 / me.len() as f64;
+        let covered = longest_common_run(&me_refs, &pool) as f64 / me.len() as f64;
         covered >= self.cfg.similarity
     }
 
@@ -113,6 +134,9 @@ impl EchoDedup {
         let cutoff = self.latest_s - self.cfg.retain_s;
         while self.recent.front().is_some_and(|e| e.end_s < cutoff) {
             self.recent.pop_front();
+        }
+        if self.partial.as_ref().is_some_and(|p| p.end_s < cutoff) {
+            self.partial = None;
         }
     }
 }
@@ -126,25 +150,21 @@ fn normalize(text: &str) -> Vec<String> {
         .collect()
 }
 
-/// Length of the longest common subsequence of two token sequences (rolling one-row DP).
-fn lcs_len(a: &[&str], b: &[&str]) -> usize {
-    if a.is_empty() || b.is_empty() {
-        return 0;
-    }
-    let mut dp = vec![0usize; b.len() + 1];
+/// Length of the longest common contiguous run of two token sequences (rolling one-row DP).
+fn longest_common_run(a: &[&str], b: &[&str]) -> usize {
+    let mut best = 0;
+    let mut prev = vec![0usize; b.len() + 1];
     for x in a {
-        let mut prev_diag = 0; // dp[i-1][j-1] before this cell is overwritten
+        let mut cur = vec![0usize; b.len() + 1];
         for (j, y) in b.iter().enumerate() {
-            let tmp = dp[j + 1];
-            dp[j + 1] = if x == y {
-                prev_diag + 1
-            } else {
-                dp[j + 1].max(dp[j])
-            };
-            prev_diag = tmp;
+            if x == y {
+                cur[j + 1] = prev[j] + 1;
+                best = best.max(cur[j + 1]);
+            }
         }
+        prev = cur;
     }
-    dp[b.len()]
+    best
 }
 
 #[cfg(test)]
@@ -232,5 +252,91 @@ mod tests {
             3.3,
             "no i really do not think we should wait that long"
         ));
+    }
+
+    #[test]
+    fn echo_finalizing_before_the_them_final_matches_the_partial() {
+        let mut d = dedup();
+        d.record_them_partial(
+            1.0,
+            4.0,
+            "so what about the third quarter numbers and the forecast",
+        );
+        assert!(d.is_echo(1.4, 3.6, "what about the third quarter numbers"));
+    }
+
+    #[test]
+    fn scattered_common_words_are_not_an_echo() {
+        let mut d = dedup();
+        d.record_them(
+            1.0,
+            9.0,
+            "yeah so i was saying that i do not think this is the case for the rest of them",
+        );
+        // Every Me token appears in order in the Them text, but no run of them is contiguous.
+        assert!(!d.is_echo(3.0, 4.0, "yeah i think that is the case"));
+    }
+
+    #[test]
+    fn double_talk_over_a_partial_is_kept() {
+        let mut d = dedup();
+        d.record_them_partial(1.0, 3.0, "we should ship it on friday");
+        assert!(!d.is_echo(
+            1.2,
+            3.3,
+            "no i really do not think we should wait that long"
+        ));
+    }
+
+    #[test]
+    fn new_partial_replaces_the_previous_one() {
+        let mut d = dedup();
+        d.record_them_partial(1.0, 2.0, "so what about the");
+        d.record_them_partial(1.0, 3.0, "so what about the third quarter numbers");
+        // Pooling both would make this repeated text match; the replaced partial must not count.
+        assert!(!d.is_echo(
+            1.2,
+            3.3,
+            "so what about the so what about the third quarter numbers"
+        ));
+    }
+
+    #[test]
+    fn final_supersedes_the_partial_without_double_counting() {
+        let mut d = dedup();
+        d.record_them_partial(1.0, 3.0, "the third quarter numbers");
+        d.record_them(1.0, 3.2, "the third quarter numbers");
+        assert!(d.partial.is_none());
+        // Doubled text would be matched in full if the partial were still pooled alongside the final.
+        assert!(!d.is_echo(
+            1.2,
+            3.3,
+            "the third quarter numbers the third quarter numbers"
+        ));
+        assert!(d.is_echo(1.2, 3.3, "the third quarter numbers"));
+    }
+
+    #[test]
+    fn a_partial_for_the_next_turn_survives_the_previous_final() {
+        let mut d = dedup();
+        d.record_them_partial(5.0, 6.0, "and then the budget review");
+        d.record_them(1.0, 3.0, "so what about the third quarter numbers");
+        assert!(d.partial.is_some());
+    }
+
+    #[test]
+    fn partial_expires_beyond_retain() {
+        let mut d = dedup();
+        d.record_them_partial(1.0, 3.0, "so what about the third quarter numbers");
+        d.record_them(20.0, 22.0, "unrelated later remark from the far end");
+        assert!(d.partial.is_none());
+        assert!(!d.is_echo(1.2, 3.3, "so what about the third quarter numbers"));
+    }
+
+    #[test]
+    fn partial_outside_the_window_is_not_matched() {
+        let mut d = dedup();
+        d.record_them_partial(1.0, 3.0, "so what about the third quarter numbers");
+        assert!(!d.is_echo(6.0, 8.0, "so what about the third quarter numbers"));
     }
 }

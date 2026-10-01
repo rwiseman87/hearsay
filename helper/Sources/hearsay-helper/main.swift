@@ -1,5 +1,6 @@
 import Foundation
 import HearsayIPC
+import SidecarIO
 
 private func warn(_ s: String) {
     FileHandle.standardError.write(Data((s + "\n").utf8))
@@ -181,6 +182,66 @@ private func spscRingChecks() -> Bool {
     return ok
 }
 
+private final class ReadCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = 0
+    func next() -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        defer { value += 1 }
+        return value
+    }
+}
+
+/// The stdin reader keeps draining while the consumer is stalled, drops the oldest audio past the
+/// bound, and still delivers keepalives and EOF in order.
+private func frameQueueChecks() -> Bool {
+    var ok = true
+    func check(_ cond: Bool, _ what: String) {
+        if !cond {
+            ok = false
+            warn("  frame queue: \(what)")
+        }
+    }
+    let total = 100
+    let counter = ReadCounter()
+    let queue = FrameQueue(prefix: "selftest", maxSamples: 60 * 16_000)
+    // 100 frames: every tenth is a keepalive, the rest are 1 s of audio tagged with their index.
+    queue.start {
+        let i = counter.next()
+        if i >= total { return .eof }
+        if i % 10 == 9 { return .empty }
+        return .samples([Float](repeating: Float(i), count: 16_000))
+    }
+
+    // No next() yet: the reader must consume all 90 s of audio itself and drop the oldest 30 s.
+    let expectedDropped = 30 * 16_000
+    let deadline = Date().addingTimeInterval(10)
+    while queue.droppedSamples < expectedDropped && Date() < deadline { usleep(1_000) }
+    check(queue.droppedSamples == expectedDropped, "dropped \(queue.droppedSamples) samples")
+
+    var values: [Float] = []
+    var empties = 0
+    var sawEof = false
+    while !sawEof {
+        switch queue.next() {
+        case .samples(let s):
+            check(!sawEof, "samples after eof")
+            values.append(s[0])
+        case .empty: empties += 1
+        case .eof: sawEof = true
+        case .oversize: check(false, "unexpected oversize")
+        }
+    }
+    check(values.count == 60, "kept \(values.count) frames, expected 60")
+    check(values == values.sorted(), "frames out of order")
+    check(values.last == Float(total - 2), "newest audio lost")
+    check((values.first ?? 0) > 0, "oldest audio not dropped")
+    check(empties == 10, "keepalives lost: \(empties)")
+    if case .eof = queue.next() {} else { check(false, "eof is not sticky") }
+    return ok
+}
+
 /// The tap watchdog's trip / recovery rules. The regression these pin: a tap that keeps delivering
 /// buffers at full cadence but only exact zeros is dead, and cadence alone reports it healthy.
 private func tapLivenessChecks() -> Bool {
@@ -232,7 +293,7 @@ private func tapLivenessChecks() -> Bool {
 private func runSelfTest(path: String) -> Bool {
     var ok =
         internalRoundTripChecks() && controlRoundTripChecks() && spscRingChecks()
-        && tapLivenessChecks()
+        && tapLivenessChecks() && frameQueueChecks()
     // control.jsonl is the NDJSON golden; it sits beside the frames fixtures passed in `path`.
     let controlDir = (path as NSString).deletingLastPathComponent
     let controlPath = (controlDir as NSString).appendingPathComponent("control.jsonl")

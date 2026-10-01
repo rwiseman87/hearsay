@@ -367,9 +367,9 @@ async fn wedged_sidecar_does_not_starve_other_stream() {
     let pool = memory_pool().await;
     let tmp = tempfile::tempdir().unwrap();
 
-    // 150 Me chunks (enough to overflow the 128-slot hand-off) ahead of the Them chunks. Them's
+    // 600 Me chunks (enough to overflow the 500-slot hand-off) ahead of the Them chunks. Them's
     // 1600-sample chunks match their 100 ms spacing, so its timeline is contiguous (no resync pad).
-    let mut chunks: Vec<CaptureChunk> = (0..150)
+    let mut chunks: Vec<CaptureChunk> = (0..600)
         .map(|i| chunk(Stream::Me, i as u64 * 100_000_000, &[1.0; 100]))
         .collect();
     for i in 0..5 {

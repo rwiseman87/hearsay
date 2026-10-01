@@ -201,6 +201,7 @@ classDiagram
         +feed(samples)
         +close()
         +ready_signal() Option~Receiver~
+        +respawn() Receiver~SidecarSegment~
     }
     class Refiner {
         <<trait>>
@@ -339,6 +340,9 @@ Two details worth knowing:
   a timeline and are aligned by timestamp, never by sample index. The sidecars' own sample-count
   clocks are bridged back to meeting time with a per-stream offset, padded with silence across
   real delivery gaps (capped at five minutes so a bad timestamp cannot force a huge allocation).
+- A live sidecar that crashes mid-meeting is respawned by its stream task (three attempts, 1 s, 2 s,
+  and 4 s apart) with the offset re-based to the first chunk the replacement receives; past the
+  budget that stream stops transcribing and the rest of the meeting continues.
 - A helper crash cannot leave a meeting falsely live: the closed capture channel fires a supervisor
   that stops the meeting through the normal path.
 
