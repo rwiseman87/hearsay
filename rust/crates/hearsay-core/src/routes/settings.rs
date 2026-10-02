@@ -40,7 +40,7 @@ pub fn router() -> Router<AppState> {
             "/settings/storage/compress",
             get(read_archive).post(start_archive),
         )
-        .route("/settings/models", put(update_models).delete(reset_models))
+        .route("/settings/models", put(update_models))
         .route("/settings/reveal", post(reveal_output_dir))
         .route("/settings/notices", post(open_notices))
 }
@@ -402,19 +402,6 @@ pub(crate) async fn update_models(
     };
     store_section(&state, SECTION_MODELS, &stored).await?;
     Ok(Json(stored))
-}
-
-/// Reset the model settings to the environment defaults.
-///
-/// Clears the stored `models` overrides so the section falls back to what the environment
-/// configures, and returns the resulting effective section.
-#[utoipa::path(
-    delete, path = "/api/settings/models", tag = "settings",
-    responses((status = 200, body = ModelSettings, description = "The effective section after the reset")),
-)]
-pub(crate) async fn reset_models(State(state): State<AppState>) -> ApiResult<Json<ModelSettings>> {
-    queries::clear_preference(&state.pool, SECTION_MODELS).await?;
-    Ok(Json(resolve_models(&state).await?))
 }
 
 /// Open the effective recordings directory in the OS file manager. Runs in the core (a native

@@ -1775,17 +1775,6 @@ pub async fn set_preference(
     Ok(())
 }
 
-/// Delete one settings `section`'s stored override (a no-op when unset), reverting the effective
-/// value to the config default. Used by "reset to default" actions where the default may be a
-/// relative/bundled path that the section's own input validation would reject on a re-write.
-pub async fn clear_preference(pool: &SqlitePool, section: &str) -> Result<(), sqlx::Error> {
-    sqlx::query("DELETE FROM preferences WHERE section = ?")
-        .bind(section)
-        .execute(pool)
-        .await?;
-    Ok(())
-}
-
 /// Settings sections persisted in the `preferences` table (one JSON row each). The section name is
 /// the wire contract shared by the API writer (`hearsay-core`'s settings routes) and the runtime
 /// readers (the `effective_*` resolvers below, called by the orchestrator at meeting start/stop).

@@ -120,7 +120,6 @@ stream with `Range` support), and `/`, which serves the UI with the token inject
         crate::routes::settings::read_archive,
         crate::routes::settings::start_archive,
         crate::routes::settings::update_models,
-        crate::routes::settings::reset_models,
         crate::routes::settings::reveal_output_dir,
         crate::routes::settings::open_notices,
         crate::routes::setup::setup_status,

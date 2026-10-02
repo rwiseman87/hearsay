@@ -690,12 +690,7 @@ export interface paths {
          */
         put: operations["update_models"];
         post?: never;
-        /**
-         * Reset the model settings to the environment defaults.
-         * @description Clears the stored `models` overrides so the section falls back to what the environment
-         *     configures, and returns the resulting effective section.
-         */
-        delete: operations["reset_models"];
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -3126,26 +3121,6 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
-            };
-        };
-    };
-    reset_models: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description The effective section after the reset */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ModelSettings"];
-                };
             };
         };
     };

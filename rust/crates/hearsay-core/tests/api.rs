@@ -2002,29 +2002,6 @@ async fn validates_output_dir_on_storage_update() {
 }
 
 #[tokio::test]
-async fn reset_models_reverts_the_notes_overrides_to_defaults() {
-    let (app, _pool, tmp) = setup().await;
-    let gguf = tmp.path().join("qwen3.gguf");
-    std::fs::write(&gguf, [0x47, 0x47, 0x55, 0x46, 0, 0, 0, 0]).unwrap();
-    let gguf_arg = serde_json::to_string(&gguf.to_string_lossy()).unwrap();
-    let (status, _) = send(
-        &app,
-        put(
-            "/api/settings/models",
-            &format!("{{\"notes_enabled\":true,\"notes_model\":{gguf_arg}}}"),
-        ),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK);
-
-    // DELETE clears the stored overrides, reverting to the config defaults.
-    let (status, body) = send(&app, del("/api/settings/models")).await;
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(body["notes_enabled"], false);
-    assert_eq!(body["notes_model"], "no-notes-model");
-}
-
-#[tokio::test]
 async fn a_legacy_refine_model_field_is_ignored() {
     // A `models` row (or a client) from before the refine model was removed still carries
     // `refine_model`; it must neither fail to parse nor reappear in the response.

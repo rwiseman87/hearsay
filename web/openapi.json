@@ -1567,26 +1567,6 @@
             "description": "A missing field, a model path that is absent or not a GGUF, or an over-long prompt"
           }
         }
-      },
-      "delete": {
-        "tags": [
-          "settings"
-        ],
-        "summary": "Reset the model settings to the environment defaults.",
-        "description": "Clears the stored `models` overrides so the section falls back to what the environment\nconfigures, and returns the resulting effective section.",
-        "operationId": "reset_models",
-        "responses": {
-          "200": {
-            "description": "The effective section after the reset",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ModelSettings"
-                }
-              }
-            }
-          }
-        }
       }
     },
     "/api/settings/notices": {
