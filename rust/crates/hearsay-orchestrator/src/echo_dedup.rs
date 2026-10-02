@@ -6,12 +6,8 @@
 //! to AEC's signal-level work. It touches only live Me finals, never the archive or the offline
 //! refine. See `docs/echo-cancellation.md`.
 //!
-//! ## Streaming order
-//!
-//! Them finals and Them partials are recorded as candidates. A Them final lands only when the
-//! diarizer closes the turn, which can be long after speech starts, while a Me echo finalizes after
-//! a short silence; the open turn's latest partial text covers that window. The partial slot holds
-//! one entry (a new partial replaces the old) and a final for the same turn supersedes it.
+//! Candidates are recent Them finals plus the open turn's latest partial, since a Me echo can
+//! finalize before the diarizer closes the Them turn.
 
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -83,14 +79,14 @@ impl EchoDedup {
     }
 
     /// Record every dropped Me final into `stats`.
-    pub fn with_stats(mut self, stats: Arc<LiveStats>) -> Self {
-        self.stats = Some(stats);
+    pub fn with_stats(mut self, stats: Option<Arc<LiveStats>>) -> Self {
+        self.stats = stats;
         self
     }
 
     /// Record a finalized Them segment as a candidate echo source, superseding the open partial.
     pub fn record_them(&mut self, start_s: f64, end_s: f64, text: &str) {
-        if self.partial.as_ref().is_some_and(|p| p.start_s < end_s) {
+        if self.partial.as_ref().is_some_and(|p| p.start_s <= start_s) {
             self.partial = None;
         }
         let tokens = normalize(text);
@@ -131,9 +127,8 @@ impl EchoDedup {
             return false;
         }
 
-        // Pool the tokens of every concurrent Them entry, in time order (finals, then the open
-        // partial), into one reference sequence: Them may have been endpointed into several finals
-        // across the span the Me echo covers as a single final.
+        // Pool every concurrent Them entry in time order: Them may split into several finals what
+        // the Me echo hears as one.
         let mut pool: Vec<&str> = Vec::new();
         for e in self.recent.iter().chain(self.partial.iter()) {
             if e.start_s <= end_s + self.cfg.window_s && e.end_s >= start_s - self.cfg.window_s {
@@ -179,15 +174,16 @@ fn normalize(text: &str) -> Vec<String> {
 fn longest_common_run(a: &[&str], b: &[&str]) -> usize {
     let mut best = 0;
     let mut prev = vec![0usize; b.len() + 1];
+    let mut cur = vec![0usize; b.len() + 1];
     for x in a {
-        let mut cur = vec![0usize; b.len() + 1];
+        cur.fill(0);
         for (j, y) in b.iter().enumerate() {
             if x == y {
                 cur[j + 1] = prev[j] + 1;
                 best = best.max(cur[j + 1]);
             }
         }
-        prev = cur;
+        std::mem::swap(&mut prev, &mut cur);
     }
     best
 }
@@ -347,6 +343,23 @@ mod tests {
         d.record_them_partial(5.0, 6.0, "and then the budget review");
         d.record_them(1.0, 3.0, "so what about the third quarter numbers");
         assert!(d.partial.is_some());
+    }
+
+    #[test]
+    fn a_next_turn_partial_inside_the_final_tail_survives() {
+        let mut d = dedup();
+        d.record_them_partial(2.5, 4.0, "and then the budget review");
+        d.record_them(1.0, 3.0, "so what about the third quarter numbers");
+        assert!(d.partial.is_some());
+    }
+
+    #[test]
+    fn longest_common_run_spans_rows() {
+        assert_eq!(
+            longest_common_run(&["a", "b", "c", "x"], &["z", "a", "b", "c"]),
+            3
+        );
+        assert_eq!(longest_common_run(&["a", "x", "b"], &["a", "b"]), 1);
     }
 
     #[test]

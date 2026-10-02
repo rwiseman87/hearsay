@@ -19,9 +19,8 @@ let package = Package(
     ],
     targets: [
         .target(name: "HearsayIPC"),
-        // Shared stdio plumbing for the streaming sidecars (framing + stdin length cap + JSON emit +
-        // stderr log + PCM buffer). Dependency-free (system frameworks only) so it never bloats a
-        // binary; the length-cap fix lives here once instead of in each sidecar main.
+        // Shared sidecar stdio (framing, bounded stdin queue, JSON emit); system frameworks only.
+        // hearsay-helper links it for its selftest.
         .target(name: "SidecarIO"),
         .executableTarget(
             name: "hearsay-helper",

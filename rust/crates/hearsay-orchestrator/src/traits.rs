@@ -81,7 +81,7 @@ pub trait Transcriber: Send {
 
 /// The post-meeting offline refine of the Them track. Behind a trait so the orchestrator does not
 /// depend on `hearsay-inference` and stays testable with fakes; the
-/// production impl (in the `hearsay-core` binary) wraps `hearsay_inference::refine_audio_file`
+/// production impl (`MacRefiner` in `hearsay-backends`) wraps `hearsay_inference::refine_audio_file`
 /// (one Swift `hearsay-diarize` sidecar run that re-diarizes and re-transcribes).
 #[async_trait]
 pub trait Refiner: Send + Sync {

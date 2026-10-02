@@ -127,8 +127,8 @@ come back on stdout. All VAD, diarization, and ASR happen inside the sidecar on 
 
 Each streaming sidecar reads stdin on a dedicated thread into a bounded in-memory queue (60 s of
 audio) and runs inference from that queue, so slow inference shows up as transcript latency and
-never stalls the pipe or the core's `feed`. If inference falls more than 60 s behind, the oldest
-queued audio is dropped and the sidecar logs the dropped seconds to stderr (rate-limited).
+never stalls the pipe or the core's `feed`. If inference falls more than 60 s behind, the sidecar
+logs the overflow and exits non-zero, so the core respawns it and re-anchors its timing (see below).
 
 - **Them, `hearsay-live`.** FluidAudio's streaming diarizer plus Parakeet: as each speaker turn
   finalizes, the sidecar transcribes it and emits a
@@ -148,15 +148,17 @@ meeting that cannot transcribe.
 A sidecar that dies mid-meeting (its stdout closes, or a stdin write fails) is respawned by its
 `stream_loop` through `Transcriber::respawn`, which `ProcessTranscriber` implements by spawning
 its binary again. Restarts wait 1 s, then 2 s, then 4 s; each logs a warning with the stream,
-attempt, and reason. After the third failed restart the loop logs an error and stops feeding that
-stream, while the meeting, the recording, and the other stream carry on. A sidecar that ran for a
-minute before dying gets a fresh budget. A fresh sidecar timestamps segments from zero at its first
-received sample, so the loop re-bases the stream's offset to the meeting time of the first chunk fed
-to the replacement. Audio that arrives during the restart waits in the bounded hand-off channel (or
-is dropped and counted once it fills), so the outage is a gap in the live transcript while
-`audio.wav` stays complete. Segments the dead sidecar had already emitted are kept at their original
-offset. The sidecar pair for the next meeting is pre-spawned so its models
-load before the user presses start (see the warm pool in
+attempt, and reason. After three restarts without a minute of stable running, the loop logs an
+error and stops feeding that stream, while the meeting, the recording, and the other stream carry
+on. A sidecar that ran for a minute before dying gets a fresh budget. A fresh sidecar timestamps
+segments from zero at its first received sample, so the loop re-bases the stream's offset to the
+meeting time of the first chunk fed to the replacement. Audio that arrives during the restart waits
+in the bounded hand-off channel (or is dropped and counted once it fills), so the outage is a gap in
+the live transcript while `audio.wav` stays complete. Segments the dead sidecar had already
+emitted are kept at their original offset; the segment it was still working on is lost. A Them
+replacement starts its speaker numbering after the highest ordinal the meeting has used, so its
+speakers get new clusters and never join an earlier (possibly renamed) speaker. The sidecar pair
+for the next meeting is pre-spawned so its models load before the user presses start (see the warm pool in
 [architecture.md](architecture.md#trait-seams)); live feeding also waits on a shared permit until
 any still-running refine releases the Neural Engine.
 

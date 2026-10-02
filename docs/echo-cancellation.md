@@ -20,7 +20,8 @@ Where the code lives: `hearsay-orchestrator/src/aec.rs` (the canceller, driven f
 see [Text-level dedup](#text-level-dedup-the-backstop)). Built under the `aec` feature. The
 production settings are the `Default` of `AecConfig` (preprocessor on, 4800-sample tail) and
 `EchoDedupConfig`; `Orchestrator::with_tuning(LiveTuning)` swaps them for evals and tests, and no
-user-facing setting exposes them. See [Measuring echo handling](#measuring-echo-handling).
+user-facing setting exposes them. `LiveTuning::stats` is `None` in production; evals and tests set
+it to collect `LiveStats` counters. See [Measuring echo handling](#measuring-echo-handling).
 
 ## The problem
 
@@ -263,8 +264,9 @@ than a miss:
   several finals across a span the Me echo covers as one.
 - **Partials** — a Them final lands only when the diarizer closes the turn, which can be long after
   speech starts, while a Me echo finalizes after a short silence. The open turn's partial text
-  covers that gap. One partial is held at a time (a newer partial replaces it), and a final for the
-  same turn supersedes it, so the text is never pooled twice.
+  covers that gap. One partial is held at a time (a newer partial replaces it), and a final that
+  starts at or after the partial's start supersedes it, so the text is never pooled twice. A
+  next-turn partial that starts inside the final's tail is kept.
 
 Two properties keep it safe alongside AEC:
 

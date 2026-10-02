@@ -35,15 +35,11 @@ use crate::types::{CaptureChunk, SegmentKind, SidecarSegment, Stream};
 /// Capacity of the per-meeting live broadcast channel (transcript events to WebSocket subscribers).
 const BROADCAST_CAPACITY: usize = 256;
 
-/// Nominal duration of one capture chunk: the macOS helper drains its uplink every 20 ms. Chunk
-/// counts for the hand-off channels derive from this, so a different real chunk size shifts the
-/// buffered seconds but never the memory bound.
+/// Nominal capture chunk length (the helper drains every 20 ms); sizes the hand-off channels.
 const NOMINAL_CHUNK_MS: usize = 20;
 
-/// Seconds of audio each stream's PCM hand-off channel (demux -> stream task) buffers. The recorder
-/// writes on the always-drained demux path *before* this hand-off, so a wedged/slow transcriber only
-/// backs up its own queue; on overflow demux drops (counted, rate-limited warn) for that stream
-/// rather than stalling the recorder and the other stream (head-of-line).
+/// Seconds of audio each stream's demux -> stream task channel buffers. On overflow demux drops
+/// that stream's chunks (counted) rather than stall the recorder or the other stream.
 const PCM_BUFFER_SECONDS: usize = 10;
 
 /// Capacity of each stream's PCM hand-off channel: [`PCM_BUFFER_SECONDS`] of nominal chunks (500
@@ -53,10 +49,8 @@ const PCM_CHANNEL_CAPACITY: usize = PCM_BUFFER_SECONDS * 1000 / NOMINAL_CHUNK_MS
 /// Minimum spacing between drop warnings for one stream; drops in between accumulate into the next.
 const DROP_WARN_INTERVAL: Duration = Duration::from_secs(5);
 
-/// Seconds of audio the demux -> recorder channel buffers. The recorder runs on its own blocking
-/// thread, so demux only ever `try_send`s here (never blocks on disk); this queue absorbs a transient
-/// disk stall, far past any real write hiccup. On sustained overflow demux drops-with-log for the
-/// archive (a silent gap the recorder re-anchors over), leaving live transcription untouched.
+/// Seconds of audio the demux -> recorder channel buffers to absorb a disk stall. On overflow demux
+/// drops the chunk from the archive (a gap the recorder re-anchors over).
 const REC_BUFFER_SECONDS: usize = 50;
 
 /// Capacity of the demux -> recorder channel: [`REC_BUFFER_SECONDS`] of nominal chunks (2500 slots,
@@ -516,8 +510,8 @@ impl PcmForwarder {
         }
     }
 
-    fn with_stats(mut self, stats: Arc<LiveStats>) -> Self {
-        self.live_stats = Some(stats);
+    fn with_stats(mut self, stats: Option<Arc<LiveStats>>) -> Self {
+        self.live_stats = stats;
         self
     }
 
@@ -587,7 +581,7 @@ async fn demux(
     intentional_stop: Arc<AtomicBool>,
     paused: Arc<AtomicBool>,
     died_tx: oneshot::Sender<()>,
-    stats: Arc<LiveStats>,
+    stats: Option<Arc<LiveStats>>,
 ) {
     let mut me_fwd = PcmForwarder::new(Stream::Me, me_tx).with_stats(stats.clone());
     let mut them_fwd = PcmForwarder::new(Stream::Them, them_tx).with_stats(stats);
@@ -665,15 +659,15 @@ async fn demux(
 }
 
 /// Replace a dead sidecar, sleeping the transcriber's backoff before each attempt. `attempts` counts
-/// consecutive failures and resets when the dead sidecar had run for [`RESPAWN_STABLE`]. Returns the
-/// new segment channel, or `None` once the retry budget is spent.
+/// restarts since the last sidecar that ran for [`RESPAWN_STABLE`]. Returns the new segment channel,
+/// or `None` once the retry budget is spent.
 async fn respawn_sidecar(
     role: StreamRole,
     transcriber: &mut dyn Transcriber,
     attempts: &mut usize,
     last_spawn: &mut Instant,
     mut reason: String,
-    stats: &LiveStats,
+    stats: Option<&LiveStats>,
 ) -> Option<mpsc::Receiver<SidecarSegment>> {
     if last_spawn.elapsed() >= RESPAWN_STABLE {
         *attempts = 0;
@@ -694,11 +688,13 @@ async fn respawn_sidecar(
         match transcriber.respawn().await {
             Ok(rx) => {
                 *last_spawn = Instant::now();
-                let counter = match role {
-                    StreamRole::Me => &stats.me_respawns,
-                    StreamRole::Them => &stats.them_respawns,
-                };
-                counter.fetch_add(1, Ordering::SeqCst);
+                if let Some(stats) = stats {
+                    let counter = match role {
+                        StreamRole::Me => &stats.me_respawns,
+                        StreamRole::Them => &stats.them_respawns,
+                    };
+                    counter.fetch_add(1, Ordering::SeqCst);
+                }
                 return Some(rx);
             }
             Err(err) => reason = err.to_string(),
@@ -706,11 +702,8 @@ async fn respawn_sidecar(
     }
 }
 
-/// Per-stream task: feed the transcriber while capture flows, then flush + drain its tail. Segment
-/// times are shifted by `offset` (the meeting time of the first `t0_s` fed to the current sidecar),
-/// mapping sidecar-local time back to meeting time. If the sidecar dies mid-meeting it is respawned
-/// (bounded retries) and `offset` re-bases to the first chunk fed to the replacement; audio during
-/// the outage is a gap.
+/// Per-stream task: feed the transcriber, persist its segments shifted by `offset`, and respawn a
+/// sidecar that dies mid-meeting (re-basing `offset` to the replacement's first chunk).
 #[allow(clippy::too_many_arguments)]
 async fn stream_loop(
     role: StreamRole,
@@ -723,7 +716,7 @@ async fn stream_loop(
     mut ane_ready: watch::Receiver<bool>,
     last_activity: Arc<Mutex<Instant>>,
     echo_dedup: Arc<Mutex<EchoDedup>>,
-    stats: Arc<LiveStats>,
+    stats: Option<Arc<LiveStats>>,
 ) {
     // Serialize live inference against the offline refine on the shared ANE permit: wait until this
     // meeting holds it before feeding the sidecar. Recording is unaffected (demux records on its own
@@ -735,6 +728,8 @@ async fn stream_loop(
 
     let mut offset: Option<f64> = None;
     let mut clusters: HashMap<i64, Uuid> = HashMap::new();
+    // Added to a Them sidecar's speaker index, so a replacement diarizer starts on fresh ordinals.
+    let mut ordinal_base: i64 = 0;
     let mut feeding = true;
     // True while a sidecar is attached; false once its restart budget is spent, after which chunks
     // are still drained (level meter, dead-mic watch) but not fed.
@@ -777,13 +772,16 @@ async fn stream_loop(
                         if transcriber.is_broken() && transcriber.can_respawn() {
                             // Keep what the dying sidecar already emitted, at its own offset.
                             while let Ok(seg) = emit_rx.try_recv() {
-                                handle(role, &seg, offset.unwrap_or(0.0), &pool, meeting_id, &broadcast_tx, &mut clusters, &echo_dedup).await;
+                                handle(role, &seg, offset.unwrap_or(0.0), &pool, meeting_id, &broadcast_tx, &mut clusters, ordinal_base, &echo_dedup).await;
                             }
-                            match respawn_sidecar(role, transcriber.as_mut(), &mut respawn_attempts, &mut last_spawn, "stdin write failed".into(), &stats).await {
+                            match respawn_sidecar(role, transcriber.as_mut(), &mut respawn_attempts, &mut last_spawn, "stdin write failed".into(), stats.as_deref()).await {
                                 Some(rx) => {
                                     emit_rx = rx;
                                     offset = None;
                                     fed_samples = 0;
+                                    if role == StreamRole::Them {
+                                        ordinal_base = next_ordinal_base(&pool, meeting_id, &clusters).await;
+                                    }
                                 }
                                 None => {
                                     transcriber.close().await;
@@ -813,17 +811,16 @@ async fn stream_loop(
                         meeting_id,
                         &broadcast_tx,
                         &mut clusters,
+                        ordinal_base,
                         &echo_dedup,
                     )
                     .await;
                 }
-                // The sidecar closed its output. While capture still flows that is a mid-meeting
-                // death: respawn it. Otherwise it finished (or cannot be replaced): close the
-                // transcriber (drop stdin, drain, reap the child) rather than leaking it.
-                // `close()` is idempotent, so a prior close on capture-end is fine.
+                // Sidecar output closed: respawn it while capture still flows, else close (idempotent)
+                // to reap the child.
                 None => {
                     let recovered = if feeding && transcriber.can_respawn() {
-                        respawn_sidecar(role, transcriber.as_mut(), &mut respawn_attempts, &mut last_spawn, "sidecar exited".into(), &stats).await
+                        respawn_sidecar(role, transcriber.as_mut(), &mut respawn_attempts, &mut last_spawn, "sidecar exited".into(), stats.as_deref()).await
                     } else {
                         None
                     };
@@ -832,6 +829,9 @@ async fn stream_loop(
                             emit_rx = rx;
                             offset = None;
                             fed_samples = 0;
+                            if role == StreamRole::Them {
+                                ordinal_base = next_ordinal_base(&pool, meeting_id, &clusters).await;
+                            }
                         }
                         None => {
                             transcriber.close().await;
@@ -1203,6 +1203,7 @@ async fn handle(
     meeting_id: Uuid,
     broadcast_tx: &broadcast::Sender<String>,
     clusters: &mut HashMap<i64, Uuid>,
+    ordinal_base: i64,
     echo_dedup: &Arc<Mutex<EchoDedup>>,
 ) {
     let start_s = seg.start_s + offset;
@@ -1268,7 +1269,7 @@ async fn handle(
                 );
                 return;
             }
-            let ordinal = seg.speaker.unwrap_or(0) + 1;
+            let ordinal = ordinal_base + seg.speaker.unwrap_or(0) + 1;
             let label = format!("Speaker {ordinal}");
             let cluster_id = cluster_for(pool, meeting_id, ordinal, clusters).await;
             if let Err(err) = queries::insert_segment(
@@ -1326,6 +1327,23 @@ async fn cluster_for(
             None
         }
     }
+}
+
+/// The highest ordinal this meeting has used, live or in the database, so new ones never reuse it.
+async fn next_ordinal_base(
+    pool: &SqlitePool,
+    meeting_id: Uuid,
+    clusters: &HashMap<i64, Uuid>,
+) -> i64 {
+    let seen = clusters.keys().copied().max().unwrap_or(0);
+    let stored = match queries::list_speaker_rows(pool, meeting_id).await {
+        Ok(rows) => rows.iter().map(|r| r.ordinal).max().unwrap_or(0),
+        Err(err) => {
+            tracing::error!(error = %err, "failed to read speaker ordinals");
+            0
+        }
+    };
+    seen.max(stored)
 }
 
 #[cfg(test)]
@@ -1398,7 +1416,7 @@ mod tests {
             Arc::new(AtomicBool::new(true)), // intentional_stop: suppress the death report on close
             paused.clone(),
             died_tx,
-            Arc::default(),
+            None,
         ));
 
         let them = |host_ms: u64| CaptureChunk {
@@ -1460,7 +1478,7 @@ mod tests {
             Arc::new(AtomicBool::new(true)), // intentional_stop: suppress the death report on close
             Arc::new(AtomicBool::new(false)),
             died_tx,
-            Arc::default(),
+            None,
         ));
 
         // A Them chunk anchors the epoch at t0_s=0 and is recorded raw (Them is never echo-cancelled).

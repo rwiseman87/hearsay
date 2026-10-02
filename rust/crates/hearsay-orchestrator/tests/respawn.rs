@@ -153,7 +153,7 @@ async fn crash_mid_stream_is_recovered_with_correct_meeting_times() {
     let stats = Arc::new(LiveStats::default());
     let orch = Orchestrator::new(pool.clone(), tmp.path().to_path_buf(), backend).with_tuning(
         LiveTuning {
-            stats: stats.clone(),
+            stats: Some(stats.clone()),
             ..LiveTuning::default()
         },
     );
@@ -202,6 +202,107 @@ async fn crash_mid_stream_is_recovered_with_correct_meeting_times() {
     assert_eq!(them_fed.lock().unwrap().len(), total * CHUNK_SAMPLES);
     assert_eq!(stats.me_respawns.load(Ordering::SeqCst), 1);
     assert_eq!(stats.them_respawns.load(Ordering::SeqCst), 0);
+}
+
+/// Them runs a `ProcessTranscriber` over the flaky sidecar; Me is scripted and silent.
+struct ThemRespawnBackend {
+    state: String,
+    chunks: Mutex<Option<Vec<CaptureChunk>>>,
+}
+
+impl Backend for ThemRespawnBackend {
+    fn build(&self) -> BackendInstance {
+        let chunks = self.chunks.lock().unwrap().take().unwrap();
+        BackendInstance {
+            source: Box::new(PacedSource { chunks, stop: None }),
+            me: Box::new(ScriptedTranscriber::new(vec![], Arc::default())),
+            them: Box::new(
+                ProcessTranscriber::new(PathBuf::from(env!("CARGO_BIN_EXE_flaky_sidecar")))
+                    .with_args(vec![self.state.clone(), "3".into()])
+                    .with_respawn_backoff(vec![FAST_BACKOFF; 3])
+                    .with_close_timeout(Duration::from_millis(300)),
+            ),
+        }
+    }
+}
+
+/// Them chunk `i` carries `i + 1` in every sample; a silent Me chunk rides alongside each.
+fn them_script(count: usize) -> Vec<CaptureChunk> {
+    let mut out = Vec::new();
+    for i in 0..count {
+        let ts = i as u64 * CHUNK_NS;
+        out.push(chunk(Stream::Me, ts, &[0.0; CHUNK_SAMPLES]));
+        out.push(chunk(Stream::Them, ts, &[(i + 1) as f32; CHUNK_SAMPLES]));
+    }
+    out
+}
+
+#[tokio::test]
+async fn them_respawn_numbers_speakers_under_new_clusters() {
+    let pool = memory_pool().await;
+    let tmp = tempfile::tempdir().unwrap();
+    let (_state_dir, state) = state_file();
+    let backend = Arc::new(ThemRespawnBackend {
+        state,
+        chunks: Mutex::new(Some(them_script(40))),
+    });
+    let stats = Arc::new(LiveStats::default());
+    let orch = Orchestrator::new(pool.clone(), tmp.path().to_path_buf(), backend).with_tuning(
+        LiveTuning {
+            stats: Some(stats.clone()),
+            ..LiveTuning::default()
+        },
+    );
+    let meeting = orch
+        .start_meeting(Some("Them respawn".into()))
+        .await
+        .unwrap();
+
+    let them_segments = || async {
+        queries::list_segments(&pool, meeting.id)
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|s| s.stream == DbStream::Them && s.text.starts_with('c'))
+            .collect::<Vec<_>>()
+    };
+    for _ in 0..400 {
+        if them_segments()
+            .await
+            .iter()
+            .any(|s| chunk_index(&s.text) >= 20)
+        {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    orch.stop_meeting(meeting.id).await.unwrap().unwrap();
+    orch.wait_for_refines().await;
+    assert_eq!(stats.them_respawns.load(Ordering::SeqCst), 1);
+
+    let segs = them_segments().await;
+    let (before, after): (Vec<_>, Vec<_>) = segs.iter().partition(|s| chunk_index(&s.text) <= 3);
+    assert!(!before.is_empty());
+    assert!(!after.is_empty(), "no segment from the respawned sidecar");
+    let old = before[0].cluster_id.unwrap();
+    let new = after[0].cluster_id.unwrap();
+    assert_ne!(
+        old, new,
+        "the replacement's speaker 0 must not join the old cluster"
+    );
+    assert!(before
+        .iter()
+        .all(|s| s.cluster_id == Some(old) && s.speaker_label == "Speaker 1"));
+    assert!(after
+        .iter()
+        .all(|s| s.cluster_id == Some(new) && s.speaker_label == "Speaker 2"));
+    let ordinals: Vec<i64> = queries::list_speaker_rows(&pool, meeting.id)
+        .await
+        .unwrap()
+        .iter()
+        .map(|r| r.ordinal)
+        .collect();
+    assert_eq!(ordinals, vec![1, 2]);
 }
 
 #[tokio::test]

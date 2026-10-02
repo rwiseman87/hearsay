@@ -1,13 +1,8 @@
 import AVFoundation
 import Foundation
 
-/// Shared stdio plumbing for the streaming sidecars (`hearsay-live`, `hearsay-me`).
-///
-/// Each sidecar reads length-prefixed PCM frames on stdin and writes NDJSON on stdout; this target
-/// holds the framing, the JSON emit (with the dead-core SIGPIPE handling), the stderr logger, and the
-/// PCM-buffer builder so they live in one place — in particular the stdin length cap, which must be
-/// applied identically by both. Deliberately dependency-free (only Foundation + AVFoundation, both
-/// system frameworks) so linking it never pulls FluidAudio/CoreML into a lean binary.
+/// Shared sidecar stdio: PCM framing + length cap, the bounded stdin queue, NDJSON emit, stderr log.
+/// System frameworks only, so linking it never pulls FluidAudio/CoreML into a lean binary.
 
 /// Upper bound on a single stdin frame's sample count. A desynced stream can present a garbage 4-byte
 /// length prefix (up to ~4.3e9 -> a ~17 GB reserve); capping bounds a bad read to ~19 MB. The bound is
@@ -53,36 +48,31 @@ public func readAudioFrame(maxSamples: Int = maxInputSamples) -> FrameResult {
 public let maxQueuedSamples = 60 * 16_000
 
 /// Drains stdin on its own thread into a bounded queue, so slow inference is latency, not pipe
-/// backpressure. Delivery is in order; overflow drops the oldest queued samples.
+/// backpressure. Delivery is in order; overflow calls `onOverflow` (default: exit so the core respawns).
 public final class FrameQueue: @unchecked Sendable {
     private let cond = NSCondition()
     private var items: [FrameResult] = []
     private var queuedSamples = 0
-    private var droppedTotal = 0
-    private var droppedUnreported = 0
-    private var lastReport: UInt64 = 0
     private let maxSamples: Int
     private let prefix: String
-    private let reportIntervalNs: UInt64 = 5_000_000_000
+    private let onOverflow: @Sendable () -> Void
 
-    public init(prefix: String, maxSamples: Int = maxQueuedSamples) {
+    public init(
+        prefix: String, maxSamples: Int = maxQueuedSamples,
+        onOverflow: @escaping @Sendable () -> Void = { exit(1) }
+    ) {
         self.prefix = prefix
         self.maxSamples = maxSamples
+        self.onOverflow = onOverflow
     }
 
-    /// Total samples dropped to overflow so far.
-    public var droppedSamples: Int {
-        cond.lock()
-        defer { cond.unlock() }
-        return droppedTotal
-    }
-
-    /// Start the reader thread; it stops after pushing `.eof` or `.oversize`.
+    /// Start the reader thread; it stops after pushing `.eof` or `.oversize`, or on overflow.
     public func start(read: @escaping @Sendable () -> FrameResult = { readAudioFrame() }) {
         let thread = Thread { [self] in
             while true {
                 let result = read()
-                push(result)
+                if case .empty = result { continue }
+                guard push(result) else { return }
                 switch result {
                 case .eof, .oversize: return
                 default: continue
@@ -93,38 +83,32 @@ public final class FrameQueue: @unchecked Sendable {
         thread.start()
     }
 
-    func push(_ result: FrameResult) {
-        var report: Int?
+    // A frame longer than the cap is a resync pad of silence, so it is admitted and not counted.
+    private func backlogCount(_ samples: [Float]) -> Int {
+        samples.count > maxSamples ? 0 : samples.count
+    }
+
+    /// Queue one frame; false if the backlog overflowed (the queue then ends with `.eof`).
+    func push(_ result: FrameResult) -> Bool {
         cond.lock()
-        if case .samples(let s) = result {
-            var index = 0
-            while queuedSamples + s.count > maxSamples, index < items.count {
-                if case .samples(let old) = items[index] {
-                    queuedSamples -= old.count
-                    droppedTotal += old.count
-                    droppedUnreported += old.count
-                    items.remove(at: index)
-                } else {
-                    index += 1
-                }
-            }
-            queuedSamples += s.count
-            let now = DispatchTime.now().uptimeNanoseconds
-            if droppedUnreported > 0, now &- lastReport >= reportIntervalNs {
-                report = droppedUnreported
-                droppedUnreported = 0
-                lastReport = now
-            }
+        if case .samples(let s) = result, queuedSamples + backlogCount(s) > maxSamples {
+            cond.unlock()
+            writeError(
+                prefix,
+                "input queue overflow: inference is over \(maxSamples / 16_000) s behind; exiting so the core respawns"
+            )
+            onOverflow()
+            cond.lock()
+            items.append(.eof)
+            cond.signal()
+            cond.unlock()
+            return false
         }
+        if case .samples(let s) = result { queuedSamples += backlogCount(s) }
         items.append(result)
         cond.signal()
         cond.unlock()
-        if let report {
-            writeError(
-                prefix,
-                "input queue overflow: dropped \(String(format: "%.1f", Double(report) / 16_000)) s of audio (inference is behind)"
-            )
-        }
+        return true
     }
 
     /// Block until the next frame is available. After `.eof` / `.oversize` it keeps returning it.
@@ -136,7 +120,7 @@ public final class FrameQueue: @unchecked Sendable {
         switch result {
         case .eof, .oversize: return result
         case .samples(let s):
-            queuedSamples -= s.count
+            queuedSamples -= backlogCount(s)
             items.removeFirst()
         case .empty: items.removeFirst()
         }

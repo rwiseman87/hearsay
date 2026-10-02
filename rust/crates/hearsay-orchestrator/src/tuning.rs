@@ -48,7 +48,8 @@ impl LiveStats {
 pub struct LiveTuning {
     pub aec: Option<AecConfig>,
     pub echo_dedup: Option<EchoDedupConfig>,
-    pub stats: Arc<LiveStats>,
+    /// Counters for evals and tests; `None` in production so nothing accumulates.
+    pub stats: Option<Arc<LiveStats>>,
 }
 
 impl Default for LiveTuning {
@@ -56,7 +57,7 @@ impl Default for LiveTuning {
         LiveTuning {
             aec: Some(AecConfig::default()),
             echo_dedup: Some(EchoDedupConfig::default()),
-            stats: Arc::new(LiveStats::default()),
+            stats: None,
         }
     }
 }

@@ -193,8 +193,38 @@ private final class ReadCounter: @unchecked Sendable {
     }
 }
 
-/// The stdin reader keeps draining while the consumer is stalled, drops the oldest audio past the
-/// bound, and still delivers keepalives and EOF in order.
+private final class OverflowFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+    func fire() {
+        lock.lock()
+        defer { lock.unlock() }
+        count += 1
+    }
+    var fired: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return count
+    }
+}
+
+/// Drain `queue` to its sticky `.eof`, returning the first sample of each audio frame.
+private func drainFrameQueue(_ queue: FrameQueue, _ check: (Bool, String) -> Void) -> [Float] {
+    var values: [Float] = []
+    while true {
+        switch queue.next() {
+        case .samples(let s): values.append(s[0])
+        case .empty: check(false, "keepalive was queued")
+        case .eof:
+            if case .eof = queue.next() {} else { check(false, "eof is not sticky") }
+            return values
+        case .oversize: check(false, "unexpected oversize")
+        }
+    }
+}
+
+/// The stdin reader keeps draining while the consumer is stalled, skips keepalives, and fires the
+/// overflow action (never drops audio) once the backlog passes the bound; a long pad is admitted.
 private func frameQueueChecks() -> Bool {
     var ok = true
     func check(_ cond: Bool, _ what: String) {
@@ -205,7 +235,8 @@ private func frameQueueChecks() -> Bool {
     }
     let total = 100
     let counter = ReadCounter()
-    let queue = FrameQueue(prefix: "selftest", maxSamples: 60 * 16_000)
+    let overflow = OverflowFlag()
+    let queue = FrameQueue(prefix: "selftest", maxSamples: 60 * 16_000, onOverflow: { overflow.fire() })
     // 100 frames: every tenth is a keepalive, the rest are 1 s of audio tagged with their index.
     queue.start {
         let i = counter.next()
@@ -214,32 +245,40 @@ private func frameQueueChecks() -> Bool {
         return .samples([Float](repeating: Float(i), count: 16_000))
     }
 
-    // No next() yet: the reader must consume all 90 s of audio itself and drop the oldest 30 s.
-    let expectedDropped = 30 * 16_000
+    // No next() yet: the reader queues 60 s, then the 61st second (frame 66) overflows.
     let deadline = Date().addingTimeInterval(10)
-    while queue.droppedSamples < expectedDropped && Date() < deadline { usleep(1_000) }
-    check(queue.droppedSamples == expectedDropped, "dropped \(queue.droppedSamples) samples")
+    while overflow.fired == 0 && Date() < deadline { usleep(1_000) }
+    check(overflow.fired == 1, "overflow fired \(overflow.fired) times, expected 1")
+    let values = drainFrameQueue(queue, check)
+    let expected = (0..<66).filter { $0 % 10 != 9 }.map { Float($0) }
+    check(values == expected, "kept \(values.count) frames, expected the first 60 in order")
 
-    var values: [Float] = []
-    var empties = 0
-    var sawEof = false
-    while !sawEof {
-        switch queue.next() {
-        case .samples(let s):
-            check(!sawEof, "samples after eof")
-            values.append(s[0])
-        case .empty: empties += 1
-        case .eof: sawEof = true
-        case .oversize: check(false, "unexpected oversize")
-        }
-    }
-    check(values.count == 60, "kept \(values.count) frames, expected 60")
-    check(values == values.sorted(), "frames out of order")
-    check(values.last == Float(total - 2), "newest audio lost")
-    check((values.first ?? 0) > 0, "oldest audio not dropped")
-    check(empties == 10, "keepalives lost: \(empties)")
-    if case .eof = queue.next() {} else { check(false, "eof is not sticky") }
+    // A pad longer than the cap into an idle queue is admitted and does not count toward the backlog.
+    let script = ScriptedFrames([
+        .samples([Float](repeating: 1, count: 500)),
+        .samples([Float](repeating: 2, count: 60)),
+        .samples([Float](repeating: 3, count: 40)),
+        .samples([Float](repeating: 4, count: 1)),
+    ])
+    let padOverflow = OverflowFlag()
+    let padQueue = FrameQueue(prefix: "selftest", maxSamples: 100, onOverflow: { padOverflow.fire() })
+    padQueue.start { script.next() }
+    while padOverflow.fired == 0 && Date() < deadline { usleep(1_000) }
+    let padValues = drainFrameQueue(padQueue, check)
+    check(padOverflow.fired == 1, "pad case overflow fired \(padOverflow.fired) times, expected 1")
+    check(padValues == [1, 2, 3], "pad case kept \(padValues), expected [1, 2, 3]")
     return ok
+}
+
+private final class ScriptedFrames: @unchecked Sendable {
+    private let lock = NSLock()
+    private var frames: [FrameResult]
+    init(_ frames: [FrameResult]) { self.frames = frames }
+    func next() -> FrameResult {
+        lock.lock()
+        defer { lock.unlock() }
+        return frames.isEmpty ? .eof : frames.removeFirst()
+    }
 }
 
 /// The tap watchdog's trip / recovery rules. The regression these pin: a tap that keeps delivering

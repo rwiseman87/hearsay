@@ -424,7 +424,7 @@ async fn run_pipeline(sidecars: &Sidecars, data: &Data, speed: f64, run: &Run) -
     let tuning = LiveTuning {
         aec,
         echo_dedup: Some(EchoDedupConfig::default()),
-        stats: stats.clone(),
+        stats: Some(stats.clone()),
     };
     let pool = memory_pool().await;
     queries::set_preference(&pool, queries::SECTION_RECORDING, r#"{"record":false}"#)

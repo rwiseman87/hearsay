@@ -1,10 +1,5 @@
-//! Test fixture: a transcription sidecar that crashes mid-stream, for the respawn tests.
-//!
-//! Args: `<state_file> <crash_after_frames>`. If `state_file` is `-`, or does not exist yet (it is
-//! then created), the process exits non-zero after emitting that many frames; otherwise it serves
-//! normally, so only the first incarnation crashes. Each frame yields one final whose text is
-//! `c<first sample as integer>` and whose times count samples from this process's first frame.
-//! Not shipped — spawned only via `CARGO_BIN_EXE_*`.
+//! Test fixture: a sidecar that exits after `<crash_after_frames>`, only on its first run unless
+//! `<state_file>` is `-`. Each frame emits one speaker-0 final, `c<first sample>`.
 
 use std::io::{self, Read, Write};
 use std::path::Path;
@@ -49,7 +44,7 @@ fn main() {
         let end = samples_seen as f64 / 16_000.0;
         writeln!(
             stdout,
-            r#"{{"kind":"final","text":"c{first}","start_s":{start},"end_s":{end}}}"#
+            r#"{{"kind":"final","speaker":0,"text":"c{first}","start_s":{start},"end_s":{end}}}"#
         )
         .unwrap();
         stdout.flush().unwrap();

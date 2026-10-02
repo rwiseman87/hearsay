@@ -9,7 +9,7 @@ use hearsay_db::queries;
 use hearsay_db::test_support::memory_pool;
 use hearsay_engine::LiveEngine;
 use hearsay_orchestrator::testing::{chunk, seg, ProgressiveBackend, ProgressivePlan};
-use hearsay_orchestrator::{LiveTuning, Orchestrator, SegmentKind, Stream};
+use hearsay_orchestrator::{LiveStats, LiveTuning, Orchestrator, SegmentKind, Stream};
 
 const ECHO: &str = "we should ship the new release on friday afternoon";
 
@@ -47,19 +47,23 @@ async fn me_finals(tuning: LiveTuning) -> usize {
 
 #[tokio::test]
 async fn default_tuning_drops_an_echoed_me_final() {
-    let tuning = LiveTuning::default();
-    let stats = tuning.stats.clone();
+    let stats = Arc::new(LiveStats::default());
+    let tuning = LiveTuning {
+        stats: Some(stats.clone()),
+        ..LiveTuning::default()
+    };
     assert_eq!(me_finals(tuning).await, 0);
     assert_eq!(stats.echo_drops().len(), 1);
 }
 
 #[tokio::test]
 async fn disabling_the_dedup_keeps_the_echoed_me_final() {
+    let stats = Arc::new(LiveStats::default());
     let tuning = LiveTuning {
         echo_dedup: None,
+        stats: Some(stats.clone()),
         ..LiveTuning::default()
     };
-    let stats = tuning.stats.clone();
     assert_eq!(me_finals(tuning).await, 1);
     assert!(stats.echo_drops().is_empty());
 }

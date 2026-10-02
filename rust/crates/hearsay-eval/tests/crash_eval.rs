@@ -286,7 +286,7 @@ async fn run(sidecars: &Sidecars, data: &Data, speed: f64, kills: &[Kill]) -> Ou
     let tuning = LiveTuning {
         aec: None,
         echo_dedup: None,
-        stats: stats.clone(),
+        stats: Some(stats.clone()),
     };
     let pool = memory_pool().await;
     queries::set_preference(&pool, queries::SECTION_RECORDING, r#"{"record":false}"#)
