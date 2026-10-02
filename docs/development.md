@@ -29,7 +29,7 @@ The `Makefile` is the task runner.
 | `make swift-build` | Build the capture helper and the FluidAudio/ANE sidecars, one invocation each. |
 | `make rust-build` / `make rust-test` | Build / test the Rust workspace. |
 | `make test` | Build the helper, run the Swift cross-language self-test, then `cargo test`. |
-| `make lint` / `make fmt` | clippy with warnings denied plus `rustfmt --check` (workspace and Tauri shell) / format. |
+| `make lint` / `make fmt` | clippy with warnings denied plus `rustfmt --check` / rustfmt, both on the workspace and the Tauri shell. |
 | `make codegen` | Regenerate the golden IPC fixtures and the OpenAPI schema plus web TS types, all from Rust. |
 | `make codegen-check` | Fail if any generated artifact drifts from the Rust source. |
 | `make audit` | CVE scan: `cargo audit` on both Rust trees plus `npm audit`. |
@@ -39,7 +39,7 @@ The `Makefile` is the task runner.
 | `make stamp-version VERSION=x.y.z` | Write the version into the five files without codegen; what the release build runs. |
 | `make ci` | The full gate: lint, tests, codegen drift, version check, audit, licenses, web CI. Must stay green. |
 | `make web-ci` | The web gate: `npm ci`, `tsc`, ESLint, vitest (unit/component tests), `vite build`. |
-| `make rust-serve` (alias `serve`) | Build the `hearsay-notes` sidecar (`metal`) and run the core (`aec`); the core spawns the sidecar for notes. |
+| `make rust-serve` | Build the `hearsay-notes` sidecar (`metal`) and run the core (`aec`); the core spawns the sidecar for notes. |
 | `make dmg` | Build the unsigned, ad-hoc-signed `.dmg` (see [packaging.md](packaging.md)). |
 
 ## Running
