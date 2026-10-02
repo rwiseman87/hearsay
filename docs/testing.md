@@ -32,7 +32,7 @@ This document maps the targets to what they test and the suite to where it lives
 | `licenses` | `cargo deny check licenses` (policy `rust/deny.toml`) | every dependency is MIT/BSD/Apache-2.0 | no |
 | `web-ci` | `web-install` + `web-typecheck` (tsc) + `web-lint` (eslint) + `web-test` + `web-build` | the web UI type-checks, lints, unit/component-tests, and builds | no |
 | `web-test` | `vitest` (jsdom) | the client layer + hooks + MSW-mocked components (also folded into `web-ci`) | no |
-| **`make e2e`** | build the core, then Playwright/Chromium vs the scripted core + `vite dev` | the real React app → real core → real pipeline over a live WebSocket | no (Chromium once) |
+| **`make e2e`** | build the core (`--features scripted`), then Playwright/Chromium vs the scripted core + `vite dev` | the real React app → real core → real pipeline over a live WebSocket | no (Chromium once) |
 | **`make probes`** | `cargo test -- --ignored` on `hearsay-notes` (metal) | the notes LLM | **yes** |
 | **`make diarize-eval`** | `swift-build`, then the `hearsay-eval` `diarization_accuracy` gate (`HEARSAY_DIARIZE_EVAL=1`) over the local labeled corpus | `hearsay-diarize` speaker-count + DER vs `shared/eval/baseline-diarization.json` (AMI, plus any local recordings added to the corpus; audio stays local). Without the opt-in the test skips, so `make ci` never runs it; with it, it self-skips when the audio or sidecar is absent. Re-baseline an intentional change with `HEARSAY_UPDATE_EVAL_BASELINE=1` | **yes** |
 | **`make wer-eval`** | `swift-build`, then the `hearsay-eval` `asr_accuracy` gate (`HEARSAY_WER_EVAL=1`) | the offline refine (`hearsay-diarize` with Parakeet Ultra) scored with WER and cpWER against the committed reference transcript, plus RTF in the run report. Without the opt-in the test skips, so `make ci` never runs it; with it, it self-skips when the audio or sidecar is absent. Gated on Parakeet Ultra: WER 0.163 / cpWER 0.225 on AMI ES2004a near-field, 0.238 / 0.301 far-field. Re-baseline with `HEARSAY_UPDATE_EVAL_BASELINE=1` | **yes** |
@@ -77,8 +77,9 @@ The gate stays model-free because the ML is replaced at well-defined seams:
   stubbed transcribers/diarizer that replay a canned meeting. The full-stack Rust test wires these into
   a real `Orchestrator` + `AppState` in-process.
 - **`build_scripted_engine` + the dev-only `HEARSAY_SCRIPTED` flag** — the same scripted engine selected
-  inside the core *binary* (honored only when `ENVIRONMENT=development`, so a shipping build never fakes
-  a meeting). This is what the browser E2E drives, streaming the transcript progressively over the live
+  inside the core *binary*. It is compiled in only with the `scripted` cargo feature (`make e2e` and
+  `make rust-serve` enable it; the release build does not) and honored only when
+  `ENVIRONMENT=development`. This is what the browser E2E drives, streaming the transcript progressively over the live
   WebSocket, so both the Rust full-stack test and Playwright assert identical output every run.
 - **`memory_pool()`** (`hearsay_db::test_support`) — a single-connection `sqlite::memory:` pool
   running the real migrations, shared by every crate's tests. Single-connection because each

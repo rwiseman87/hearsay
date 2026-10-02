@@ -195,7 +195,9 @@ impl Settings {
             .ok()
             .and_then(|p| p.parse().ok())
             .unwrap_or(0);
-        let scripted = environment == "development" && env::var_os("HEARSAY_SCRIPTED").is_some();
+        let scripted = cfg!(feature = "scripted")
+            && environment == "development"
+            && env::var_os("HEARSAY_SCRIPTED").is_some();
         let models_dir = PathBuf::from(env_or("HEARSAY_MODELS_DIR", "outputs/models"));
         let auto_refine = env_bool("HEARSAY_AUTO_REFINE", false, &mut problems);
         let record = env_bool("HEARSAY_RECORD", true, &mut problems);

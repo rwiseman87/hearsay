@@ -58,9 +58,11 @@ make mac-app  # unsigned .app only (faster; for local testing)
 ```
 
 Both run `stage-release`, which builds the release binaries and copies them where Tauri's
-`externalBin` expects them (`web/src-tauri/binaries/<name>-aarch64-apple-darwin`). The `mac-app`
-target (which `dmg` depends on) then invokes `cargo tauri build` and runs `codesign --verify --deep
---strict` on the bundle to confirm the ad-hoc signature is intact.
+`externalBin` expects them (`web/src-tauri/binaries/<name>-aarch64-apple-darwin`). The Rust release
+profile strips symbols and uses thin LTO; the Swift binaries are stripped with `strip -x` as they are
+staged. The release core leaves out the dev-only `scripted` engine. Each target then runs one
+`cargo tauri build` (`dmg` bundles the `.app` and the `.dmg` in that one run) and `codesign --verify
+--deep --strict` on the `.app` to confirm the ad-hoc signature is intact.
 
 `THIRD-PARTY-NOTICES.md` is bundled as a Tauri resource (`Contents/Resources/`), and the shell
 points `HEARSAY_THIRD_PARTY_NOTICES` at it so Settings > About can open it. The speech models the app

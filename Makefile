@@ -84,6 +84,7 @@ rust-test: ## Run the Rust workspace tests (cargo test)
 
 rust-lint: ## Lint Rust (clippy with warnings denied + rustfmt --check)
 	cargo clippy --manifest-path $(RUST_MANIFEST) --all-targets -- -D warnings
+	cargo clippy --manifest-path $(RUST_MANIFEST) -p hearsay-core --features scripted --all-targets -- -D warnings
 	cargo fmt --manifest-path $(RUST_MANIFEST) --all --check
 
 tauri-lint: ## Lint the Tauri shell (the shipping entrypoint; excluded from the rust/ workspace)
@@ -230,8 +231,8 @@ e2e: ## Browser end-to-end (Playwright) vs the scripted core + vite; one-time: c
 	@command -v npx >/dev/null 2>&1 || { echo "npx not found: install Node (https://nodejs.org)"; exit 1; }
 	@test -d $(WEB)/node_modules/@playwright/test || { echo "playwright not installed: run 'cd web && npm install' (then 'npx playwright install chromium')"; exit 1; }
 	@mkdir -p $(OUT)/e2e
-# Build the core up front so Playwright's webServer starts fast; the scripted engine needs no features.
-	cargo build --manifest-path $(RUST_MANIFEST) -p hearsay-core
+# Build the core up front so Playwright's webServer starts fast; the release core leaves `scripted` out.
+	cargo build --manifest-path $(RUST_MANIFEST) -p hearsay-core --features scripted
 # An archived (compressed-only) meeting recording for the playback spec, built by the real encoder.
 	cargo run -q --manifest-path $(RUST_MANIFEST) -p hearsay-audio --example fixture -- $(OUT)/e2e/fixture
 	cd $(WEB) && npx playwright test
@@ -245,7 +246,7 @@ rust-serve: ## Serve the Rust core (SYNTHETIC=1 for no-permission plumbing; need
 	@mkdir -p $(OUT)/db
 	cargo build --manifest-path $(RUST_MANIFEST) -p hearsay-notes --features $(NOTES_FEATURES)
 	HEARSAY_SERVER_PORT=$(RUST_PORT) DATABASE_URL="$(RUST_DB)" \
-		cargo run --manifest-path $(RUST_MANIFEST) -p hearsay-core --features $(CORE_FEATURES),api-console $(if $(SYNTHETIC),-- --synthetic)
+		cargo run --manifest-path $(RUST_MANIFEST) -p hearsay-core --features $(CORE_FEATURES),api-console,scripted $(if $(SYNTHETIC),-- --synthetic)
 
 # Release binaries + web bundle, copied where Tauri's `externalBin` expects them. Shared by mac-app and dmg.
 stage-release: version-check web-install web-build ## Build release binaries + web bundle and stage them for the Tauri bundle
@@ -257,8 +258,10 @@ stage-release: version-check web-install web-build ## Build release binaries + w
 	@mkdir -p $(STAGE)
 	cp $(RUST)/target/release/hearsay-core $(STAGE)/hearsay-core-$(TRIPLE)
 	cp $(RUST)/target/release/hearsay-notes $(STAGE)/hearsay-notes-$(TRIPLE)
+# SwiftPM keeps symbol tables in release; strip -x drops them (about 2.5 MB per sidecar) and re-signs.
 	@set -euo pipefail; for b in $(SWIFT_PRODUCTS); do \
 		cp $(PKG)/.build/arm64-apple-macosx/release/$$b $(STAGE)/$$b-$(TRIPLE); \
+		strip -x $(STAGE)/$$b-$(TRIPLE); \
 	done
 
 mac-app: stage-release ## Build the UNSIGNED .app (ad-hoc signed; core + sidecars); needs `cargo install tauri-cli`
@@ -266,10 +269,11 @@ mac-app: stage-release ## Build the UNSIGNED .app (ad-hoc signed; core + sidecar
 	codesign --verify --deep --strict --verbose=2 $(APP)
 	@echo "built (unsigned/ad-hoc): $(APP)"
 
-# Depends on mac-app: the dmg bundler consumes the .app, so it is signed + verified first.
-dmg: mac-app ## Build the distributable UNSIGNED .dmg (ad-hoc signed, no notarization)
+# One tauri build: the dmg bundler reuses the .app it just made, which is the one verified here.
+dmg: stage-release ## Build the distributable UNSIGNED .dmg (ad-hoc signed, no notarization)
 # CI=true skips bundle_dmg.sh's Finder AppleScript styling (needs a GUI session); only icon positions are lost.
-	cd $(TAURI) && CI=true cargo tauri build --bundles dmg
+	cd $(TAURI) && CI=true cargo tauri build --bundles app,dmg
+	codesign --verify --deep --strict --verbose=2 $(APP)
 	@echo "built (unsigned/ad-hoc): $(BUNDLE)/dmg/ (see docs/packaging.md)"
 	@echo "install on another Mac: drag to /Applications, then run"
 	@echo "  xattr -dr com.apple.quarantine /Applications/Hearsay.app"

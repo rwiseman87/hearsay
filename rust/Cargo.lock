@@ -894,6 +894,7 @@ dependencies = [
  "async-trait",
  "chrono",
  "hearsay-audio",
+ "hearsay-backends",
  "hearsay-capture",
  "hearsay-db",
  "hearsay-engine",

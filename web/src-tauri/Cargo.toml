@@ -26,3 +26,8 @@ tempfile = "3.27.0"
 
 # Standalone from the `rust/` workspace: this crate only bundles + spawns the built binaries.
 [workspace]
+
+[profile.release]
+strip = true
+lto = "thin"
+codegen-units = 1

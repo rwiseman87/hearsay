@@ -12,7 +12,7 @@ use tokio::signal::unix::{signal, SignalKind};
 use utoipa::OpenApi as _;
 use uuid::Uuid;
 
-use hearsay_backends::{build_engine, build_scripted_engine, EngineConfig};
+use hearsay_backends::{build_engine, EngineConfig};
 use hearsay_core::{create_app, ApiDoc, AppState, Settings};
 
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
@@ -77,12 +77,15 @@ async fn main() -> Result<(), BoxError> {
     // engine that replays a canned meeting (see `hearsay_backends::build_scripted_engine`), so the
     // browser end-to-end test can drive this binary with no capture devices or ANE/GPU. Gated to
     // development so a shipping build never honors it.
+    #[cfg(feature = "scripted")]
     let engine = if settings.scripted {
         tracing::info!("HEARSAY_SCRIPTED set: using the scripted (model-free) engine");
-        build_scripted_engine(engine_config)
+        hearsay_backends::build_scripted_engine(engine_config)
     } else {
         build_engine(engine_config)
     };
+    #[cfg(not(feature = "scripted"))]
+    let engine = build_engine(engine_config);
     // A prior hard exit (SIGKILL / panic / power loss) can strand a meeting row `recording` or
     // `refining` forever, with no session to finalize it. Nothing is active at startup, so sweep and
     // finalize every such row (writing its transcript from the persisted segments) before we serve.

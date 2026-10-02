@@ -23,8 +23,12 @@ uuid = { workspace = true }
 
 [features]
 aec = ["hearsay-orchestrator/aec"]
+# The model-free scripted engine for the browser E2E and dev runs; release builds leave it out.
+scripted = []
 
 [dev-dependencies]
+# Enables `scripted` for this crate's own tests.
+hearsay-backends = { path = ".", features = ["scripted"] }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 tempfile = { workspace = true }
 hound = { workspace = true }

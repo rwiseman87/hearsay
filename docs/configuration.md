@@ -52,7 +52,7 @@ source this page mirrors; `hearsay-core/src/routes/settings.rs` implements the w
 | Diarize fixed speaker count (`hearsay-diarize --diarizer pyannote` only; experiment) | `HEARSAY_DIARIZE_NUM_SPEAKERS` | unset |
 | Diarize maximum speaker count (`hearsay-diarize --diarizer pyannote` only; experiment) | `HEARSAY_DIARIZE_MAX_SPEAKERS` | unset |
 | Me VAD threshold (`hearsay-me`, `0 < t < 1`; experiment) | `HEARSAY_VAD_THRESHOLD` | FluidAudio default |
-| Scripted model-free engine (dev only; any value, honored only when `ENVIRONMENT=development`) | `HEARSAY_SCRIPTED` | unset (off) |
+| Scripted model-free engine (dev only; any value, honored only when `ENVIRONMENT=development` in a build with the `scripted` feature) | `HEARSAY_SCRIPTED` | unset (off) |
 | Environment | `ENVIRONMENT` | `development` |
 
 The desktop shell injects `DATABASE_URL`, `HEARSAY_OUTPUT_DIR`, `HEARSAY_WEB_DIR`,

@@ -41,6 +41,8 @@ sha2 = "0.10.9"
 # the console in a shipping configuration either.
 api-console = ["dep:utoipa-swagger-ui"]
 aec = ["hearsay-backends/aec"]
+# Honor `HEARSAY_SCRIPTED` (the model-free E2E engine). `make e2e` and `make rust-serve` enable it.
+scripted = ["hearsay-backends/scripted"]
 
 [dev-dependencies]
 tempfile = { workspace = true }

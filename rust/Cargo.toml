@@ -43,3 +43,9 @@ async-trait = "0.1.89"
 tempfile = "3.27.0"
 hound = "3.5.1"
 proptest = "1.11.0"
+
+[profile.release]
+# Smaller shipped binaries; panics still print, but backtraces lose symbol names.
+strip = true
+lto = "thin"
+codegen-units = 1
