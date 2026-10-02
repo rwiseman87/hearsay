@@ -89,17 +89,10 @@ fn default_notes_binary() -> PathBuf {
     if let Some(path) = env::var_os("HEARSAY_NOTES_PATH") {
         return PathBuf::from(path);
     }
-    let name = notes_binary_name();
     env::current_exe()
         .ok()
-        .and_then(|exe| exe.parent().map(|dir| dir.join(&name)))
-        .unwrap_or_else(|| PathBuf::from(name))
-}
-
-/// The sidecar's file name. The summarizer probes the resolved path with `is_file()` before
-/// spawning, so it has to match what the packager stages beside the core.
-fn notes_binary_name() -> String {
-    "hearsay-notes".to_string()
+        .and_then(|exe| exe.parent().map(|dir| dir.join("hearsay-notes")))
+        .unwrap_or_else(|| PathBuf::from("hearsay-notes"))
 }
 
 /// Parse a boolean env var (`1`/`true`/`yes`/`on` -> true, `0`/`false`/`no`/`off` -> false,
@@ -282,18 +275,7 @@ impl Settings {
 
 #[cfg(test)]
 mod tests {
-    use super::{bind_allowed, is_loopback_bind, notes_binary_name};
-
-    /// The notes sidecar is found by an `is_file()` probe in the summarizer, so the name the core
-    /// resolves has to match what the packager stages beside it.
-    /// Staging it the way the bundler does and probing the resolved path exercises that predicate.
-    #[test]
-    fn notes_sidecar_resolves_to_the_staged_binary() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let staged = dir.path().join("hearsay-notes");
-        std::fs::write(&staged, b"").expect("stage sidecar");
-        assert!(dir.path().join(notes_binary_name()).is_file());
-    }
+    use super::{bind_allowed, is_loopback_bind};
 
     #[test]
     fn loopback_bind_accepts_loopback_ips_and_localhost_only() {

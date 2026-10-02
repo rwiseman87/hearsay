@@ -2,11 +2,13 @@
 //! serve the API + UI. `--dump-openapi` prints the OpenAPI document and exits (for the TS codegen);
 //! `--synthetic` runs the capture helper in synthetic mode (generated audio, no TCC prompts).
 
+use std::os::unix::fs::OpenOptionsExt as _;
 use std::path::Path;
 use std::sync::Arc;
 
 use tokio::io::AsyncReadExt as _;
 use tokio::net::TcpListener;
+use tokio::signal::unix::{signal, SignalKind};
 use utoipa::OpenApi as _;
 use uuid::Uuid;
 
@@ -50,11 +52,8 @@ async fn main() -> Result<(), BoxError> {
     if !models_present {
         tracing::info!("models missing: first-run setup required before recording");
     }
-    // Assemble the backend behind the neutral LiveEngine seam (capture helper + live sidecars +
-    // offline refine). `build_engine` installs the orchestrator's self-reference (so a capture death
-    // finalizes the meeting); the
-    // binary holds only the trait object. Config defaults seed it; the editable Settings panels
-    // override per meeting.
+    // Assemble the backend behind the LiveEngine seam; the binary holds only the trait object.
+    // Config defaults seed it; the editable Settings panels override per meeting.
     let engine_config = EngineConfig {
         pool: pool.clone(),
         output_dir: settings.output_dir.clone(),
@@ -143,7 +142,7 @@ async fn main() -> Result<(), BoxError> {
 
 /// Write `{port, token}` JSON to `handshake_path` (resolved from `HEARSAY_HANDSHAKE_PATH` into
 /// [`Settings`]) — the private file the desktop shell reads once to navigate the webview. Written via
-/// temp file + rename (0600 on Unix) so the shell never reads a half-written payload. A no-op when
+/// temp file + rename (0600) so the shell never reads a half-written payload. A no-op when
 /// the path is `None` (headless dev).
 fn write_handshake(port: u16, token: &str, handshake_path: Option<&Path>) -> std::io::Result<()> {
     let Some(path) = handshake_path else {
@@ -154,11 +153,7 @@ fn write_handshake(port: u16, token: &str, handshake_path: Option<&Path>) -> std
     let tmp = path.with_extension("tmp");
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create(true).truncate(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
+    options.mode(0o600);
     {
         use std::io::Write as _;
         let mut file = options.open(&tmp)?;
@@ -169,7 +164,7 @@ fn write_handshake(port: u16, token: &str, handshake_path: Option<&Path>) -> std
     Ok(())
 }
 
-/// Resolve when any shutdown trigger fires: Ctrl-C, SIGTERM (Unix), or EOF on our stdin. The desktop
+/// Resolve when any shutdown trigger fires: Ctrl-C, SIGTERM, or EOF on our stdin. The desktop
 /// shell holds our stdin, so stdin EOF is how a shell quit (or crash) tells us to exit — this is the
 /// parent-death signal that keeps a headless core with a live token from lingering.
 async fn shutdown_signal() {
@@ -190,9 +185,7 @@ async fn shutdown_signal() {
         }
     };
 
-    #[cfg(unix)]
     let terminate = async {
-        use tokio::signal::unix::{signal, SignalKind};
         match signal(SignalKind::terminate()) {
             Ok(mut sig) => {
                 sig.recv().await;
@@ -201,8 +194,6 @@ async fn shutdown_signal() {
             Err(_) => std::future::pending::<()>().await,
         }
     };
-    #[cfg(not(unix))]
-    let terminate = std::future::pending::<()>();
 
     tokio::select! {
         _ = ctrl_c => tracing::info!("shutdown: ctrl-c"),

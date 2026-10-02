@@ -1,4 +1,4 @@
-# Hearsay Rust workspace — cross-platform (macOS + Windows) foundation.
+# Hearsay Rust workspace — the macOS backend.
 # Architecture: ../docs/architecture.md
 #
 # Shared dependency versions live in [workspace.dependencies]; crates inherit them with

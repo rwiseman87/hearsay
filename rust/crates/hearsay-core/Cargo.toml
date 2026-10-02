@@ -28,9 +28,8 @@ uuid = { workspace = true, features = ["v4", "serde"] }
 chrono = { workspace = true, features = ["serde"] }
 sqlx = { workspace = true }
 tower = { version = "0.5.3", features = ["util"] }
-# Notes-model download manager (always compiled — independent of the `notes` inference feature so the
-# `/api/models` surface + codegen stay identical across feature states). ureq: blocking HTTPS with a
-# bundled rustls + webpki roots (no OS cert dep, no async runtime pulled in — runs in spawn_blocking).
+# Notes-model download manager. ureq: blocking HTTPS with bundled rustls + webpki roots (no OS cert
+# dep, no async runtime pulled in — runs in spawn_blocking).
 ureq = "3.3.0"
 sha2 = "0.10.9"
 

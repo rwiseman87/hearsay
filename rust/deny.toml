@@ -17,8 +17,9 @@
 
 [graph]
 # Resolve the dependency graph with ALL features enabled so optional-feature deps
-# (notes/llama-cpp-2, metal) are license-checked too. The default (default-features-only) graph prunes them, so a future copyleft optional dep would slip
-# past CI. Verified all-features stays fully permissive (2026-07-17).
+# (notes/llama-cpp-2, metal) are license-checked too. The default (default-features-only) graph
+# prunes them, so a future copyleft optional dep would slip past CI. Verified all-features stays
+# fully permissive (2026-07-17).
 all-features = true
 
 [licenses]

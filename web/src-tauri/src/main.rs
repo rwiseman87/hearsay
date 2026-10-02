@@ -108,7 +108,7 @@ fn erase_all_data(app: tauri::AppHandle, core: tauri::State<'_, CoreChild>) -> R
     }
 
     // Stop the core first so the SQLite file handle is released before the DB file is deleted out
-    // from under it (graceful on macOS, so an in-progress meeting is finalized).
+    // from under it (gracefully, so an in-progress meeting is finalized).
     if let Some(child) = core.0.lock().unwrap().take() {
         stop_core_gracefully(child);
     }
@@ -193,7 +193,7 @@ impl RotatingLog {
 
     /// Move the current file aside and start a fresh one, keeping one previous generation.
     fn rotate(&mut self) {
-        // Drop the handle before renaming: Windows will not rename an open file.
+        // Drop the handle before renaming.
         self.file = None;
         let previous = self.path.with_extension("log.1");
         if std::fs::rename(&self.path, &previous).is_err() {
@@ -220,12 +220,8 @@ impl RotatingLog {
     }
 }
 
-/// Remove a file or directory tree, retrying briefly on a transient failure. `child.kill()`
-/// (TerminateProcess) is asynchronous on Windows — `stop_core_gracefully` only waits for the core to
-/// exit on Unix — so the core's SQLite handle can outlive the call by a few milliseconds and a first
-/// `remove_dir_all` then hits a sharing violation. Retrying with a short backoff lets the handle
-/// release. `NotFound` is success (nothing to remove); any other error after the last attempt is
-/// logged, never fatal — the wipe is best-effort.
+/// Best-effort remove with a short retry: killed sidecars may still be writing into the tree.
+/// `NotFound` is success; a final failure is logged, never fatal.
 fn remove_path_with_retry(path: &std::path::Path) {
     const ATTEMPTS: usize = 10;
     for attempt in 0..ATTEMPTS {
@@ -364,8 +360,8 @@ fn main() {
             // show why instead of leaving the splash spinning forever.
             let drain_handle = app.handle().clone();
             let drain_settled = boot_settled.clone();
-            // Mirror the core.s output into a log file. The Windows shell is a GUI binary with no
-            // console, so `eprint!` alone goes nowhere: a panic in the core would leave no trace and
+            // Mirror the core's output into a log file. A GUI-launched macOS app has no attached
+            // terminal, so `eprint!` alone goes nowhere: a panic in the core would leave no trace and
             // present only as every request failing. Appended (so a crash survives the relaunch that
             // follows it) but size-capped, so it cannot grow without bound.
             let log_path = core_log_path.clone();

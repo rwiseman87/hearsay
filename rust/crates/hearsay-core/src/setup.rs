@@ -19,7 +19,6 @@ const MODELS_REVISION: u64 = 1;
 
 /// FluidAudio's cache layout: one directory per repo. A name that drifts only costs a redundant
 /// prepare run — the persisted completion revision is what stops setup repeating.
-#[cfg(target_os = "macos")]
 const FLUID_REPOS: &[&str] = &[
     "silero-vad/silero-vad-unified-256ms-v6.2.1.mlmodelc",
     "speaker-diarization",
@@ -397,7 +396,6 @@ fn fluid_cache(settings: &Settings) -> Option<PathBuf> {
         .map(|home| home.join("Library/Application Support/FluidAudio/Models"))
 }
 
-#[cfg(target_os = "macos")]
 fn live_models_present(cache: Option<&Path>) -> bool {
     let Some(cache) = cache else {
         return false;
@@ -427,7 +425,6 @@ fn pending_step(id: &str, label: &str, total_bytes: i64) -> SetupStep {
 }
 
 /// A repo dir created but never filled (an interrupted download) does not count as present.
-#[cfg(target_os = "macos")]
 fn dir_has_entries(dir: &Path) -> bool {
     std::fs::read_dir(dir)
         .map(|mut entries| entries.next().is_some())
@@ -438,7 +435,6 @@ fn dir_has_entries(dir: &Path) -> bool {
 mod tests {
     use super::*;
 
-    #[cfg(target_os = "macos")]
     #[test]
     fn dir_has_entries_rejects_missing_and_empty_dirs() {
         let tmp = tempfile::tempdir().unwrap();

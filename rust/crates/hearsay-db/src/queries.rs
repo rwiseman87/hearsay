@@ -1934,8 +1934,8 @@ pub async fn set_notes_model(pool: &SqlitePool, path: &str) -> Result<(), sqlx::
     Ok(())
 }
 
-/// Whether first-run model setup completed for model-set `revision`. A recorded revision older than
-/// the build's re-opens setup, so an update that changes the model set cannot leave an install
+/// Whether first-run model setup completed for model-set `revision`. A recorded revision different
+/// from the build's re-opens setup, so an update that changes the model set cannot leave an install
 /// silently downloading a model at first use. Paired with the on-disk probe in `hearsay-core`'s setup
 /// manager, which covers an install that already has its models.
 pub async fn models_ready(pool: &SqlitePool, revision: u64) -> Result<bool, sqlx::Error> {

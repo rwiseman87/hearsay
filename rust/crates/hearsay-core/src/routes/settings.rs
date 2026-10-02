@@ -454,7 +454,6 @@ pub(crate) async fn open_notices(State(state): State<AppState>) -> ApiResult<Sta
 /// minimal process environment). `dir` is app-controlled (the effective recordings dir or the
 /// bundled notices file), never user-supplied, so there is no argument-injection surface. Errors
 /// carry the reason for the UI.
-#[cfg(target_os = "macos")]
 pub(crate) fn reveal_in_file_manager(dir: &Path) -> ApiResult<()> {
     tracing::info!(path = %dir.display(), "reveal: opening in Finder");
     let status = std::process::Command::new("/usr/bin/open")

@@ -13,8 +13,7 @@ path = "src/main.rs"
 
 [dependencies]
 # The pure prompt-building + reply-parsing (no ML) is shared with the core's config default; reuse it
-# from the dependency-free crate rather than forking it. Crucially NOT `hearsay-inference`; this
-# binary links llama.cpp and nothing else ML.
+# from the dependency-free crate rather than forking it. No other ML beyond llama.cpp.
 hearsay-notes-prompt = { path = "../hearsay-notes-prompt" }
 llama-cpp-2 = { version = "0.1.151", default-features = false }
 encoding_rs = "0.8.35"

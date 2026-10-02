@@ -1,4 +1,4 @@
-//! Platform backend selection for Hearsay: the concrete capture + inference stack assembled behind
+//! The macOS backend for Hearsay: the concrete capture + inference stack assembled behind
 //! the [`hearsay_engine::LiveEngine`] seam, kept out of the web-API crate.
 //!
 //! `build_engine` takes an `EngineConfig` and returns an `Arc<dyn LiveEngine>` — all
@@ -23,7 +23,6 @@ use hearsay_orchestrator::{
 };
 
 pub mod archive;
-#[cfg(target_os = "macos")]
 mod mac;
 pub mod reconcile;
 mod summarizer;
@@ -32,17 +31,14 @@ pub use hearsay_capture::{probe_permissions, PermissionsSnapshot};
 // The default notes prompt lives in the dependency-free `hearsay-notes-prompt` crate (shared with the
 // notes sidecar); re-export it so `hearsay-core` can seed the config default without a direct dep.
 pub use hearsay_notes_prompt::DEFAULT_NOTES_PROMPT;
-#[cfg(target_os = "macos")]
 pub use mac::build_engine;
 
-/// Everything a platform `build_engine` needs, resolved by `hearsay-core` from its `Settings` plus
-/// the CLI. One struct on every platform so the composition-root call site never forks; each
-/// backend reads the fields that apply to it and ignores the rest.
+/// Everything `build_engine` needs, resolved by `hearsay-core` from its `Settings` plus the CLI.
 pub struct EngineConfig {
     pub pool: SqlitePool,
     /// Root of the per-meeting output folders.
     pub output_dir: PathBuf,
-    /// macOS: the Swift `hearsay-helper` capture binary (the `-live`/`-me`/`-diarize` sidecars
+    /// The Swift `hearsay-helper` capture binary (the `-live`/`-me`/`-diarize` sidecars
     /// resolve as siblings).
     pub helper_path: PathBuf,
     /// Run capture with generated audio (`--synthetic`): no devices touched, no permission prompts.
@@ -69,8 +65,7 @@ pub struct EngineConfig {
     pub notes_binary: PathBuf,
 }
 
-/// Map the inference crate's refine output onto the orchestrator's `RefineResult`. Identical on
-/// every platform — only how the output is produced differs.
+/// Map the inference crate's refine output onto the orchestrator's `RefineResult`.
 pub(crate) fn map_refine_output(output: hearsay_inference::RefineOutput) -> RefineResult {
     RefineResult {
         segments: output
@@ -92,8 +87,7 @@ pub(crate) fn map_refine_output(output: hearsay_inference::RefineOutput) -> Refi
 }
 
 impl EngineConfig {
-    /// The orchestrator defaults this config carries. Every `build_engine` needs exactly this
-    /// subset, so each platform lifts it the same way.
+    /// The orchestrator defaults this config carries.
     pub(crate) fn defaults(&self) -> Defaults {
         Defaults {
             record: self.record,
@@ -113,7 +107,7 @@ impl EngineConfig {
 /// persistence over a canned meeting — emitting its transcript progressively over the live WebSocket
 /// during recording (via [`ProgressiveBackend`]) — instead of touching any capture device, ANE, or
 /// GPU. Selected by the core's dev-only `HEARSAY_SCRIPTED` flag so the browser end-to-end test can
-/// drive the real core *binary* with exact, assertable output. Platform-neutral: it reuses the same
+/// drive the real core *binary* with exact, assertable output. It reuses the same
 /// `hearsay-orchestrator::testing` fakes the in-process Rust full-stack test does, so both paths
 /// produce identical output. A canned summarizer backs the "Generate notes" step; no refiner is wired
 /// (like the full-stack test), so stop just finalizes and keeps the live-emitted segments.
