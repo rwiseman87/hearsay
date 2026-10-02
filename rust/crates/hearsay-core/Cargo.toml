@@ -13,6 +13,8 @@ hearsay-audio = { path = "../hearsay-audio" }
 axum = { version = "0.8.9", features = ["ws", "macros"] }
 tower-http = { version = "0.7.0", features = ["fs", "set-header", "trace", "request-id"] }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net", "signal", "fs", "sync", "time", "io-std", "io-util"] }
+# ReceiverStream, to stream archived audio decoded on a blocking thread as the response body.
+tokio-stream = { version = "0.1.18", default-features = false }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
@@ -46,6 +48,8 @@ scripted = ["hearsay-backends/scripted"]
 
 [dev-dependencies]
 tempfile = { workspace = true }
+# Writes the WAV that the archived-audio playback test encodes to FLAC.
+hound = { workspace = true }
 # Real WebSocket client for the handshake-gating + full-stack integration tests (axum's
 # WebSocketUpgrade extractor cannot be driven by tower::oneshot). Already in the lock.
 tokio-tungstenite = "0.29.0"

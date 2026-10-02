@@ -138,7 +138,9 @@ the refine, and a segment's start time maps directly onto a seek position.
 230 MB and never shrinks. FLAC is about 3x smaller and bit-identical, so playback, the refine, and
 re-diarization are unaffected. The destructive step is ordered so failure can only cost disk space:
 encode to a temporary, decode it back and compare sample for sample, rename into place, and only
-then unlink the original.
+then unlink the original. Playback still serves WAV: the core decodes only the FLAC frames a range
+request covers, because WebKit seeks a FLAC by estimating byte offsets, which lands tens of seconds
+off when long muted stretches compress to almost nothing. Nothing decoded is written to disk.
 
 ## Data, API, and distribution
 

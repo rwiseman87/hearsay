@@ -1015,6 +1015,72 @@ async fn audio_checks_the_query_token_and_404s_without_a_file() {
 }
 
 #[tokio::test]
+async fn archived_audio_plays_as_wav_and_seeks_to_the_exact_bytes() {
+    let (app, pool, tmp) = setup().await;
+    let meeting = queries::create_meeting(&pool, "M", "f", "", chrono::Utc::now())
+        .await
+        .unwrap();
+    // Silence then a ramp then silence: uneven compression, and every sample is identifiable.
+    let mut samples = vec![0i16; 2 * 40_000];
+    samples.extend((0..2 * 20_000).map(|i| (i % 30_000) as i16 - 15_000));
+    samples.extend(vec![0i16; 2 * 9_999]);
+    let dir = tmp.path().join("f");
+    std::fs::create_dir_all(&dir).unwrap();
+    let spec = hound::WavSpec {
+        channels: 2,
+        sample_rate: 16_000,
+        bits_per_sample: 16,
+        sample_format: hound::SampleFormat::Int,
+    };
+    let mut writer = hound::WavWriter::create(dir.join("source.wav"), spec).unwrap();
+    for s in &samples {
+        writer.write_sample(*s).unwrap();
+    }
+    writer.finalize().unwrap();
+    hearsay_audio::encode_wav_to_flac(&dir.join("source.wav"), &dir.join("audio.flac")).unwrap();
+    std::fs::remove_file(dir.join("source.wav")).unwrap();
+    let pcm: Vec<u8> = samples.iter().flat_map(|s| s.to_le_bytes()).collect();
+    let wav_len = 44 + pcm.len();
+    let uri = format!("/api/meetings/{}/audio?token={TOKEN}", meeting.id);
+
+    let full = app.clone().oneshot(get(&uri)).await.unwrap();
+    assert_eq!(full.status(), StatusCode::OK);
+    assert_eq!(full.headers()["content-type"], "audio/wav");
+    assert_eq!(
+        full.headers()["content-length"],
+        wav_len.to_string().as_str()
+    );
+    let body = axum::body::to_bytes(full.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    assert_eq!(&body[44..], &pcm[..]);
+
+    // A seek into the ramp returns exactly the bytes at that offset.
+    let (start, end) = (44 + 4 * 41_000, 44 + 4 * 52_345 + 1);
+    let mut ranged = get(&uri);
+    ranged
+        .headers_mut()
+        .insert("range", format!("bytes={start}-{end}").parse().unwrap());
+    let resp = app.clone().oneshot(ranged).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::PARTIAL_CONTENT);
+    assert_eq!(
+        resp.headers()["content-range"],
+        format!("bytes {start}-{end}/{wav_len}").as_str()
+    );
+    let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    assert_eq!(&body[..], &pcm[start - 44..=end - 44]);
+
+    let mut past_end = get(&uri);
+    past_end
+        .headers_mut()
+        .insert("range", format!("bytes={wav_len}-").parse().unwrap());
+    let resp = app.clone().oneshot(past_end).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::RANGE_NOT_SATISFIABLE);
+}
+
+#[tokio::test]
 async fn deletes_a_meeting_then_404s() {
     let (app, pool, _tmp) = setup().await;
     let meeting = queries::create_meeting(&pool, "M", "f", "", chrono::Utc::now())

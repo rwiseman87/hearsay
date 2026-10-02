@@ -62,10 +62,10 @@ test("an archived meeting serves and plays its compressed audio", async ({ page,
   rmSync(path.join(dir, "audio.wav"), { force: true });
   copyFileSync(FLAC_FIXTURE, path.join(dir, "audio.flac"));
 
-  // The route resolves the archived form and labels it so the browser will decode it.
+  // The route decodes the archived form and serves it as WAV, whose byte offsets map to time exactly.
   const audio = await request.get(`/api/meetings/${meeting.id}/audio?token=${token}`);
   expect(audio.status()).toBe(200);
-  expect(audio.headers()["content-type"]).toBe("audio/flac");
+  expect(audio.headers()["content-type"]).toBe("audio/wav");
 
   // Range requests still work, so the player can seek.
   const ranged = await request.get(`/api/meetings/${meeting.id}/audio?token=${token}`, {

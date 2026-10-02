@@ -92,9 +92,11 @@ on the right. Sample N is meeting second N/16000, so a segment's `start_s` maps 
 
 - Takes `?token=` (an `<audio>` element cannot set a header) or a bearer header.
 - Supports `Range` requests, answering `206 Partial Content`, so the browser can seek.
-- The file is `audio.wav` until the archival sweep compresses it, then `audio.flac` — losslessly, so
-  the samples are identical either way. The content type reflects which one it is (`audio/wav` or
-  `audio/flac`); both decode natively in the shipped webviews.
+- Always `audio/wav` (16 kHz, 16-bit, stereo), so a byte offset maps to a time exactly. The file on
+  disk is `audio.wav` until the archival sweep compresses it to lossless `audio.flac`; an archived
+  recording is decoded on demand, only the frames a request covers, and served as the same WAV.
+  Serving the FLAC itself would let WebKit estimate seek positions from byte offsets, which lands
+  tens of seconds off on audio that compresses unevenly (long muted stretches).
 - `404` if the meeting is unknown, or was recorded with audio retention off.
 
 ## WebSocket: the live transcript
