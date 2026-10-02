@@ -8,10 +8,10 @@ use std::collections::HashMap;
 
 use chrono::Utc;
 use hearsay_attribution::{centroid_from_bytes, centroid_to_bytes};
-use hearsay_db::models::{MeetingStatus, Stream};
+use hearsay_db::models::{refine_incomplete, MeetingStatus, RefineGap, Stream};
 use hearsay_db::queries;
 use hearsay_db::queries::{
-    FolderScope, MeetingFilter, NotesResult, RefineResult, RefinedThemSegment,
+    FolderScope, MeetingFilter, NotesResult, RefineCoverage, RefineResult, RefinedThemSegment,
 };
 use hearsay_db::test_support::memory_pool;
 use hearsay_db::{connect_options, MIGRATOR};
@@ -1120,6 +1120,62 @@ async fn replace_them_segments_empty_is_noop() {
     );
 }
 
+#[tokio::test]
+async fn replace_them_segments_persists_coverage_and_gaps() {
+    let pool = memory_pool().await;
+    let meeting = queries::create_meeting(&pool, "t", "f", "", chrono::Utc::now())
+        .await
+        .unwrap();
+    assert_eq!(meeting.refine_gaps(), None);
+    assert!(!meeting.refine_incomplete());
+
+    let refined = vec![RefinedThemSegment {
+        ordinal: 1,
+        text: "hello".into(),
+        start_s: 0.0,
+        end_s: 1.0,
+    }];
+    let gap = RefineGap {
+        start_s: 49.0,
+        end_s: 72.0,
+    };
+    let result = RefineResult {
+        segments: refined,
+        coverage: Some(RefineCoverage {
+            fraction: 0.6,
+            gaps: vec![gap],
+        }),
+        ..Default::default()
+    };
+    queries::replace_them_segments(&pool, meeting.id, &result, 0.6)
+        .await
+        .unwrap();
+
+    let stored = queries::get_meeting(&pool, meeting.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.refine_coverage, Some(0.6));
+    assert_eq!(stored.refine_gaps(), Some(vec![gap]));
+    assert!(stored.refine_incomplete());
+}
+
+#[test]
+fn low_coverage_alone_is_not_truncation_once_gaps_are_recorded() {
+    let gap = RefineGap {
+        start_s: 10.0,
+        end_s: 25.0,
+    };
+    // Scattered short misses: low coverage, no gap of 10 s or more.
+    assert!(!refine_incomplete(0.75, Some(&[])));
+    assert!(refine_incomplete(0.75, Some(&[gap])));
+    // A gap with healthy coverage is not flagged.
+    assert!(!refine_incomplete(0.95, Some(&[gap])));
+    // A refine that predates gap recording falls back to coverage alone.
+    assert!(refine_incomplete(0.75, None));
+    assert!(!refine_incomplete(0.95, None));
+}
+
 /// A prior meeting names + locks "Alice" with a voiceprint; a later refine stores each speaker's
 /// voiceprint and auto-recognizes the returning Alice (bound but unlocked — provisional).
 #[tokio::test]
@@ -2005,4 +2061,21 @@ async fn migrations_upgrade_a_populated_older_db_with_data_intact() {
         .unwrap();
     assert_eq!(hits.len(), 1);
     assert_eq!(hits[0].meeting_id, meeting.id);
+}
+
+#[tokio::test]
+async fn models_ready_is_tied_to_the_model_set_revision() {
+    let pool = memory_pool().await;
+    assert!(!queries::models_ready(&pool, 1).await.unwrap());
+
+    queries::set_models_ready(&pool, 1).await.unwrap();
+    assert!(queries::models_ready(&pool, 1).await.unwrap());
+    // A build whose model set moved on re-opens setup on this install.
+    assert!(!queries::models_ready(&pool, 2).await.unwrap());
+
+    // The boolean flag older builds recorded is not a revision, so it never satisfies one.
+    queries::set_preference(&pool, queries::SECTION_SETUP, r#"{"models_ready":true}"#)
+        .await
+        .unwrap();
+    assert!(!queries::models_ready(&pool, 1).await.unwrap());
 }

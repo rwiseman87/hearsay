@@ -367,9 +367,9 @@ async fn wedged_sidecar_does_not_starve_other_stream() {
     let pool = memory_pool().await;
     let tmp = tempfile::tempdir().unwrap();
 
-    // 150 Me chunks (enough to overflow the 128-slot hand-off) ahead of the Them chunks. Them's
+    // 600 Me chunks (enough to overflow the 500-slot hand-off) ahead of the Them chunks. Them's
     // 1600-sample chunks match their 100 ms spacing, so its timeline is contiguous (no resync pad).
-    let mut chunks: Vec<CaptureChunk> = (0..150)
+    let mut chunks: Vec<CaptureChunk> = (0..600)
         .map(|i| chunk(Stream::Me, i as u64 * 100_000_000, &[1.0; 100]))
         .collect();
     for i in 0..5 {
@@ -568,10 +568,7 @@ async fn storage_override_pins_meeting_dir_off_the_default_root() {
     let override_root = tempfile::tempdir().unwrap();
     let (backend, _fed) = ScriptedBackend::new(vec![], vec![], vec![]);
 
-    // Serialize the preference the way the settings route does instead of interpolating it into a
-    // JSON literal: a Windows path's backslashes are JSON escape sequences, so a hand-built string
-    // stores `C:\Users\...` as invalid escapes, the override fails to parse, and the meeting
-    // silently lands in the default root.
+    // Serialize like the settings route does; never hand-build the JSON.
     let storage = serde_json::json!({ "output_dir": override_root.path() }).to_string();
     queries::set_preference(&pool, queries::SECTION_STORAGE, &storage)
         .await

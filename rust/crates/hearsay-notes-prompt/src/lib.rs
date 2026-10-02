@@ -1,8 +1,7 @@
 //! Prompt construction + reply cleanup for the local-LLM notes step — the pure, ML-free half of
 //! summarization, always compiled and unit-tested here. The actual llama.cpp generation lives in the
 //! standalone `hearsay-notes` binary (which reuses [`build_prompt`] + [`clean_reply`]); it is a
-//! separate process so llama.cpp's vendored `ggml` never links into the core alongside whisper.cpp's,
-//! whose co-linked `ggml` degrades the whisper refine ~5x.
+//! separate process so a llama.cpp crash, stall or memory blowup cannot take down the core.
 //!
 //! The model's reply is the note: the Settings prompt template dictates the response, and the reply
 //! is stored and shown verbatim (as Markdown). There is deliberately no structural parsing into a

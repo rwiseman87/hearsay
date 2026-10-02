@@ -7,7 +7,6 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use sqlx::SqlitePool;
 
 use hearsay_capture::SwiftHelperSource;
 use hearsay_engine::LiveEngine;
@@ -164,18 +163,13 @@ impl Backend for MacBackend {
     }
 }
 
-/// The post-meeting offline refine backend: re-diarize the Them track with the Swift
-/// `hearsay-diarize` FluidAudio sidecar + re-transcribe with whisper (`hearsay-inference`). Wired
-/// into the orchestrator so a meeting auto-refines at stop — the same refiner the manual
-/// `/rediarize` route now drives through [`LiveEngine::rediarize`].
+/// The post-meeting offline refine backend: re-diarize and re-transcribe the Them track with one run
+/// of the Swift `hearsay-diarize` FluidAudio sidecar (`hearsay-inference`). Wired into the
+/// orchestrator so a meeting auto-refines at stop — the same refiner the manual `/rediarize` route
+/// drives through [`LiveEngine::rediarize`].
 struct MacRefiner {
-    pool: SqlitePool,
     diarize_path: PathBuf,
-    /// Bundled config default; the effective model is the `models` preference override else this,
-    /// resolved from the DB at each refine so a Models-panel change applies with no restart.
-    default_model: PathBuf,
     timeout: Duration,
-    carry_over: bool,
 }
 
 #[async_trait]
@@ -187,16 +181,12 @@ impl Refiner for MacRefiner {
                 self.diarize_path.display()
             )));
         }
-        let model = hearsay_db::queries::effective_refine_model(&self.pool, &self.default_model)
-            .await
-            .map_err(|e| OrchestratorError::Backend(format!("resolve refine model: {e}")))?;
         let audio = audio_path.to_path_buf();
         let diarize = self.diarize_path.clone();
         let timeout = self.timeout;
-        let carry_over = self.carry_over;
-        // whisper + the diarize subprocess are blocking — run off the async runtime.
+        // The sidecar subprocess is blocking — run off the async runtime.
         let output = tokio::task::spawn_blocking(move || {
-            hearsay_inference::refine_audio_file(&audio, &diarize, &model, timeout, carry_over)
+            hearsay_inference::refine_audio_file(&audio, &diarize, timeout)
         })
         .await
         .map_err(|e| OrchestratorError::Backend(format!("refine task panicked: {e}")))?;
@@ -214,7 +204,7 @@ impl Refiner for MacRefiner {
 }
 
 /// Assemble the macOS live engine: the Swift capture helper + FluidAudio live sidecars ([`MacBackend`])
-/// and the whisper offline refine ([`MacRefiner`]) inside an [`Orchestrator`], returned as the neutral
+/// and the offline refine ([`MacRefiner`]) inside an [`Orchestrator`], returned as the neutral
 /// [`LiveEngine`] the HTTP crate consumes. Prewarms the first sidecar pair and installs the
 /// orchestrator's weak self-reference (so a capture death finalizes the meeting) before returning.
 /// Takes the platform-neutral [`EngineConfig`] rather than `hearsay_core::Settings` so this crate
@@ -228,9 +218,7 @@ pub fn build_engine(config: EngineConfig) -> Arc<dyn LiveEngine> {
         helper_path,
         synthetic,
         prewarm,
-        refine_model,
         refine_timeout,
-        refine_carry_over,
         // The editable-settings defaults are lifted whole by `config.defaults()` above.
         record: _,
         auto_refine: _,
@@ -243,9 +231,6 @@ pub fn build_engine(config: EngineConfig) -> Arc<dyn LiveEngine> {
         notes_model,
         notes_prompt,
         notes_binary,
-        // Windows-only fields; the mac backend has no use for them.
-        sherpa_models_dir: _,
-        win_loopback_mode: _,
     } = config;
     let backend = Arc::new(MacBackend::new(helper_path.clone(), synthetic));
     // Spawn the first sidecar pair now so its models start loading before the first meeting instead
@@ -267,11 +252,8 @@ pub fn build_engine(config: EngineConfig) -> Arc<dyn LiveEngine> {
     let orchestrator = Orchestrator::new(pool.clone(), output_dir, backend)
         .with_defaults(defaults)
         .with_refiner(Arc::new(MacRefiner {
-            pool,
             diarize_path: helper_path.with_file_name("hearsay-diarize"),
-            default_model: refine_model,
             timeout: refine_timeout,
-            carry_over: refine_carry_over,
         }));
     // Always wire the notes summarizer: it runs the local LLM out-of-process in the `hearsay-notes`
     // sidecar, so nothing links llama.cpp into this binary. Notes are available whenever the sidecar

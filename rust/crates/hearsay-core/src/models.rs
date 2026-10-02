@@ -16,8 +16,6 @@ use crate::schema::{CatalogEntry, DownloadState, DownloadStatus, ModelCatalog};
 
 /// Leading bytes of a GGUF file (the ASCII `GGUF`) — the notes models.
 pub(crate) const GGUF_MAGIC: [u8; 4] = *b"GGUF";
-/// Whisper's `GGML_FILE_MAGIC` (0x67676d6c) as stored little-endian — the refine models.
-pub(crate) const GGML_MAGIC: [u8; 4] = [0x6c, 0x6d, 0x67, 0x67];
 
 /// A downloadable model file: its HuggingFace source + the integrity metadata enforced after
 /// download. Shared by the notes catalog and first-run setup.
@@ -101,41 +99,8 @@ const CATALOG: &[Model] = &[
     },
 ];
 
-/// The refine model an install uses when nothing overrides it: the file [`Settings::refine_model`]
-/// defaults to, and the one first-run setup fetches. Windows takes a smaller model — no ANE/Metal on
-/// the reference hardware.
-#[cfg(not(windows))]
-pub(crate) const DEFAULT_REFINE_FILE: &str = "ggml-large-v3-turbo.bin";
-#[cfg(windows)]
-pub(crate) const DEFAULT_REFINE_FILE: &str = "ggml-small.en.bin";
-
-/// Refine models setup can fetch, keyed by file name — an install pointed at some other model skips
-/// the step rather than fetching one it will never load. Sizes + SHA256 are HuggingFace's LFS oid.
-const REFINE_SOURCES: &[Source] = &[
-    // The macOS default.
-    Source {
-        repo: "ggerganov/whisper.cpp",
-        file: "ggml-large-v3-turbo.bin",
-        sha256: "1fc70f774d38eb169993ac391eea357ef47c88757ef72ee5943879b7e8e2bc69",
-        size_bytes: 1_624_555_275,
-    },
-    // The Windows default, bundled today; here so an install that loses it can fetch it back.
-    Source {
-        repo: "ggerganov/whisper.cpp",
-        file: "ggml-small.en.bin",
-        sha256: "c6138d6d58ecc8322097e0f987c32f1be8bb0a18532a3f88f734d1bbf9c41e5d",
-        size_bytes: 487_614_201,
-    },
-];
-
 fn find(id: &str) -> Option<&'static Model> {
     CATALOG.iter().find(|m| m.id == id)
-}
-
-/// The catalog source for a configured refine-model path, matched on its file name.
-pub(crate) fn refine_source(path: &Path) -> Option<&'static Source> {
-    let name = path.file_name()?.to_str()?;
-    REFINE_SOURCES.iter().find(|s| s.file == name)
 }
 
 /// The catalog source for a notes-model id.
@@ -145,7 +110,7 @@ pub(crate) fn notes_source(id: &str) -> Option<&'static Source> {
 
 /// Cheap on-disk integrity gate: the file exists and begins with `magic`. Not a full hash (that runs
 /// only on the network path), but it stops a truncated or foreign file that merely matches the
-/// expected byte size from being adopted as a model and handed to llama.cpp / whisper.
+/// expected byte size from being adopted as a model and handed to llama.cpp.
 fn has_magic(path: &Path, magic: [u8; 4]) -> bool {
     let Ok(mut f) = std::fs::File::open(path) else {
         return false;
@@ -156,11 +121,6 @@ fn has_magic(path: &Path, magic: [u8; 4]) -> bool {
 
 fn is_gguf(path: &Path) -> bool {
     has_magic(path, GGUF_MAGIC)
-}
-
-/// Whether `path` is a loadable whisper refine model — setup's readiness check.
-pub(crate) fn is_ggml(path: &Path) -> bool {
-    has_magic(path, GGML_MAGIC)
 }
 
 /// Manages the catalog + the single active download and its progress. Held in `AppState` behind an
@@ -440,26 +400,6 @@ mod tests {
             assert!(m.source.file.ends_with(".gguf"));
         }
         assert_eq!(CATALOG.iter().filter(|m| m.recommended).count(), 1);
-    }
-
-    #[test]
-    fn refine_sources_are_valid_and_match_on_file_name() {
-        for s in REFINE_SOURCES {
-            assert_eq!(s.sha256.len(), 64, "{} sha256 must be 64 hex chars", s.file);
-            assert!(s.sha256.chars().all(|c| c.is_ascii_hexdigit()));
-            assert!(s.size_bytes > 0);
-            assert!(s.file.ends_with(".bin"));
-        }
-        // The configured path is matched by file name, wherever it lives.
-        let found = refine_source(Path::new("/opt/models/ggml-large-v3-turbo.bin"))
-            .expect("the macOS default is in the catalog");
-        assert_eq!(found.file, "ggml-large-v3-turbo.bin");
-        // An unknown model is skipped rather than replaced with one of ours.
-        assert!(refine_source(Path::new("/opt/models/ggml-tiny.bin")).is_none());
-        assert!(refine_source(Path::new("")).is_none());
-        // The default this platform ships must be one setup can actually fetch, or a fresh install
-        // would gate on a refine model with no way to get it.
-        assert!(refine_source(Path::new(DEFAULT_REFINE_FILE)).is_some());
     }
 
     #[test]

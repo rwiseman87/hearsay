@@ -40,7 +40,7 @@ pub fn router() -> Router<AppState> {
             "/settings/storage/compress",
             get(read_archive).post(start_archive),
         )
-        .route("/settings/models", put(update_models).delete(reset_models))
+        .route("/settings/models", put(update_models))
         .route("/settings/reveal", post(reveal_output_dir))
         .route("/settings/notices", post(open_notices))
 }
@@ -152,14 +152,10 @@ async fn resolve_storage(state: &AppState) -> ApiResult<StorageSettings> {
 async fn resolve_models(state: &AppState) -> ApiResult<ModelSettings> {
     // Resolve each field independently against its config default rather than deserializing the whole
     // section as a struct: the download manager merges in just `notes_model`, so the stored object is
-    // often partial (no `refine_model`), which a strict struct parse would reject. Mirrors the
-    // per-field `effective_*` readers in `hearsay-db`.
+    // often partial, which a strict struct parse would reject. Mirrors the per-field `effective_*`
+    // readers in `hearsay-db`.
     let s = queries::Section::load(&state.pool, SECTION_MODELS).await?;
     Ok(ModelSettings {
-        refine_model: s
-            .path_field("refine_model", &state.settings.refine_model)
-            .to_string_lossy()
-            .to_string(),
         notes_enabled: s.bool_field("notes_enabled", state.settings.notes_enabled),
         notes_model: s
             .path_field("notes_model", &state.settings.notes_model)
@@ -171,8 +167,6 @@ async fn resolve_models(state: &AppState) -> ApiResult<ModelSettings> {
 
 fn models_info(state: &AppState, effective: &ModelSettings) -> ModelsInfo {
     ModelsInfo {
-        default_refine_model: state.settings.refine_model.to_string_lossy().to_string(),
-        refine_model_exists: Path::new(&effective.refine_model).is_file(),
         default_notes_model: state.settings.notes_model.to_string_lossy().to_string(),
         // An empty notes_model is "unset", not "missing file" — report it as not-resolving.
         notes_model_exists: !effective.notes_model.is_empty()
@@ -381,24 +375,6 @@ pub(crate) async fn update_models(
     State(state): State<AppState>,
     Json(body): Json<ModelSettings>,
 ) -> ApiResult<Json<ModelSettings>> {
-    // Only validate the refine model when it actually changes. The client echoes the current value
-    // back when it is only editing the notes fields (one PUT covers the whole `models` section), and
-    // the effective refine model may be the bundled default — a relative path the absolute-path check
-    // would reject. `reset_models` (DELETE) is the channel for reverting to that default.
-    let current = resolve_models(&state).await?;
-    let refine_input = body.refine_model.trim().to_string();
-    let refine_model = if refine_input == current.refine_model {
-        refine_input
-    } else if refine_input.is_empty() {
-        return Err(ApiError::Unprocessable(
-            "refine_model must not be empty".into(),
-        ));
-    } else {
-        tokio::task::spawn_blocking(move || validate_refine_model(&refine_input))
-            .await
-            .map_err(|e| ApiError::Internal(format!("refine_model validation panicked: {e}")))??
-    };
-
     // The notes model is optional: empty means "not chosen yet" (the notes step stays unavailable
     // until one is downloaded/selected). Validate the file only when a path is provided.
     let notes_input = body.notes_model.trim().to_string();
@@ -420,26 +396,12 @@ pub(crate) async fn update_models(
     }
 
     let stored = ModelSettings {
-        refine_model,
         notes_enabled: body.notes_enabled,
         notes_model,
         notes_prompt,
     };
     store_section(&state, SECTION_MODELS, &stored).await?;
     Ok(Json(stored))
-}
-
-/// Reset the model settings to the environment defaults.
-///
-/// Clears the stored `models` overrides so the section falls back to what the environment
-/// configures, and returns the resulting effective section.
-#[utoipa::path(
-    delete, path = "/api/settings/models", tag = "settings",
-    responses((status = 200, body = ModelSettings, description = "The effective section after the reset")),
-)]
-pub(crate) async fn reset_models(State(state): State<AppState>) -> ApiResult<Json<ModelSettings>> {
-    queries::clear_preference(&state.pool, SECTION_MODELS).await?;
-    Ok(Json(resolve_models(&state).await?))
 }
 
 /// Open the effective recordings directory in the OS file manager. Runs in the core (a native
@@ -492,7 +454,6 @@ pub(crate) async fn open_notices(State(state): State<AppState>) -> ApiResult<Sta
 /// minimal process environment). `dir` is app-controlled (the effective recordings dir or the
 /// bundled notices file), never user-supplied, so there is no argument-injection surface. Errors
 /// carry the reason for the UI.
-#[cfg(target_os = "macos")]
 pub(crate) fn reveal_in_file_manager(dir: &Path) -> ApiResult<()> {
     tracing::info!(path = %dir.display(), "reveal: opening in Finder");
     let status = std::process::Command::new("/usr/bin/open")
@@ -507,29 +468,6 @@ pub(crate) fn reveal_in_file_manager(dir: &Path) -> ApiResult<()> {
             dir.display()
         )))
     }
-}
-
-/// Open `dir` in File Explorer. `explorer` resolves through the system PATH (always present for a
-/// Win32 process). Explorer is known to exit nonzero even on success, so only a failed launch is an
-/// error; the exit status is logged, not checked. `dir` is app-controlled (the effective recordings
-/// dir), never user-supplied, so there is no argument-injection surface.
-#[cfg(target_os = "windows")]
-pub(crate) fn reveal_in_file_manager(dir: &Path) -> ApiResult<()> {
-    tracing::info!(path = %dir.display(), "reveal: opening in File Explorer");
-    let status = std::process::Command::new("explorer")
-        .arg(dir)
-        .status()
-        .map_err(|e| ApiError::Unavailable(format!("could not launch explorer: {e}")))?;
-    tracing::debug!(%status, "explorer exited");
-    Ok(())
-}
-
-/// Placeholder for targets with no file manager to drive.
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
-pub(crate) fn reveal_in_file_manager(_dir: &Path) -> ApiResult<()> {
-    Err(ApiError::Unavailable(
-        "revealing the recordings folder is not supported on this platform".into(),
-    ))
 }
 
 /// Serialize a settings section to JSON and upsert its `preferences` row.
@@ -653,20 +591,6 @@ fn validate_output_dir(input: &str) -> Result<String, ApiError> {
     Ok(resolved.to_string_lossy().to_string())
 }
 
-/// Resolve `input` to an absolute, existing, readable GGML whisper model file or a 422. The refine
-/// loads this model at each run, so reject a bad path at the boundary (empty, non-absolute, missing,
-/// a directory, or not a whisper model) instead of surfacing a cryptic whisper load failure at
-/// refine time. The GGML magic check (little-endian `0x67676d6c`, the first 4 bytes of every
-/// `ggml-*.bin` whisper model) guards against pointing the refine at an unrelated file.
-fn validate_refine_model(input: &str) -> Result<String, ApiError> {
-    validate_model_file(
-        input,
-        "refine_model",
-        crate::models::GGML_MAGIC,
-        "a GGML whisper model (expected a ggml-*.bin file)",
-    )
-}
-
 /// Resolve a user-supplied model path and prove it is the expected format: expand `~`, require an
 /// absolute path, canonicalize it, and check the leading four magic bytes. `field` names the setting
 /// in the 422 and `expected` describes the format.
@@ -706,8 +630,8 @@ fn validate_model_file(
 
 /// Resolve `input` to an absolute, existing, readable GGUF file or a 422 — the notes step loads this
 /// model with llama.cpp at each run, so reject a bad path at the boundary. Same shape as
-/// [`validate_refine_model`] but checks the **GGUF** magic (the ASCII bytes `GGUF` = `0x47 0x47 0x55
-/// 0x46`, the first 4 bytes of every `.gguf` model) so pointing the notes step at a whisper `.bin`
+/// `validate_model_file` but checks the **GGUF** magic (the ASCII bytes `GGUF` = `0x47 0x47 0x55
+/// 0x46`, the first 4 bytes of every `.gguf` model) so pointing the notes step at a non-GGUF file
 /// or an unrelated file is caught here, not as a cryptic llama.cpp load failure at generate time.
 fn validate_notes_model(input: &str) -> Result<String, ApiError> {
     validate_model_file(

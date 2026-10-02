@@ -1,14 +1,9 @@
-// Ship a GUI binary on Windows: without this the shell is linked for the console subsystem, so
-// Windows allocates a terminal alongside the app window for the whole session. Debug builds keep
-// the console, where the core's stdout/stderr is worth having. No effect on macOS. (The core
-// sidecar itself never shows one -- tauri-plugin-shell spawns it with CREATE_NO_WINDOW.)
-#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
-//! Hearsay desktop shell. Bundles the `hearsay-core` server (plus, on macOS, the Swift capture/AI
+//! Hearsay desktop shell. Bundles the `hearsay-core` server (plus the Swift capture/AI
 //! sidecars), spawns the core with bundle-resolved paths and a user-writable data dir, and points
 //! the window at the loopback URL from its readiness handshake. On quit the core is asked to shut
-//! down gracefully on macOS (SIGTERM, then a SIGKILL backstop) so the active meeting is finalized
-//! and its Swift sidecars don't leak. Windows has no equivalent graceful signal, so quitting
-//! mid-meeting relies on the core's startup reconciliation instead. If the
+//! down gracefully (SIGTERM, then a SIGKILL backstop) so the active meeting is finalized
+//! and its Swift sidecars don't leak. If the core is killed mid-meeting, startup reconciliation
+//! finalizes it on the next launch. If the
 //! core dies during boot, the splash is replaced with an error instead of spinning.
 
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -87,10 +82,10 @@ struct Handshake {
     token: String,
 }
 
-/// Erase everything Hearsay stored on this computer (and on macOS, reset its permission grants).
+/// Erase everything Hearsay stored on this computer and reset its permission grants.
 /// Removes the data dir (db + recordings/transcripts), the downloadable model caches, and the
-/// disposable WebView state; macOS additionally `tccutil reset`s so a reinstall re-prompts for
-/// mic / system-audio / screen access (Windows has no per-app grants to reset). Best-effort: a
+/// disposable WebView state, then `tccutil reset`s so a reinstall re-prompts for
+/// mic / system-audio / screen access. Best-effort: a
 /// missing path never aborts the wipe. The caller quits via `quit_app` afterward.
 #[tauri::command]
 fn erase_all_data(app: tauri::AppHandle, core: tauri::State<'_, CoreChild>) -> Result<(), String> {
@@ -113,7 +108,7 @@ fn erase_all_data(app: tauri::AppHandle, core: tauri::State<'_, CoreChild>) -> R
     }
 
     // Stop the core first so the SQLite file handle is released before the DB file is deleted out
-    // from under it (graceful on macOS, so an in-progress meeting is finalized).
+    // from under it (gracefully, so an in-progress meeting is finalized).
     if let Some(child) = core.0.lock().unwrap().take() {
         stop_core_gracefully(child);
     }
@@ -133,14 +128,6 @@ fn erase_all_data(app: tauri::AppHandle, core: tauri::State<'_, CoreChild>) -> R
             Some(home.join("Library/Preferences/com.hearsay.app.plist")),
         ]
     };
-    // Windows: app-data (Roaming: db + recordings + models), local data (WebView2's EBWebView
-    // state), and the cache dir (the handshake file).
-    #[cfg(windows)]
-    let targets = [
-        app.path().app_data_dir().ok(),
-        app.path().app_local_data_dir().ok(),
-        app.path().app_cache_dir().ok(),
-    ];
     for path in targets.into_iter().flatten() {
         remove_path_with_retry(&path);
     }
@@ -206,7 +193,7 @@ impl RotatingLog {
 
     /// Move the current file aside and start a fresh one, keeping one previous generation.
     fn rotate(&mut self) {
-        // Drop the handle before renaming: Windows will not rename an open file.
+        // Drop the handle before renaming.
         self.file = None;
         let previous = self.path.with_extension("log.1");
         if std::fs::rename(&self.path, &previous).is_err() {
@@ -233,12 +220,8 @@ impl RotatingLog {
     }
 }
 
-/// Remove a file or directory tree, retrying briefly on a transient failure. `child.kill()`
-/// (TerminateProcess) is asynchronous on Windows — `stop_core_gracefully` only waits for the core to
-/// exit on Unix — so the core's SQLite handle can outlive the call by a few milliseconds and a first
-/// `remove_dir_all` then hits a sharing violation. Retrying with a short backoff lets the handle
-/// release. `NotFound` is success (nothing to remove); any other error after the last attempt is
-/// logged, never fatal — the wipe is best-effort.
+/// Best-effort remove with a short retry: killed sidecars may still be writing into the tree.
+/// `NotFound` is success; a final failure is logged, never fatal.
 fn remove_path_with_retry(path: &std::path::Path) {
     const ATTEMPTS: usize = 10;
     for attempt in 0..ATTEMPTS {
@@ -290,22 +273,6 @@ fn notify_still_recording(
         .map_err(|e| e.to_string())
 }
 
-/// Open a native file picker for the offline-refine whisper model and return the chosen absolute
-/// path (or `None` if the user cancels). Filtered to GGML `.bin` models. Async so it runs off the
-/// main thread — the blocking picker dispatches the panel to the main run loop and waits, which
-/// would deadlock on the main thread (this is the plugin's documented pattern). The shell only
-/// surfaces the chooser; the picked path is handed to the core's `PUT /api/settings/models`, which
-/// validates it (GGML magic) and persists it.
-#[tauri::command]
-async fn pick_refine_model(app: tauri::AppHandle) -> Option<String> {
-    app.dialog()
-        .file()
-        .add_filter("GGML whisper model", &["bin"])
-        .blocking_pick_file()
-        .and_then(|path| path.into_path().ok())
-        .map(|path| path.to_string_lossy().to_string())
-}
-
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
@@ -315,7 +282,6 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             erase_all_data,
             quit_app,
-            pick_refine_model,
             notify_still_recording
         ])
         .setup(|app| {
@@ -334,9 +300,6 @@ fn main() {
             // travel with the distributed app, so the file ships as a resource and Settings > About
             // opens this copy.
             let notices_path = resource_dir.join("THIRD-PARTY-NOTICES.md");
-            // Bundled sherpa live/diarize models (the Windows backend reads them in place).
-            #[cfg(windows)]
-            let sherpa_models = resource_dir.join("models/sherpa");
 
             let data_dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(data_dir.join("db"))?;
@@ -346,10 +309,6 @@ fn main() {
             // app-data so downloads survive app updates.
             let models_dir = data_dir.join("models");
             std::fs::create_dir_all(&models_dir)?;
-            // macOS downloads its refine model into the models dir, which the core defaults to on
-            // its own. Windows bundles one, so it needs the override.
-            #[cfg(windows)]
-            let refine_model = resource_dir.join("models/ggml-small.en.bin");
             let db_url = format!("sqlite://{}", data_dir.join("db/hearsay.db").display());
 
             // Private readiness handshake: the core writes {port, token} here once it is listening,
@@ -384,16 +343,6 @@ fn main() {
                 );
             #[cfg(target_os = "macos")]
             let cmd = cmd.env("HEARSAY_HELPER_PATH", helper.to_string_lossy().to_string());
-            #[cfg(windows)]
-            let cmd = cmd
-                .env(
-                    "HEARSAY_SHERPA_MODELS_DIR",
-                    sherpa_models.to_string_lossy().to_string(),
-                )
-                .env(
-                    "HEARSAY_REFINE_MODEL",
-                    refine_model.to_string_lossy().to_string(),
-                );
             // Where the core's stdout/stderr is mirrored (see the drain task below).
             let core_log_path = data_dir.join("logs").join("core.log");
             let _ = std::fs::create_dir_all(data_dir.join("logs"));
@@ -411,8 +360,8 @@ fn main() {
             // show why instead of leaving the splash spinning forever.
             let drain_handle = app.handle().clone();
             let drain_settled = boot_settled.clone();
-            // Mirror the core.s output into a log file. The Windows shell is a GUI binary with no
-            // console, so `eprint!` alone goes nowhere: a panic in the core would leave no trace and
+            // Mirror the core's output into a log file. A GUI-launched macOS app has no attached
+            // terminal, so `eprint!` alone goes nowhere: a panic in the core would leave no trace and
             // present only as every request failing. Appended (so a crash survives the relaunch that
             // follows it) but size-capped, so it cannot grow without bound.
             let log_path = core_log_path.clone();

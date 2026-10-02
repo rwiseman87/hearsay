@@ -20,11 +20,13 @@ pub(crate) mod test_support;
 pub mod decode;
 pub mod encode;
 pub mod error;
+pub mod playback;
 pub mod verify;
 
 pub use decode::{flac_channels, for_each_flac_block, read_flac_channel_16k, read_flac_mono_16k};
 pub use encode::encode_wav_to_flac;
 pub use error::AudioError;
+pub use playback::FlacIndex;
 pub use verify::verify_flac_matches_wav;
 
 /// Contract-fixed capture sample rate (Hz).

@@ -179,7 +179,7 @@ impl ScriptedBackend {
 }
 
 /// A [`Refiner`] that yields a fixed [`RefineResult`] (or a fixed error), ignoring the audio file,
-/// and counts how many times it ran — for testing auto-refine-at-stop without whisper.
+/// and counts how many times it ran — for testing auto-refine-at-stop without the sidecar.
 pub struct ScriptedRefiner {
     result: Result<RefineResult, String>,
     calls: Arc<AtomicUsize>,

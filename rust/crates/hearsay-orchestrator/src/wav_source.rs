@@ -8,6 +8,7 @@
 //! recording — only the audio device is replaced.
 
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use async_trait::async_trait;
 use tokio::sync::{mpsc, oneshot};
@@ -24,6 +25,7 @@ const DEFAULT_FRAME_SAMPLES: usize = 1600;
 pub struct WavFileSource {
     path: PathBuf,
     frame_samples: usize,
+    speed: f64,
     stop_tx: Option<oneshot::Sender<()>>,
 }
 
@@ -33,9 +35,22 @@ impl WavFileSource {
         WavFileSource {
             path,
             frame_samples: DEFAULT_FRAME_SAMPLES,
+            speed: 0.0,
             stop_tx: None,
         }
     }
+
+    /// Pace the replay at `speed` times real time (1.0 is real time). The default, 0.0 (or any
+    /// non-positive value), replays as fast as the pipeline accepts.
+    pub fn with_speed(mut self, speed: f64) -> Self {
+        self.speed = speed;
+        self
+    }
+}
+
+/// How long after the replay starts the chunk at sample `start` is due, at `speed` times real time.
+fn due_after(start: usize, speed: f64) -> Duration {
+    Duration::from_secs_f64(start as f64 / SAMPLE_RATE as f64 / speed)
 }
 
 /// Read a 16 kHz recording into per-stream f32 sample vectors (Me = left, Them = right; mono ->
@@ -123,11 +138,16 @@ impl AudioSource for WavFileSource {
         let (stop_tx, stop_rx) = oneshot::channel();
         self.stop_tx = Some(stop_tx);
         let frame = self.frame_samples;
+        let speed = self.speed;
 
         tokio::spawn(async move {
             let n = me.len().max(them.len());
+            let began = tokio::time::Instant::now();
             let mut start = 0;
             while start < n {
+                if speed > 0.0 {
+                    tokio::time::sleep_until(began + due_after(start, speed)).await;
+                }
                 let host_ts = start as u64 * 1_000_000_000 / SAMPLE_RATE as u64;
                 let end = (start + frame).min(n);
                 for (stream, data) in [(Stream::Me, &me), (Stream::Them, &them)] {
@@ -197,6 +217,31 @@ mod tests {
         assert_eq!(me_wav.len(), 5_000);
         assert_eq!(me_wav, me_flac);
         assert_eq!(them_wav, them_flac);
+    }
+
+    #[test]
+    fn pacing_scales_the_due_time_by_speed() {
+        assert_eq!(due_after(16_000, 1.0), Duration::from_secs(1));
+        assert_eq!(due_after(16_000, 4.0), Duration::from_millis(250));
+    }
+
+    #[tokio::test]
+    async fn a_paced_source_spreads_chunks_over_the_scaled_duration() {
+        let tmp = tempfile::tempdir().unwrap();
+        let wav = tmp.path().join("audio.wav");
+        write_stereo(&wav, 16_000 * 2);
+        let mut source = WavFileSource::new(wav).with_speed(8.0);
+        let mut rx = source.start().await.unwrap();
+        let began = std::time::Instant::now();
+        let mut last = Duration::ZERO;
+        while let Ok(Some(_)) = tokio::time::timeout(Duration::from_millis(500), rx.recv()).await {
+            last = began.elapsed();
+        }
+        assert!(
+            last >= Duration::from_millis(200),
+            "2 s of audio at 8x ends near 0.24 s, got {last:?}"
+        );
+        source.stop().await;
     }
 
     #[test]

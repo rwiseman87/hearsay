@@ -45,7 +45,7 @@ make stamp-version VERSION=0.2.0   # write all five; what the installer build ru
 make set-version VERSION=0.2.0     # the same, plus regenerated codegen
 ```
 
-`make dmg` and `scripts\build-windows.ps1` both run the drift check first and stop if any file
+`make dmg` runs the drift check first and stops if any file
 disagrees, so a mismatched version cannot reach an installer. `make ci` runs the same check.
 Versions are `x.y.z`; that is what Cargo and Tauri require and what `CFBundleShortVersionString`
 expects.
@@ -58,17 +58,18 @@ make mac-app  # unsigned .app only (faster; for local testing)
 ```
 
 Both run `stage-release`, which builds the release binaries and copies them where Tauri's
-`externalBin` expects them (`web/src-tauri/binaries/<name>-aarch64-apple-darwin`). The `mac-app`
-target (which `dmg` depends on) then invokes `cargo tauri build` and runs `codesign --verify --deep
---strict` on the bundle to confirm the ad-hoc signature is intact.
+`externalBin` expects them (`web/src-tauri/binaries/<name>-aarch64-apple-darwin`). The Rust release
+profile strips symbols and uses thin LTO; the Swift binaries are stripped with `strip -x` as they are
+staged. The release core leaves out the dev-only `scripted` engine. Each target then runs one
+`cargo tauri build` (`dmg` bundles the `.app` and the `.dmg` in that one run) and `codesign --verify
+--deep --strict` on the `.app` to confirm the ad-hoc signature is intact.
 
 `THIRD-PARTY-NOTICES.md` is bundled as a Tauri resource (`Contents/Resources/`), and the shell
 points `HEARSAY_THIRD_PARTY_NOTICES` at it so Settings > About can open it. The speech models the app
 downloads include CC BY 4.0 weights whose attribution has to travel with the app, so this file ships
 with every build — no staging step, Tauri copies it from the repo root.
 
-Nothing about packaging needs a model on the build machine. `make fetch-refine-model` still exists,
-but only for a local `make rust-serve` run (the dev default `HEARSAY_REFINE_MODEL` path).
+Nothing about packaging needs a model on the build machine.
 
 Artifacts:
 
@@ -115,7 +116,7 @@ installer build (`promote` needs none of it — it moves a file):
 | Node | `24.19.0` | Its bundled npm (11.17.0) decides which lockfile tree `npm ci` demands, so the patch version is pinned and `web/package-lock.json` is generated with that npm. Local development needs only >= 20.19.0 (`web/package.json`). |
 | `cargo-audit` / `cargo-deny` / `tauri-cli` | 0.22.2 / 0.20.2 / 2.11.4 | The Makefile assumes all three on `PATH`; none ship on the runner. |
 
-The runner leaves about 14 GB free and this build compiles whisper.cpp, llama.cpp and SpeexDSP from
+The runner leaves about 14 GB free and this build compiles llama.cpp and SpeexDSP from
 source, so the setup action deletes the unused Xcode installations before building.
 
 Three caches, all `actions/cache`: the pinned cargo tools (keyed on the setup action itself, so a
@@ -154,15 +155,15 @@ exactly what the `xattr` step addresses.
 ## First-run models
 
 The installer carries no models, so the first launch shows a setup screen instead of the app: about
-2.6 GB of speech models (1.1 GB of FluidAudio live models plus the 1.5 GB whisper refine model), with
-an option to fetch a notes model in the same pass. Nothing downloads until the user starts it, which
-is what makes a metered or offline first run survivable — the app simply waits.
+1.3 GB of speech models (the FluidAudio set: Silero VAD ~1 MB, diarizer ~34 MB, LS-EEND ~43 MB, Parakeet
+Ultra ~614 MB, Parakeet unified streaming ~582 MB), with an option to fetch a notes model in the same
+pass. Nothing downloads until the user starts it, which is what makes a metered or offline first run survivable — the app simply waits.
 
-- The live models are fetched by the `hearsay-models` sidecar, which calls the same FluidAudio
+- The models are fetched by the `hearsay-models` sidecar, which calls the same FluidAudio
   loaders the live sidecars call, so what it prepares cannot drift from what they load. They land in
   FluidAudio's own cache (`~/Library/Application Support/FluidAudio/Models/`).
-- The refine model is a resumable, SHA-256-verified download into
-  `~/Library/Application Support/com.hearsay.app/models/`, where `HEARSAY_REFINE_MODEL` points.
+- Setup carries a models revision; a build that changes the model set re-runs the setup screen on
+  upgrade rather than failing later at first use.
 - An interrupted download resumes from its `.part` file on the next attempt; quitting mid-download
   is safe.
 - The core holds back sidecar pre-warming until the models are there, so nothing races the setup run
@@ -179,8 +180,8 @@ location keyed by the bundle id `com.hearsay.app`:
 |---|---|
 | Database (meetings, speakers, settings) | `~/Library/Application Support/com.hearsay.app/db/` |
 | Recordings and transcripts (one folder per meeting) | `~/Library/Application Support/com.hearsay.app/recordings/` |
-| Downloaded refine and notes models | `~/Library/Application Support/com.hearsay.app/models/` |
-| FluidAudio live models (re-downloadable) | `~/Library/Application Support/FluidAudio/`, `~/.cache/fluidaudio/` |
+| Downloaded notes models | `~/Library/Application Support/com.hearsay.app/models/` |
+| FluidAudio live and refine models (re-downloadable) | `~/Library/Application Support/FluidAudio/`, `~/.cache/fluidaudio/` |
 | WebView and app caches | `~/Library/Caches/com.hearsay.app`, `~/Library/WebKit/com.hearsay.app`, and similar |
 
 Your recordings and transcripts live outside the `.app`, so deleting the app never deletes them.
@@ -210,38 +211,6 @@ flowchart TD
   The erase is confirmed through a native dialog driven by the shell (not the web page), and it
   cannot be undone. The app then quits so you can drag `Hearsay.app` to the Trash.
 
-## Windows installer
-
-The Windows bundle is an unsigned NSIS installer built on a Windows x86_64 machine:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File scripts\build-windows.ps1              # default: Vulkan (GPU) + AEC
-powershell -ExecutionPolicy Bypass -File scripts\build-windows.ps1 -NoVulkan     # CPU-only build
-```
-
-Vulkan and AEC are on by default; opt out with `-NoVulkan` / `-NoAec` (and `-SkipModels` to reuse an
-already-staged model set).
-
-The script checks the app version for drift first (the PowerShell half of `make version-check`), then
-fetches and stages the models (the sherpa live/diarize set plus `ggml-small.en.bin`
-for the refine), builds the web bundle, `hearsay-core.exe` (features `sherpa`, plus `vulkan`/`aec`
-unless disabled), and the `hearsay-notes.exe` sidecar (built separately with matching `vulkan` so
-llama.cpp never co-links with the core's whisper), then runs `cargo tauri build --bundles nsis`.
-`tauri.windows.conf.json` narrows the bundle for Windows: NSIS only, and `hearsay-core` +
-`hearsay-notes` as the external binaries (no Swift sidecars). The installer lands in
-`web/src-tauri/target/release/bundle/nsis/`.
-
-Windows specifics:
-
-- **Unsigned**: SmartScreen shows "Windows protected your PC" — More info > Run anyway.
-- **WebView2**: the installer bootstraps Microsoft's WebView2 runtime if it is missing
-  (preinstalled on Windows 11 and current Windows 10).
-- **Data locations**: database, recordings, and downloaded models live under
-  `%APPDATA%\com.hearsay.app\`; WebView state under `%LOCALAPPDATA%\com.hearsay.app\`. "Erase
-  all data" removes both (Windows has no per-app permission grants to reset).
-- **Quit during a meeting**: Windows has no SIGTERM-style graceful stop yet, so a meeting active
-  at quit is finalized by the next launch's startup reconciliation instead of at exit.
-
 ## Known limitations
 
 - **Not notarized.** By design; recipients run the `xattr` quarantine strip once.
@@ -250,5 +219,4 @@ Windows specifics:
   already in progress.
 - **The first run needs the network.** The installer is small because the models are not in it, so
   a machine that is offline on first launch can browse the app but cannot record until the download
-  completes. After that Hearsay is fully offline. (Windows still bundles its smaller model set, so
-  its installer is about 650 MB and needs no first-run download.)
+  completes. After that Hearsay is fully offline.

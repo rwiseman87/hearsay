@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -32,13 +32,11 @@ const settingsFixture = {
     meeting_count: 12,
     uncompressed_bytes: 2_147_483_648,
   },
-  models: { refine_model: "/models/ggml.bin", notes_enabled: false, notes_model: "", notes_prompt: "" },
+  models: { notes_enabled: false, notes_model: "", notes_prompt: "" },
   models_info: {
     default_notes_model: "",
     default_notes_prompt: "Summarize the transcript.",
-    default_refine_model: "/default.bin",
     notes_model_exists: false,
-    refine_model_exists: true,
   },
   about: {},
 };
@@ -62,24 +60,26 @@ beforeEach(() => {
   );
 });
 
-describe("SettingsPage models validation", () => {
-  it("surfaces the server 422 when saving an invalid refine model path", async () => {
+describe("SettingsPage models panel", () => {
+  it("saves the notes toggle with only the notes fields", async () => {
     const user = userEvent.setup();
+    const bodies: unknown[] = [];
     server.use(
-      http.put("/api/settings/models", () =>
-        HttpResponse.json({ detail: "refine model not found: /bad/path" }, { status: 422 }),
-      ),
+      http.put("/api/settings/models", async ({ request }) => {
+        const body = await request.json();
+        bodies.push(body);
+        return HttpResponse.json(body);
+      }),
     );
 
     renderSettings();
 
     await user.click(screen.getByRole("button", { name: "Models" }));
-    const input = await screen.findByRole("textbox", { name: "Refine transcription model path" });
-    await user.clear(input);
-    // The input commits on Enter (its onKeyDown), which triggers the save.
-    await user.type(input, "/bad/path{Enter}");
+    await user.click(await screen.findByRole("checkbox", { name: /Summarize meetings/ }));
 
-    expect(await screen.findByText("refine model not found: /bad/path")).toBeTruthy();
+    await waitFor(() =>
+      expect(bodies).toEqual([{ notes_enabled: true, notes_model: "", notes_prompt: "" }]),
+    );
   });
 });
 

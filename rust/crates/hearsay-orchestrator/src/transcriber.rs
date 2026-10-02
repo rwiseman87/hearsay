@@ -20,7 +20,7 @@ use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 
 use crate::error::OrchestratorError;
-use crate::traits::Transcriber;
+use crate::traits::{Transcriber, RESPAWN_BACKOFF};
 use crate::types::SidecarSegment;
 
 /// Deadline for each stage of a sidecar shutdown (draining stdout, then reaping the child). A
@@ -30,13 +30,16 @@ const SIDECAR_CLOSE_TIMEOUT: Duration = Duration::from_secs(10);
 /// Capacity of the sidecar's segment (`emit`) channel. The read loop awaits on a full channel, so a
 /// stalled consumer (e.g. a DB write backlog) backpressures the sidecar through its blocked stdout
 /// write instead of letting segments — including finals, which must never be dropped — accumulate
-/// without bound. Segments are far lower-rate than the 128-slot PCM hand-off, so a few hundred slots
+/// without bound. Segments are far lower-rate than the PCM hand-off, so a few hundred slots
 /// is generous headroom a real burst never reaches; it only fills under a sustained stall.
 pub const SEGMENT_CHANNEL_CAPACITY: usize = 256;
 
 /// Owns one streaming sidecar process for a meeting.
 pub struct ProcessTranscriber {
     binary: PathBuf,
+    args: Vec<String>,
+    env: Vec<(String, String)>,
+    respawn_backoff: Vec<Duration>,
     child: Option<Child>,
     stdin: Option<ChildStdin>,
     reader: Option<JoinHandle<()>>,
@@ -67,6 +70,9 @@ impl ProcessTranscriber {
     pub fn new(binary: PathBuf) -> Self {
         ProcessTranscriber {
             binary,
+            args: Vec::new(),
+            env: Vec::new(),
+            respawn_backoff: RESPAWN_BACKOFF.to_vec(),
             child: None,
             stdin: None,
             reader: None,
@@ -102,6 +108,24 @@ impl ProcessTranscriber {
         self
     }
 
+    /// Pass `args` to the sidecar on every spawn, including respawns.
+    pub fn with_args(mut self, args: Vec<String>) -> Self {
+        self.args = args;
+        self
+    }
+
+    /// Set an environment variable on the sidecar on every spawn, including respawns.
+    pub fn with_env(mut self, key: &str, value: &str) -> Self {
+        self.env.push((key.to_string(), value.to_string()));
+        self
+    }
+
+    /// Override the restart delays (and so the retry budget); production uses [`RESPAWN_BACKOFF`].
+    pub fn with_respawn_backoff(mut self, backoff: Vec<Duration>) -> Self {
+        self.respawn_backoff = backoff;
+        self
+    }
+
     /// Spawn the sidecar process, wiring its stderr into tracing and its stdout into a segment
     /// channel. `ready_tx` (if set) fires once the sidecar prints its models-ready marker. Shared by
     /// the cold [`start`](Transcriber::start) path and [`spawn_warming`](Self::spawn_warming).
@@ -110,6 +134,8 @@ impl ProcessTranscriber {
         ready_tx: Option<oneshot::Sender<()>>,
     ) -> Result<mpsc::Receiver<SidecarSegment>, OrchestratorError> {
         let mut child = Command::new(&self.binary)
+            .args(&self.args)
+            .envs(self.env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -265,15 +291,40 @@ impl Transcriber for ProcessTranscriber {
             return;
         };
         if let Err(err) = stdin.write_all(&encode_feed(&samples)).await {
-            // The sidecar exited/crashed; stop feeding a dead pipe so it never fails the meeting.
+            // The sidecar exited/crashed; stop feeding a dead pipe (the stream loop respawns it).
             // Segments it already emitted are kept.
             self.broken = true;
             tracing::warn!(
                 sidecar = %self.binary.display(),
                 error = %err,
-                "sidecar pipe closed mid-meeting; live transcription stopped",
+                "sidecar pipe closed mid-meeting",
             );
         }
+    }
+
+    fn can_respawn(&self) -> bool {
+        true
+    }
+
+    fn is_broken(&self) -> bool {
+        self.broken
+    }
+
+    fn respawn_backoff(&self) -> &[Duration] {
+        &self.respawn_backoff
+    }
+
+    async fn respawn(&mut self) -> Result<mpsc::Receiver<SidecarSegment>, OrchestratorError> {
+        self.stdin.take();
+        if let Some(reader) = self.reader.take() {
+            reader.abort();
+        }
+        if let Some(mut child) = self.child.take() {
+            let _ = child.kill().await;
+        }
+        self.broken = false;
+        self.ready_flag.store(false, Ordering::SeqCst);
+        self.spawn_process(None)
     }
 
     async fn close(&mut self) {

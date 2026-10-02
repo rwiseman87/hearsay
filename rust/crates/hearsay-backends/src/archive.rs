@@ -12,9 +12,8 @@
 //!
 //! A manual re-diarize does not change a meeting's status, so it can overlap a sweep of the same
 //! meeting. That is safe rather than coordinated: the refine reads the whole track into memory
-//! before the sweep could unlink anything, POSIX keeps an unlinked file readable through an open
-//! handle, and on Windows a refused unlink leaves both files behind — which
-//! [`hearsay_audio::resolve_recorded_audio`] resolves and the next sweep cleans up.
+//! before the sweep could unlink anything, and POSIX keeps an unlinked file readable through an open
+//! handle.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -261,9 +260,8 @@ async fn run_pass(
                 sweeper.step(false, 0);
                 // Only remember failures that will fail again. A bad or unreadable recording is
                 // deterministic, so retrying it hourly forever is pure waste. An I/O failure is not:
-                // a manual re-diarize on an old meeting holds the wav open (Windows refuses to
-                // unlink it), and that resolves on its own — memoizing it would strand the meeting
-                // uncompressed until the next restart.
+                // it can be transient, and memoizing it would strand the meeting uncompressed until the
+                // next restart.
                 if !matches!(err, hearsay_audio::AudioError::Io(_)) {
                     sweeper.mark_failed(id);
                 }

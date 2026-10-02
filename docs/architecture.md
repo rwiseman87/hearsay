@@ -1,7 +1,6 @@
 # Architecture
 
-Hearsay is a local-first meeting transcriber for macOS (Apple Silicon, macOS 14.4 or later) and
-Windows (x86_64, Windows 10 2004 or later; see [Cross-platform architecture](#cross-platform-architecture)). It captures the
+Hearsay is a local-first meeting transcriber for macOS (Apple Silicon, macOS 14.4 or later). It captures the
 local microphone ("Me") and the system audio output ("Them") as separate 16 kHz streams, transcribes
 both live, diarizes the Them stream into `Speaker N`, and refines the result after the meeting with
 an offline re-diarization and re-transcription pass. Everything runs on the user's machine; audio
@@ -39,17 +38,17 @@ flowchart TB
     subgraph bundle["Hearsay.app (ad-hoc signed, not sandboxed)"]
         shell["Tauri shell (web/src-tauri)<br/>window + child-process lifecycle"]
         webview["WKWebView<br/>React + TypeScript UI"]
-        core["hearsay-core (Rust)<br/>axum HTTP + WebSocket on 127.0.0.1<br/>orchestration, SQLite, whisper refine"]
+        core["hearsay-core (Rust)<br/>axum HTTP + WebSocket on 127.0.0.1<br/>orchestration, SQLite, refine attribution"]
         helper["hearsay-helper (Swift)<br/>Core Audio tap + AVAudioEngine mic<br/>lean PCM streamer, no ML"]
         live["hearsay-live (Swift, ANE)<br/>Them: streaming diarization + Parakeet ASR"]
         me["hearsay-me (Swift, ANE)<br/>Me: streaming VAD + Parakeet ASR"]
-        diarize["hearsay-diarize (Swift, ANE)<br/>offline refine diarizer + voiceprints"]
+        diarize["hearsay-diarize (Swift, ANE)<br/>offline refine: diarization + Parakeet Ultra ASR + voiceprints"]
         notes["hearsay-notes (Rust)<br/>llama.cpp notes LLM, burst per generate"]
     end
     subgraph disk["Data at rest (user-writable, outside the bundle)"]
         db[("SQLite database<br/>WAL, foreign keys")]
         meetings["Per-meeting folders<br/>audio.wav or audio.flac, transcript.md, meeting.json, notes.md"]
-        models["Model files<br/>whisper GGML, notes GGUF, FluidAudio cache"]
+        models["Model files<br/>notes GGUF, FluidAudio cache"]
     end
 
     shell -->|"navigates with the token"| webview
@@ -70,18 +69,19 @@ flowchart TB
 | Process | Role | Why a separate process |
 |---|---|---|
 | Tauri shell (`hearsay-app`) | Owns the OS window, spawns exactly one child (`hearsay-core`), stops it gracefully on quit, and hosts the native commands the UI can invoke (erase-all-data with a native confirm dialog, quit, model file picker, and the inactivity OS notification). | The desktop entry point; it never touches the Swift processes. |
-| `hearsay-core` | The single backend: loopback HTTP + WebSocket API, SQLite persistence, meeting orchestration, speaker attribution, and the offline whisper refine. Spawns and supervises the helper, sidecars, and the `hearsay-notes` LLM sidecar. | The composition root; the only ML it runs in-process is the offline whisper refine, never live — the notes LLM runs out-of-process in `hearsay-notes` (see below). |
+| `hearsay-core` | The single backend: loopback HTTP + WebSocket API, SQLite persistence, meeting orchestration, speaker attribution, and the offline refine (word-to-speaker attribution over the `hearsay-diarize` output). Spawns and supervises the helper, sidecars, and the `hearsay-notes` LLM sidecar. | The composition root; it runs no ML in-process; the notes LLM runs out-of-process in `hearsay-notes` (see below). |
 | `hearsay-helper` | The only process that touches TCC-guarded native APIs: the Core Audio process tap (system audio, configured global-except-self) and the microphone. Resamples both to 16 kHz mono and stamps both with one monotonic clock. | Confines the permission surface, and keeps the capture binary free of CoreML so a model problem can never take down capture. |
 | `hearsay-live` / `hearsay-me` | The live audio AI (FluidAudio on the Apple Neural Engine): streaming diarization plus Parakeet ASR for Them, streaming VAD plus Parakeet for Me. One process per stream, one meeting per process. | Each model owns its address space; a crash is contained and the warm pool replaces the pair. |
-| `hearsay-diarize` | The offline refine diarizer: given the recorded Them track, returns speaker turns and per-speaker voiceprint embeddings. | Same CoreML isolation; runs as a burst after the meeting, never live. |
-| `hearsay-notes` | The optional local-LLM notes step (llama.cpp): given the finalized transcript, returns the verbatim Markdown notes over stdio. | llama's vendored `ggml` must not co-link with the whisper refine's (a ~5x refine slowdown), so it runs out-of-process as a burst sidecar. |
+| `hearsay-diarize` | The offline refine: given the recorded Them track, diarizes it (pyannote community-1) and transcribes it with Parakeet Ultra (`--asr ultra`), returning speaker turns, per-speaker voiceprint embeddings, and word-level timestamps. | Same CoreML isolation; runs as a burst after the meeting, never live. |
+| `hearsay-notes` | The optional local-LLM notes step (llama.cpp): given the finalized transcript, returns the verbatim Markdown notes over stdio. | A llama.cpp crash or memory blowup must not take down the core, which owns live capture and the database, so it runs out-of-process as a burst sidecar. |
 | `hearsay-models` | First-run model preparation: downloads the FluidAudio models the live and refine sidecars load, reporting progress as NDJSON. The installer ships no models. | It calls the same FluidAudio loaders those sidecars call, so what it fetches cannot drift from what they load — which a hand-maintained file manifest in Rust could not guarantee. |
 
 ## Rust crate map
 
 Workspace crates under `rust/crates/`. Arrows point at the dependency (the actual `path`
 entries in each `Cargo.toml`). `hearsay-notes` is a standalone sidecar binary the core spawns rather
-than links, so it stands apart from the `hearsay-core` link graph.
+than links, so it stands apart from the `hearsay-core` link graph. `hearsay-eval` is test-only and
+never linked into the app; its dotted arrows are dev-dependencies.
 
 ```mermaid
 flowchart BT
@@ -92,11 +92,12 @@ flowchart BT
     engine["hearsay-engine<br/>LiveEngine seam"]
     orch["hearsay-orchestrator<br/>pipeline, recorder, traits"]
     cap["hearsay-capture<br/>SwiftHelperSource, TCC probe"]
-    inf["hearsay-inference<br/>whisper refine (no llama)"]
+    inf["hearsay-inference<br/>refine: drive hearsay-diarize + attribute words"]
     notesprompt["hearsay-notes-prompt<br/>prompt build + reply parse, no deps"]
     back["hearsay-backends<br/>MacBackend, MacRefiner,<br/>reconcile + archive sweep"]
     core["hearsay-core<br/>axum API, composition root"]
     notes["hearsay-notes<br/>llama.cpp notes sidecar (standalone binary)"]
+    eval["hearsay-eval<br/>test-only accuracy, latency, AEC, crash evals"]
 
     db --> attr
     engine --> db
@@ -120,21 +121,28 @@ flowchart BT
     core --> audio
     core --> ipc
     notes --> notesprompt
+    eval --> attr
+    eval --> inf
+    eval -.-> orch
+    eval -.-> engine
+    eval -.-> db
+    eval -.-> audio
 ```
 
 | Crate | Responsibility |
 |---|---|
 | `hearsay-ipc` | The binary media-frame codec (28-byte little-endian header) and the NDJSON control codec. Source of truth for `shared/protocol/ipc.md`; generates the golden fixtures both languages validate in CI. |
-| `hearsay-attribution` | Pure attribution logic: speaker ordering, segment-speaker assignment, cosine voiceprint matching. No dependencies; unit-tested in isolation. |
-| `hearsay-audio` | Lossless FLAC archival of the recorded meeting WAV: a bounded-memory streaming encoder, a block-at-a-time decoder, and the byte-exact verifier that must pass before the original is deleted. Also resolves which form a meeting's recording is in. Ships `restore` and `repair_header` examples for un-archiving a library and for fixing the STREAMINFO of files written before the frame-size range was populated. No first-party dependencies, so every consumer can depend on it without pulling in whisper or the orchestrator. |
+| `hearsay-attribution` | Pure attribution logic: speaker ordering, segment-speaker assignment, cosine voiceprint matching, and the eval metrics (DER, speaker-count error, WER, cpWER). No dependencies; unit-tested in isolation. |
+| `hearsay-audio` | Lossless FLAC archival of the recorded meeting WAV: a bounded-memory streaming encoder, a block-at-a-time decoder, a frame index that serves an archived recording as an exact-seeking WAV byte range, and the byte-exact verifier that must pass before the original is deleted. Also resolves which form a meeting's recording is in. Ships `restore` and `repair_header` examples for un-archiving a library and for fixing the STREAMINFO of files written before the frame-size range was populated. No first-party dependencies, so every consumer can depend on it without pulling in the orchestrator. |
 | `hearsay-db` | Persistence: SQLite via SQLx (WAL, `busy_timeout`, foreign keys), UUID primary keys, forward-only migrations, the attribution policy (vote and recognition), FTS transcript search, folders, notes, and settings queries. |
 | `hearsay-engine` | The neutral `LiveEngine` trait and the `DisabledEngine` placeholder the API test suite runs against. Exists so the core and the orchestrator can share the seam without a dependency cycle. |
-| `hearsay-orchestrator` | Implements `LiveEngine`: creates the meeting row and folder, drives an `AudioSource`, routes each stream's PCM to its `Transcriber`, records the stereo `audio.wav`, persists and broadcasts segments, and runs the refine and notes steps after stop. Ships scripted test fakes. |
+| `hearsay-orchestrator` | Implements `LiveEngine`: creates the meeting row and folder, drives an `AudioSource`, routes each stream's PCM to its `Transcriber`, records the stereo `audio.wav`, persists and broadcasts segments, and runs the refine and notes steps after stop. Holds the scripted test fakes (kept out of the release core). |
 | `hearsay-capture` | `AudioSource` implementations. On macOS, `SwiftHelperSource` spawns `hearsay-helper` and pumps its socket traffic; also hosts the TCC permissions probe. |
-| `hearsay-inference` | In-process ML, all offline: the whisper refine (GGML; CPU, or Metal/Vulkan/CUDA by feature) and the feature-gated sherpa-onnx modules for the Windows path (`sherpa` feature). The llama.cpp notes summarizer runs out-of-process in the `hearsay-notes` sidecar, reusing the pure prompt/parse logic from `hearsay-notes-prompt`. |
-| `hearsay-notes-prompt` | Dependency-free prompt construction and reply parsing for the notes step, shared by `hearsay-backends` (the `SubprocessSummarizer`) and the `hearsay-notes` sidecar so the sidecar never pulls in `hearsay-inference` → whisper. |
+| `hearsay-inference` | The offline refine: drives the `hearsay-diarize` sidecar, attributes each Parakeet word to a diarizer turn, and guards transcript coverage; no ML runs in-process. The llama.cpp notes summarizer runs out-of-process in the `hearsay-notes` sidecar, reusing the pure prompt/parse logic from `hearsay-notes-prompt`. |
+| `hearsay-notes-prompt` | Dependency-free prompt construction and reply parsing for the notes step, shared by `hearsay-backends` (the `SubprocessSummarizer`) and the `hearsay-notes` sidecar so the sidecar never pulls in `hearsay-inference`. |
+| `hearsay-eval` | Test-only evals (`make wer-eval`, `make diarize-eval`, `make live-eval`, `make diarizer-eval`, `make robustness-eval`, `make aec-eval`, `make crash-eval`): reference-transcript and corpus loading, the non-regression baseline gate, and a driver that feeds the live sidecars over stdio. Scoring is the pure `hearsay-attribution` metrics. Not linked into the app. |
 | `hearsay-notes` | The standalone notes-LLM sidecar binary: owns llama.cpp (`llama-cpp-2`), spawned by the core over stdio (JSON in, JSON out). The only process that links llama's vendored `ggml`. |
-| `hearsay-backends` | Platform backend wiring behind the engine seam: `MacBackend` (warm sidecar pool), `MacRefiner`, the `SubprocessSummarizer` (spawns `hearsay-notes`), startup reconciliation, the periodic audio-archival sweep, and `build_engine`. `WindowsBackend` and `WindowsRefiner` sit behind the same seam. |
+| `hearsay-backends` | Platform backend wiring behind the engine seam: `MacBackend` (warm sidecar pool), `MacRefiner`, the `SubprocessSummarizer` (spawns `hearsay-notes`), startup reconciliation, the periodic audio-archival sweep, and `build_engine`. |
 | `hearsay-core` | The application binary: the axum HTTP + WebSocket API, security middleware, the served UI, OpenAPI generation, and the composition root that calls `build_engine`. Depends only on the seam, never on the concrete backend crates directly. |
 
 The Tauri shell (`web/src-tauri/`) is a separate crate outside the workspace; it spawns the
@@ -201,6 +209,7 @@ classDiagram
         +feed(samples)
         +close()
         +ready_signal() Option~Receiver~
+        +respawn() Receiver~SidecarSegment~
     }
     class Refiner {
         <<trait>>
@@ -238,16 +247,12 @@ classDiagram
     class ProcessTranscriber {
         <<hearsay-orchestrator>>
     }
-    class SherpaTranscriber {
-        <<hearsay-backends, sherpa feature>>
-    }
     Backend <|.. MacBackend
     MacBackend *-- SidecarPool
     Refiner <|.. MacRefiner
     Summarizer <|.. SubprocessSummarizer
     AudioSource <|.. SwiftHelperSource
     Transcriber <|.. ProcessTranscriber
-    Transcriber <|.. SherpaTranscriber
 ```
 
 Notable implementation points, each verifiable in the named file:
@@ -343,6 +348,12 @@ Two details worth knowing:
   a timeline and are aligned by timestamp, never by sample index. The sidecars' own sample-count
   clocks are bridged back to meeting time with a per-stream offset, padded with silence across
   real delivery gaps (capped at five minutes so a bad timestamp cannot force a huge allocation).
+- A live sidecar that crashes mid-meeting is respawned by its stream task (three attempts, 1 s, 2 s,
+  and 4 s apart; the budget resets once a sidecar has run for a minute) with the offset re-based to
+  the first chunk the replacement receives; past the budget that stream stops transcribing and the
+  rest of the meeting continues. A sidecar more than 60 s behind on its input exits rather than
+  dropping audio, which takes the same respawn path. A replacement Them sidecar's speakers get fresh
+  ordinals and clusters, so its diarizer never relabels the existing speakers.
 - A helper crash cannot leave a meeting falsely live: the closed capture channel fires a supervisor
   that stops the meeting through the normal path.
 
@@ -550,25 +561,3 @@ core therefore treats its port as untrusted and gates it three ways
 Privacy posture: raw audio retention is a single per-meeting recording that can be turned off in
 Settings (turning it off also disables the refine, which reads it), deleting a meeting removes both
 the rows and the folder, and the app collects no telemetry.
-
-## Cross-platform architecture
-
-Hearsay runs on macOS and Windows as the same Rust + Tauri app with per-OS code only at the edges.
-Roughly 90 percent of the codebase is platform-neutral.
-
-| Layer | Technology | Shared or per-OS |
-|---|---|---|
-| Shell and distribution | Tauri v2 (installer, system webview, signing) | Shared configuration, two build targets |
-| Frontend | React + TypeScript over the loopback API | Shared |
-| Core | axum, SQLx/SQLite, OpenAPI codegen, orchestration | Shared |
-| Capture | macOS: Swift helper. Windows: in-process WASAPI loopback + mic (`wasapi` crate), behind the same `AudioSource` trait | Per-OS, thin |
-| Live transcription | macOS: FluidAudio sidecars. Windows: a pure-Rust streaming transcriber (`SherpaTranscriber`, already present behind the `sherpa` feature) | Per-OS engine behind the `Transcriber` trait |
-| Offline refine | whisper (GGML) with a per-OS acceleration feature: Metal on macOS, Vulkan/CUDA for Windows | Shared code, per-OS acceleration |
-
-Constraints the Windows design targets: a 16 GB laptop with integrated graphics (Core Ultra
-225U-class reference hardware), no discrete GPU assumed, and the same local-only rule. Model sizes
-are tiered by detected hardware, so faster machines run larger refine models.
-
-Both engines sit behind the same trait seams, so each OS selects its own without the other's cost:
-the sherpa modules compile only under the `sherpa` feature, and the macOS bundle therefore carries
-no onnxruntime.

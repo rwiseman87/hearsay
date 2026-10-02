@@ -1,12 +1,12 @@
 //! The notes sidecar: read a summarize request as JSON on stdin, run the local GGUF instruct model
 //! via llama.cpp, and write the model's reply verbatim as JSON on stdout. Errors go to stderr with a
 //! non-zero exit — the same contract shape as `hearsay-diarize`. Loading the model per invocation (and
-//! exiting after) keeps the ~GBs resident only while generating, matching the previous in-process
-//! behavior. The reply is used as-is (only ChatML markers stripped): the prompt template dictates the
-//! note's content and Markdown format, with no structural parsing.
+//! exiting after) keeps the ~GBs resident only while generating. The reply is used as-is (only ChatML
+//! markers stripped): the prompt template dictates the note's content and Markdown format, with no
+//! structural parsing.
 //!
-//! This binary exists solely so llama.cpp's vendored `ggml` never links into the core alongside
-//! whisper.cpp's: co-linking the two degrades the whisper refine ~5x (a `ggml` symbol collision).
+//! This is a separate binary so a crash, stall or memory blowup in llama.cpp generation cannot take
+//! down the core, which owns live capture and the meeting database.
 
 use std::io::Read;
 use std::num::NonZeroU32;

@@ -690,12 +690,7 @@ export interface paths {
          */
         put: operations["update_models"];
         post?: never;
-        /**
-         * Reset the model settings to the environment defaults.
-         * @description Clears the stored `models` overrides so the section falls back to what the environment
-         *     configures, and returns the resulting effective section.
-         */
-        delete: operations["reset_models"];
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -876,7 +871,7 @@ export interface paths {
         };
         /**
          * Whether first-run model setup is still needed, and how a run is progressing.
-         * @description The installer ships no models. `required` stays `true` until the live and refine models are on
+         * @description The installer ships no models. `required` stays `true` until the speech models are on
          *     disk, and the UI blocks recording while it is. `steps` carries per-asset progress during a run,
          *     and the work a run would do before one starts.
          */
@@ -935,7 +930,7 @@ export interface paths {
          *
          *     `active_count` is the subset recognition actually uses (a sample counts only once its name was
          *     set by hand), so `active_count: 0` means "saved, matching nothing yet". `dimension` is the
-         *     embedding length — 256 on macOS, 192 on Windows — and samples of different lengths never match
+         *     embedding length (256 from FluidAudio) — and samples of different lengths never match
          *     each other.
          */
         get: operations["list_voiceprints"];
@@ -1223,8 +1218,13 @@ export interface components {
              */
             refine_coverage?: number | null;
             /**
-             * @description `true` when the last refine came back too short to trust as complete, so the transcript is
-             *     truncated and worth re-refining. `false` when healthy or never refined.
+             * @description Audible stretches of at least 10 s that the last refine left untranscribed, in meeting time.
+             *     `null` when never refined or refined before gaps were recorded.
+             */
+            refine_gaps?: components["schemas"]["RefineGapRead"][] | null;
+            /**
+             * @description `true` when the last refine looks truncated: coverage under 80% plus at least one gap (or, for
+             *     a refine that predates gap recording, coverage alone). `false` when healthy or never refined.
              */
             refine_incomplete: boolean;
             /** Format: date-time */
@@ -1255,7 +1255,7 @@ export interface components {
             models_dir: string;
         };
         /**
-         * @description Models: the offline-refine whisper model path plus the optional local-LLM notes step (enable +
+         * @description Models: the optional local-LLM notes step (enable +
          *     its GGUF model). Editable section; each effective value is the stored override, else the config
          *     default. Live transcription is the FluidAudio/ANE sidecars and is not configured here.
          */
@@ -1274,7 +1274,6 @@ export interface components {
              *     prompt existed still deserializes.
              */
             notes_prompt?: string;
-            refine_model: string;
         };
         /**
          * @description Read-only model facts shown alongside the editable models section: the bundled/config defaults
@@ -1287,9 +1286,7 @@ export interface components {
              *     editable `notes_prompt` is empty).
              */
             default_notes_prompt: string;
-            default_refine_model: string;
             notes_model_exists: boolean;
-            refine_model_exists: boolean;
         };
         /** @description A manual notes edit: replace the Markdown `content`. Validated at the boundary (length-bounded). */
         NotesEdit: {
@@ -1356,8 +1353,13 @@ export interface components {
                  */
                 refine_coverage?: number | null;
                 /**
-                 * @description `true` when the last refine came back too short to trust as complete, so the transcript is
-                 *     truncated and worth re-refining. `false` when healthy or never refined.
+                 * @description Audible stretches of at least 10 s that the last refine left untranscribed, in meeting time.
+                 *     `null` when never refined or refined before gaps were recorded.
+                 */
+                refine_gaps?: components["schemas"]["RefineGapRead"][] | null;
+                /**
+                 * @description `true` when the last refine looks truncated: coverage under 80% plus at least one gap (or, for
+                 *     a refine that predates gap recording, coverage alone). `false` when healthy or never refined.
                  */
                 refine_incomplete: boolean;
                 /** Format: date-time */
@@ -1521,6 +1523,13 @@ export interface components {
             inactivity_prompt_minutes: number;
             record: boolean;
         };
+        /** @description An untranscribed audible stretch of the remote track, in seconds from the meeting start. */
+        RefineGapRead: {
+            /** Format: double */
+            end_s: number;
+            /** Format: double */
+            start_s: number;
+        };
         /**
          * @description A backfill signal (not a transcript line): the broadcast buffer dropped events for a lagged
          *     subscriber, so the persisted transcript is ahead of this live stream. On receipt the client
@@ -1627,8 +1636,8 @@ export interface components {
          */
         SetupStatus: "idle" | "running" | "ready" | "error";
         /**
-         * @description One asset first-run setup fetches: the live speech models, the refine model, or a notes model.
-         *     `total_bytes` is approximate for the live models until the preparation sidecar reports its plan.
+         * @description One asset first-run setup fetches: the FluidAudio speech models, or a notes model.
+         *     `total_bytes` is approximate for the speech models until the preparation sidecar reports its plan.
          */
         SetupStep: {
             /** Format: int64 */
@@ -1818,7 +1827,7 @@ export interface components {
         VoiceprintSampleRead: {
             /**
              * Format: int64
-             * @description Embedding length: 256 on macOS (FluidAudio), 192 on Windows (sherpa). Samples of different
+             * @description Embedding length (256 from FluidAudio). Samples of different
              *     lengths never match each other.
              */
             dimension: number;
@@ -3129,26 +3138,6 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
-            };
-        };
-    };
-    reset_models: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description The effective section after the reset */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ModelSettings"];
-                };
             };
         };
     };

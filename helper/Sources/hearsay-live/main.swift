@@ -43,7 +43,7 @@ let stream: StreamingUnifiedAsrManager
 // The batch Parakeet ASR transcribes a diarizer turn only once it *finalizes* (several seconds into
 // speech), so it loads in the background rather than on the critical path: the sidecar signals ready
 // — and live partials start flowing — as soon as the streaming ASR + diarizer are up, without also
-// waiting for the batch model's ~461 MB to compile on the ANE (which otherwise stacks onto the load
+// waiting for the batch model's ~614 MB to compile on the ANE (which otherwise stacks onto the load
 // the user waits through). `transcribeAndEmit` awaits this task before the first final; the task
 // warms the model itself so that first final is not slow.
 let asrTask: Task<AsrManager, Error>
@@ -58,7 +58,7 @@ do {
     async let streamReady: Void = streamManager.loadModels()
     // Batch ASR: load + ANE-warm in the background; not awaited before ready.
     asrTask = Task {
-        let models = try await AsrModels.downloadAndLoad(version: .v3)
+        let models = try await AsrModels.downloadAndLoad(version: .ultra)
         let manager = AsrManager(config: .default, models: models)
         if var state = try? TdtDecoderState() {
             _ = try? await manager.transcribe(
@@ -205,9 +205,12 @@ func reanchorPartial(to sample: Int) async {
     try? await stream.reset()
 }
 
+let inbox = FrameQueue(prefix: "hearsay-live")
+inbox.start()
+
 reading: while true {
     let samples: [Float]
-    switch readAudioFrame() {
+    switch inbox.next() {
     case .eof: break reading
     case .empty: continue reading
     case .oversize(let n):

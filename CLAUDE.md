@@ -1,11 +1,11 @@
 # Hearsay
 
-Local-first meeting-note transcriber for macOS and Windows. Captures the local mic and system
+Local-first meeting-note transcriber for macOS. Captures the local mic and system
 audio as **separate** streams ("Me" vs "Them"), transcribes in real time, identifies the remote
 speakers, and streams Markdown notes. Transcription, diarization, and the notes LLM all run on-device;
 audio never leaves the machine.
 
-Ships as **one Rust + Tauri application** — one installer per OS, no interpreter bundle. The
+Ships as **one Rust + Tauri application** — one installer, no interpreter bundle. The
 Rust core is the single backend and the single source of truth.
 Canonical architecture: `docs/architecture.md`. Design rationale: `docs/design-decisions.md`.
 IPC contract: `shared/protocol/ipc.md`. `README.md` is the single documentation index; there is no
@@ -13,22 +13,22 @@ IPC contract: `shared/protocol/ipc.md`. `README.md` is the single documentation 
 
 ## Architecture
 
-Multi-process, local-only (macOS on Apple Silicon 14.4+; Windows on x86_64, Win10 2004+):
+Multi-process, local-only (macOS on Apple Silicon 14.4+):
 
 - **Swift capture helper** (`helper/`) — the ONLY process that touches guarded native APIs (the Core
   Audio process tap and the microphone via AVAudioEngine). A lean PCM streamer; streams PCM and device
   hints over IPC.
 - **Swift sidecars** (`helper/`, FluidAudio on the Apple Neural Engine) — the audio-AI: `hearsay-live` (live
   Them diarization + Parakeet ASR), `hearsay-me` (live Me VAD + Parakeet), `hearsay-diarize` (post-meeting
-  refine), `hearsay-models` (first-run model download). The core spawns + feeds each over stdio.
+  refine: diarization + Parakeet Ultra ASR in one pass), `hearsay-models` (first-run model download).
+  The core spawns + feeds each over stdio.
 - **Rust core** (`rust/crates/`) — orchestration (spawns the helper + sidecars, routes PCM), speaker
-  attribution (clusters + cross-meeting voiceprints + manual labels), the offline refine (whisper),
-  optional local-LLM notes (spawned as the `hearsay-notes` sidecar, off by default), Markdown,
-  persistence, and a loopback axum HTTP + WebSocket API. The whisper refine is the only ML it runs
-  in-process; the notes LLM (llama.cpp) runs out-of-process because llama's and whisper's vendored
-  `ggml` collide when co-linked (a ~5x refine slowdown).
+  attribution (clusters + cross-meeting voiceprints + manual labels), the offline refine (drives the
+  `hearsay-diarize` sidecar and attributes each Parakeet word to a diarizer turn), optional local-LLM
+  notes (spawned as the `hearsay-notes` sidecar, off by default), Markdown, persistence, and a loopback axum HTTP + WebSocket API. The core runs no ML in-process; the notes LLM
+  (llama.cpp) runs out-of-process for crash isolation.
 - **Rust notes sidecar** (`hearsay-notes`) — the local-LLM notes step (llama.cpp), a standalone binary
-  the core spawns over stdio. Separate process for the `ggml` reason above; the pure
+  the core spawns over stdio. Separate process for crash isolation; the pure
   prompt/parse logic is shared via the dependency-free `hearsay-notes-prompt` crate.
 - **Web UI** (`web/`) — typed React frontend served by the core, shown in a Tauri WKWebView window. The
   **Tauri shell** (`web/src-tauri/`) bundles + spawns the core, and bundles the Swift sidecars + the
@@ -45,12 +45,13 @@ rust/crates/
   hearsay-db/           SQLite via SQLx: models, queries, migrations/ (forward-only .sql)
   hearsay-orchestrator/ capture routing + Transcriber/AudioSource seams + pipeline + markdown/recorder + notes seam (implements LiveEngine)
   hearsay-engine/       LiveEngine trait seam + DisabledEngine placeholder (no dependency cycle)
-  hearsay-backends/     per-OS backend wiring: MacBackend/MacRefiner + SubprocessSummarizer + build_engine (rediarize + notes)
+  hearsay-backends/     backend wiring: MacBackend/MacRefiner + SubprocessSummarizer + build_engine (rediarize + notes)
   hearsay-capture/      AudioSource trait + SwiftHelperSource (spawns hearsay-helper) + the TCC permissions probe
-  hearsay-inference/    whisper offline ASR + the refine (whisper-rs; no llama — see hearsay-notes)
+  hearsay-inference/    the offline refine: drives `hearsay-diarize`, word-to-speaker attribution, coverage guard (no ML in-process)
   hearsay-notes/        the local-LLM notes sidecar (llama-cpp-2); spawned by the core, kept out of its binary
   hearsay-notes-prompt/ dependency-free prompt build + reply parse, shared by the core default + the notes sidecar
-  hearsay-attribution/  speaker clustering / voiceprint match / segment-speaker assignment (pure logic)
+  hearsay-eval/         test-only evals: offline WER/cpWER, diarization, live, diarizer comparison, robustness, AEC, crash; see docs/testing.md
+  hearsay-attribution/  speaker ordering / voiceprint match / segment-speaker assignment + DER/WER/cpWER eval metrics (pure logic)
   hearsay-audio/        lossless FLAC archival of the recorded meeting wav (encode + decode + byte-exact verify)
   hearsay-ipc/          binary frame codec + NDJSON control codec (source of truth for the IPC contract) + gen_fixtures bin
 helper/                 SwiftPM: hearsay-{helper,live,me,diarize,models} executables + HearsayIPC + SidecarIO libraries
@@ -76,7 +77,16 @@ shared/protocol/ipc.md  IPC contract (source of truth)   ·   shared/fixtures/  
 - Targets: `make rust-build`, `make test` (Swift selftest + cargo test), `make lint` (clippy + rustfmt),
   `make fmt`, `make codegen`, `make codegen-check`, `make web-ci`, `make audit`, `make licenses`, `make ci`,
   `make diarize-eval` (offline diarization accuracy gate: speaker-count + DER vs a committed baseline over a
-  local labeled corpus; self-skips inside `make ci` when the audio/sidecar are absent).
+  local labeled corpus; opt-in via the make target, skips when the audio/sidecar are absent).
+  `make wer-eval` (offline transcript WER + cpWER vs a committed baseline; opt-in via the make target, skips without audio/sidecar),
+  `make diarizer-eval` (report-only diarizer comparison: pyannote, Nemotron 3, Sortformer, LS-EEND on AMI; opt-in, slow),
+  `make robustness-eval` (counts-only refine robustness over local recordings: coverage, stalls, repeat runs),
+  `make live-eval` (live sidecars at real-time pace: WER/cpWER gate + final-delay report; opt-in, ~10 min),
+  `make aec-eval` (report-only echo eval: synthetic mic = AMI near-end speaker + simulated room echo of an AMI
+  Them track, scored through the Speex canceller and the live pipeline; opt-in, ~1 h),
+  `make crash-eval` (SIGKILLs the real Me/Them sidecars mid-meeting and asserts the pipeline respawns them with
+  correct meeting times and the other stream unaffected; opt-in, ~10 min),
+  `make eval` (the three gated evals). See `docs/testing.md`.
 - `make ci` is the gate and must stay green (`ci: lint test tauri-test web-ci codegen-check version-check
   audit licenses`): `clippy -D warnings` + `rustfmt --check` + Swift `selftest` + `cargo test` + the Tauri
   shell's clippy/tests + the web gate (`tsc` + ESLint + vitest + `vite build`) + codegen-drift check +
@@ -196,23 +206,23 @@ shared/protocol/ipc.md  IPC contract (source of truth)   ·   shared/fixtures/  
 
 ## Distribution
 
-- One **installer per OS**, no interpreter bundle (Rust removes the hardest packaging step). NOT
+- One **installer**, no interpreter bundle (Rust removes the hardest packaging step). NOT
   sandboxed / not App Store (the system-audio tap needs it). `make dmg` builds the ad-hoc-signed,
-  un-notarized DMG; `scripts/build-windows.ps1` builds the NSIS installer.
+  un-notarized DMG.
 - The macOS installer carries **no models** (~50 MB): the app downloads them on first run behind a
   setup screen that gates recording (`hearsay-core/src/setup.rs` + the `hearsay-models` sidecar).
-  2.6 GB of models would exceed GitHub's 2 GB release-asset cap. Windows still bundles its smaller
-  sherpa set.
+  The FluidAudio model set is about 1.3 GB (plus an optional notes model); bundling it would approach
+  GitHub's 2 GB release-asset cap.
 
 ## Dependency Decisions
 
 - Rust core canonical: a single self-contained artifact with no interpreter bundle,
-  ~90% shared across macOS + Windows, with the loopback API + OpenAPI codegen as the one source of
+  with the loopback API + OpenAPI codegen as the one source of
   truth.
 - Persistence: local-first SQLite via SQLx + forward-only SQL migrations. Single-user desktop app, so
   there is no database server to run.
 - macOS inference uses the Swift/FluidAudio (ANE) sidecars for live ASR + diarization; the offline
-  refine is whisper (`hearsay-inference`). Windows uses the sherpa-onnx live path behind the same seams.
+  refine is the same sidecar family (`hearsay-diarize`: community-1 diarization + Parakeet Ultra ASR).
 
 ## Environment Variables
 

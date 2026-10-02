@@ -22,6 +22,7 @@ use crate::error::OrchestratorError;
 use crate::lock::MutexExt;
 use crate::pipeline::{self, InactivityConfig, Pipeline};
 use crate::traits::{Backend, Refiner, Summarizer};
+use crate::tuning::LiveTuning;
 
 /// How often the background warm ticker re-checks the sidecar pool while idle. The check is cheap
 /// and idempotent when a healthy pair is present; on this cadence it re-spawns a warm pair that died
@@ -104,6 +105,8 @@ pub struct Orchestrator {
     /// orchestrator was built with [`new`](Self::new) alone (unit tests that never drive a capture
     /// death), where the supervisor simply no-ops.
     self_weak: Weak<Orchestrator>,
+    /// Echo cancellation + dedup settings; the default is the production behavior.
+    tuning: LiveTuning,
 }
 
 impl Orchestrator {
@@ -133,7 +136,14 @@ impl Orchestrator {
             background: Mutex::new(Vec::new()),
             warm_ticker: OnceLock::new(),
             self_weak: Weak::new(),
+            tuning: LiveTuning::default(),
         }
+    }
+
+    /// Override the echo cancellation + dedup settings (evals and tests only).
+    pub fn with_tuning(mut self, tuning: LiveTuning) -> Self {
+        self.tuning = tuning;
+        self
     }
 
     /// Run `f` against the live pipeline, but only if `meeting_id` is the one currently recording.
@@ -306,6 +316,7 @@ impl Orchestrator {
             audio_path,
             self.ane_gate.clone(),
             inactivity,
+            &self.tuning,
         )
         .await?;
         *self.active.lock_recover() = Some(ActiveSession {
@@ -411,7 +422,7 @@ async fn run_auto_refine(
     match refiner.refine(&audio).await {
         Ok(result) => {
             let count = result.segments.len();
-            report_coverage(meeting, result.coverage);
+            report_coverage(meeting, result.coverage.as_ref());
             match queries::replace_them_segments(pool, meeting.id, &result, threshold).await {
                 Ok(()) => tracing::info!(
                     meeting = %meeting.id,
@@ -428,22 +439,19 @@ async fn run_auto_refine(
     }
 }
 
-/// Warn when the refine stalled or came back short; without this a truncated transcript ships
+/// Warn when the refine came back short; without this a truncated transcript ships
 /// looking complete. `replace_them_segments` persists the same number for the UI.
-fn report_coverage(meeting: &Meeting, coverage: Option<queries::RefineCoverage>) {
+fn report_coverage(meeting: &Meeting, coverage: Option<&queries::RefineCoverage>) {
     let Some(coverage) = coverage else { return };
-    if coverage.recovered_spans > 0 {
-        tracing::warn!(
-            meeting = %meeting.id,
-            recovered_spans = coverage.recovered_spans,
-            "refine: whisper stalled mid-track; re-decoded the silent spans without prompt carry-over"
-        );
-    }
     if coverage.is_incomplete() {
         tracing::warn!(
             meeting = %meeting.id,
             coverage = format!("{:.0}%", coverage.fraction * 100.0),
-            unrecovered_spans = coverage.unrecovered_spans,
+            gaps = coverage.gaps.len(),
+            gap_s = format!(
+                "{:.0}",
+                coverage.gaps.iter().map(|g| g.end_s - g.start_s).sum::<f64>()
+            ),
             "refine transcribed only part of the audible track; transcript is incomplete"
         );
     }
@@ -480,7 +488,7 @@ async fn write_transcript(pool: &SqlitePool, output_dir: &Path, meeting: &Meetin
 }
 
 /// Generate + persist + write a meeting's notes with `summarizer`, acquiring the shared ANE gate for
-/// the GPU-heavy generation (llama.cpp runs on the same GPU as whisper). `default_enabled` /
+/// the GPU-heavy generation (llama.cpp shares the GPU with the live sidecars). `default_enabled` /
 /// `default_model` are the config defaults behind the effective `models`-section values; the stored
 /// `model` label is the effective notes model's file name (the summarizer resolves it itself to
 /// load). A meeting with no segments is a no-op. Shared by the manual "Generate notes" route and the
@@ -624,7 +632,7 @@ impl LiveEngine for Orchestrator {
         let task_meeting = meeting.clone();
         let handle = tokio::spawn(async move {
             if let Some((refiner, threshold)) = refine {
-                // Serialize the refine's ANE work (diarize + whisper) against any live meeting on the
+                // Serialize the refine's ANE work (diarize + transcribe) against any live meeting on the
                 // shared permit: hold it only for the refine (waiting if a meeting currently holds
                 // it), released before the transcript write (disk, not ANE). Deadlock-free — the live
                 // side always releases at stop, this always releases when the refine returns.
@@ -764,7 +772,7 @@ impl LiveEngine for Orchestrator {
                 .expect("ANE gate semaphore is never closed");
             refiner.refine(&audio).await?
         };
-        report_coverage(&meeting, result.coverage);
+        report_coverage(&meeting, result.coverage.as_ref());
         queries::replace_them_segments(&self.pool, meeting_id, &result, threshold)
             .await
             .map_err(OrchestratorError::from)?;

@@ -1,13 +1,8 @@
 import AVFoundation
 import Foundation
 
-/// Shared stdio plumbing for the streaming sidecars (`hearsay-live`, `hearsay-me`).
-///
-/// Each sidecar reads length-prefixed PCM frames on stdin and writes NDJSON on stdout; this target
-/// holds the framing, the JSON emit (with the dead-core SIGPIPE handling), the stderr logger, and the
-/// PCM-buffer builder so they live in one place — in particular the stdin length cap, which must be
-/// applied identically by both. Deliberately dependency-free (only Foundation + AVFoundation, both
-/// system frameworks) so linking it never pulls FluidAudio/CoreML into a lean binary.
+/// Shared sidecar stdio: PCM framing + length cap, the bounded stdin queue, NDJSON emit, stderr log.
+/// System frameworks only, so linking it never pulls FluidAudio/CoreML into a lean binary.
 
 /// Upper bound on a single stdin frame's sample count. A desynced stream can present a garbage 4-byte
 /// length prefix (up to ~4.3e9 -> a ~17 GB reserve); capping bounds a bad read to ~19 MB. The bound is
@@ -47,6 +42,90 @@ public func readAudioFrame(maxSamples: Int = maxInputSamples) -> FrameResult {
     guard let body = readExactly(n * 4) else { return .eof }
     let samples = body.withUnsafeBytes { Array($0.bindMemory(to: Float.self)) }
     return .samples(samples)
+}
+
+/// Upper bound on queued audio in a `FrameQueue`: 60 s of 16 kHz mono.
+public let maxQueuedSamples = 60 * 16_000
+
+/// Drains stdin on its own thread into a bounded queue, so slow inference is latency, not pipe
+/// backpressure. Delivery is in order; overflow calls `onOverflow` (default: exit so the core respawns).
+public final class FrameQueue: @unchecked Sendable {
+    private let cond = NSCondition()
+    private var items: [FrameResult] = []
+    private var queuedSamples = 0
+    private let maxSamples: Int
+    private let prefix: String
+    private let onOverflow: @Sendable () -> Void
+
+    public init(
+        prefix: String, maxSamples: Int = maxQueuedSamples,
+        onOverflow: @escaping @Sendable () -> Void = { exit(1) }
+    ) {
+        self.prefix = prefix
+        self.maxSamples = maxSamples
+        self.onOverflow = onOverflow
+    }
+
+    /// Start the reader thread; it stops after pushing `.eof` or `.oversize`, or on overflow.
+    public func start(read: @escaping @Sendable () -> FrameResult = { readAudioFrame() }) {
+        let thread = Thread { [self] in
+            while true {
+                let result = read()
+                if case .empty = result { continue }
+                guard push(result) else { return }
+                switch result {
+                case .eof, .oversize: return
+                default: continue
+                }
+            }
+        }
+        thread.name = "\(prefix)-stdin"
+        thread.start()
+    }
+
+    // A frame longer than the cap is a resync pad of silence, so it is admitted and not counted.
+    private func backlogCount(_ samples: [Float]) -> Int {
+        samples.count > maxSamples ? 0 : samples.count
+    }
+
+    /// Queue one frame; false if the backlog overflowed (the queue then ends with `.eof`).
+    func push(_ result: FrameResult) -> Bool {
+        cond.lock()
+        if case .samples(let s) = result, queuedSamples + backlogCount(s) > maxSamples {
+            cond.unlock()
+            writeError(
+                prefix,
+                "input queue overflow: inference is over \(maxSamples / 16_000) s behind; exiting so the core respawns"
+            )
+            onOverflow()
+            cond.lock()
+            items.append(.eof)
+            cond.signal()
+            cond.unlock()
+            return false
+        }
+        if case .samples(let s) = result { queuedSamples += backlogCount(s) }
+        items.append(result)
+        cond.signal()
+        cond.unlock()
+        return true
+    }
+
+    /// Block until the next frame is available. After `.eof` / `.oversize` it keeps returning it.
+    public func next() -> FrameResult {
+        cond.lock()
+        defer { cond.unlock() }
+        while items.isEmpty { cond.wait() }
+        let result = items[0]
+        switch result {
+        case .eof, .oversize: return result
+        case .samples(let s):
+            queuedSamples -= backlogCount(s)
+            items.removeFirst()
+        case .empty: items.removeFirst()
+        }
+        return result
+    }
 }
 
 /// Encode `value` as one NDJSON line to stdout. A dead core closes our stdout mid-write; SIGPIPE is

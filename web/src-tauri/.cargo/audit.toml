@@ -10,9 +10,9 @@
 #
 # Tauri v2's Linux GTK3 + WebKit backend pulls the now-EOL gtk-rs 0.18 family (atk / gdk / gtk / glib
 # and their -sys crates, gtk3-macros -> proc-macro-error, and the unic-* set). They are flagged
-# `unmaintained` (glib `unsound`) with no maintained successor at 0.18. Hearsay ships macOS + Windows
-# only, so this GTK stack never compiles into the shipped binary; the advisories are informational and
-# have no fix to take. Listed per-id (not a blanket category ignore) so any future *real* vulnerability
+# `unmaintained` (glib `unsound`) with no maintained successor at 0.18. Hearsay ships macOS only,
+# so this GTK stack never compiles into the shipped binary; the advisories are informational and have
+# no fix to take. Listed per-id (not a blanket category ignore) so any future *real* vulnerability
 # in these crates still surfaces under a new advisory id.
 [advisories]
 ignore = [

@@ -75,13 +75,32 @@ pub struct MeetingRead {
     /// Transcribed share (0.0-1.0) of the remote track's audible time at the last refine, or `null`
     /// if this meeting has never been refined.
     pub refine_coverage: Option<f64>,
-    /// `true` when the last refine came back too short to trust as complete, so the transcript is
-    /// truncated and worth re-refining. `false` when healthy or never refined.
+    /// `true` when the last refine looks truncated: coverage under 80% plus at least one gap (or, for
+    /// a refine that predates gap recording, coverage alone). `false` when healthy or never refined.
     pub refine_incomplete: bool,
+    /// Audible stretches of at least 10 s that the last refine left untranscribed, in meeting time.
+    /// `null` when never refined or refined before gaps were recorded.
+    pub refine_gaps: Option<Vec<RefineGapRead>>,
+}
+
+/// An untranscribed audible stretch of the remote track, in seconds from the meeting start.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, ToSchema)]
+pub struct RefineGapRead {
+    pub start_s: f64,
+    pub end_s: f64,
 }
 
 impl From<Meeting> for MeetingRead {
     fn from(m: Meeting) -> Self {
+        let refine_incomplete = m.refine_incomplete();
+        let refine_gaps = m.refine_gaps().map(|gaps| {
+            gaps.into_iter()
+                .map(|g| RefineGapRead {
+                    start_s: g.start_s,
+                    end_s: g.end_s,
+                })
+                .collect()
+        });
         MeetingRead {
             id: m.id,
             title: m.title,
@@ -93,9 +112,8 @@ impl From<Meeting> for MeetingRead {
             created_at: m.created_at,
             updated_at: m.updated_at,
             refine_coverage: m.refine_coverage,
-            refine_incomplete: m
-                .refine_coverage
-                .is_some_and(|f| f < hearsay_db::queries::MIN_REFINE_COVERAGE),
+            refine_incomplete,
+            refine_gaps,
         }
     }
 }
@@ -319,7 +337,7 @@ pub struct VoiceprintSampleRead {
     /// Whether the name on this cluster was set by hand. Only locked samples are recognition
     /// candidates in later meetings.
     pub locked: bool,
-    /// Embedding length: 256 on macOS (FluidAudio), 192 on Windows (sherpa). Samples of different
+    /// Embedding length (256 from FluidAudio). Samples of different
     /// lengths never match each other.
     pub dimension: i64,
 }
@@ -527,12 +545,11 @@ pub struct StorageInfo {
     pub uncompressed_bytes: i64,
 }
 
-/// Models: the offline-refine whisper model path plus the optional local-LLM notes step (enable +
+/// Models: the optional local-LLM notes step (enable +
 /// its GGUF model). Editable section; each effective value is the stored override, else the config
 /// default. Live transcription is the FluidAudio/ANE sidecars and is not configured here.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ModelSettings {
-    pub refine_model: String,
     /// Generate meeting notes at stop (the optional local-LLM notes step).
     /// `#[serde(default)]` so a `models` row written before notes existed still deserializes.
     #[serde(default)]
@@ -552,8 +569,6 @@ pub struct ModelSettings {
 /// (reset targets) and whether each effective model file currently resolves on disk.
 #[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct ModelsInfo {
-    pub default_refine_model: String,
-    pub refine_model_exists: bool,
     pub default_notes_model: String,
     pub notes_model_exists: bool,
     /// The built-in default notes prompt template (the reset target + the effective value when the
@@ -634,8 +649,8 @@ pub enum SetupStepStatus {
     Error,
 }
 
-/// One asset first-run setup fetches: the live speech models, the refine model, or a notes model.
-/// `total_bytes` is approximate for the live models until the preparation sidecar reports its plan.
+/// One asset first-run setup fetches: the FluidAudio speech models, or a notes model.
+/// `total_bytes` is approximate for the speech models until the preparation sidecar reports its plan.
 #[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct SetupStep {
     pub id: String,

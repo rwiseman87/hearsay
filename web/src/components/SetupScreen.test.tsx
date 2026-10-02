@@ -22,13 +22,6 @@ const idle = {
       downloaded_bytes: 0,
       total_bytes: 1_048_576 * 1024,
     },
-    {
-      id: "refine",
-      label: "Refine model",
-      status: "pending",
-      downloaded_bytes: 0,
-      total_bytes: 1_048_576 * 512,
-    },
   ],
 };
 
@@ -66,18 +59,17 @@ beforeEach(() => {
 
 it("states the download size and lists each missing model", async () => {
   renderSetup();
-  // 1.0 GB live + 512.0 MB refine, with no notes model selected.
-  expect(await screen.findByText(/one-time download of about 1\.5 GB/)).toBeTruthy();
+  // 1.0 GB live, with no notes model selected.
+  expect(await screen.findByText(/one-time download of about 1\.0 GB/)).toBeTruthy();
   expect(screen.getByText("Speech models")).toBeTruthy();
-  expect(screen.getByText("Refine model")).toBeTruthy();
 });
 
 it("adds the notes model to the total only when it is opted into", async () => {
   renderSetup();
   const user = userEvent.setup();
   await user.click(await screen.findByRole("checkbox"));
-  // The 2.0 GB notes model joins the 1.5 GB of required models.
-  expect(await screen.findByText(/one-time download of about 3\.5 GB/)).toBeTruthy();
+  // The 2.0 GB notes model joins the 1.0 GB of required models.
+  expect(await screen.findByText(/one-time download of about 3\.0 GB/)).toBeTruthy();
 });
 
 it("sends the picked notes model when starting, and nothing when it is not opted into", async () => {

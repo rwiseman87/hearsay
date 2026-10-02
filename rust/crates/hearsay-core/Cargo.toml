@@ -13,6 +13,8 @@ hearsay-audio = { path = "../hearsay-audio" }
 axum = { version = "0.8.9", features = ["ws", "macros"] }
 tower-http = { version = "0.7.0", features = ["fs", "set-header", "trace", "request-id"] }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net", "signal", "fs", "sync", "time", "io-std", "io-util"] }
+# ReceiverStream, to stream archived audio decoded on a blocking thread as the response body.
+tokio-stream = { version = "0.1.18", default-features = false }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
@@ -28,22 +30,12 @@ uuid = { workspace = true, features = ["v4", "serde"] }
 chrono = { workspace = true, features = ["serde"] }
 sqlx = { workspace = true }
 tower = { version = "0.5.3", features = ["util"] }
-# Notes-model download manager (always compiled — independent of the `notes` inference feature so the
-# `/api/models` surface + codegen stay identical across feature states). ureq: blocking HTTPS with a
-# bundled rustls + webpki roots (no OS cert dep, no async runtime pulled in — runs in spawn_blocking).
+# Notes-model download manager. ureq: blocking HTTPS with bundled rustls + webpki roots (no OS cert
+# dep, no async runtime pulled in — runs in spawn_blocking).
 ureq = "3.3.0"
 sha2 = "0.10.9"
 
-# GPU backends for the offline whisper refine, forwarded through `hearsay-backends` to
-# `hearsay-inference`'s whisper-rs. Off by default (CPU); the macOS bundle + `rust-serve` build with
-# `metal` (see the Makefile) — a large win on Apple Silicon. vulkan/cuda cover the Windows and Linux
-# builds; enable one per target (building a backend the host lacks fails).
 [features]
-# The cross-platform (Windows) sherpa-onnx live/diarize path; required by the Windows backend
-# (`--features sherpa` there), off by default so the macOS bundle never links onnxruntime. The local
-# notes LLM is no longer a feature of the core: it runs out-of-process in the `hearsay-notes` sidecar
-# (built separately with its own `metal`/`vulkan` accel), so llama.cpp never links here with whisper.
-sherpa = ["hearsay-backends/sherpa"]
 # The browsable Swagger UI console at /docs, for working against the API by hand. Off by default:
 # `vendored` embeds ~1.6 MB of JS/CSS into the binary at COMPILE time, so a runtime check alone
 # would still ship the assets. `make rust-serve` turns it on; the packaged app does not. The mount
@@ -51,12 +43,13 @@ sherpa = ["hearsay-backends/sherpa"]
 # the console in a shipping configuration either.
 api-console = ["dep:utoipa-swagger-ui"]
 aec = ["hearsay-backends/aec"]
-metal = ["hearsay-backends/metal"]
-vulkan = ["hearsay-backends/vulkan"]
-cuda = ["hearsay-backends/cuda"]
+# Honor `HEARSAY_SCRIPTED` (the model-free E2E engine). `make e2e` and `make rust-serve` enable it.
+scripted = ["hearsay-backends/scripted"]
 
 [dev-dependencies]
 tempfile = { workspace = true }
+# Writes the WAV that the archived-audio playback test encodes to FLAC.
+hound = { workspace = true }
 # Real WebSocket client for the handshake-gating + full-stack integration tests (axum's
 # WebSocketUpgrade extractor cannot be driven by tower::oneshot). Already in the lock.
 tokio-tungstenite = "0.29.0"

@@ -8,8 +8,6 @@ use std::net::IpAddr;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use hearsay_backends::LoopbackMode;
-
 /// Resolved settings for one process.
 #[derive(Debug, Clone)]
 pub struct Settings {
@@ -30,14 +28,8 @@ pub struct Settings {
     /// Dev-only (`HEARSAY_SCRIPTED`): swap the platform backend for the model-free scripted engine.
     /// It spawns no sidecars, so first-run setup is skipped with it.
     pub scripted: bool,
-    /// GGML whisper model for the offline refine; defaults into [`Self::models_dir`].
-    pub refine_model: PathBuf,
     /// Deadline for the `hearsay-diarize` refine subprocess, so a hung sidecar cannot wedge stop.
     pub refine_timeout: Duration,
-    /// Prime each of the refine's 30-s whisper windows with the previous window's text. Off by
-    /// default: measured on a 44-minute meeting it cost 2.4x the decode time for no gain in unique
-    /// transcript, and carried one hallucinated silent window into every window after it.
-    pub refine_carry_over: bool,
     /// Run the offline refine at stop. Off by default: it contends with the next meeting's
     /// sidecars on the ANE. The manual `/rediarize` route works regardless.
     pub auto_refine: bool,
@@ -66,8 +58,8 @@ pub struct Settings {
     /// Prompt template for the notes step; its `{transcript}` placeholder is filled with the
     /// finalized transcript. Read fresh at each generate, like `notes_model`.
     pub notes_prompt: String,
-    /// Path to the `hearsay-notes` sidecar. Out-of-process so llama.cpp never links into the core
-    /// alongside whisper — see `docs/architecture.md`.
+    /// Path to the `hearsay-notes` sidecar. Out-of-process so a llama.cpp crash or stall cannot take
+    /// down the core — see `docs/architecture.md`.
     pub notes_binary: PathBuf,
     /// Root the download manager writes models into and references them from.
     pub models_dir: PathBuf,
@@ -78,10 +70,6 @@ pub struct Settings {
     pub notices_path: PathBuf,
     /// The process's home directory: the base of FluidAudio's model cache.
     pub home_dir: Option<PathBuf>,
-    /// Sherpa live/diarize models for the Windows backend. Unused on macOS.
-    pub sherpa_models_dir: PathBuf,
-    /// Which WASAPI loopback path captures Them on Windows. Unused on macOS.
-    pub win_loopback_mode: LoopbackMode,
 }
 
 fn env_or(key: &str, default: impl Into<String>) -> String {
@@ -101,20 +89,10 @@ fn default_notes_binary() -> PathBuf {
     if let Some(path) = env::var_os("HEARSAY_NOTES_PATH") {
         return PathBuf::from(path);
     }
-    let name = notes_binary_name();
     env::current_exe()
         .ok()
-        .and_then(|exe| exe.parent().map(|dir| dir.join(&name)))
-        .unwrap_or_else(|| PathBuf::from(name))
-}
-
-/// The sidecar's file name, carrying the platform executable suffix (`hearsay-notes` on macOS,
-/// `hearsay-notes.exe` on Windows — what both the Tauri bundler and cargo's target dir produce).
-/// The suffix is not cosmetic: the summarizer probes the path with `is_file()` before spawning, and
-/// an extension-less path never resolves on Windows, so notes fail with "sidecar not found" against
-/// a sidecar sitting right next to the core.
-fn notes_binary_name() -> String {
-    format!("hearsay-notes{}", env::consts::EXE_SUFFIX)
+        .and_then(|exe| exe.parent().map(|dir| dir.join("hearsay-notes")))
+        .unwrap_or_else(|| PathBuf::from("hearsay-notes"))
 }
 
 /// Parse a boolean env var (`1`/`true`/`yes`/`on` -> true, `0`/`false`/`no`/`off` -> false,
@@ -146,22 +124,6 @@ fn env_u64(key: &str, default: u64, problems: &mut Vec<String>) -> u64 {
         Ok(value) => value,
         Err(_) => {
             problems.push(format!("{key}={raw:?} is not a non-negative integer"));
-            default
-        }
-    }
-}
-
-/// Parse the Windows loopback-mode env var (`HEARSAY_WIN_LOOPBACK`); `default` when unset. A
-/// set-but-unrecognized value is recorded in `problems` instead of falling back silently.
-fn env_loopback_mode(default: LoopbackMode, problems: &mut Vec<String>) -> LoopbackMode {
-    const KEY: &str = "HEARSAY_WIN_LOOPBACK";
-    let Ok(raw) = env::var(KEY) else {
-        return default;
-    };
-    match raw.parse::<LoopbackMode>() {
-        Ok(mode) => mode,
-        Err(err) => {
-            problems.push(format!("{KEY}: {err}"));
             default
         }
     }
@@ -233,12 +195,10 @@ impl Settings {
             .ok()
             .and_then(|p| p.parse().ok())
             .unwrap_or(0);
-        let scripted = environment == "development" && env::var_os("HEARSAY_SCRIPTED").is_some();
-        // Downloaded models live together, so the refine model defaults into the models dir rather
-        // than being named again by whoever sets that dir (the desktop shell, a dev run).
+        let scripted = cfg!(feature = "scripted")
+            && environment == "development"
+            && env::var_os("HEARSAY_SCRIPTED").is_some();
         let models_dir = PathBuf::from(env_or("HEARSAY_MODELS_DIR", "outputs/models"));
-        let refine_model = env_path("HEARSAY_REFINE_MODEL")
-            .unwrap_or_else(|| models_dir.join(crate::models::DEFAULT_REFINE_FILE));
         let auto_refine = env_bool("HEARSAY_AUTO_REFINE", false, &mut problems);
         let record = env_bool("HEARSAY_RECORD", true, &mut problems);
         let recognition_threshold = env_recognition_threshold(0.6, &mut problems);
@@ -252,8 +212,6 @@ impl Settings {
         let notes_enabled = env_bool("HEARSAY_NOTES", false, &mut problems);
         let refine_timeout =
             Duration::from_secs(env_u64("HEARSAY_REFINE_TIMEOUT_SECS", 1800, &mut problems));
-        let refine_carry_over = env_bool("HEARSAY_REFINE_CARRY_OVER", false, &mut problems);
-        let win_loopback_mode = env_loopback_mode(LoopbackMode::Device, &mut problems);
 
         if !problems.is_empty() {
             if environment == "development" {
@@ -282,9 +240,7 @@ impl Settings {
                 "helper/.build/arm64-apple-macosx/debug/hearsay-helper",
             )),
             scripted,
-            refine_model,
             refine_timeout,
-            refine_carry_over,
             auto_refine,
             record,
             recognition_threshold,
@@ -308,11 +264,6 @@ impl Settings {
                 "./THIRD-PARTY-NOTICES.md",
             )),
             home_dir: env_path("HOME"),
-            sherpa_models_dir: PathBuf::from(env_or(
-                "HEARSAY_SHERPA_MODELS_DIR",
-                "outputs/models/sherpa",
-            )),
-            win_loopback_mode,
         })
     }
 
@@ -326,20 +277,7 @@ impl Settings {
 
 #[cfg(test)]
 mod tests {
-    use super::{bind_allowed, is_loopback_bind, notes_binary_name};
-
-    /// The notes sidecar is found by an `is_file()` probe in the summarizer, so the name the core
-    /// resolves has to match what the packager stages beside it — `hearsay-notes.exe` on Windows.
-    /// Staging it the way the bundler does and probing the resolved path exercises that predicate.
-    #[test]
-    fn notes_sidecar_resolves_to_the_staged_binary() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let staged = dir
-            .path()
-            .join(format!("hearsay-notes{}", std::env::consts::EXE_SUFFIX));
-        std::fs::write(&staged, b"").expect("stage sidecar");
-        assert!(dir.path().join(notes_binary_name()).is_file());
-    }
+    use super::{bind_allowed, is_loopback_bind};
 
     #[test]
     fn loopback_bind_accepts_loopback_ips_and_localhost_only() {

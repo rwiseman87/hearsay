@@ -21,15 +21,7 @@ import {
 fs.mkdirSync(E2E_OUTPUT_DIR, { recursive: true });
 fs.writeFileSync(NOTES_MODEL_STUB, "");
 
-// Windows must compile the sherpa backend into the core (a compile_error otherwise); the scripted
-// engine itself is platform-neutral, so macOS needs no features. scripts\test-windows.ps1 sets this.
-const coreFeatures = process.env.HEARSAY_CORE_FEATURES;
-const coreRun = [
-  "cargo run -q --manifest-path ../rust/Cargo.toml -p hearsay-core",
-  coreFeatures ? `--features ${coreFeatures}` : "",
-]
-  .filter(Boolean)
-  .join(" ");
+const coreRun = "cargo run -q --manifest-path ../rust/Cargo.toml -p hearsay-core --features scripted";
 
 // The scripted core boots headless with a canned, model-free meeting (HEARSAY_SCRIPTED, honored only
 // in development) writing its DB + outputs + handshake under the gitignored outputs/e2e/.

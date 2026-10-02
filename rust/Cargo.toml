@@ -1,4 +1,4 @@
-# Hearsay Rust workspace — cross-platform (macOS + Windows) foundation.
+# Hearsay Rust workspace — the macOS backend.
 # Architecture: ../docs/architecture.md
 #
 # Shared dependency versions live in [workspace.dependencies]; crates inherit them with
@@ -18,6 +18,7 @@ members = [
     "crates/hearsay-core",
     "crates/hearsay-inference",
     "crates/hearsay-backends",
+    "crates/hearsay-eval",
     "crates/hearsay-notes-prompt",
     "crates/hearsay-notes",
 ]
@@ -42,3 +43,9 @@ async-trait = "0.1.89"
 tempfile = "3.27.0"
 hound = "3.5.1"
 proptest = "1.11.0"
+
+[profile.release]
+# Smaller shipped binaries; panics still print, but backtraces lose symbol names.
+strip = true
+lto = "thin"
+codegen-units = 1

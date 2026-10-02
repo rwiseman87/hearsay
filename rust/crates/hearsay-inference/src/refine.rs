@@ -1,32 +1,46 @@
-//! Post-meeting offline refine: re-diarize the Them track (reusing the Swift `hearsay-diarize`
-//! FluidAudio sidecar — the same offline diarizer the live path's sidecars come from) and
-//! re-transcribe each speaker turn with whisper → accurate `Speaker N` segments.
-//!
-//! [`refine_them`] also returns each speaker's voiceprint (from the diarizer's per-speaker mean
-//! embedding); persistence, cross-meeting recognition, and carry-forward of locked manual labels
-//! all live in `hearsay_db::replace_them_segments`, which both this refine's callers go through.
+//! Offline refine: one `hearsay-diarize` run diarizes and transcribes the Them track, and each word
+//! is attributed to the speaker turn it overlaps.
 
 use std::collections::{HashMap, HashSet};
 use std::io::Read;
+use std::ops::Range;
 use std::path::Path;
 use std::process::{Command, ExitStatus, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use hearsay_attribution::{l2_normalize, max_overlap_turn, order_speakers, SpeakerTurn};
+use hearsay_attribution::{l2_normalize, order_speakers, SpeakerTurn};
 use serde::Deserialize;
 
-use crate::asr::{AsrSegment, Coverage, WhisperAsr};
-use crate::diarizer::{DiarTurn, Diarization, Diarizer};
+use crate::coverage::{self, Coverage};
 use crate::error::InferenceError;
 
 use hearsay_audio::SAMPLE_RATE;
 
-/// How often the bounded diarize wait polls the child for exit.
-const DIARIZE_POLL_INTERVAL: Duration = Duration::from_millis(50);
+/// How often the bounded sidecar wait polls the child for exit.
+const SIDECAR_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
-/// One refined Them segment: a diarizer turn re-transcribed, tagged with its 1-based speaker
-/// ordinal (`Speaker {ordinal}`).
+/// The Parakeet model the refine transcribes with (a `hearsay-diarize --asr` value).
+pub const ASR_MODEL: &str = "ultra";
+
+/// One diarizer turn: a 1-based speaker ordinal (by first appearance) over `[start_s, end_s)`,
+/// track-relative seconds.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DiarTurn {
+    pub speaker: i64,
+    pub start_s: f64,
+    pub end_s: f64,
+}
+
+/// Ordinal speaker turns (start-sorted) and each speaker's raw mean voiceprint by ordinal.
+#[derive(Debug, Clone, Default)]
+pub struct Diarization {
+    pub turns: Vec<DiarTurn>,
+    pub embeddings: HashMap<i64, Vec<f32>>,
+}
+
+/// One refined Them segment: the words of a diarizer turn, tagged with its 1-based speaker ordinal
+/// (`Speaker {ordinal}`).
 #[derive(Debug, Clone, PartialEq)]
 pub struct RefinedSegment {
     pub ordinal: i64,
@@ -35,30 +49,28 @@ pub struct RefinedSegment {
     pub end_s: f64,
 }
 
-/// The refine's full output: the re-transcribed `Speaker N` segments + each speaker's L2-normalized
-/// voiceprint by 1-based ordinal (for cross-meeting recognition + storage). `centroids` is empty
-/// when the diarizer emits no embeddings.
+/// The refine's output: segments plus each speaker's L2-normalized voiceprint by ordinal.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct RefineOutput {
     pub segments: Vec<RefinedSegment>,
     pub centroids: HashMap<i64, Vec<f32>>,
-    /// What the whole-track whisper pass actually covered. `None` only for a default-constructed
-    /// output (no decode ran). See [`crate::Coverage`] — a short decode returns `Ok`, so this is the
-    /// only signal that the transcript is truncated rather than the meeting quiet.
+    /// Audible-vs-transcribed coverage; the signal that a transcript is truncated, not quiet.
     pub coverage: Option<Coverage>,
 }
 
 #[derive(Deserialize)]
-struct DiarizeOutput {
-    turns: Vec<DiarizeTurn>,
-    /// Per-speaker mean voiceprint (FluidAudio's speaker database); absent for a model that emits
-    /// none, so default to empty rather than fail the parse.
+struct SidecarOutput {
+    turns: Vec<SidecarTurn>,
+    /// Per-speaker mean voiceprint; absent when the model emits none.
     #[serde(default)]
     speakers: Vec<SpeakerEmbedding>,
+    /// Present only when the sidecar ran with `--asr`.
+    #[serde(default)]
+    asr: Option<AsrPayload>,
 }
 
 #[derive(Deserialize)]
-struct DiarizeTurn {
+struct SidecarTurn {
     speaker: String,
     start_s: f64,
     end_s: f64,
@@ -70,56 +82,52 @@ struct SpeakerEmbedding {
     embedding: Vec<f32>,
 }
 
-/// The macOS diarizer: drives the Swift `hearsay-diarize` FluidAudio sidecar (file-based; a bounded
-/// subprocess) and returns its `turns` + per-speaker embeddings. The default the app wires; keeps the
-/// sidecar's current stdout-JSON / `noSpeechDetected`-stderr contract exactly as-is.
-pub struct SwiftDiarizer<'a> {
-    binary: &'a Path,
+#[derive(Deserialize)]
+struct AsrPayload {
+    words: Vec<AsrWord>,
+}
+
+#[derive(Deserialize, Debug, Clone, PartialEq)]
+struct AsrWord {
+    word: String,
+    start_s: f64,
+    end_s: f64,
+}
+
+/// Write the Them track to a temp wav, run `hearsay-diarize` on it (with `--asr <model>` when `model`
+/// is given) under a deadline, and parse its stdout JSON.
+fn run_sidecar(
+    binary: &Path,
+    samples: &[f32],
+    model: Option<&str>,
     timeout: Duration,
-}
-
-impl<'a> SwiftDiarizer<'a> {
-    /// `binary` is the Swift `hearsay-diarize` sidecar; `timeout` bounds the subprocess (killed on
-    /// expiry) so a hung sidecar can never wedge the refine — and thus meeting stop.
-    pub fn new(binary: &'a Path, timeout: Duration) -> Self {
-        Self { binary, timeout }
-    }
-}
-
-impl Diarizer for SwiftDiarizer<'_> {
-    fn diarize(&self, them_samples: &[f32]) -> Result<Diarization, InferenceError> {
-        // hearsay-diarize is file-based: write the Them track to a temp wav.
-        let tmp = tempfile::Builder::new().suffix(".wav").tempfile()?;
-        write_mono_wav(tmp.path(), them_samples)?;
-
-        let (stdout, stderr, status) = run_diarize(self.binary, tmp.path(), self.timeout)?;
-        if !status.success() {
-            let stderr = String::from_utf8_lossy(&stderr);
-            // FluidAudio reports a silent / no-remote-speech track as an error; that is benign for a
-            // refine (there is simply nothing to re-diarize), so surface it as a distinct variant the
-            // caller can treat as a no-op rather than a failure.
-            if stderr.contains("noSpeechDetected") {
-                return Err(InferenceError::NoSpeech);
-            }
-            return Err(InferenceError::Diarize(format!(
-                "hearsay-diarize failed: {}",
-                stderr.trim()
-            )));
+) -> Result<SidecarOutput, InferenceError> {
+    let tmp = tempfile::Builder::new().suffix(".wav").tempfile()?;
+    write_mono_wav(tmp.path(), samples)?;
+    let (stdout, stderr, status) = run_bounded(binary, tmp.path(), model, timeout)?;
+    if !status.success() {
+        let stderr = String::from_utf8_lossy(&stderr);
+        // A silent track is a benign no-op, not a failure.
+        if stderr.contains("noSpeechDetected") {
+            return Err(InferenceError::NoSpeech);
         }
-        parse_diarization(&stdout)
+        return Err(InferenceError::Sidecar(format!(
+            "hearsay-diarize failed: {}",
+            stderr.trim()
+        )));
     }
+    parse_sidecar(&stdout)
 }
 
-/// Parse the `hearsay-diarize` sidecar's stdout JSON into a [`Diarization`]: speaker labels mapped to
-/// 1-based ordinals by first appearance (canonical `order_speakers`), turns start-sorted, and each
-/// speaker's raw voiceprint keyed by the same ordinal (an embedding for a label with no turn is
-/// skipped; the refine L2-normalizes it later). Pure (no I/O), so the parse + ordinal mapping is
-/// unit-tested against a fixture without the sidecar.
-fn parse_diarization(stdout: &[u8]) -> Result<Diarization, InferenceError> {
-    let diarized: DiarizeOutput = serde_json::from_slice(stdout)
-        .map_err(|e| InferenceError::Diarize(format!("parse diarize output: {e}")))?;
+fn parse_sidecar(stdout: &[u8]) -> Result<SidecarOutput, InferenceError> {
+    serde_json::from_slice(stdout)
+        .map_err(|e| InferenceError::Sidecar(format!("parse hearsay-diarize output: {e}")))
+}
 
-    let ordering: Vec<SpeakerTurn> = diarized
+/// Map speaker labels to 1-based ordinals by first appearance, start-sort the turns, and key each
+/// speaker's raw voiceprint by the same ordinal.
+fn to_diarization(output: &SidecarOutput) -> Diarization {
+    let ordering: Vec<SpeakerTurn> = output
         .turns
         .iter()
         .map(|t| SpeakerTurn {
@@ -130,7 +138,7 @@ fn parse_diarization(stdout: &[u8]) -> Result<Diarization, InferenceError> {
         .collect();
     let ordinals = order_speakers(&ordering);
 
-    let mut turns: Vec<DiarTurn> = diarized
+    let mut turns: Vec<DiarTurn> = output
         .turns
         .iter()
         .map(|t| DiarTurn {
@@ -142,116 +150,102 @@ fn parse_diarization(stdout: &[u8]) -> Result<Diarization, InferenceError> {
     turns.sort_by(|a, b| a.start_s.total_cmp(&b.start_s));
 
     let mut embeddings: HashMap<i64, Vec<f32>> = HashMap::new();
-    for speaker in diarized.speakers {
+    for speaker in &output.speakers {
         if let Some(&ord) = ordinals.get(&speaker.speaker) {
-            embeddings.insert(i64::from(ord), speaker.embedding);
+            embeddings.insert(i64::from(ord), speaker.embedding.clone());
         }
     }
-
-    Ok(Diarization { turns, embeddings })
+    Diarization { turns, embeddings }
 }
 
-/// Re-diarize + re-transcribe the Them track through a [`Diarizer`]: the whole track is transcribed
-/// once with whisper, then each ASR segment is attributed to the diarizer turn it most overlaps
-/// ([`assemble_refined_segments`]) into `Speaker N` segments, and each speaker's raw voiceprint is
-/// L2-normalized into a stored centroid. Transcribing whole-track (rather than slicing the track at
-/// turn boundaries and transcribing each turn alone) gives whisper full context and never skips
-/// inter-turn audio, so no speech is dropped. The diarizer-agnostic refine entry — the Swift sidecar
-/// ([`SwiftDiarizer`], via [`refine_them`]) or `SherpaDiarizer` plugs in. Blocking (whisper) — call
-/// via `spawn_blocking` from async code.
-pub fn refine_them_with(
-    asr: &WhisperAsr,
-    diarizer: &dyn Diarizer,
+/// Diarize the Them track alone (no ASR). Blocking — call via `spawn_blocking`.
+pub fn diarize(
+    binary: &Path,
     them_samples: &[f32],
-) -> Result<RefineOutput, InferenceError> {
-    // Diarize and transcribe are independent reads of the same immutable buffer, so overlap them:
-    // whisper runs on a scoped thread (its `WhisperContext` is `Sync`, and each `transcribe` builds a
-    // fresh `WhisperState`) while the diarizer runs on the calling thread. On macOS the diarizer is a
-    // sleep-polled subprocess and whisper is on Metal, so the diarize duration fills the GPU's
-    // otherwise-idle time instead of running before it. The diarizer stays on one thread (the sherpa
-    // path is not thread-safe). `thread::scope` blocks until whisper finishes, so both borrows of
-    // `them_samples` are safe.
-    let (diarization, asr_result) = thread::scope(|scope| {
-        let asr_handle = scope.spawn(|| asr.transcribe_track(them_samples));
-        let diarization = diarizer.diarize(them_samples);
-        (diarization, asr_handle.join())
-    });
-    // A diarizer `NoSpeech` / error still waited out the whole (now-discarded) transcription — the
-    // scope cannot cancel it mid-run. Propagate it as the no-op the callers expect.
-    let diarization = diarization?;
-    let transcription = match asr_result {
-        Ok(transcription) => transcription?,
-        Err(panic) => std::panic::resume_unwind(panic),
-    };
-    let segments = assemble_refined_segments(&transcription.segments, &diarization.turns);
+    timeout: Duration,
+) -> Result<Diarization, InferenceError> {
+    Ok(to_diarization(&run_sidecar(
+        binary,
+        them_samples,
+        None,
+        timeout,
+    )?))
+}
 
-    // Keep a voiceprint only for a speaker that actually appears in the refined segments. Whole-track
-    // overlap attribution can leave a speaker whose speech was entirely overlap-dominated with no
-    // segment; that speaker has no cluster to store a voiceprint on, so an orphan centroid would only
-    // waste a cross-meeting recognition match. This keeps `centroids` ⊆ the segments' speakers.
+/// Re-diarize and re-transcribe the Them track with one `hearsay-diarize --asr <model>` run, bounded
+/// by `timeout`. Blocking — call via `spawn_blocking`.
+pub fn refine_them(
+    binary: &Path,
+    model: &str,
+    them_samples: &[f32],
+    timeout: Duration,
+) -> Result<RefineOutput, InferenceError> {
+    let output = run_sidecar(binary, them_samples, Some(model), timeout)?;
+    let diarization = to_diarization(&output);
+    let words = output
+        .asr
+        .ok_or_else(|| InferenceError::Sidecar("hearsay-diarize returned no asr payload".into()))?
+        .words;
+    let segments = assemble_refined_segments(&words, &diarization.turns);
+
+    // Keep centroids only for speakers that have a segment (no orphan voiceprints).
     let present: HashSet<i64> = segments.iter().map(|s| s.ordinal).collect();
     let mut centroids = build_centroids(&diarization.embeddings);
     centroids.retain(|ordinal, _| present.contains(ordinal));
+
+    // Measure only words that reached a segment, so words dropped for lack of turns read as missing.
+    let speech: Vec<Range<f64>> = if segments.is_empty() {
+        Vec::new()
+    } else {
+        words.iter().map(|w| w.start_s..w.end_s).collect()
+    };
     Ok(RefineOutput {
         segments,
         centroids,
-        coverage: Some(transcription.coverage),
+        coverage: Some(coverage::measure(them_samples, &speech)),
     })
 }
 
-/// Attribute each whole-track ASR segment to the diarizer turn it most overlaps (falling back to the
-/// nearest turn in time when a segment overlaps none, so no transcribed text is dropped), then merge
-/// consecutive segments attributed to the *same turn* into one `RefinedSegment`.
-///
-/// Merging is bounded by the turn, not the speaker: same-speaker runs can span many turns (one
-/// remote speaker holding the floor for minutes — or a diarizer collapsing several people into one
-/// cluster), and merging across them produced a single blob spanning most of a meeting. The final
-/// transcript interleaves Me segments by `start_s`, so a blob starting at 0:00 pushed every Me
-/// utterance spoken *during* it after it. Turn-bounded segments keep meeting-time granularity (turns
-/// end at real speech pauses), and the transcript writer already regroups consecutive same-speaker
-/// segments under one header, so an uninterrupted run still renders as one block.
-///
-/// Empty `turns` yields no segments — there is no speaker to attribute to, which the refine's
-/// callers treat as a no-op. Pure — no ML or I/O, so it is unit-tested without whisper or the
-/// diarizer sidecar.
-fn assemble_refined_segments(
-    asr_segments: &[AsrSegment],
-    turns: &[DiarTurn],
-) -> Vec<RefinedSegment> {
+/// Refine a meeting's `audio.wav`: read the Them channel and run [`refine_them`] with [`ASR_MODEL`].
+/// Blocking — call via `spawn_blocking`.
+pub fn refine_audio_file(
+    audio_path: &Path,
+    binary: &Path,
+    timeout: Duration,
+) -> Result<RefineOutput, InferenceError> {
+    let them = crate::audio::read_them_channel(audio_path)?;
+    refine_them(binary, ASR_MODEL, &them, timeout)
+}
+
+/// Attribute each word to the turn it overlaps most (else the nearest), merging consecutive words of
+/// the same turn into one segment; merging stops at turn boundaries so Me lines can interleave.
+fn assemble_refined_segments(words: &[AsrWord], turns: &[DiarTurn]) -> Vec<RefinedSegment> {
     if turns.is_empty() {
         return Vec::new();
     }
-    // Adapt the ordinal-keyed turns to the shared overlap helper; the label is unused — the returned
-    // index maps back to the turn's ordinal below.
-    let overlap_turns: Vec<SpeakerTurn> = turns
-        .iter()
-        .map(|t| SpeakerTurn {
-            speaker: String::new(),
-            start_s: t.start_s,
-            end_s: t.end_s,
-        })
-        .collect();
+    let mut ordered: Vec<&AsrWord> = words.iter().collect();
+    ordered.sort_by(|a, b| a.start_s.total_cmp(&b.start_s));
 
     let mut segments: Vec<RefinedSegment> = Vec::new();
     let mut last_turn: Option<usize> = None;
-    for seg in asr_segments {
-        let text = seg.text.trim();
+    for word in ordered {
+        let text = word.word.trim();
         if text.is_empty() {
             continue;
         }
-        let idx = max_overlap_turn(seg.start_s, seg.end_s, &overlap_turns, 0.0)
-            .unwrap_or_else(|| nearest_turn(seg.start_s, seg.end_s, turns));
+        let idx = best_turn(word.start_s, word.end_s, turns)
+            .unwrap_or_else(|| nearest_turn(word.start_s, word.end_s, turns));
         match segments.last_mut() {
             Some(last) if last_turn == Some(idx) => {
                 last.text.push(' ');
                 last.text.push_str(text);
-                last.end_s = seg.end_s;
+                last.end_s = word.end_s;
             }
             _ => segments.push(RefinedSegment {
                 ordinal: turns[idx].speaker,
                 text: text.to_string(),
-                start_s: seg.start_s,
-                end_s: seg.end_s,
+                start_s: word.start_s,
+                end_s: word.end_s,
             }),
         }
         last_turn = Some(idx);
@@ -259,13 +253,36 @@ fn assemble_refined_segments(
     segments
 }
 
-/// Index of the turn closest in time to segment `[start_s, end_s]` (0 distance if the segment's
-/// midpoint falls inside a turn). `turns` must be non-empty. The fallback for a segment overlapping
-/// no turn, so its text is still attributed rather than dropped.
+/// Index of the turn overlapping `[start_s, end_s]` most, or `None`; ties go to the shorter turn (a
+/// nested interjection), then the earlier one.
+fn best_turn(start_s: f64, end_s: f64, turns: &[DiarTurn]) -> Option<usize> {
+    let mut best: Option<(usize, f64, f64)> = None;
+    for (i, turn) in turns.iter().enumerate() {
+        let overlap = end_s.min(turn.end_s) - start_s.max(turn.start_s);
+        if overlap <= 0.0 {
+            continue;
+        }
+        let length = turn.end_s - turn.start_s;
+        let better = match best {
+            None => true,
+            Some((_, best_overlap, best_length)) => {
+                overlap > best_overlap || (overlap == best_overlap && length < best_length)
+            }
+        };
+        if better {
+            best = Some((i, overlap, length));
+        }
+    }
+    best.map(|(i, _, _)| i)
+}
+
+/// Index of the turn nearest `[start_s, end_s]` in time (`turns` must be non-empty); ties go to the
+/// shorter turn, then the earlier one.
 fn nearest_turn(start_s: f64, end_s: f64, turns: &[DiarTurn]) -> usize {
     let mid = (start_s + end_s) / 2.0;
     let mut best = 0;
     let mut best_dist = f64::INFINITY;
+    let mut best_length = f64::INFINITY;
     for (i, turn) in turns.iter().enumerate() {
         let dist = if mid < turn.start_s {
             turn.start_s - mid
@@ -274,44 +291,34 @@ fn nearest_turn(start_s: f64, end_s: f64, turns: &[DiarTurn]) -> usize {
         } else {
             0.0
         };
-        if dist < best_dist {
+        let length = turn.end_s - turn.start_s;
+        if dist < best_dist || (dist == best_dist && length < best_length) {
             best_dist = dist;
+            best_length = length;
             best = i;
         }
     }
     best
 }
 
-/// Re-diarize + re-transcribe the Them track with the Swift `hearsay-diarize` sidecar (the macOS
-/// default). Thin wrapper over [`refine_them_with`] with a [`SwiftDiarizer`]: `diarize_binary` is the
-/// sidecar and `timeout` bounds it. Blocking (whisper + subprocess) — call via `spawn_blocking`.
-pub fn refine_them(
-    asr: &WhisperAsr,
-    diarize_binary: &Path,
-    them_samples: &[f32],
-    timeout: Duration,
-) -> Result<RefineOutput, InferenceError> {
-    refine_them_with(
-        asr,
-        &SwiftDiarizer::new(diarize_binary, timeout),
-        them_samples,
-    )
-}
-
-/// Spawn `hearsay-diarize <wav>` and wait for it with a deadline, killing it on expiry so a hung
-/// sidecar can never wedge the refine. stdout/stderr are drained on their own threads so a large
-/// payload (per-speaker embeddings) cannot deadlock the wait by filling a pipe buffer.
-fn run_diarize(
+/// Run `hearsay-diarize` under a deadline (killed on expiry), draining stdout/stderr on threads so a
+/// large payload cannot deadlock the wait.
+fn run_bounded(
     binary: &Path,
     wav: &Path,
+    model: Option<&str>,
     timeout: Duration,
 ) -> Result<(Vec<u8>, Vec<u8>, ExitStatus), InferenceError> {
-    let mut child = Command::new(binary)
-        .arg(wav)
+    let mut command = Command::new(binary);
+    command.arg(wav);
+    if let Some(model) = model {
+        command.args(["--asr", model]);
+    }
+    let mut child = command
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|e| InferenceError::Diarize(format!("spawn hearsay-diarize: {e}")))?;
+        .map_err(|e| InferenceError::Sidecar(format!("spawn hearsay-diarize: {e}")))?;
 
     let mut out_pipe = child.stdout.take().expect("stdout piped");
     let mut err_pipe = child.stderr.take().expect("stderr piped");
@@ -330,19 +337,19 @@ fn run_diarize(
     let status = loop {
         if let Some(status) = child
             .try_wait()
-            .map_err(|e| InferenceError::Diarize(format!("wait hearsay-diarize: {e}")))?
+            .map_err(|e| InferenceError::Sidecar(format!("wait hearsay-diarize: {e}")))?
         {
             break status;
         }
         if Instant::now() >= deadline {
             let _ = child.kill();
             let _ = child.wait();
-            return Err(InferenceError::Diarize(format!(
+            return Err(InferenceError::Sidecar(format!(
                 "hearsay-diarize timed out after {}s",
                 timeout.as_secs()
             )));
         }
-        thread::sleep(DIARIZE_POLL_INTERVAL);
+        thread::sleep(SIDECAR_POLL_INTERVAL);
     };
 
     // The child has exited, so both pipes are closed; the reader threads finish promptly.
@@ -361,43 +368,6 @@ fn build_centroids(embeddings: &HashMap<i64, Vec<f32>>) -> HashMap<i64, Vec<f32>
         }
     }
     centroids
-}
-
-/// Unit-length a voiceprint so stored centroids match the cosine convention (norm computed in f64).
-/// `None` for an empty vector; a zero vector is returned unchanged.
-/// Refine a recorded meeting's `audio.wav` end-to-end with any [`Diarizer`]: read the Them (right)
-/// channel, load the whisper model, then re-diarize + re-transcribe. The diarizer-agnostic file
-/// entry — the macOS refiner wraps it with [`SwiftDiarizer`] ([`refine_audio_file`]) and the
-/// Windows refiner with `SherpaDiarizer`. `carry_over` is whisper's cross-window prompt
-/// ([`WhisperAsr::with_carry_over`]). Blocking (whisper) — call via `spawn_blocking` from async code.
-pub fn refine_audio_file_with(
-    audio_path: &Path,
-    diarizer: &dyn Diarizer,
-    model: &Path,
-    carry_over: bool,
-) -> Result<RefineOutput, InferenceError> {
-    let them = crate::audio::read_them_channel(audio_path)?;
-    let asr = WhisperAsr::load(model)?.with_carry_over(carry_over);
-    refine_them_with(&asr, diarizer, &them)
-}
-
-/// Refine a recorded meeting's `audio.wav` end-to-end with the Swift `hearsay-diarize` sidecar
-/// (`diarize_binary`, bounded by `timeout`) — the macOS entry point shared by the manual
-/// `/rediarize` route and the orchestrator's auto-refine-at-stop. Blocking (whisper + subprocess)
-/// — call via `spawn_blocking` from async code.
-pub fn refine_audio_file(
-    audio_path: &Path,
-    diarize_binary: &Path,
-    model: &Path,
-    timeout: Duration,
-    carry_over: bool,
-) -> Result<RefineOutput, InferenceError> {
-    refine_audio_file_with(
-        audio_path,
-        &SwiftDiarizer::new(diarize_binary, timeout),
-        model,
-        carry_over,
-    )
 }
 
 fn write_mono_wav(path: &Path, samples: &[f32]) -> Result<(), InferenceError> {
@@ -424,6 +394,7 @@ fn write_mono_wav(path: &Path, samples: &[f32]) -> Result<(), InferenceError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::fs::PermissionsExt;
 
     #[test]
     fn build_centroids_normalizes_and_skips_empty() {
@@ -435,11 +406,16 @@ mod tests {
         assert!((a[0] - 0.6).abs() < 1e-6 && (a[1] - 0.8).abs() < 1e-6);
     }
 
+    fn diarization(json: &[u8]) -> Diarization {
+        to_diarization(&parse_sidecar(json).unwrap())
+    }
+
     #[test]
-    fn parse_diarization_orders_speakers_by_time_and_keys_embeddings() {
+    fn diarization_orders_speakers_by_time_and_keys_embeddings() {
         // Turns out of order: A first appears at 1.0, B at 5.0 -> A=1, B=2 (order_speakers sorts by
         // start). The returned turns are start-sorted; embeddings are keyed by the same ordinal.
-        let json = br#"{
+        let d = diarization(
+            br#"{
             "turns": [
                 {"speaker": "B", "start_s": 5.0, "end_s": 6.0},
                 {"speaker": "A", "start_s": 1.0, "end_s": 2.0},
@@ -449,8 +425,8 @@ mod tests {
                 {"speaker": "A", "embedding": [0.1, 0.2]},
                 {"speaker": "B", "embedding": [0.3, 0.4]}
             ]
-        }"#;
-        let d = parse_diarization(json).unwrap();
+        }"#,
+        );
         assert_eq!(
             d.turns.iter().map(|t| t.start_s).collect::<Vec<_>>(),
             vec![1.0, 5.0, 8.0]
@@ -463,29 +439,34 @@ mod tests {
     }
 
     #[test]
-    fn parse_diarization_defaults_missing_speakers_and_skips_unturned_embeddings() {
+    fn diarization_defaults_missing_speakers_and_skips_unturned_embeddings() {
         // No `speakers` field -> empty embeddings, not a parse failure.
-        let d = parse_diarization(br#"{"turns":[{"speaker":"S1","start_s":0.0,"end_s":1.0}]}"#)
-            .unwrap();
+        let d = diarization(br#"{"turns":[{"speaker":"S1","start_s":0.0,"end_s":1.0}]}"#);
         assert_eq!(d.turns.len(), 1);
         assert_eq!(d.turns[0].speaker, 1);
         assert!(d.embeddings.is_empty());
 
         // An embedding for a label with no turn is skipped (not keyed to a phantom ordinal).
-        let d2 = parse_diarization(
+        let d2 = diarization(
             br#"{"turns":[{"speaker":"S1","start_s":0.0,"end_s":1.0}],
                  "speakers":[{"speaker":"ghost","embedding":[1.0]}]}"#,
-        )
-        .unwrap();
+        );
         assert!(d2.embeddings.is_empty());
     }
 
     #[test]
-    fn parse_diarization_rejects_malformed_json() {
+    fn parse_rejects_malformed_json_and_reads_the_asr_payload() {
         assert!(matches!(
-            parse_diarization(b"not json at all"),
-            Err(InferenceError::Diarize(_))
+            parse_sidecar(b"not json at all"),
+            Err(InferenceError::Sidecar(_))
         ));
+        let out = parse_sidecar(
+            br#"{"turns":[],"asr":{"model":"ultra","processing_s":1.0,
+                 "words":[{"word":"hi","start_s":0.5,"end_s":0.9,"confidence":0.9}]}}"#,
+        )
+        .unwrap();
+        assert_eq!(out.asr.unwrap().words.len(), 1);
+        assert!(parse_sidecar(br#"{"turns":[]}"#).unwrap().asr.is_none());
     }
 
     fn diar(speaker: i64, start_s: f64, end_s: f64) -> DiarTurn {
@@ -496,69 +477,113 @@ mod tests {
         }
     }
 
-    fn asr(text: &str, start_s: f64, end_s: f64) -> AsrSegment {
-        AsrSegment {
-            text: text.to_string(),
+    fn word(text: &str, start_s: f64, end_s: f64) -> AsrWord {
+        AsrWord {
+            word: text.to_string(),
             start_s,
             end_s,
         }
     }
 
     #[test]
-    fn assemble_attributes_each_segment_by_max_overlap() {
+    fn assemble_attributes_each_word_by_max_overlap() {
         let turns = vec![diar(1, 0.0, 5.0), diar(2, 5.0, 10.0)];
-        let segs = vec![asr("hello", 0.5, 4.0), asr("world", 5.5, 9.0)];
-        let out = assemble_refined_segments(&segs, &turns);
+        let words = vec![word("hello", 0.5, 1.0), word("world", 5.5, 6.0)];
+        let out = assemble_refined_segments(&words, &turns);
         assert_eq!(out.len(), 2);
         assert_eq!((out[0].ordinal, out[0].text.as_str()), (1, "hello"));
         assert_eq!((out[1].ordinal, out[1].text.as_str()), (2, "world"));
     }
 
     #[test]
-    fn assemble_merges_consecutive_segments_of_the_same_turn() {
+    fn assemble_merges_consecutive_words_of_the_same_turn() {
         let turns = vec![diar(1, 0.0, 10.0)];
-        let segs = vec![asr("hello", 0.0, 2.0), asr("there", 2.0, 4.0)];
-        let out = assemble_refined_segments(&segs, &turns);
+        let words = vec![word("hello", 0.0, 0.5), word("there", 0.6, 1.2)];
+        let out = assemble_refined_segments(&words, &turns);
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].ordinal, 1);
         assert_eq!(out[0].text, "hello there");
         // The merged segment spans the first start to the last end.
-        assert_eq!((out[0].start_s, out[0].end_s), (0.0, 4.0));
+        assert_eq!((out[0].start_s, out[0].end_s), (0.0, 1.2));
     }
 
     #[test]
     fn assemble_does_not_merge_across_turns_of_the_same_speaker() {
-        // One speaker, two turns (a real speech pause between them): the segments stay separate so
-        // the final transcript can interleave Me utterances spoken during the pause. A single blob
-        // here is the failure mode that pushed a whole meeting's Me lines after one giant segment.
+        // Two turns of one speaker stay separate so Me lines spoken in the pause can interleave.
         let turns = vec![diar(1, 0.0, 4.0), diar(1, 6.0, 10.0)];
-        let segs = vec![asr("before the pause", 0.0, 4.0), asr("after it", 6.0, 9.0)];
-        let out = assemble_refined_segments(&segs, &turns);
+        let words = vec![
+            word("before", 0.0, 1.0),
+            word("it", 6.0, 6.5),
+            word("after", 6.5, 7.0),
+        ];
+        let out = assemble_refined_segments(&words, &turns);
         assert_eq!(out.len(), 2);
-        assert_eq!(
-            (out[0].ordinal, out[0].text.as_str()),
-            (1, "before the pause")
-        );
-        assert_eq!((out[1].ordinal, out[1].text.as_str()), (1, "after it"));
-        assert_eq!((out[1].start_s, out[1].end_s), (6.0, 9.0));
+        assert_eq!((out[0].ordinal, out[0].text.as_str()), (1, "before"));
+        assert_eq!((out[1].ordinal, out[1].text.as_str()), (1, "it after"));
+        assert_eq!((out[1].start_s, out[1].end_s), (6.0, 7.0));
+    }
+
+    #[test]
+    fn assemble_keeps_a_short_interjection_with_its_own_speaker() {
+        // Speaker 2 says "right" while speaker 1 holds a long turn: word-level attribution keeps the
+        // interjection out of speaker 1's segment.
+        let turns = vec![diar(1, 0.0, 10.0), diar(2, 4.0, 4.6)];
+        let words = vec![
+            word("so", 1.0, 1.3),
+            word("right", 4.1, 4.5),
+            word("anyway", 5.0, 5.5),
+        ];
+        let out = assemble_refined_segments(&words, &turns);
+        let ordinals: Vec<i64> = out.iter().map(|s| s.ordinal).collect();
+        assert_eq!(ordinals, vec![1, 2, 1]);
+        assert_eq!(out[1].text, "right");
     }
 
     #[test]
     fn assemble_keeps_unoverlapped_text_via_nearest_turn() {
-        // A segment overlapping no turn is attributed to the nearest turn, never dropped.
+        // A word overlapping no turn is attributed to the nearest turn, never dropped.
         let turns = vec![diar(1, 0.0, 5.0), diar(2, 50.0, 55.0)];
-        let out = assemble_refined_segments(&[asr("stray", 6.0, 7.0)], &turns);
+        let out = assemble_refined_segments(&[word("stray", 6.0, 7.0)], &turns);
         assert_eq!(out.len(), 1);
         assert_eq!((out[0].ordinal, out[0].text.as_str()), (1, "stray"));
     }
 
     #[test]
-    fn assemble_skips_blank_segments_and_empty_turns() {
-        let turns = vec![diar(1, 0.0, 5.0)];
-        let out = assemble_refined_segments(&[asr("   ", 0.0, 1.0), asr("real", 1.0, 2.0)], &turns);
+    fn assemble_gives_a_zero_length_word_to_the_shorter_containing_turn() {
+        let turns = vec![diar(1, 0.0, 10.0), diar(2, 4.0, 4.6)];
+        let out = assemble_refined_segments(&[word("x", 4.2, 4.2)], &turns);
         assert_eq!(out.len(), 1);
-        assert_eq!(out[0].text, "real");
+        assert_eq!(out[0].ordinal, 2);
+    }
+
+    #[test]
+    fn refine_with_words_but_no_turns_reports_the_words_as_uncovered() {
+        let dir = tempfile::tempdir().unwrap();
+        let sidecar = dir.path().join("hearsay-diarize");
+        std::fs::write(
+            &sidecar,
+            "#!/bin/sh\necho '{\"turns\":[],\"asr\":{\"words\":[{\"word\":\"hi\",\"start_s\":0.0,\"end_s\":2.0}]}}'\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&sidecar, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let loud = vec![0.5_f32; 2 * SAMPLE_RATE as usize];
+        let out = refine_them(&sidecar, ASR_MODEL, &loud, Duration::from_secs(10)).unwrap();
+        assert!(out.segments.is_empty());
+        assert_eq!(out.coverage.unwrap().fraction(), 0.0);
+    }
+
+    #[test]
+    fn assemble_orders_words_skips_blanks_and_handles_empty_turns() {
+        let turns = vec![diar(1, 0.0, 5.0)];
+        let words = vec![
+            word("   ", 0.0, 1.0),
+            word("two", 2.0, 2.5),
+            word("one", 1.0, 1.5),
+        ];
+        let out = assemble_refined_segments(&words, &turns);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].text, "one two");
         // No turns -> nothing to attribute to.
-        assert!(assemble_refined_segments(&[asr("hi", 0.0, 1.0)], &[]).is_empty());
+        assert!(assemble_refined_segments(&[word("hi", 0.0, 1.0)], &[]).is_empty());
     }
 }

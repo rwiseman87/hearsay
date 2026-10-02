@@ -1,4 +1,4 @@
-// swift-tools-version: 6.0
+// swift-tools-version: 6.1
 import Foundation
 import PackageDescription
 
@@ -14,17 +14,17 @@ let package = Package(
     dependencies: [
         // On-device AI on the Apple Neural Engine (Apache-2.0). Used by the audio-AI
         // sidecars (hearsay-{live,me,diarize}); the capture executable stays dependency-free.
-        .package(url: "https://github.com/FluidInference/FluidAudio.git", exact: "0.15.4")
+        // `traits: []` opts out of the prebuilt NemoTextProcessing binary (inverse text normalization, unused here).
+        .package(url: "https://github.com/FluidInference/FluidAudio.git", exact: "0.17.5", traits: [])
     ],
     targets: [
         .target(name: "HearsayIPC"),
-        // Shared stdio plumbing for the streaming sidecars (framing + stdin length cap + JSON emit +
-        // stderr log + PCM buffer). Dependency-free (system frameworks only) so it never bloats a
-        // binary; the length-cap fix lives here once instead of in each sidecar main.
+        // Shared sidecar stdio (framing, bounded stdin queue, JSON emit); system frameworks only.
+        // hearsay-helper links it for its selftest.
         .target(name: "SidecarIO"),
         .executableTarget(
             name: "hearsay-helper",
-            dependencies: ["HearsayIPC"],
+            dependencies: ["HearsayIPC", "SidecarIO"],
             // The capture executable drives real-time Core Audio / AVAudioEngine
             // callbacks across threads with explicit lock discipline and
             // @unchecked Sendable. Swift 6 strict-concurrency flags those

@@ -34,9 +34,8 @@ pub fn router(web_dir: &FsPath) -> Router<AppState> {
 /// Minimal CSP for a loopback single-page app: same-origin scripts plus the one nonce'd inline
 /// token bootstrap; `connect-src` also allows the loopback WebSocket and — so the Tauri desktop
 /// shell's `invoke()` works when it navigates the webview to this served page — the Tauri IPC
-/// transport (`ipc://localhost` on macOS, `http://ipc.localhost` on Windows/Linux). Because the core
-/// (not Tauri) serves this page, Tauri cannot auto-patch its own CSP, so these must be listed
-/// explicitly; they are inert in a plain browser. The WebSocket source is pinned to the exact host
+/// transport (`ipc://localhost`). Because the core (not Tauri) serves this page, Tauri cannot
+/// auto-patch its own CSP, so these must be listed explicitly; they are inert in a plain browser. The WebSocket source is pinned to the exact host
 /// the page was served from (the same `window.location.host` the client opens the socket on) rather
 /// than a `ws://127.0.0.1:*` port wildcard.
 fn csp(nonce: &str, ws_host: &str) -> String {
@@ -45,7 +44,7 @@ fn csp(nonce: &str, ws_host: &str) -> String {
         format!("script-src 'self' 'nonce-{nonce}'"),
         "style-src 'self' 'unsafe-inline'".to_string(),
         "img-src 'self' data:".to_string(),
-        format!("connect-src 'self' ipc: http://ipc.localhost ws://{ws_host}"),
+        format!("connect-src 'self' ipc: ws://{ws_host}"),
         "base-uri 'none'".to_string(),
         "object-src 'none'".to_string(),
         "frame-ancestors 'none'".to_string(),

@@ -24,28 +24,42 @@ use uuid::Uuid;
 use hearsay_db::queries;
 
 use crate::aec::EchoCanceller;
-use crate::echo_dedup::{EchoDedup, EchoDedupConfig};
+use crate::echo_dedup::EchoDedup;
 use crate::error::OrchestratorError;
 use crate::lock::MutexExt;
 use crate::recorder::MeetingAudioRecorder;
 use crate::traits::{AudioSource, BackendInstance, StreamRole, Transcriber};
+use crate::tuning::{LiveStats, LiveTuning};
 use crate::types::{CaptureChunk, SegmentKind, SidecarSegment, Stream};
 
 /// Capacity of the per-meeting live broadcast channel (transcript events to WebSocket subscribers).
 const BROADCAST_CAPACITY: usize = 256;
 
-/// Capacity of each stream's PCM hand-off channel (demux -> stream task). ~13 s of 100 ms chunks.
-/// The recorder writes on the always-drained demux path *before* this hand-off, so a wedged/slow
-/// transcriber only backs up its own queue; on overflow demux drops-with-log for that stream rather
-/// than stalling the recorder and the other stream (head-of-line).
-const PCM_CHANNEL_CAPACITY: usize = 128;
+/// Nominal capture chunk length (the helper drains every 20 ms); sizes the hand-off channels.
+const NOMINAL_CHUNK_MS: usize = 20;
 
-/// Capacity of the demux -> recorder hand-off channel. The recorder runs on its own blocking thread,
-/// so demux only ever `try_send`s here (never blocks on disk); this queue absorbs a transient disk
-/// stall. ~50 s of 100 ms chunks — far past any real write hiccup, and only a few MB of buffered PCM.
-/// On sustained overflow demux drops-with-log for the archive (a silent gap the recorder re-anchors
-/// over), leaving live transcription untouched.
-const REC_CHANNEL_CAPACITY: usize = 512;
+/// Seconds of audio each stream's demux -> stream task channel buffers. On overflow demux drops
+/// that stream's chunks (counted) rather than stall the recorder or the other stream.
+const PCM_BUFFER_SECONDS: usize = 10;
+
+/// Capacity of each stream's PCM hand-off channel: [`PCM_BUFFER_SECONDS`] of nominal chunks (500
+/// slots, under 1 MB of PCM per stream).
+const PCM_CHANNEL_CAPACITY: usize = PCM_BUFFER_SECONDS * 1000 / NOMINAL_CHUNK_MS;
+
+/// Minimum spacing between drop warnings for one stream; drops in between accumulate into the next.
+const DROP_WARN_INTERVAL: Duration = Duration::from_secs(5);
+
+/// Seconds of audio the demux -> recorder channel buffers to absorb a disk stall. On overflow demux
+/// drops the chunk from the archive (a gap the recorder re-anchors over).
+const REC_BUFFER_SECONDS: usize = 50;
+
+/// Capacity of the demux -> recorder channel: [`REC_BUFFER_SECONDS`] of nominal chunks (2500 slots,
+/// a few MB of PCM).
+const REC_CHANNEL_CAPACITY: usize = REC_BUFFER_SECONDS * 1000 / NOMINAL_CHUNK_MS;
+
+/// A stream whose sidecar has been running at least this long when it dies gets a fresh retry
+/// budget, so isolated crashes over a long meeting do not exhaust it.
+const RESPAWN_STABLE: Duration = Duration::from_secs(60);
 
 const SAMPLE_RATE: f64 = hearsay_audio::SAMPLE_RATE as f64;
 
@@ -247,6 +261,7 @@ pub(crate) async fn spawn(
     audio_path: Option<PathBuf>,
     ane_gate: Arc<Semaphore>,
     inactivity: InactivityConfig,
+    tuning: &LiveTuning,
 ) -> Result<(Pipeline, oneshot::Receiver<()>, oneshot::Receiver<()>), OrchestratorError> {
     let BackendInstance {
         mut source,
@@ -354,7 +369,10 @@ pub(crate) async fn spawn(
     // Shared across both stream tasks: the Them task records finals as candidate echo sources; the
     // Me task drops a final that matches one. A backstop behind the acoustic canceller (`aec`), it
     // touches only live Me finals, never the archive or the refine.
-    let echo_dedup = Arc::new(Mutex::new(EchoDedup::new(EchoDedupConfig::default())));
+    let dedup = tuning
+        .echo_dedup
+        .map_or_else(EchoDedup::off, EchoDedup::new);
+    let echo_dedup = Arc::new(Mutex::new(dedup.with_stats(tuning.stats.clone())));
     let intentional_stop = Arc::new(AtomicBool::new(false));
     // Pause gate (the "Pause" control): while set, demux drops chunks and elides the span so the
     // timeline stays contiguous, and the watchdog holds the silence clock. Shared with those tasks.
@@ -365,10 +383,11 @@ pub(crate) async fn spawn(
         me_tx,
         them_tx,
         rec_tx,
-        EchoCanceller::new(),
+        EchoCanceller::new_with(tuning.aec),
         intentional_stop.clone(),
         paused.clone(),
         died_tx,
+        tuning.stats.clone(),
     ));
     let me_task = tokio::spawn(stream_loop(
         StreamRole::Me,
@@ -381,6 +400,7 @@ pub(crate) async fn spawn(
         ane_ready_rx.clone(),
         last_activity.clone(),
         echo_dedup.clone(),
+        tuning.stats.clone(),
     ));
     let them_task = tokio::spawn(stream_loop(
         StreamRole::Them,
@@ -393,6 +413,7 @@ pub(crate) async fn spawn(
         ane_ready_rx,
         last_activity.clone(),
         echo_dedup,
+        tuning.stats.clone(),
     ));
 
     // Spawn the inactivity watchdog only when a prompt or an auto-end is enabled; otherwise drop
@@ -436,17 +457,98 @@ pub(crate) async fn spawn(
     ))
 }
 
-/// Forward one chunk to a stream's transcriber without ever blocking on a slow/wedged one (that
-/// would stall the recorder + the other stream); on a full queue drop-with-log. The dropped span
-/// reappears as a timeline gap that `stream_loop`'s resync pads with silence, so segment times stay
-/// aligned.
-fn forward(sender: &mpsc::Sender<(f64, Vec<f32>)>, t0_s: f64, samples: Vec<f32>, stream: Stream) {
-    match sender.try_send((t0_s, samples)) {
-        Ok(()) => {}
-        Err(TrySendError::Full(_)) => {
-            tracing::debug!(stream = ?stream, "transcriber queue full; dropping chunk")
+/// Chunks and samples dropped on a full hand-off channel, with the rate limiter for the drop warning.
+#[derive(Default)]
+struct DropStats {
+    chunks: u64,
+    samples: u64,
+    pending_chunks: u64,
+    pending_samples: u64,
+    last_warn: Option<Instant>,
+}
+
+impl DropStats {
+    /// Count one dropped chunk. Returns the `(chunks, samples)` dropped since the last warning once
+    /// [`DROP_WARN_INTERVAL`] has elapsed (or on the first drop), else `None`.
+    fn record(&mut self, samples: usize, now: Instant) -> Option<(u64, u64)> {
+        self.chunks += 1;
+        self.samples += samples as u64;
+        self.pending_chunks += 1;
+        self.pending_samples += samples as u64;
+        if self
+            .last_warn
+            .is_some_and(|t| now.duration_since(t) < DROP_WARN_INTERVAL)
+        {
+            return None;
         }
-        Err(TrySendError::Closed(_)) => {}
+        self.last_warn = Some(now);
+        Some((
+            std::mem::take(&mut self.pending_chunks),
+            std::mem::take(&mut self.pending_samples),
+        ))
+    }
+}
+
+/// Hands one stream's chunks to its transcriber task without ever blocking on a slow/wedged one (that
+/// would stall the recorder + the other stream); on a full queue it drops and counts. The dropped
+/// span reappears as a timeline gap that `stream_loop`'s resync pads with silence, so segment times
+/// stay aligned.
+struct PcmForwarder {
+    stream: Stream,
+    sender: mpsc::Sender<(f64, Vec<f32>)>,
+    stats: DropStats,
+    live_stats: Option<Arc<LiveStats>>,
+}
+
+impl PcmForwarder {
+    fn new(stream: Stream, sender: mpsc::Sender<(f64, Vec<f32>)>) -> Self {
+        PcmForwarder {
+            stream,
+            sender,
+            stats: DropStats::default(),
+            live_stats: None,
+        }
+    }
+
+    fn with_stats(mut self, stats: Option<Arc<LiveStats>>) -> Self {
+        self.live_stats = stats;
+        self
+    }
+
+    fn forward(&mut self, t0_s: f64, samples: Vec<f32>) {
+        let len = samples.len();
+        match self.sender.try_send((t0_s, samples)) {
+            Ok(()) => {}
+            Err(TrySendError::Full(_)) => {
+                if let Some(live) = &self.live_stats {
+                    live.dropped_chunks.fetch_add(1, Ordering::SeqCst);
+                }
+                if let Some((chunks, samples)) = self.stats.record(len, Instant::now()) {
+                    tracing::warn!(
+                        stream = ?self.stream,
+                        chunks,
+                        seconds = samples as f64 / SAMPLE_RATE,
+                        "transcriber queue full; dropping audio",
+                    );
+                }
+            }
+            Err(TrySendError::Closed(_)) => {}
+        }
+    }
+
+    fn log_summary(&self) {
+        let seconds = self.stats.samples as f64 / SAMPLE_RATE;
+        if self.stats.chunks > 0 {
+            tracing::warn!(
+                stream = ?self.stream,
+                dropped_chunks = self.stats.chunks,
+                dropped_samples = self.stats.samples,
+                dropped_seconds = seconds,
+                "audio dropped on a full transcriber queue this meeting",
+            );
+        } else {
+            tracing::info!(stream = ?self.stream, "no audio dropped on the transcriber queue");
+        }
     }
 }
 
@@ -479,7 +581,10 @@ async fn demux(
     intentional_stop: Arc<AtomicBool>,
     paused: Arc<AtomicBool>,
     died_tx: oneshot::Sender<()>,
+    stats: Option<Arc<LiveStats>>,
 ) {
+    let mut me_fwd = PcmForwarder::new(Stream::Me, me_tx).with_stats(stats.clone());
+    let mut them_fwd = PcmForwarder::new(Stream::Them, them_tx).with_stats(stats);
     let mut epoch_ns: Option<u64> = None;
     // Total nanoseconds elided by pauses, subtracted from every chunk's meeting time so the timeline
     // (and `audio.wav`) stays contiguous across a pause — no silent gap. `pause_started_at` holds the
@@ -528,18 +633,20 @@ async fn demux(
         match stream {
             Stream::Them => {
                 let ready = canceller.push_far(t0_s, &samples);
-                forward(&them_tx, t0_s, samples, Stream::Them);
+                them_fwd.forward(t0_s, samples);
                 for (mt0, m) in ready {
-                    forward(&me_tx, mt0, m, Stream::Me);
+                    me_fwd.forward(mt0, m);
                 }
             }
             Stream::Me => {
                 for (mt0, m) in canceller.process_me(t0_s, &samples) {
-                    forward(&me_tx, mt0, m, Stream::Me);
+                    me_fwd.forward(mt0, m);
                 }
             }
         }
     }
+    me_fwd.log_summary();
+    them_fwd.log_summary();
     // Capture ended: `rec_tx` drops as this task returns, so the recorder task drains its queue,
     // writes the tail, and finalizes `audio.wav` (awaited by `Pipeline::close`).
     // If capture ended without an intentional `close()` (the helper crashed / the media socket
@@ -551,9 +658,52 @@ async fn demux(
     }
 }
 
-/// Per-stream task: feed the transcriber while capture flows, then flush + drain its tail. Segment
-/// times are shifted by `offset` (the first `t0_s` fed to this stream), mapping sidecar-local time
-/// back to meeting time.
+/// Replace a dead sidecar, sleeping the transcriber's backoff before each attempt. `attempts` counts
+/// restarts since the last sidecar that ran for [`RESPAWN_STABLE`]. Returns the new segment channel,
+/// or `None` once the retry budget is spent.
+async fn respawn_sidecar(
+    role: StreamRole,
+    transcriber: &mut dyn Transcriber,
+    attempts: &mut usize,
+    last_spawn: &mut Instant,
+    mut reason: String,
+    stats: Option<&LiveStats>,
+) -> Option<mpsc::Receiver<SidecarSegment>> {
+    if last_spawn.elapsed() >= RESPAWN_STABLE {
+        *attempts = 0;
+    }
+    let backoff = transcriber.respawn_backoff().to_vec();
+    loop {
+        let Some(delay) = backoff.get(*attempts).copied() else {
+            tracing::error!(
+                stream = ?role,
+                reason = %reason,
+                "sidecar restart budget exhausted; live transcription for this stream has stopped",
+            );
+            return None;
+        };
+        *attempts += 1;
+        tracing::warn!(stream = ?role, attempt = *attempts, reason = %reason, "restarting sidecar");
+        tokio::time::sleep(delay).await;
+        match transcriber.respawn().await {
+            Ok(rx) => {
+                *last_spawn = Instant::now();
+                if let Some(stats) = stats {
+                    let counter = match role {
+                        StreamRole::Me => &stats.me_respawns,
+                        StreamRole::Them => &stats.them_respawns,
+                    };
+                    counter.fetch_add(1, Ordering::SeqCst);
+                }
+                return Some(rx);
+            }
+            Err(err) => reason = err.to_string(),
+        }
+    }
+}
+
+/// Per-stream task: feed the transcriber, persist its segments shifted by `offset`, and respawn a
+/// sidecar that dies mid-meeting (re-basing `offset` to the replacement's first chunk).
 #[allow(clippy::too_many_arguments)]
 async fn stream_loop(
     role: StreamRole,
@@ -566,6 +716,7 @@ async fn stream_loop(
     mut ane_ready: watch::Receiver<bool>,
     last_activity: Arc<Mutex<Instant>>,
     echo_dedup: Arc<Mutex<EchoDedup>>,
+    stats: Option<Arc<LiveStats>>,
 ) {
     // Serialize live inference against the offline refine on the shared ANE permit: wait until this
     // meeting holds it before feeding the sidecar. Recording is unaffected (demux records on its own
@@ -577,14 +728,21 @@ async fn stream_loop(
 
     let mut offset: Option<f64> = None;
     let mut clusters: HashMap<i64, Uuid> = HashMap::new();
+    // Added to a Them sidecar's speaker index, so a replacement diarizer starts on fresh ordinals.
+    let mut ordinal_base: i64 = 0;
     let mut feeding = true;
+    // True while a sidecar is attached; false once its restart budget is spent, after which chunks
+    // are still drained (level meter, dead-mic watch) but not fed.
+    let mut sidecar_live = true;
+    let mut respawn_attempts: usize = 0;
+    let mut last_spawn = Instant::now();
     let mut dead_mic = DeadMicMonitor::default();
     let mut level_meter = LevelMeter::new();
     // Samples fed to the sidecar so far (including any silence padding), so its sample-count
     // timeline can be kept aligned to meeting time.
     let mut fed_samples: u64 = 0;
 
-    loop {
+    while feeding || sidecar_live {
         tokio::select! {
             // No `biased`: a chunk-first bias lets a producer that outpaces wall-clock (e.g. an
             // offline WAV replay) keep `chunk_rx` non-empty and starve `emit_rx`, which — with the
@@ -593,23 +751,45 @@ async fn stream_loop(
             chunk = chunk_rx.recv(), if feeding => match chunk {
                 Some((t0_s, samples)) => {
                     let base = *offset.get_or_insert(t0_s);
-                    // Keep the sidecar's sample-count timeline aligned to meeting time: if this
-                    // chunk's timestamp is past where the samples fed so far place it (dropped
-                    // frames, a tap rebuild, or a chunk dropped by demux under backpressure), pad
-                    // the gap with silence so the single `offset` mapping in `handle` stays correct
-                    // and transcript times track `audio.wav` (which re-anchors on `t0_s` too).
-                    let expected_s = fed_samples as f64 / SAMPLE_RATE;
-                    let gap_s = (t0_s - base) - expected_s;
-                    if gap_s > RESYNC_THRESHOLD_S {
-                        let pad = ((gap_s * SAMPLE_RATE).round() as usize).min(MAX_SILENCE_PAD_SAMPLES);
-                        tracing::debug!(role = ?role, gap_s, pad, "resync: padding sidecar timeline with silence");
-                        fed_samples += pad as u64;
-                        transcriber.feed(vec![0.0; pad]).await;
-                    }
-                    fed_samples += samples.len() as u64;
                     dead_mic.observe(role, &samples, &broadcast_tx);
                     level_meter.observe(role, &samples, &broadcast_tx);
-                    transcriber.feed(samples).await;
+                    if sidecar_live {
+                        // Keep the sidecar's sample-count timeline aligned to meeting time: if this
+                        // chunk's timestamp is past where the samples fed so far place it (dropped
+                        // frames, a tap rebuild, or a chunk dropped by demux under backpressure), pad
+                        // the gap with silence so the single `offset` mapping in `handle` stays correct
+                        // and transcript times track `audio.wav` (which re-anchors on `t0_s` too).
+                        let expected_s = fed_samples as f64 / SAMPLE_RATE;
+                        let gap_s = (t0_s - base) - expected_s;
+                        if gap_s > RESYNC_THRESHOLD_S {
+                            let pad = ((gap_s * SAMPLE_RATE).round() as usize).min(MAX_SILENCE_PAD_SAMPLES);
+                            tracing::debug!(role = ?role, gap_s, pad, "resync: padding sidecar timeline with silence");
+                            fed_samples += pad as u64;
+                            transcriber.feed(vec![0.0; pad]).await;
+                        }
+                        fed_samples += samples.len() as u64;
+                        transcriber.feed(samples).await;
+                        if transcriber.is_broken() && transcriber.can_respawn() {
+                            // Keep what the dying sidecar already emitted, at its own offset.
+                            while let Ok(seg) = emit_rx.try_recv() {
+                                handle(role, &seg, offset.unwrap_or(0.0), &pool, meeting_id, &broadcast_tx, &mut clusters, ordinal_base, &echo_dedup).await;
+                            }
+                            match respawn_sidecar(role, transcriber.as_mut(), &mut respawn_attempts, &mut last_spawn, "stdin write failed".into(), stats.as_deref()).await {
+                                Some(rx) => {
+                                    emit_rx = rx;
+                                    offset = None;
+                                    fed_samples = 0;
+                                    if role == StreamRole::Them {
+                                        ordinal_base = next_ordinal_base(&pool, meeting_id, &clusters).await;
+                                    }
+                                }
+                                None => {
+                                    transcriber.close().await;
+                                    sidecar_live = false;
+                                }
+                            }
+                        }
+                    }
                 }
                 // Capture ended: stop feeding and flush the sidecar's finalized tail. The emit
                 // channel closes once the sidecar exits, ending the drain below.
@@ -618,7 +798,7 @@ async fn stream_loop(
                     transcriber.close().await;
                 }
             },
-            seg = emit_rx.recv() => match seg {
+            seg = emit_rx.recv(), if sidecar_live => match seg {
                 Some(seg) => {
                     // Any emitted segment (partial or final, either stream) is VAD-gated speech, so it
                     // resets the silence clock the inactivity watchdog measures.
@@ -631,16 +811,33 @@ async fn stream_loop(
                         meeting_id,
                         &broadcast_tx,
                         &mut clusters,
+                        ordinal_base,
                         &echo_dedup,
                     )
                     .await;
                 }
-                // The sidecar closed its output (finished, or died mid-meeting). Close the
-                // transcriber (drop stdin, drain, reap the child) rather than leaking it, then end
-                // this stream. `close()` is idempotent, so a prior close on capture-end is fine.
+                // Sidecar output closed: respawn it while capture still flows, else close (idempotent)
+                // to reap the child.
                 None => {
-                    transcriber.close().await;
-                    break;
+                    let recovered = if feeding && transcriber.can_respawn() {
+                        respawn_sidecar(role, transcriber.as_mut(), &mut respawn_attempts, &mut last_spawn, "sidecar exited".into(), stats.as_deref()).await
+                    } else {
+                        None
+                    };
+                    match recovered {
+                        Some(rx) => {
+                            emit_rx = rx;
+                            offset = None;
+                            fed_samples = 0;
+                            if role == StreamRole::Them {
+                                ordinal_base = next_ordinal_base(&pool, meeting_id, &clusters).await;
+                            }
+                        }
+                        None => {
+                            transcriber.close().await;
+                            sidecar_live = false;
+                        }
+                    }
                 }
             },
         }
@@ -729,8 +926,7 @@ struct PromptEvent<'a> {
 }
 
 /// A capture-health notice pushed to WebSocket subscribers:
-/// `{"kind":"capture_health","stream":"me","state":"silent"}`. The Windows counterpart of the
-/// macOS helper's `tap_health` event.
+/// `{"kind":"capture_health","stream":"me","state":"silent"}`.
 #[derive(Serialize)]
 struct CaptureHealthEvent<'a> {
     kind: &'a str,
@@ -1007,6 +1203,7 @@ async fn handle(
     meeting_id: Uuid,
     broadcast_tx: &broadcast::Sender<String>,
     clusters: &mut HashMap<i64, Uuid>,
+    ordinal_base: i64,
     echo_dedup: &Arc<Mutex<EchoDedup>>,
 ) {
     let start_s = seg.start_s + offset;
@@ -1056,6 +1253,9 @@ async fn handle(
         // A final carries a 0-based speaker ordinal -> a `Speaker N` label + a per-meeting cluster.
         StreamRole::Them => {
             if seg.kind == SegmentKind::Partial {
+                echo_dedup
+                    .lock_recover()
+                    .record_them_partial(start_s, end_s, &seg.text);
                 publish(
                     broadcast_tx,
                     &TranscriptEvent {
@@ -1069,7 +1269,7 @@ async fn handle(
                 );
                 return;
             }
-            let ordinal = seg.speaker.unwrap_or(0) + 1;
+            let ordinal = ordinal_base + seg.speaker.unwrap_or(0) + 1;
             let label = format!("Speaker {ordinal}");
             let cluster_id = cluster_for(pool, meeting_id, ordinal, clusters).await;
             if let Err(err) = queries::insert_segment(
@@ -1127,6 +1327,23 @@ async fn cluster_for(
             None
         }
     }
+}
+
+/// The highest ordinal this meeting has used, live or in the database, so new ones never reuse it.
+async fn next_ordinal_base(
+    pool: &SqlitePool,
+    meeting_id: Uuid,
+    clusters: &HashMap<i64, Uuid>,
+) -> i64 {
+    let seen = clusters.keys().copied().max().unwrap_or(0);
+    let stored = match queries::list_speaker_rows(pool, meeting_id).await {
+        Ok(rows) => rows.iter().map(|r| r.ordinal).max().unwrap_or(0),
+        Err(err) => {
+            tracing::error!(error = %err, "failed to read speaker ordinals");
+            0
+        }
+    };
+    seen.max(stored)
 }
 
 #[cfg(test)]
@@ -1199,6 +1416,7 @@ mod tests {
             Arc::new(AtomicBool::new(true)), // intentional_stop: suppress the death report on close
             paused.clone(),
             died_tx,
+            None,
         ));
 
         let them = |host_ms: u64| CaptureChunk {
@@ -1260,6 +1478,7 @@ mod tests {
             Arc::new(AtomicBool::new(true)), // intentional_stop: suppress the death report on close
             Arc::new(AtomicBool::new(false)),
             died_tx,
+            None,
         ));
 
         // A Them chunk anchors the epoch at t0_s=0 and is recorded raw (Them is never echo-cancelled).
@@ -1471,5 +1690,63 @@ mod tests {
                 .any(|s| s.speaker_label == "System" && s.text.contains("auto-ended")),
             "expected a System auto-end marker segment, got: {segments:?}"
         );
+    }
+}
+
+#[cfg(test)]
+mod drop_tests {
+    use super::{DropStats, PcmForwarder, DROP_WARN_INTERVAL, PCM_CHANNEL_CAPACITY};
+    use crate::types::Stream;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn channel_buffers_ten_seconds_of_nominal_chunks() {
+        // 20 ms chunks: 50 per second.
+        assert_eq!(PCM_CHANNEL_CAPACITY, 500);
+    }
+
+    #[test]
+    fn forwarder_counts_chunks_and_samples_dropped_on_overflow() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<(f64, Vec<f32>)>(2);
+        let mut fwd = PcmForwarder::new(Stream::Me, tx);
+        for i in 0..7 {
+            fwd.forward(i as f64 * 0.02, vec![0.1; 320]);
+        }
+        // Two fit; the other five are dropped and counted.
+        assert_eq!(fwd.stats.chunks, 5);
+        assert_eq!(fwd.stats.samples, 5 * 320);
+        assert_eq!(rx.try_recv().unwrap().0, 0.0);
+        // Draining makes room again, and later chunks are not counted as drops.
+        rx.try_recv().unwrap();
+        fwd.forward(1.0, vec![0.1; 320]);
+        assert_eq!(fwd.stats.chunks, 5);
+    }
+
+    #[test]
+    fn forwarder_does_not_count_a_closed_channel_as_a_drop() {
+        let (tx, rx) = tokio::sync::mpsc::channel::<(f64, Vec<f32>)>(2);
+        drop(rx);
+        let mut fwd = PcmForwarder::new(Stream::Them, tx);
+        fwd.forward(0.0, vec![0.1; 320]);
+        assert_eq!(fwd.stats.chunks, 0);
+    }
+
+    #[test]
+    fn drop_warning_is_rate_limited_and_accumulates() {
+        let mut stats = DropStats::default();
+        let t0 = Instant::now();
+        // The first drop warns at once.
+        assert_eq!(stats.record(320, t0), Some((1, 320)));
+        // A burst inside the interval stays quiet but is still counted.
+        for i in 1..=100 {
+            assert_eq!(stats.record(320, t0 + Duration::from_millis(i)), None);
+        }
+        assert_eq!(stats.chunks, 101);
+        // The next warning after the interval reports everything dropped since the last one.
+        assert_eq!(
+            stats.record(320, t0 + DROP_WARN_INTERVAL),
+            Some((101, 101 * 320))
+        );
+        assert_eq!(stats.samples, 102 * 320);
     }
 }

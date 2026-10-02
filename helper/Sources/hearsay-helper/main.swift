@@ -1,5 +1,6 @@
 import Foundation
 import HearsayIPC
+import SidecarIO
 
 private func warn(_ s: String) {
     FileHandle.standardError.write(Data((s + "\n").utf8))
@@ -181,6 +182,105 @@ private func spscRingChecks() -> Bool {
     return ok
 }
 
+private final class ReadCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = 0
+    func next() -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        defer { value += 1 }
+        return value
+    }
+}
+
+private final class OverflowFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+    func fire() {
+        lock.lock()
+        defer { lock.unlock() }
+        count += 1
+    }
+    var fired: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return count
+    }
+}
+
+/// Drain `queue` to its sticky `.eof`, returning the first sample of each audio frame.
+private func drainFrameQueue(_ queue: FrameQueue, _ check: (Bool, String) -> Void) -> [Float] {
+    var values: [Float] = []
+    while true {
+        switch queue.next() {
+        case .samples(let s): values.append(s[0])
+        case .empty: check(false, "keepalive was queued")
+        case .eof:
+            if case .eof = queue.next() {} else { check(false, "eof is not sticky") }
+            return values
+        case .oversize: check(false, "unexpected oversize")
+        }
+    }
+}
+
+/// The stdin reader keeps draining while the consumer is stalled, skips keepalives, and fires the
+/// overflow action (never drops audio) once the backlog passes the bound; a long pad is admitted.
+private func frameQueueChecks() -> Bool {
+    var ok = true
+    func check(_ cond: Bool, _ what: String) {
+        if !cond {
+            ok = false
+            warn("  frame queue: \(what)")
+        }
+    }
+    let total = 100
+    let counter = ReadCounter()
+    let overflow = OverflowFlag()
+    let queue = FrameQueue(prefix: "selftest", maxSamples: 60 * 16_000, onOverflow: { overflow.fire() })
+    // 100 frames: every tenth is a keepalive, the rest are 1 s of audio tagged with their index.
+    queue.start {
+        let i = counter.next()
+        if i >= total { return .eof }
+        if i % 10 == 9 { return .empty }
+        return .samples([Float](repeating: Float(i), count: 16_000))
+    }
+
+    // No next() yet: the reader queues 60 s, then the 61st second (frame 66) overflows.
+    let deadline = Date().addingTimeInterval(10)
+    while overflow.fired == 0 && Date() < deadline { usleep(1_000) }
+    check(overflow.fired == 1, "overflow fired \(overflow.fired) times, expected 1")
+    let values = drainFrameQueue(queue, check)
+    let expected = (0..<66).filter { $0 % 10 != 9 }.map { Float($0) }
+    check(values == expected, "kept \(values.count) frames, expected the first 60 in order")
+
+    // A pad longer than the cap into an idle queue is admitted and does not count toward the backlog.
+    let script = ScriptedFrames([
+        .samples([Float](repeating: 1, count: 500)),
+        .samples([Float](repeating: 2, count: 60)),
+        .samples([Float](repeating: 3, count: 40)),
+        .samples([Float](repeating: 4, count: 1)),
+    ])
+    let padOverflow = OverflowFlag()
+    let padQueue = FrameQueue(prefix: "selftest", maxSamples: 100, onOverflow: { padOverflow.fire() })
+    padQueue.start { script.next() }
+    while padOverflow.fired == 0 && Date() < deadline { usleep(1_000) }
+    let padValues = drainFrameQueue(padQueue, check)
+    check(padOverflow.fired == 1, "pad case overflow fired \(padOverflow.fired) times, expected 1")
+    check(padValues == [1, 2, 3], "pad case kept \(padValues), expected [1, 2, 3]")
+    return ok
+}
+
+private final class ScriptedFrames: @unchecked Sendable {
+    private let lock = NSLock()
+    private var frames: [FrameResult]
+    init(_ frames: [FrameResult]) { self.frames = frames }
+    func next() -> FrameResult {
+        lock.lock()
+        defer { lock.unlock() }
+        return frames.isEmpty ? .eof : frames.removeFirst()
+    }
+}
+
 /// The tap watchdog's trip / recovery rules. The regression these pin: a tap that keeps delivering
 /// buffers at full cadence but only exact zeros is dead, and cadence alone reports it healthy.
 private func tapLivenessChecks() -> Bool {
@@ -232,7 +332,7 @@ private func tapLivenessChecks() -> Bool {
 private func runSelfTest(path: String) -> Bool {
     var ok =
         internalRoundTripChecks() && controlRoundTripChecks() && spscRingChecks()
-        && tapLivenessChecks()
+        && tapLivenessChecks() && frameQueueChecks()
     // control.jsonl is the NDJSON golden; it sits beside the frames fixtures passed in `path`.
     let controlDir = (path as NSString).deletingLastPathComponent
     let controlPath = (controlDir as NSString).appendingPathComponent("control.jsonl")

@@ -1,0 +1,15 @@
+{
+  "window_s": 600.0,
+  "references": {
+    "ami-ES2004a-mixheadset": {
+      "me_wer": 0.224,
+      "them_wer": 0.2775,
+      "them_cpwer": 0.298
+    },
+    "ami-ES2004a-sdm": {
+      "me_wer": 0.5258,
+      "them_wer": 0.4742,
+      "them_cpwer": 0.927
+    }
+  }
+}

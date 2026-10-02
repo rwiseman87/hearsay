@@ -16,22 +16,21 @@ constraint that decided it.
 
 **A Rust core rather than a Python backend.** Shipping CPython inside a signed, notarized desktop
 app is the hardest part of packaging one: the interpreter, the native wheels, and the code-signing
-rules interact badly, and the result is fragile. A Rust core is a single self-contained binary per
-OS with no interpreter to install, and roughly 90 percent of it is shared between macOS and Windows.
+rules interact badly, and the result is fragile. A Rust core is a single self-contained binary
+with no interpreter to install.
 
 **Swift only where the OS requires it.** Core Audio process taps, `AVAudioEngine`, and CoreML/ANE
 access have no usable Rust bindings, and FluidAudio is a Swift package. Those live in the capture
 helper and the sidecars; everything else is Rust.
 
-**Tauri rather than Electron.** Tauri uses the system webview — WKWebView on macOS, WebView2 on
-Windows — instead of bundling Chromium. A browser runtime would be the largest thing in an installer
+**Tauri rather than Electron.** Tauri uses the system webview — WKWebView — instead of
+bundling Chromium. A browser runtime would be the largest thing in an installer
 whose whole point is that it is small enough to host.
 
-**Models downloaded on first run rather than bundled.** The macOS model set is about 2.6 GB, past
-what a GitHub release asset can hold (2 GB), so bundling would rule out the distribution channel
-entirely. Downloading them once at first launch trades the offline-install property for a ~50 MB
-installer; after that first run the app is as offline as it ever was. Windows keeps its (smaller)
-models bundled, since its installer fits comfortably.
+**Models downloaded on first run rather than bundled.** The macOS model set is about 1.3 GB (Silero VAD, diarizer,
+LS-EEND, Parakeet Ultra, Parakeet unified streaming; plus an optional notes model), close enough to
+what a GitHub release asset can hold (2 GB) that bundling would crowd out the distribution channel. Downloading them once at first launch trades the offline-install property for a ~50 MB
+installer; after that first run the app is as offline as it ever was.
 
 **SQLite via SQLx rather than PostgreSQL.** This is a single-user desktop app; running a database
 daemon would be infrastructure with no user. Going through SQLx rather than raw `rusqlite` keeps a
@@ -39,55 +38,50 @@ later move to a server cheap without paying for it now.
 
 ## Model selection
 
-Per stage, per OS. The two platforms run different engines because the ANE is a macOS-only
-accelerator, and the trait seams (`Transcriber`, `Diarizer`, `Refiner`) keep them interchangeable.
+Per stage. The `hearsay-orchestrator` trait seams (`Transcriber` for live ASR and diarization,
+`Refiner` for the offline refine, `Summarizer` for notes) keep each engine interchangeable.
 
-| Stage | macOS | Windows |
+| Stage | Model |
+|---|---|
+| Live ASR | Parakeet on the ANE: unified streaming for Me and for Them partials, Ultra for Them batch finals |
+| Live diarization | FluidAudio streaming diarizer (LS-EEND), on CPU |
+| Offline diarization | pyannote community-1, CoreML |
+| Speaker embeddings | wespeaker_v2, 256-d |
+| Me VAD | Silero |
+| Offline refine ASR | Parakeet Ultra, on the ANE (`hearsay-diarize --asr ultra`) |
+| Notes | local GGUF instruct model via llama.cpp |
+
+**Why Parakeet for the refine.** The refine diarizes and transcribes in one sidecar run, and each
+transcribed word is attributed to the diarizer turn it overlaps most (ties go to the shorter turn),
+so the speaker boundaries and the words come from one pass over one set of timestamps. Parakeet
+Ultra also measured better than the alternatives on the AMI ES2004a meeting (WER / cpWER, lower is
+better):
+
+| ASR | Near-field | Far-field |
 |---|---|---|
-| Live ASR | Parakeet TDT 0.6b, on the ANE | streaming zipformer (sherpa-onnx) |
-| Casing and punctuation | emitted by Parakeet | a second model, `sherpa-onnx-online-punct-en` |
-| Live diarization | FluidAudio streaming diarizer (LS-EEND), on CPU | **none** — live text is speaker-less |
-| Offline diarization | pyannote community-1, CoreML | pyannote segmentation 3.0 (sherpa-onnx) |
-| Speaker embeddings | wespeaker_v2, 256-d | TitaNet-small, 192-d |
-| Me VAD | Silero | — |
-| Offline refine ASR | whisper `ggml-large-v3-turbo` | whisper `ggml-small.en` |
-| Notes | local GGUF instruct model via llama.cpp | same |
+| whisper large-v3-turbo | 0.214 / 0.271 | 0.299 / 0.343 |
+| Parakeet v3 | 0.170 / 0.230 | 0.255 / 0.313 |
+| Parakeet Ultra | 0.163 / 0.225 | 0.238 / 0.301 |
+| Parakeet Phonon-2 | 0.226 / 0.276 | n/a |
 
-**Why not whisper for the live path?** whisper decodes in 30-second windows, so it cannot emit the
-growing partial transcripts a live caption view needs. Parakeet and the streaming zipformer are
-streaming-native. whisper earns its place in the offline refine, where whole-file context is an
-advantage rather than a latency problem.
+Phonon-2 requires macOS 15, above the app's 14.4 floor. The gated figures in `make wer-eval` are the
+Ultra row (`shared/eval/baseline-asr.json`). Because Parakeet decodes the track without a text
+prompt carried between windows, it has no repetition-loop or silent-stall failure mode to repair;
+a coverage guard (audible versus transcribed seconds) still flags a truncated transcript. The guard
+counts any loud audio as speech, so background music with no voice lowers coverage.
 
-**Why a separate punctuation model on Windows?** The streaming zipformer emits bare uppercase text
-with no punctuation, so the sherpa tier needs a second pass to make the transcript readable.
-Parakeet emits punctuated, cased text directly. That is a concrete quality gap between the tiers,
-not just a speed difference.
-
-**Why FluidAudio stays the macOS accuracy tier.** Diarization tuning on the sherpa path was
-exhausted under the dependency license gate and still plateaus: on a known-two-speaker clip it
-settles on about three speakers across every clustering threshold that does not over-cluster badly,
-where FluidAudio returns a clean two. The residual over-split is cleaned up afterwards by a
-consolidation pass over whole-speaker centroids, which separate far better than sherpa's per-window
-ones — a Windows-side repair, not a reason to change macOS.
-
-**Why pyannote segmentation 3.0 on the sherpa path.** It is the only segmentation model in the
-sherpa-onnx zoo under a permissive license. The better-performing Rev "reverb" models are
-Non-Production/non-commercial, which the project's MIT/BSD/Apache-only dependency policy rules out.
-The license gate picked the model here, not the benchmark.
-
-**Why TitaNet-small for embeddings on that path.** It beat CAM++ as the embedder in the same
-evaluation. The two embedding spaces are not interchangeable with the macOS one: a 256-d wespeaker
-vector and a 192-d TitaNet vector are never compared, and a length mismatch is skipped rather than
-scored, so voiceprints never cross-match between platforms.
-
-**Why greedy decoding on the refine.** Beam search is too slow on `large-v3` for a pass that already
-runs over the whole meeting.
+The live diarizer (LS-EEND, AMI variant) scores DER 0.103 near-field but 0.600 far-field, where it finds
+one of four speakers; the offline pyannote pipeline scores 0.144 and 0.194. Live labels are best
+effort and the offline refine corrects them. Input conditioning (high-pass, level normalization, AGC)
+does not change the live result, because the model's feature extractor normalizes gain itself. Timeline
+thresholds and padding only trade misses against confusion, the other LS-EEND variants and the Nemotron 3
+and Sortformer engines do not beat pyannote on both conditions, and the streaming path matches the
+offline path, so the eval figures describe live behavior.
 
 ## Streaming versus offline
 
 **Live diarization is deliberately approximate; accuracy work targets the offline refine.** A
-streaming diarizer runs online with limited context, so it over- and under-merges — and on Windows
-there is no live diarization at all, only speaker-less text. A whole-track pass after the meeting
+streaming diarizer runs online with limited context, so it over- and under-merges. A whole-track pass after the meeting
 clusters globally, handles overlap properly, and is cheap on the ANE, so every meeting can end with
 better labels than it streamed with. This is why "Refine speakers" exists as a user-facing action,
 and why live label quality is not treated as a defect.
@@ -111,12 +105,12 @@ time and rewrites the file, which also bakes in any names resolved along the way
 **Parakeet on the ANE, the streaming diarizer on CPU.** Two models contending for the Neural Engine
 interfere with each other, so the live diarizer is loaded CPU-only on purpose and leaves the ANE to
 the ASR. Running the live models on the GPU instead is worse still: a contended Metal pipeline can
-enter an unrecoverable error state, and the GPU is left free for the offline whisper refine.
+enter an unrecoverable error state, and the GPU stays free for the notes LLM.
 
-**The notes LLM in its own process.** llama.cpp and whisper.cpp each vendor `ggml`, and co-linking
-them slows the refine by roughly 5x. `hearsay-notes` is therefore a standalone binary the core
-spawns over stdio, and the shared prompt-building and reply-parsing logic lives in the
-dependency-free `hearsay-notes-prompt` crate so the sidecar never pulls in whisper.
+**The notes LLM in its own process.** llama.cpp generation holds gigabytes resident and can crash or
+stall, which must not cost a live recording. `hearsay-notes` is therefore a standalone binary the
+core spawns over stdio, and the shared prompt-building and reply-parsing logic lives in the
+dependency-free `hearsay-notes-prompt` crate so the sidecar stays free of the refine's dependencies.
 
 **Each CoreML model in its own sidecar.** A model crash is contained to that process rather than
 taking down capture, and the capture helper stays free of CoreML entirely — so a model problem can
@@ -144,7 +138,9 @@ the refine, and a segment's start time maps directly onto a seek position.
 230 MB and never shrinks. FLAC is about 3x smaller and bit-identical, so playback, the refine, and
 re-diarization are unaffected. The destructive step is ordered so failure can only cost disk space:
 encode to a temporary, decode it back and compare sample for sample, rename into place, and only
-then unlink the original.
+then unlink the original. Playback still serves WAV: the core decodes only the FLAC frames a range
+request covers, because WebKit seeks a FLAC by estimating byte offsets, which lands tens of seconds
+off when long muted stretches compress to almost nothing. Nothing decoded is written to disk.
 
 ## Data, API, and distribution
 

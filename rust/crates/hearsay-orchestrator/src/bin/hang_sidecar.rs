@@ -1,9 +1,5 @@
-//! Test fixture: a wedged transcription sidecar that never closes stdout and never exits.
-//!
-//! It drains stdin to EOF (as a real sidecar would when the core drops its stdin) and then blocks
-//! forever, keeping its stdout pipe open. Used to prove `ProcessTranscriber::close()` is bounded:
-//! the parent's stdout drain must time out and kill the child rather than hang meeting stop. Not
-//! shipped — spawned only via `CARGO_BIN_EXE_*` from the crate's integration tests.
+//! Test fixture: a sidecar that drains stdin, then never closes stdout or exits, so tests can
+//! prove `ProcessTranscriber::close()` is bounded.
 
 use std::io::{self, Read};
 

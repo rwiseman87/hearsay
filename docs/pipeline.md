@@ -4,7 +4,7 @@ Traces a single meeting from captured audio frames to a finished `transcript.md`
 timestamped, speaker-labelled, persisted transcript lines.
 
 The Rust core relays audio and persists results but runs no live ML of its own. The audio AI runs in
-Swift sidecars that the pipeline spawns and feeds; the offline refine uses whisper.
+Swift sidecars that the pipeline spawns and feeds; the offline refine runs one Swift sidecar that diarizes and transcribes with Parakeet Ultra.
 
 ## Related documents
 
@@ -95,8 +95,11 @@ the frames into a channel of `CaptureChunk`s (samples plus `host_ts`) tagged by 
 pipeline's `demux` task forwards each chunk into a bounded per-stream channel, and one
 `stream_loop` task per stream (`Me`, `Them`) consumes it. The recorder writes on the demux path
 before that hand-off, so a slow transcriber can only back up its own stream's queue (chunks past
-the 128-slot capacity are dropped with a log line); it can never stall the recorder or the other
-stream.
+the channel's capacity are dropped); it can never stall the recorder or the other stream. The
+channel holds 10 seconds of audio (500 slots of the helper's 20 ms chunks, under 1 MB per stream).
+Each stream counts its dropped chunks and samples, logs a warning on the first drop and then at
+most every 5 seconds with the totals since the last one, and logs a per-stream summary when the
+meeting ends.
 
 When built with the `aec` feature, `demux` echo-cancels the Me stream against the Them tap (the
 far-end reference) before the hand-off, so system audio the mic picks up on speakers is not
@@ -122,6 +125,11 @@ Each `stream_loop` owns a `ProcessTranscriber`, which owns one Swift subprocess:
 stdin (a `u32` little-endian sample count followed by that many `f32` samples), and NDJSON segments
 come back on stdout. All VAD, diarization, and ASR happen inside the sidecar on the Neural Engine.
 
+Each streaming sidecar reads stdin on a dedicated thread into a bounded in-memory queue (60 s of
+audio) and runs inference from that queue, so slow inference shows up as transcript latency and
+never stalls the pipe or the core's `feed`. If inference falls more than 60 s behind, the sidecar
+logs the overflow and exits non-zero, so the core respawns it and re-anchors its timing (see below).
+
 - **Them, `hearsay-live`.** FluidAudio's streaming diarizer plus Parakeet: as each speaker turn
   finalizes, the sidecar transcribes it and emits a
   `{kind: "final", speaker, text, start_s, end_s}` turn. The loop maps the 0-based `speaker` to a
@@ -135,8 +143,22 @@ come back on stdout. All VAD, diarization, and ASR happen inside the sidecar on 
   always `Me`.
 
 A missing or broken sidecar binary fails `start_meeting` with a clean error rather than starting a
-meeting that cannot transcribe. The sidecar pair for the next meeting is pre-spawned so its models
-load before the user presses start (see the warm pool in
+meeting that cannot transcribe.
+
+A sidecar that dies mid-meeting (its stdout closes, or a stdin write fails) is respawned by its
+`stream_loop` through `Transcriber::respawn`, which `ProcessTranscriber` implements by spawning
+its binary again. Restarts wait 1 s, then 2 s, then 4 s; each logs a warning with the stream,
+attempt, and reason. After three restarts without a minute of stable running, the loop logs an
+error and stops feeding that stream, while the meeting, the recording, and the other stream carry
+on. A sidecar that ran for a minute before dying gets a fresh budget. A fresh sidecar timestamps
+segments from zero at its first received sample, so the loop re-bases the stream's offset to the
+meeting time of the first chunk fed to the replacement. Audio that arrives during the restart waits
+in the bounded hand-off channel (or is dropped and counted once it fills), so the outage is a gap in
+the live transcript while `audio.wav` stays complete. Segments the dead sidecar had already
+emitted are kept at their original offset; the segment it was still working on is lost. A Them
+replacement starts its speaker numbering after the highest ordinal the meeting has used, so its
+speakers get new clusters and never join an earlier (possibly renamed) speaker. The sidecar pair
+for the next meeting is pre-spawned so its models load before the user presses start (see the warm pool in
 [architecture.md](architecture.md#trait-seams)); live feeding also waits on a shared permit until
 any still-running refine releases the Neural Engine.
 
@@ -180,36 +202,22 @@ handles overlap better. The refine runs automatically at stop when auto-refine i
 and on demand from the "Refine speakers" button (`POST /api/meetings/{id}/rediarize`). Both paths
 drive the same `LiveEngine::rediarize` implementation. The refine:
 
-- diarizes the whole Them track (the right channel of the recording) with the `hearsay-diarize`
-  sidecar, which returns speaker turns and each speaker's mean voiceprint,
-- transcribes the whole Them track in one whisper pass (`hearsay-inference`) — not a per-turn
-  transcribe loop — then attributes each ASR segment to the diarizer turn it most overlaps, so the
-  transcript follows speaker changes; `replace_them_segments` swaps the live Them segments and
-  clusters for the refined, speaker-attributed segments in a single transaction (Me is untouched),
-- decodes with cross-window prompt carry-over off (`HEARSAY_REFINE_CARRY_OVER`, default `false`).
-  Carry-over primes each 30-second window with the previous window's text, which holds context across
-  the seam but makes the decoder's output its own next input. Measured on a 44-minute meeting it cost
-  2.4x the decode time for no gain in unique transcript, and carried one hallucinated silent window
-  into every window after it. The two repairs below defend the meeting that turns it back on,
-- repairs whisper's repetition loops before attribution: whisper primes each 30-second window with
-  the text it just produced, so a phrase that starts repeating keeps winning and can run to the end
-  of the track. Its built-in gates catch the short cases only — the entropy check reads the last 32
-  tokens, so a longer repeated unit scores like ordinary speech, and an attractor is confident enough
-  to clear the average-logprob gate. Runs of three or more repeating segments (cycles up to three
-  segments long) are therefore re-decoded from the audio alone, with cross-window prompting off,
-  which breaks the attractor and recovers the speech the loop wrote over. A re-decode that repeats
-  again is treated as genuine repetition and kept,
-- re-decodes stretches the pass left blank. The same cross-window prompting has a second failure
-  mode: once a window's output degenerates, later windows can emit timestamps and no text at all,
-  and because that empty output becomes the next window's prompt the state sustains itself to the
-  end of the track — `whisper_full` still returns success, so a 44-minute meeting can come back with
-  12 minutes of transcript and no error. Untranscribed spans of 45 seconds or more that carry audio
-  above the silence floor are therefore re-decoded prompt-free and spliced back in. The loop is
-  bounded: three passes at most, each must add transcript to earn the next, and silence is never
-  retried,
-- records what fraction of the *audible* Them track ended up transcribed. Below 80% the meeting is
-  flagged `refine_incomplete`, the core logs a warning, and the transcript view offers a re-refine —
-  so a truncated decode is visible instead of passing as a quiet meeting,
+- runs one `hearsay-diarize <wav> --asr ultra` sidecar over the whole Them track (the right channel of
+  the recording). The sidecar diarizes (pyannote community-1) and transcribes with Parakeet Ultra on
+  the Apple Neural Engine, returning speaker turns, each speaker's mean voiceprint, and word-level
+  timestamps. The track is transcribed whole, not per turn,
+- attributes each word to the diarizer turn it overlaps most (ties go to the shorter turn), then
+  merges consecutive words in the same turn into a segment, so the transcript follows speaker
+  changes; `replace_them_segments` swaps the live Them segments and clusters for the refined,
+  speaker-attributed segments in a single transaction (Me is untouched),
+- records what fraction of the *audible* Them track (one-second bins above an RMS of 0.005) ended up
+  transcribed, plus each gap: an audible run of at least 10 s with no word. A meeting is flagged
+  `refine_incomplete` only when coverage is below 80% *and* there is at least one gap, because
+  scattered one- to three-second misses (pauses, noise between phrases) lower coverage on a quiet
+  far end without losing speech. A refine recorded before gaps were stored falls back to coverage
+  alone. When flagged, the core logs a warning. The transcript view highlights every recorded gap in
+  place among the lines, with its time range, length and a play button, so the user can hear whether
+  it holds speech before re-refining,
 - carries manual renames forward by voting each locked name onto the turn ordinal its old segments
   most overlap, so a re-diarize never drops a manual binding (per-line reassignments, being
   segment-level, are rebuilt only at the cluster level — like manual text edits, a refine discards

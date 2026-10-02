@@ -37,7 +37,7 @@ pub fn router() -> Router<AppState> {
 ///
 /// `active_count` is the subset recognition actually uses (a sample counts only once its name was
 /// set by hand), so `active_count: 0` means "saved, matching nothing yet". `dimension` is the
-/// embedding length — 256 on macOS, 192 on Windows — and samples of different lengths never match
+/// embedding length (256 from FluidAudio) — and samples of different lengths never match
 /// each other.
 #[utoipa::path(
     get, path = "/api/voiceprints", tag = "voiceprints",

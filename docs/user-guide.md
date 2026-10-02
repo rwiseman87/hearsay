@@ -17,7 +17,7 @@ what on the far end, and keeps everything on your machine. Nothing is uploaded.
 ## First run
 
 The installer does not carry the speech models, so the first launch offers to download them: about
-2.6 GB, once. Nothing starts until you click **Download models**, which is the point — on a metered
+1.3 GB, once. Nothing starts until you click **Download models**, which is the point — on a metered
 or offline connection you can quit and come back. An interrupted download resumes where it stopped
 rather than starting over.
 
@@ -125,7 +125,8 @@ else.
 
 ### Refine speakers
 
-**Refine speakers** re-runs diarization over the whole recording at once. Because it can see the
+**Refine speakers** re-runs diarization over the whole recording at once and re-transcribes the
+other side of the call with a more accurate speech model (Parakeet Ultra). Because it can see the
 entire meeting rather than a rolling window, it separates and merges speakers far more accurately
 than the live pass, and it recognizes people you have named in previous meetings.
 
@@ -133,8 +134,7 @@ Names you set by hand are carried across. Per-line reassignments and hand-edited
 a refine rebuilds the transcript from the audio. If you have made line-level edits, Hearsay warns
 first: *"Discard N edits?"*.
 
-Refining is worth doing whenever the live labels are messy. On Windows the live transcript has no
-speaker labels at all, so a refine is how you get them.
+Refining is worth doing whenever the live labels are messy.
 
 ### Recognition across meetings
 
@@ -169,7 +169,7 @@ them.
 | Recording & Privacy | Whether meeting audio is kept at all, auto-refine after each meeting, the inactivity reminder and the automatic stop (each independently switchable, with their own thresholds) |
 | Speakers | The recognition threshold — how similar a voice must be before someone is named automatically. Higher is stricter |
 | Voices | Stored voiceprints: who is known, their samples, rename everywhere, forget a sample or a person |
-| Models | The transcription refine model and the notes model, including downloading one, plus the notes prompt template |
+| Models | The notes model, including downloading one, plus the notes prompt template |
 | Storage | Where recordings live, whether older audio is compressed, after how many days, and a **Compress now** button |
 | Permissions | Live microphone and system-audio permission status |
 | About | Version, where the database lives, and third-party licenses |

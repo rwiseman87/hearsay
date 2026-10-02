@@ -1567,26 +1567,6 @@
             "description": "A missing field, a model path that is absent or not a GGUF, or an over-long prompt"
           }
         }
-      },
-      "delete": {
-        "tags": [
-          "settings"
-        ],
-        "summary": "Reset the model settings to the environment defaults.",
-        "description": "Clears the stored `models` overrides so the section falls back to what the environment\nconfigures, and returns the resulting effective section.",
-        "operationId": "reset_models",
-        "responses": {
-          "200": {
-            "description": "The effective section after the reset",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ModelSettings"
-                }
-              }
-            }
-          }
-        }
       }
     },
     "/api/settings/notices": {
@@ -1801,7 +1781,7 @@
           "setup"
         ],
         "summary": "Whether first-run model setup is still needed, and how a run is progressing.",
-        "description": "The installer ships no models. `required` stays `true` until the live and refine models are on\ndisk, and the UI blocks recording while it is. `steps` carries per-asset progress during a run,\nand the work a run would do before one starts.",
+        "description": "The installer ships no models. `required` stays `true` until the speech models are on\ndisk, and the UI blocks recording while it is. `steps` carries per-asset progress during a run,\nand the work a run would do before one starts.",
         "operationId": "setup_status",
         "responses": {
           "200": {
@@ -1881,7 +1861,7 @@
           "voiceprints"
         ],
         "summary": "The voice roster: people who have a stored voiceprint, with all of their samples.",
-        "description": "Lists only people who **have** an embedding. Someone named in a meeting that was never refined\nhas no centroid and is therefore absent — they are still a known person on `GET /api/identities`,\njust not a voice. Clearing someone's last sample drops them from this list, so `sample_count` is\nalways at least 1.\n\n`active_count` is the subset recognition actually uses (a sample counts only once its name was\nset by hand), so `active_count: 0` means \"saved, matching nothing yet\". `dimension` is the\nembedding length — 256 on macOS, 192 on Windows — and samples of different lengths never match\neach other.",
+        "description": "Lists only people who **have** an embedding. Someone named in a meeting that was never refined\nhas no centroid and is therefore absent — they are still a known person on `GET /api/identities`,\njust not a voice. Clearing someone's last sample drops them from this list, so `sample_count` is\nalways at least 1.\n\n`active_count` is the subset recognition actually uses (a sample counts only once its name was\nset by hand), so `active_count: 0` means \"saved, matching nothing yet\". `dimension` is the\nembedding length (256 from FluidAudio) — and samples of different lengths never match\neach other.",
         "operationId": "list_voiceprints",
         "parameters": [
           {
@@ -2462,9 +2442,19 @@
             "format": "double",
             "description": "Transcribed share (0.0-1.0) of the remote track's audible time at the last refine, or `null`\nif this meeting has never been refined."
           },
+          "refine_gaps": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/RefineGapRead"
+            },
+            "description": "Audible stretches of at least 10 s that the last refine left untranscribed, in meeting time.\n`null` when never refined or refined before gaps were recorded."
+          },
           "refine_incomplete": {
             "type": "boolean",
-            "description": "`true` when the last refine came back too short to trust as complete, so the transcript is\ntruncated and worth re-refining. `false` when healthy or never refined."
+            "description": "`true` when the last refine looks truncated: coverage under 80% plus at least one gap (or, for\na refine that predates gap recording, coverage alone). `false` when healthy or never refined."
           },
           "started_at": {
             "type": "string",
@@ -2532,10 +2522,7 @@
       },
       "ModelSettings": {
         "type": "object",
-        "description": "Models: the offline-refine whisper model path plus the optional local-LLM notes step (enable +\nits GGUF model). Editable section; each effective value is the stored override, else the config\ndefault. Live transcription is the FluidAudio/ANE sidecars and is not configured here.",
-        "required": [
-          "refine_model"
-        ],
+        "description": "Models: the optional local-LLM notes step (enable +\nits GGUF model). Editable section; each effective value is the stored override, else the config\ndefault. Live transcription is the FluidAudio/ANE sidecars and is not configured here.",
         "properties": {
           "notes_enabled": {
             "type": "boolean",
@@ -2548,9 +2535,6 @@
           "notes_prompt": {
             "type": "string",
             "description": "User-editable prompt template for the notes step (its `{transcript}` placeholder is filled\nwith the finalized transcript). Empty means \"use the built-in default\"\n(`ModelsInfo::default_notes_prompt`). `#[serde(default)]` so a `models` row written before the\nprompt existed still deserializes."
-          },
-          "refine_model": {
-            "type": "string"
           }
         }
       },
@@ -2558,8 +2542,6 @@
         "type": "object",
         "description": "Read-only model facts shown alongside the editable models section: the bundled/config defaults\n(reset targets) and whether each effective model file currently resolves on disk.",
         "required": [
-          "default_refine_model",
-          "refine_model_exists",
           "default_notes_model",
           "notes_model_exists",
           "default_notes_prompt"
@@ -2572,13 +2554,7 @@
             "type": "string",
             "description": "The built-in default notes prompt template (the reset target + the effective value when the\neditable `notes_prompt` is empty)."
           },
-          "default_refine_model": {
-            "type": "string"
-          },
           "notes_model_exists": {
-            "type": "boolean"
-          },
-          "refine_model_exists": {
             "type": "boolean"
           }
         }
@@ -2771,9 +2747,19 @@
                   "format": "double",
                   "description": "Transcribed share (0.0-1.0) of the remote track's audible time at the last refine, or `null`\nif this meeting has never been refined."
                 },
+                "refine_gaps": {
+                  "type": [
+                    "array",
+                    "null"
+                  ],
+                  "items": {
+                    "$ref": "#/components/schemas/RefineGapRead"
+                  },
+                  "description": "Audible stretches of at least 10 s that the last refine left untranscribed, in meeting time.\n`null` when never refined or refined before gaps were recorded."
+                },
                 "refine_incomplete": {
                   "type": "boolean",
-                  "description": "`true` when the last refine came back too short to trust as complete, so the transcript is\ntruncated and worth re-refining. `false` when healthy or never refined."
+                  "description": "`true` when the last refine looks truncated: coverage under 80% plus at least one gap (or, for\na refine that predates gap recording, coverage alone). `false` when healthy or never refined."
                 },
                 "started_at": {
                   "type": "string",
@@ -3184,6 +3170,24 @@
           }
         }
       },
+      "RefineGapRead": {
+        "type": "object",
+        "description": "An untranscribed audible stretch of the remote track, in seconds from the meeting start.",
+        "required": [
+          "start_s",
+          "end_s"
+        ],
+        "properties": {
+          "end_s": {
+            "type": "number",
+            "format": "double"
+          },
+          "start_s": {
+            "type": "number",
+            "format": "double"
+          }
+        }
+      },
       "ResyncEvent": {
         "type": "object",
         "description": "A backfill signal (not a transcript line): the broadcast buffer dropped events for a lagged\nsubscriber, so the persisted transcript is ahead of this live stream. On receipt the client\nrefetches persisted segments rather than diverging.",
@@ -3416,7 +3420,7 @@
       },
       "SetupStep": {
         "type": "object",
-        "description": "One asset first-run setup fetches: the live speech models, the refine model, or a notes model.\n`total_bytes` is approximate for the live models until the preparation sidecar reports its plan.",
+        "description": "One asset first-run setup fetches: the FluidAudio speech models, or a notes model.\n`total_bytes` is approximate for the speech models until the preparation sidecar reports its plan.",
         "required": [
           "id",
           "label",
@@ -3775,7 +3779,7 @@
           "dimension": {
             "type": "integer",
             "format": "int64",
-            "description": "Embedding length: 256 on macOS (FluidAudio), 192 on Windows (sherpa). Samples of different\nlengths never match each other."
+            "description": "Embedding length (256 from FluidAudio). Samples of different\nlengths never match each other."
           },
           "id": {
             "type": "string",

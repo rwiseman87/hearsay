@@ -1,10 +1,10 @@
-//! The post-meeting notes summarizer, shared by every platform backend: resolve the effective GGUF
-//! notes model + prompt, then run the summarization in the standalone `hearsay-notes` sidecar over
-//! stdio (JSON in, JSON out). The sidecar is a separate process on purpose — it owns llama.cpp, whose
-//! vendored `ggml` would otherwise co-link with whisper.cpp's in the core and degrade the whisper
-//! refine ~5x. Always compiled (it links no ML); notes are simply unavailable at runtime when the
-//! sidecar binary or a notes model is missing. Wired into the orchestrator so a meeting can
-//! auto-generate notes at stop and the manual "Generate notes" route can drive the same path.
+//! The post-meeting notes summarizer: resolve the effective GGUF notes model + prompt, then run the
+//! summarization in the standalone `hearsay-notes` sidecar over stdio (JSON in, JSON out). The
+//! sidecar is a separate process on purpose — it owns llama.cpp, so a crash, stall or memory blowup
+//! in generation cannot take down the core, which owns live capture and the meeting database. Always
+//! compiled (it links no ML); notes are simply unavailable at runtime when the sidecar binary or a
+//! notes model is missing. Wired into the orchestrator so a meeting can auto-generate notes at stop
+//! and the manual "Generate notes" route can drive the same path.
 
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -117,15 +117,6 @@ fn run_notes_sidecar(
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    // The desktop shell spawns the core with CREATE_NO_WINDOW, so the core has no console of its
-    // own; Windows would then allocate a fresh one for this console-subsystem child and show it for
-    // the whole generation (tens of seconds to minutes). Suppress it the same way the shell does.
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        command.creation_flags(CREATE_NO_WINDOW);
-    }
     let mut child = command
         .spawn()
         .map_err(|e| format!("spawn hearsay-notes: {e}"))?;

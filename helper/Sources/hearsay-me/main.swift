@@ -27,6 +27,14 @@ signal(SIGPIPE, SIG_IGN)
 
 func note(_ message: String) { writeError("hearsay-me", message) }
 
+// Experiment only: HEARSAY_VAD_THRESHOLD (0 < t < 1) overrides FluidAudio's default VAD threshold.
+let vadBaseConfig: VadConfig = {
+    guard let raw = ProcessInfo.processInfo.environment["HEARSAY_VAD_THRESHOLD"],
+        let value = Float(raw), value > 0, value < 1
+    else { return .default }
+    return VadConfig(defaultThreshold: value)
+}()
+
 let vad: VadManager
 var vadState: VadStreamState
 let asr: StreamingUnifiedAsrManager
@@ -34,7 +42,7 @@ note("loading models (first run may download from HuggingFace; this can take min
 do {
     // Load the VAD and the streaming ASR concurrently instead of one after another, so their model
     // loads overlap rather than stacking before the sidecar can signal ready.
-    async let vadLoaded = VadManager()
+    async let vadLoaded = VadManager(config: vadBaseConfig)
     let asrManager = StreamingUnifiedAsrManager()
     async let asrReady: Void = asrManager.loadModels()
     vad = try await vadLoaded
@@ -152,9 +160,12 @@ note("warmup complete")
 emitReady()  // models loaded + ANE warmed: lets the core tell a slow first-run download from a hang
 // and lets the prewarm pool know the sidecar is hot.
 
+let inbox = FrameQueue(prefix: "hearsay-me")
+inbox.start()
+
 reading: while true {
     let samples: [Float]
-    switch readAudioFrame() {
+    switch inbox.next() {
     case .eof: break reading
     case .empty: continue reading
     case .oversize(let n):

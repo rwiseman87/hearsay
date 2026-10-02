@@ -17,7 +17,8 @@ const KNOWN_VOICEPRINTS_SQL: &str = "SELECT i.display_name, c.centroid FROM clus
      WHERE c.locked = 1 AND c.centroid IS NOT NULL AND c.meeting_id != ?";
 
 use crate::models::{
-    Cluster, Folder, Identity, Meeting, MeetingNotes, MeetingStatus, Segment, Stream, UserNotes,
+    refine_incomplete, Cluster, Folder, Identity, Meeting, MeetingNotes, MeetingStatus, RefineGap,
+    Segment, Stream, UserNotes,
 };
 
 /// A speaker cluster joined to its bound identity's name (for the speakers list). `display_name`
@@ -61,6 +62,7 @@ pub async fn create_meeting(
         dir: dir.to_string(),
         folder_id: None,
         refine_coverage: None,
+        refine_gaps_json: None,
     };
     sqlx::query(
         "INSERT INTO meetings \
@@ -1039,20 +1041,15 @@ pub struct RefinedThemSegment {
 
 /// How much of the Them track the refine transcribed. `fraction` is the share of *audible* time, so
 /// silence does not count against it.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct RefineCoverage {
     pub fraction: f64,
-    pub recovered_spans: usize,
-    pub unrecovered_spans: usize,
+    pub gaps: Vec<RefineGap>,
 }
-
-/// Coverage below which a refine counts as truncated. Stated once; the orchestrator warns on it and
-/// the API flags it to the UI.
-pub const MIN_REFINE_COVERAGE: f64 = 0.8;
 
 impl RefineCoverage {
     pub fn is_incomplete(&self) -> bool {
-        self.fraction < MIN_REFINE_COVERAGE
+        refine_incomplete(self.fraction, Some(&self.gaps))
     }
 }
 
@@ -1449,13 +1446,17 @@ pub async fn replace_them_segments(
     }
 
     // Left untouched when the refiner reported no coverage.
-    if let Some(coverage) = result.coverage {
-        sqlx::query("UPDATE meetings SET refine_coverage = ?, updated_at = ? WHERE id = ?")
-            .bind(coverage.fraction)
-            .bind(now)
-            .bind(meeting_id)
-            .execute(&mut *tx)
-            .await?;
+    if let Some(coverage) = &result.coverage {
+        let gaps: Vec<[f64; 2]> = coverage.gaps.iter().map(|g| [g.start_s, g.end_s]).collect();
+        sqlx::query(
+            "UPDATE meetings SET refine_coverage = ?, refine_gaps = ?, updated_at = ? WHERE id = ?",
+        )
+        .bind(coverage.fraction)
+        .bind(serde_json::to_string(&gaps).expect("a list of number pairs serializes"))
+        .bind(now)
+        .bind(meeting_id)
+        .execute(&mut *tx)
+        .await?;
     }
 
     tx.commit().await?;
@@ -1512,7 +1513,7 @@ struct VoiceprintJoinRow {
 
 /// One stored voiceprint: the centroid on a single meeting's cluster. `locked` is what decides
 /// whether it is actually a recognition candidate (see `KNOWN_VOICEPRINTS_SQL`); `dimension` is the
-/// embedding length, which differs per platform (256 macOS / FluidAudio, 192 Windows / sherpa) and
+/// embedding length (256 from FluidAudio) and
 /// never cross-matches, since `cosine` returns 0.0 on a length mismatch.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VoiceprintSample {
@@ -1776,17 +1777,6 @@ pub async fn set_preference(
     Ok(())
 }
 
-/// Delete one settings `section`'s stored override (a no-op when unset), reverting the effective
-/// value to the config default. Used by "reset to default" actions where the default may be a
-/// relative/bundled path that the section's own input validation would reject on a re-write.
-pub async fn clear_preference(pool: &SqlitePool, section: &str) -> Result<(), sqlx::Error> {
-    sqlx::query("DELETE FROM preferences WHERE section = ?")
-        .bind(section)
-        .execute(pool)
-        .await?;
-    Ok(())
-}
-
 /// Settings sections persisted in the `preferences` table (one JSON row each). The section name is
 /// the wire contract shared by the API writer (`hearsay-core`'s settings routes) and the runtime
 /// readers (the `effective_*` resolvers below, called by the orchestrator at meeting start/stop).
@@ -1920,20 +1910,8 @@ pub async fn effective_compression(
     ))
 }
 
-/// Effective offline-refine whisper model: the stored `models` override, else `default` (the
-/// bundled model from config). Read fresh at each refine, so pointing the `models` section at a
-/// larger downloaded model takes effect on the next refine/rediarize with no restart.
-pub async fn effective_refine_model(
-    pool: &SqlitePool,
-    default: &Path,
-) -> Result<PathBuf, sqlx::Error> {
-    Ok(Section::load(pool, SECTION_MODELS)
-        .await?
-        .path_field("refine_model", default))
-}
-
 /// Set the `models` section's `notes_model` to `path` (what the download manager calls on a
-/// completed download), preserving the section's other fields (`refine_model`, `notes_enabled`) by
+/// completed download), preserving the section's other fields (`notes_enabled`) by
 /// merging into the stored object rather than overwriting it.
 pub async fn set_notes_model(pool: &SqlitePool, path: &str) -> Result<(), sqlx::Error> {
     // Atomic single-statement merge (not read-modify-write): `json_set` updates only `$.notes_model`
@@ -1958,17 +1936,25 @@ pub async fn set_notes_model(pool: &SqlitePool, path: &str) -> Result<(), sqlx::
     Ok(())
 }
 
-/// Whether first-run model setup has completed on this install. Paired with the on-disk probe in
-/// `hearsay-core`'s setup manager, which covers an install that already had its models.
-pub async fn models_ready(pool: &SqlitePool) -> Result<bool, sqlx::Error> {
+/// Whether first-run model setup completed for model-set `revision`. A recorded revision different
+/// from the build's re-opens setup, so an update that changes the model set cannot leave an install
+/// silently downloading a model at first use. Paired with the on-disk probe in `hearsay-core`'s setup
+/// manager, which covers an install that already has its models.
+pub async fn models_ready(pool: &SqlitePool, revision: u64) -> Result<bool, sqlx::Error> {
     Ok(Section::load(pool, SECTION_SETUP)
         .await?
-        .bool_field("models_ready", false))
+        .u64_field("models_revision", 0)
+        == revision)
 }
 
-/// Record that first-run model setup finished.
-pub async fn set_models_ready(pool: &SqlitePool) -> Result<(), sqlx::Error> {
-    set_preference(pool, SECTION_SETUP, r#"{"models_ready":true}"#).await
+/// Record that first-run model setup finished for model-set `revision`.
+pub async fn set_models_ready(pool: &SqlitePool, revision: u64) -> Result<(), sqlx::Error> {
+    set_preference(
+        pool,
+        SECTION_SETUP,
+        &format!(r#"{{"models_revision":{revision}}}"#),
+    )
+    .await
 }
 
 /// Effective notes settings from the same `models` section: `(notes_enabled, notes_model)`. Each

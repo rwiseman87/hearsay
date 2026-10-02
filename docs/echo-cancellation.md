@@ -17,7 +17,11 @@ and a text-level dedup backstop drops any residual echo that still reaches the t
 
 Where the code lives: `hearsay-orchestrator/src/aec.rs` (the canceller, driven from the pipeline's
 `demux` task) and `hearsay-orchestrator/src/echo_dedup.rs` (the text backstop, driven from `handle`;
-see [Text-level dedup](#text-level-dedup-the-backstop)). Built under the `aec` feature.
+see [Text-level dedup](#text-level-dedup-the-backstop)). Built under the `aec` feature. The
+production settings are the `Default` of `AecConfig` (preprocessor on, 4800-sample tail) and
+`EchoDedupConfig`; `Orchestrator::with_tuning(LiveTuning)` swaps them for evals and tests, and no
+user-facing setting exposes them. `LiveTuning::stats` is `None` in production; evals and tests set
+it to collect `LiveStats` counters. See [Measuring echo handling](#measuring-echo-handling).
 
 ## The problem
 
@@ -223,22 +227,9 @@ is in [design-decisions.md](design-decisions.md). The choices below are specific
   is not `Send` by default. `demux` is the single owner and Tokio never polls that future from two
   threads at once, so a narrow `unsafe impl Send for SendAec` is sound and no lock is needed
   (`aec.rs`).
-- **Why is the Windows mic opened RAW?** Because otherwise there is nothing to cancel *linearly*.
-  A normally-opened WASAPI capture stream arrives through the APO chain — "Audio enhancements",
-  vendor noise suppression and AGC, and on most laptops the OEM's own echo canceller — which makes
-  Me a nonlinear, time-varying function of the acoustic field. An adaptive linear filter cannot
-  model that, so Speex cancels almost nothing and every remote utterance leaks into Me anyway.
-  Measured on one laptop as the best ERLE *any* linear canceller could reach (an offline
-  least-squares FIR, 200 ms fit, speakers, user silent): **1.7 dB** with enhancements on and the
-  stream processed, **16.8 dB** with them manually off, and **17.3 dB** with them left on but the
-  stream opened RAW. So RAW recovers the full ~15 dB without the user having to find the "Audio
-  enhancements" checkbox — which matters because it is on by default. `wasapi_source.rs` therefore
-  opens Me with `StreamOption::Raw`, falling back to the processed stream only if the endpoint
-  refuses (logged, so a degraded mic is diagnosable rather than silent).
-  Only Me: the loopback reference is a digital copy of the render mix with no APO chain in front of
-  it. Note the ceiling keeps climbing to ~17 dB out at 300 ms of filter, which is why `FILTER_TAIL`
-  is sized at 4800 and not the crate default — the echo path through a laptop chassis has a long
-  reverb tail, and a 50 ms fit understates what is cancellable by ~10 dB.
+- **Why is `FILTER_TAIL` 4800 and not the crate default?** The echo path through a laptop chassis has
+  a long reverb tail: the best ERLE any linear canceller could reach keeps climbing out to about
+  300 ms of filter, and a 50 ms fit understates what is cancellable by roughly 10 dB.
 
 ## Text-level dedup: the backstop
 
@@ -249,7 +240,8 @@ filter — so `EchoCanceller` leaves a residual, and a loud remote party can sti
 layer that catches that residual, working on the *transcript* rather than the signal.
 
 The rule: drop a Me **final** whose text is an echo of concurrent Them speech. The Them stream task
-records each finalized Them segment (`record_them`) as a candidate; before a Me final is persisted
+records each finalized Them segment (`record_them`) and the open turn's latest partial
+(`record_them_partial`) as candidates; before a Me final is persisted
 or broadcast, the Me stream task checks it against the recorded window (`is_echo`). A single
 `EchoDedup` is shared between the two tasks behind the same `Arc<Mutex<…>>` pattern as the
 last-activity clock.
@@ -259,14 +251,22 @@ than a miss:
 
 - **Length gate** — a final under `min_tokens` (4) is never dropped, so backchannels ("yeah",
   "right") always survive.
-- **Concurrency gate** — only Them finals overlapping the Me final's window (`window_s` = 1.5 s of
-  slack each side) are candidates; echo is roughly concurrent with its reference.
-- **Coverage gate** — the concurrent Them finals are pooled, in time order, into one reference
-  sequence, and the drop fires only when the longest common subsequence covers `similarity` (0.8) of
-  the Me final's tokens. Normalizing by the *Me* length means a Me line is dropped only when it is
-  almost entirely echo: a real Me utterance that merely quotes a short Them phrase, or Me talking
-  over Them (double-talk), stays under threshold and is kept. Pooling handles Them being endpointed
-  into several finals across a span the Me echo covers as one.
+- **Concurrency gate** — only Them entries (finals and the open partial) overlapping the Me final's
+  window (`window_s` = 1.5 s of slack each side) are candidates; echo is roughly concurrent with its
+  reference.
+- **Coverage gate** — the concurrent Them entries are pooled, in time order, into one reference
+  sequence, and the drop fires only when the longest common contiguous run of tokens covers
+  `similarity` (0.8) of the Me final's tokens. A scattered in-order match does not count, so short
+  genuine Me speech made of common words stays even when a long Them text happens to contain those
+  words. Normalizing by the *Me* length means a Me line is dropped only when it is almost entirely
+  echo: a real Me utterance that merely quotes a short Them phrase, or Me talking over Them
+  (double-talk), stays under threshold and is kept. Pooling handles Them being endpointed into
+  several finals across a span the Me echo covers as one.
+- **Partials** — a Them final lands only when the diarizer closes the turn, which can be long after
+  speech starts, while a Me echo finalizes after a short silence. The open turn's partial text
+  covers that gap. One partial is held at a time (a newer partial replaces it), and a final that
+  starts at or after the partial's start supersedes it, so the text is never pooled twice. A
+  next-turn partial that starts inside the final's tail is kept.
 
 Two properties keep it safe alongside AEC:
 
@@ -276,10 +276,66 @@ Two properties keep it safe alongside AEC:
 - **It is pure and always on.** No C toolchain, no `aec` feature, no new dependency — it runs (and
   is unit-tested) in the default build, and it helps even when AEC is not compiled in.
 
-It relies on Them finalizing before its Me echo, which the physics favors: Them is tapped
-*pre-speaker*, so its ASR runs earlier and on cleaner audio than the mic echo, which the playout +
-acoustic round trip delays. A Them final that lands *after* its Me echo is not caught — an accepted
-limitation of a streaming backstop.
+It relies on the Them text existing (as a final or a partial) before its Me echo finalizes, which
+the physics favors: Them is tapped *pre-speaker*, so its ASR runs earlier and on cleaner audio than
+the mic echo, which the playout + acoustic round trip delays. Them text that is not yet emitted when
+the Me echo finalizes is not caught — an accepted limitation of a streaming backstop.
+
+## Measuring echo handling
+
+`make aec-eval` (report-only, see [testing.md](testing.md)) measures how the live Me stream copes
+with echo. It builds a synthetic mic, `Me_mic = near_end + echo(Them) + noise`, from AMI audio:
+
+- **Them** is the AMI ES2004a Mix-Headset track; **near-end speech** is the single headset of a
+  different meeting (ES2004b Headset-0), so its words never occur in the Them track. Both are
+  high-passed at 100 Hz and scaled to the same loud-speech level, in the densest 300 s window of
+  each (`HEARSAY_ECHO_WINDOW_S`).
+- **Echo** is Them through a five-tap decaying impulse response, delayed 20-150 ms and attenuated
+  6-20 dB (`HEARSAY_ECHO_GRID=delay_ms:level_db,...`; default 40/120 ms by -8/-16 dB). Scenarios are
+  echo-only (every Me word is spurious), double-talk (near-end speech over the echo) and
+  near-end-only (no Them audio, which checks for over-suppression).
+- **Stage A** feeds the stereo mix to `EchoCanceller` alone and reports ERLE, convergence time (first
+  three consecutive active seconds above 10 dB) and near-end fidelity (speech-band level and log
+  band-energy correlation against the clean near end; phase-insensitive because the canceller's input
+  notch shifts phase).
+- **Stage B** replays the mix at 4x real time through the real `Orchestrator` with `hearsay-me` and
+  `hearsay-live`, and scores the persisted Me finals: spurious words (alignment insertions against the
+  near-end reference; in echo-only, all words), words that sit in a 3-word run also found in the Them
+  reference, Me WER, and finals dropped by the dedup. Dropped finals are recorded, so the
+  dedup-off arm is the kept finals plus the dropped ones; the dedup only filters Me finals after the
+  fact, so this equals a run with it disabled. `LiveStats::dropped_chunks` confirms no audio was
+  lost on the transcriber queues.
+
+Representative results (300 s window, one Them recording, one near-end speaker; mean over the four
+echo paths; Me WER carries about 0.01-0.02 of run-to-run noise):
+
+Each cell is dedup off / dedup on.
+
+| Setting | Echo-only spurious words (of 1010 Them words) | Double-talk Me WER | Near-end-only Me WER |
+|---|---|---|---|
+| AEC off | 902 / 870 | 0.63 / 0.62 | 0.11 / 0.11 |
+| AEC on, preprocess on (shipped) | 24 / 23 | 0.14 / 0.14 | 0.14 / 0.14 |
+| AEC on, preprocess off | 12 / 9 | 0.16 / 0.16 | 0.13 / 0.13 |
+
+Findings:
+
+- The acoustic canceller removes about 97-99% of the spurious Me words; the dedup alone removes at
+  most about 7% of them, because Me finals on a speaker leak run to tens of words and rarely match the
+  Them text on 80% of a contiguous run.
+- With the canceller on, the dedup dropped a final in 2 of 8 echo-only runs (removing the last 5-12
+  words) and none elsewhere, so it never changed near-end WER.
+- The preprocessor adds 8-18 dB of ERLE (about 32 dB against 19 dB at the 4800 tail) and converges
+  within seconds; turning it off leaves fewer residual words in echo-only but lets one double-talk
+  path (120 ms, -16 dB) through with 71 spurious words (WER 0.22).
+- Even with a silent Them, the canceller's input filter attenuates content below roughly 300 Hz and
+  costs the 300 Hz-7 kHz speech band about 2 dB, and near-end-only WER rises from 0.11 to 0.13-0.14.
+- `hearsay-me` VAD thresholds 0.5, 0.7 and 0.85 give the same double-talk WER (0.14, 0.14, 0.14) and
+  near-end-only WER (0.15, 0.15, 0.14); 0.5 adds insertions (22 against 14).
+
+Limits: the echo is a linear, time-invariant synthetic path with no loudspeaker distortion, room
+noise or clock drift; the near end is a close-talk headset recording rather than a laptop mic;
+and there is one Them recording and one near-end speaker, so differences of a few words or 0.02 WER
+are not significant.
 
 ## Guardrails and edge cases
 
@@ -319,12 +375,10 @@ through the crates:
 hearsay-core/aec  ->  hearsay-backends/aec  ->  hearsay-orchestrator/aec  ->  dep:aec-rs
 ```
 
-- **On** in `make rust-serve` and `make dmg` / `make mac-app` (`--features metal,aec`); the Windows
-  package build adds it alongside `sherpa`/`vulkan`.
+- **On** in `make rust-serve` and `make dmg` / `make mac-app` (`--features aec`).
 - **Off** by default (plain `cargo test`, `cargo build`), where `EchoCanceller` is the passthrough
   stub — so the default build and CI need no C toolchain.
-- Building the feature compiles vendored SpeexDSP with `cc` + `cmake` + `bindgen` (on Windows,
-  `bindgen` needs LLVM). Each platform's build treats AEC as a graceful add-on: if it is not built
+- Building the feature compiles vendored SpeexDSP with `cc` + `cmake` + `bindgen`. The build treats AEC as a graceful add-on: if it is not built
   in, capture and transcription still work, just without echo removal.
 
 Licensing: `aec-rs` is MIT and the vendored SpeexDSP is BSD-3-Clause — both inside the project's
