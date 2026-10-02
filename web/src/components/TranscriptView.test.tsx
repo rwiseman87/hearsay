@@ -121,7 +121,7 @@ beforeEach(() => {
 });
 
 describe("TranscriptView truncated-refine notice", () => {
-  it("names each untranscribed stretch with its length and a way to play it", async () => {
+  it("summarizes the gaps and points at them in the transcript", async () => {
     renderView({
       refine_incomplete: true,
       refine_coverage: 0.62,
@@ -135,11 +135,34 @@ describe("TranscriptView truncated-refine notice", () => {
     expect(notice.textContent).toContain("2 stretches");
     expect(notice.textContent).toContain("38 s in total");
     expect(notice.textContent).toContain("62%");
+    expect(notice.textContent).toContain("highlighted in the transcript below");
     expect(notice.textContent).toContain("If it is music, noise or silence, nothing is missing");
-    expect(
-      screen.getByRole("button", { name: "Play the untranscribed stretch at 00:49" }).textContent,
-    ).toContain("00:49–01:12 (23 s)");
     expect(screen.getByRole("button", { name: "Refine again" })).toBeTruthy();
+  });
+
+  it("highlights each gap in time order among the transcript lines", async () => {
+    renderView({
+      refine_incomplete: true,
+      refine_coverage: 0.62,
+      refine_gaps: [
+        { start_s: 49, end_s: 72 },
+        { start_s: 0, end_s: 1.5 },
+      ],
+    });
+
+    await screen.findByText("original text");
+    const rows = Array.from(document.querySelectorAll(".transcript__lines > li"));
+    // The fixture line starts at 2 s: the 0 s gap precedes it and the 49 s gap follows it.
+    expect(rows.map((row) => row.className.split(" ")[0])).toEqual([
+      "gap-line",
+      "live-line",
+      "gap-line",
+    ]);
+    expect(rows[2].textContent).toContain("00:49–01:12");
+    expect(rows[2].textContent).toContain("No transcript for 23 s of audio");
+    expect(
+      screen.getByRole("button", { name: "Play the untranscribed stretch at 00:49" }),
+    ).toBeTruthy();
   });
 
   it("asks for a re-refine to locate gaps when an older refine recorded none", async () => {

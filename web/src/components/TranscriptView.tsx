@@ -102,17 +102,13 @@ function formatTime(seconds: number): string {
   return `${minutes}:${secs}`;
 }
 
-const MAX_LISTED_GAPS = 5;
-
-// The truncated-refine notice: where the untranscribed audio is, and how to check it by ear.
+// The truncated-refine notice; the gaps themselves are highlighted in the transcript.
 function RefineNotice({
   coverage,
   gaps,
-  onPlay,
 }: {
   coverage: number | null;
   gaps: RefineGapRead[] | null;
-  onPlay: (seconds: number) => void;
 }) {
   const percent = coverage === null ? null : Math.round(coverage * 100);
   if (gaps === null) {
@@ -125,32 +121,59 @@ function RefineNotice({
     );
   }
   const totalS = Math.round(gaps.reduce((sum, g) => sum + (g.end_s - g.start_s), 0));
-  const listed = gaps.slice(0, MAX_LISTED_GAPS);
   return (
     <span className="inactivity-banner__text">
       {gaps.length === 1
         ? `One stretch of the other side’s audio (${totalS} s) has sound but no transcript`
         : `${gaps.length} stretches of the other side’s audio (${totalS} s in total) have sound but no transcript`}
-      {percent === null ? "." : `; about ${percent}% of their audible audio was transcribed.`} Play
-      each one to check: if you hear them speaking, the transcriber missed it and refining again
-      re-reads it from the recording. If it is music, noise or silence, nothing is missing.
-      <span className="refine-gaps">
-        {listed.map((g) => (
-          <button
-            type="button"
-            key={g.start_s}
-            onClick={() => onPlay(g.start_s)}
-            aria-label={`Play the untranscribed stretch at ${formatTime(g.start_s)}`}
-          >
-            ▶ {formatTime(g.start_s)}–{formatTime(g.end_s)} ({Math.round(g.end_s - g.start_s)} s)
-          </button>
-        ))}
-        {gaps.length > listed.length ? (
-          <span>and {gaps.length - listed.length} more</span>
-        ) : null}
-      </span>
+      {percent === null ? "." : `; about ${percent}% of their audible audio was transcribed.`}{" "}
+      They are highlighted in the transcript below. Play each one to check: if you hear them
+      speaking, the transcriber missed it and refining again re-reads it from the recording. If it
+      is music, noise or silence, nothing is missing.
     </span>
   );
+}
+
+// An untranscribed stretch, placed in the transcript at its time so it can be checked by ear.
+function GapRow({ gap, onPlay }: { gap: RefineGapRead; onPlay: (seconds: number) => void }) {
+  const lengthS = Math.round(gap.end_s - gap.start_s);
+  return (
+    <li className="gap-line">
+      <span className="gap-line__time">
+        {formatTime(gap.start_s)}–{formatTime(gap.end_s)}
+      </span>
+      <span className="gap-line__text">
+        No transcript for {lengthS} s of audio. Play it: speech means it was missed; music, noise
+        or silence means nothing is missing.
+      </span>
+      <button
+        type="button"
+        onClick={() => onPlay(gap.start_s)}
+        aria-label={`Play the untranscribed stretch at ${formatTime(gap.start_s)}`}
+      >
+        ▶ Play
+      </button>
+    </li>
+  );
+}
+
+type ListItem =
+  | { kind: "line"; line: TranscriptLine; index: number }
+  | { kind: "gap"; gap: RefineGapRead };
+
+// Interleave gaps with lines by start time; lines keep their visible-list index.
+function withGaps(lines: TranscriptLine[], gaps: RefineGapRead[]): ListItem[] {
+  const sorted = [...gaps].sort((a, b) => a.start_s - b.start_s);
+  const items: ListItem[] = [];
+  let next = 0;
+  lines.forEach((line, index) => {
+    while (next < sorted.length && sorted[next].start_s <= line.start_s) {
+      items.push({ kind: "gap", gap: sorted[next++] });
+    }
+    items.push({ kind: "line", line, index });
+  });
+  while (next < sorted.length) items.push({ kind: "gap", gap: sorted[next++] });
+  return items;
 }
 
 // The meeting's calendar date for the detail header ("Jul 21, 2026").
@@ -556,6 +579,15 @@ export function TranscriptView({ meeting, jumpTo }: Props) {
     );
   }, [lines, speakerFilter]);
 
+  // Gaps belong to the other side, so a Me-only filter hides them.
+  const showsThem =
+    speakerFilter.size === 0 || [...speakerFilter].some((key) => key !== ME_FILTER_KEY);
+  const refineGaps = meeting?.refine_gaps;
+  const listItems = useMemo(
+    () => withGaps(visibleLines, refineGaps && showsThem ? refineGaps : []),
+    [visibleLines, refineGaps, showsThem],
+  );
+
   // The audio.wav timeline is meeting-relative (sample N = second N), so the currently-playing
   // line is the last one whose start time has passed.
   const activeIndex = useMemo(() => {
@@ -924,7 +956,6 @@ export function TranscriptView({ meeting, jumpTo }: Props) {
           <RefineNotice
             coverage={meeting.refine_coverage ?? null}
             gaps={meeting.refine_gaps ?? null}
-            onPlay={onSeek}
           />
           <div className="inactivity-banner__actions">
             <button type="button" onClick={onRefine} disabled={rediarize.isPending}>
@@ -1155,7 +1186,11 @@ export function TranscriptView({ meeting, jumpTo }: Props) {
               pinnedToBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 48;
             }}
           >
-            {visibleLines.map((line, index) => {
+            {listItems.map((item) => {
+              if (item.kind === "gap") {
+                return <GapRow key={`gap:${item.gap.start_s}`} gap={item.gap} onPlay={onSeek} />;
+              }
+              const { line, index } = item;
               const active = index === activeIndex;
               const editing = editingId != null && line.id === editingId;
               const reassignOpen = reassigningId != null && line.id === reassigningId;

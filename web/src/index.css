@@ -9,6 +9,7 @@
   --me: #5b9dff;
   --them: #2ecc9b;
   --danger: #ff6b6b;
+  --warn: #ffcf8a;
   --radius: 8px;
   --gap: 12px;
   --rail-width: 62px;
@@ -145,12 +146,26 @@ progress::-webkit-progress-value {
   min-width: 220px;
 }
 
-.refine-gaps {
+.gap-line {
   display: flex;
-  flex-wrap: wrap;
   align-items: center;
-  gap: 6px;
-  margin-top: 8px;
+  gap: 12px;
+  margin: 6px 0;
+  padding: 10px 14px;
+  border: 1px dashed var(--warn);
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--warn) 8%, transparent);
+  color: var(--text);
+  font-size: var(--fs-md);
+}
+
+.gap-line__text {
+  flex: 1;
+}
+
+.gap-line__time {
+  color: var(--warn);
+  font-family: var(--mono);
 }
 
 .inactivity-banner__actions {

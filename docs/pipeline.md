@@ -215,8 +215,9 @@ drive the same `LiveEngine::rediarize` implementation. The refine:
   `refine_incomplete` only when coverage is below 80% *and* there is at least one gap, because
   scattered one- to three-second misses (pauses, noise between phrases) lower coverage on a quiet
   far end without losing speech. A refine recorded before gaps were stored falls back to coverage
-  alone. When flagged, the core logs a warning and the transcript view lists each gap with its
-  length and a play button, so the user can hear whether it holds speech before re-refining,
+  alone. When flagged, the core logs a warning. The transcript view highlights every recorded gap in
+  place among the lines, with its time range, length and a play button, so the user can hear whether
+  it holds speech before re-refining,
 - carries manual renames forward by voting each locked name onto the turn ordinal its old segments
   most overlap, so a re-diarize never drops a manual binding (per-line reassignments, being
   segment-level, are rebuilt only at the cluster level — like manual text edits, a refine discards
