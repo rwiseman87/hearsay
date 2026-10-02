@@ -14,12 +14,9 @@ import Foundation
 //
 // The per-speaker embeddings (FluidAudio's mean-of-segments speaker database) are
 // the cross-meeting voiceprints the Rust refine stores + matches, so no separate
-// ONNX embedder is needed. All FluidAudio diagnostics go to stderr, so stdout is
-// clean JSON. The Rust core (`POST /api/meetings/{id}/rediarize`) invokes this as a subprocess.
-// `--asr <v2|v3|ultra|redux|phonon2>` additionally runs FluidAudio's Parakeet batch ASR over the same
-// file and adds `"asr":{"model","processing_s","words":[{"word","start_s","end_s","confidence"}]}`.
-// `--diarizer <pyannote|nemotron3[-preset]|sortformer[-offline]|lseend-<variant>[-<step>ms]>` is an
-// experimental, opt-in comparison mode (`make diarizer-eval`); the production paths never take it.
+// ONNX embedder is needed. The Rust core (`POST /api/meetings/{id}/rediarize`) invokes this as a
+// subprocess. `--asr <model>` adds Parakeet word timings as `"asr"`; `--diarizer <engine>` is an eval-only
+// comparison mode (`make diarizer-eval`).
 // CoreML models auto-download from public HuggingFace repos on first run.
 
 struct Turn: Codable {
@@ -84,6 +81,36 @@ let asrModelName: String? = args.count == 4 && args[2] == "--asr" ? args[3] : ni
 let experimentalEngine: String? = args.count == 4 && args[2] == "--diarizer" ? args[3] : nil
 guard FileManager.default.fileExists(atPath: wavPath) else {
     emitErrorAndExit("no such file: \(wavPath)")
+}
+let asrModelVersion: AsrModelVersion? = asrModelName.map { name in
+    guard let version = asrVersion(name) else { emitErrorAndExit("unknown asr model: \(name)") }
+    return version
+}
+
+/// Write the result JSON line to the real stdout; a dead core (EPIPE) exits instead of crashing.
+func writeResult(_ data: Data) {
+    do {
+        try resultOutput.write(contentsOf: data + Data("\n".utf8))
+    } catch {
+        exit(1)
+    }
+}
+
+/// The shipped offline diarizer config, shared by the production path and `--diarizer pyannote`.
+func productionDiarizerConfig() -> OfflineDiarizerConfig {
+    var config = OfflineDiarizerConfig.default
+    // Clustering threshold (Euclidean distance on unit embeddings). FluidAudio's 0.6 default
+    // under-separates compressed meeting audio: a many-voice Teams roundtable collapsed to 2
+    // speakers (146:1 turns). Swept 0.45-0.9 across four real recordings: 0.7 recovers a third
+    // roundtable speaker (126:21:1), is plateau-stable through 0.85, and leaves the 2- and
+    // 3-speaker reference recordings unchanged; 0.9 starts merging a real 3-speaker meeting to 2.
+    config.clustering.threshold = 0.7
+    // Sweep override for offline tuning runs; not part of the core's contract.
+    if let raw = ProcessInfo.processInfo.environment["HEARSAY_DIARIZE_CLUSTER_THRESHOLD"],
+        let value = Double(raw) {
+        config.clustering.threshold = value
+    }
+    return config
 }
 
 /// Group SentencePiece token timings into words: a token starting with the word-boundary marker opens a
@@ -164,8 +191,7 @@ func runExperimental(engine: String, url: URL, durationS: Double) async throws -
 
     switch family {
     case "pyannote":
-        var config = OfflineDiarizerConfig.default
-        config.clustering.threshold = 0.7
+        var config = productionDiarizerConfig()
         let env = ProcessInfo.processInfo.environment
         config.clustering.numSpeakers = env["HEARSAY_DIARIZE_NUM_SPEAKERS"].flatMap { Int($0) }
         config.clustering.maxSpeakers = env["HEARSAY_DIARIZE_MAX_SPEAKERS"].flatMap { Int($0) }
@@ -227,24 +253,11 @@ do {
         let output = try await runExperimental(engine: engine, url: url, durationS: durationS)
         let encoder = JSONEncoder()
         encoder.keyEncodingStrategy = .convertToSnakeCase
-        resultOutput.write(try encoder.encode(output))
-        resultOutput.write(Data("\n".utf8))
+        writeResult(try encoder.encode(output))
         exit(0)
     }
 
-    var config = OfflineDiarizerConfig.default
-    // Clustering threshold (Euclidean distance on unit embeddings). FluidAudio's 0.6 default
-    // under-separates compressed meeting audio: a many-voice Teams roundtable collapsed to 2
-    // speakers (146:1 turns). Swept 0.45-0.9 across four real recordings: 0.7 recovers a third
-    // roundtable speaker (126:21:1), is plateau-stable through 0.85, and leaves the 2- and
-    // 3-speaker reference recordings unchanged; 0.9 starts merging a real 3-speaker meeting to 2.
-    config.clustering.threshold = 0.7
-    // Sweep override for offline tuning runs; not part of the core's contract.
-    if let raw = ProcessInfo.processInfo.environment["HEARSAY_DIARIZE_CLUSTER_THRESHOLD"],
-        let value = Double(raw) {
-        config.clustering.threshold = value
-    }
-    let manager = OfflineDiarizerManager(config: config)
+    let manager = OfflineDiarizerManager(config: productionDiarizerConfig())
     let result = try await manager.process(url)
 
     let turns = result.segments.map {
@@ -257,8 +270,7 @@ do {
         SpeakerEmbedding(speaker: $0.key, embedding: $0.value)
     }
     var asrOutput: AsrOutput?
-    if let name = asrModelName {
-        guard let version = asrVersion(name) else { emitErrorAndExit("unknown asr model: \(name)") }
+    if let name = asrModelName, let version = asrModelVersion {
         let models = try await AsrModels.downloadAndLoad(version: version)
         let asr = AsrManager(config: .default, models: models)
         var decoderState = try TdtDecoderState()
@@ -274,9 +286,7 @@ do {
 
     let encoder = JSONEncoder()
     encoder.keyEncodingStrategy = .convertToSnakeCase
-    let data = try encoder.encode(output)
-    resultOutput.write(data)
-    resultOutput.write(Data("\n".utf8))
+    writeResult(try encoder.encode(output))
 } catch {
     emitErrorAndExit("diarization failed: \(error)")
 }

@@ -43,7 +43,7 @@ let stream: StreamingUnifiedAsrManager
 // The batch Parakeet ASR transcribes a diarizer turn only once it *finalizes* (several seconds into
 // speech), so it loads in the background rather than on the critical path: the sidecar signals ready
 // — and live partials start flowing — as soon as the streaming ASR + diarizer are up, without also
-// waiting for the batch model's ~461 MB to compile on the ANE (which otherwise stacks onto the load
+// waiting for the batch model's ~614 MB to compile on the ANE (which otherwise stacks onto the load
 // the user waits through). `transcribeAndEmit` awaits this task before the first final; the task
 // warms the model itself so that first final is not slow.
 let asrTask: Task<AsrManager, Error>
