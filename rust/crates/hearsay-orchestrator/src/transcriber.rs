@@ -38,6 +38,7 @@ pub const SEGMENT_CHANNEL_CAPACITY: usize = 256;
 pub struct ProcessTranscriber {
     binary: PathBuf,
     args: Vec<String>,
+    env: Vec<(String, String)>,
     respawn_backoff: Vec<Duration>,
     child: Option<Child>,
     stdin: Option<ChildStdin>,
@@ -70,6 +71,7 @@ impl ProcessTranscriber {
         ProcessTranscriber {
             binary,
             args: Vec::new(),
+            env: Vec::new(),
             respawn_backoff: RESPAWN_BACKOFF.to_vec(),
             child: None,
             stdin: None,
@@ -112,6 +114,12 @@ impl ProcessTranscriber {
         self
     }
 
+    /// Set an environment variable on the sidecar on every spawn, including respawns.
+    pub fn with_env(mut self, key: &str, value: &str) -> Self {
+        self.env.push((key.to_string(), value.to_string()));
+        self
+    }
+
     /// Override the restart delays (and so the retry budget); production uses [`RESPAWN_BACKOFF`].
     pub fn with_respawn_backoff(mut self, backoff: Vec<Duration>) -> Self {
         self.respawn_backoff = backoff;
@@ -127,6 +135,7 @@ impl ProcessTranscriber {
     ) -> Result<mpsc::Receiver<SidecarSegment>, OrchestratorError> {
         let mut child = Command::new(&self.binary)
             .args(&self.args)
+            .envs(self.env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())

@@ -1,4 +1,4 @@
-.PHONY: help swift-plist-guard swift-build swift-test rust-build rust-test rust-lint tauri-lint tauri-test rust-fmt test lint fmt codegen codegen-check web-install web-typecheck web-lint web-test web-build web-ci audit licenses version-check version stamp-version set-version ci probes diarize-eval wer-eval diarizer-eval robustness-eval live-eval eval coverage e2e test-all clean-test build package notarize clean serve rust-serve stage-release mac-app dmg
+.PHONY: help swift-plist-guard swift-build swift-test rust-build rust-test rust-lint tauri-lint tauri-test rust-fmt test lint fmt codegen codegen-check web-install web-typecheck web-lint web-test web-build web-ci audit licenses version-check version stamp-version set-version ci probes diarize-eval wer-eval diarizer-eval robustness-eval live-eval aec-eval eval coverage e2e test-all clean-test build package notarize clean serve rust-serve stage-release mac-app dmg
 
 PKG := helper
 RUST := rust
@@ -169,6 +169,9 @@ live-eval: swift-build ## Live accuracy + latency: feed the corpus to hearsay-me
 
 robustness-eval: swift-build ## Refine robustness on local recordings (HEARSAY_ROBUSTNESS_DIR, default outputs/recordings): counts only, never text (coverage, stalls, repeat runs, RTF)
 	HEARSAY_ROBUSTNESS_DIR=$(or $(HEARSAY_ROBUSTNESS_DIR),outputs/recordings) cargo test --manifest-path $(RUST)/Cargo.toml -p hearsay-eval --test robustness -- --nocapture
+
+aec-eval: swift-build ## Report-only echo eval: synthetic mic (AMI near-end speaker + simulated room echo of an AMI Them track) through the Speex canceller (audio metrics) and the live pipeline (spurious Me words, Me WER, dedup drops) across AEC, dedup and VAD-threshold settings. Needs the AMI audio in outputs/ami (see shared/eval/corpus.json). HEARSAY_ECHO_WINDOW_S, HEARSAY_ECHO_SPEED, HEARSAY_ECHO_GRID=delay_ms:level_db,... tune it.
+	HEARSAY_ECHO_EVAL=1 cargo test --manifest-path $(RUST)/Cargo.toml -p hearsay-eval --features aec --test echo_eval -- --nocapture --test-threads=1
 
 eval: diarize-eval wer-eval live-eval ## Every accuracy/latency eval (diarization, offline transcript, live)
 

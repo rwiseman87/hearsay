@@ -22,6 +22,7 @@ use crate::error::OrchestratorError;
 use crate::lock::MutexExt;
 use crate::pipeline::{self, InactivityConfig, Pipeline};
 use crate::traits::{Backend, Refiner, Summarizer};
+use crate::tuning::LiveTuning;
 
 /// How often the background warm ticker re-checks the sidecar pool while idle. The check is cheap
 /// and idempotent when a healthy pair is present; on this cadence it re-spawns a warm pair that died
@@ -104,6 +105,8 @@ pub struct Orchestrator {
     /// orchestrator was built with [`new`](Self::new) alone (unit tests that never drive a capture
     /// death), where the supervisor simply no-ops.
     self_weak: Weak<Orchestrator>,
+    /// Echo cancellation + dedup settings; the default is the production behavior.
+    tuning: LiveTuning,
 }
 
 impl Orchestrator {
@@ -133,7 +136,14 @@ impl Orchestrator {
             background: Mutex::new(Vec::new()),
             warm_ticker: OnceLock::new(),
             self_weak: Weak::new(),
+            tuning: LiveTuning::default(),
         }
+    }
+
+    /// Override the echo cancellation + dedup settings (evals and tests only).
+    pub fn with_tuning(mut self, tuning: LiveTuning) -> Self {
+        self.tuning = tuning;
+        self
     }
 
     /// Run `f` against the live pipeline, but only if `meeting_id` is the one currently recording.
@@ -306,6 +316,7 @@ impl Orchestrator {
             audio_path,
             self.ane_gate.clone(),
             inactivity,
+            &self.tuning,
         )
         .await?;
         *self.active.lock_recover() = Some(ActiveSession {

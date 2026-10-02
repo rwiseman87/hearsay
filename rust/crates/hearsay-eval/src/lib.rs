@@ -2,6 +2,7 @@
 //! baseline gate, and run reports. Scoring is the pure `hearsay_attribution` metrics; audio stays
 //! local, while the manifest, transcript and baselines under `shared/eval/` are committed.
 
+pub mod echo;
 pub mod live;
 
 use std::collections::BTreeMap;

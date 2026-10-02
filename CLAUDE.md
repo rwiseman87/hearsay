@@ -82,7 +82,9 @@ shared/protocol/ipc.md  IPC contract (source of truth)   ·   shared/fixtures/  
   `make diarizer-eval` (report-only diarizer comparison: pyannote, Nemotron 3, Sortformer, LS-EEND on AMI; opt-in, slow),
   `make robustness-eval` (counts-only refine robustness over local recordings: coverage, stalls, repeat runs),
   `make live-eval` (live sidecars at real-time pace: WER/cpWER gate + final-delay report; opt-in, ~10 min),
-  `make eval` (all three). See `docs/testing.md`.
+  `make aec-eval` (report-only echo eval: synthetic mic = AMI near-end speaker + simulated room echo of an AMI
+  Them track, scored through the Speex canceller and the live pipeline; opt-in, ~1 h),
+  `make eval` (the three gated evals). See `docs/testing.md`.
 - `make ci` is the gate and must stay green (`ci: lint test tauri-test web-ci codegen-check version-check
   audit licenses`): `clippy -D warnings` + `rustfmt --check` + Swift `selftest` + `cargo test` + the Tauri
   shell's clippy/tests + the web gate (`tsc` + ESLint + vitest + `vite build`) + codegen-drift check +

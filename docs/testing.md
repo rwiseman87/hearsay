@@ -38,7 +38,8 @@ This document maps the targets to what they test and the suite to where it lives
 | **`make diarizer-eval`** | `swift-build`, then the `hearsay-eval` `diarizer_compare` test (`HEARSAY_DIARIZER_EVAL=1`) | each candidate engine (`hearsay-diarize --diarizer <engine>`: pyannote, Nemotron 3, Sortformer, LS-EEND variants) over AMI ES2004a near-field and far-field: speaker count, DER with the missed / false-alarm / confusion split (collar 0.25 s), embedding count, wall time and RTF. Report-only (never gates); downloads each engine's models on first run; `HEARSAY_DIARIZER_ENGINES=a,b` restricts the engines. The report is written to `outputs/eval/<stamp>/diarizers.json` | **yes** |
 | **`make robustness-eval`** | `swift-build`, then the `hearsay-eval` `robustness` test over `HEARSAY_ROBUSTNESS_DIR` (default `outputs/recordings`) | the refine on local recordings with no reference transcript: coverage, stalls, repeat runs, loud untranscribed time and RTF as counts only, never text. Report-only | **yes** |
 | **`make live-eval`** | `swift-build`, then the `hearsay-eval` `live_eval` gate (`HEARSAY_LIVE_EVAL=1`) | `hearsay-me` and `hearsay-live` fed the corpus concurrently at real-time pace; WER and cpWER gated, final-delay percentiles reported. A 10-minute window takes about 10 minutes; `HEARSAY_EVAL_SPEED=0` feeds unpaced (WER only) | **yes** |
-| **`make eval`** | `diarize-eval` + `wer-eval` + `live-eval` | every accuracy and latency eval | **yes** |
+| **`make aec-eval`** | `swift-build`, then the `hearsay-eval` `echo_eval` test with `--features aec` (`HEARSAY_ECHO_EVAL=1`) | how the live Me stream copes with Them leaking into the mic: a synthetic mic (AMI near-end speaker plus a simulated room echo of an AMI Them track) scored through the Speex canceller alone (ERLE, convergence, near-end fidelity) and through the full live pipeline (spurious Me words, Me WER, finals dropped by the echo dedup) across AEC, dedup and Me VAD-threshold settings. Report-only (never gates); about an hour with the defaults. See [echo-cancellation.md](echo-cancellation.md#measuring-echo-handling) | **yes** |
+| **`make eval`** | `diarize-eval` + `wer-eval` + `live-eval` | every gated accuracy and latency eval | **yes** |
 | `make coverage` | `cargo-llvm-cov` + vitest v8 → `outputs/coverage/` | report-only; the "what's untested" view | no |
 | **`make test-all`** | `ci` + `probes` + `e2e` | everything, on a fully-equipped box | yes |
 | `make clean-test` | `rm -rf outputs/coverage outputs/e2e` | (removes report dirs; test *data* auto-cleans via tempdirs) | no |
@@ -120,6 +121,7 @@ and `der`), and the runners live in `hearsay-eval` (plus the diarization gate in
 | `diarizer-eval` | per-engine speaker count, DER breakdown, RTF | the AMI RTTM |
 | `wer-eval` | WER, cpWER, RTF of the refine | `shared/eval/ES2004a.utterances.json` |
 | `live-eval` | live WER, cpWER, final delay | the same transcript |
+| `aec-eval` | echo return loss, spurious Me words, Me WER (report only) | `shared/eval/ES2004b-A.utterances.json` |
 
 - **Data.** The audio is local and never committed (`outputs/ami/`, fetched with the `curl` commands
   recorded in `shared/eval/corpus.json`). Committed: the manifest, the reference transcript, and the

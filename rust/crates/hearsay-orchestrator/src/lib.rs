@@ -15,16 +15,20 @@ mod pipeline;
 mod recorder;
 mod traits;
 mod transcriber;
+mod tuning;
 mod types;
 mod wav_source;
 
 pub mod testing;
 
+pub use aec::{AecConfig, EchoCanceller};
+pub use echo_dedup::EchoDedupConfig;
 pub use error::OrchestratorError;
 pub use hearsay_db::queries::{NotesResult, RefineCoverage, RefineResult, RefinedThemSegment};
 pub use markdown::write_meeting_files;
 pub use orchestrator::{Defaults, Orchestrator};
 pub use traits::{AudioSource, Backend, BackendInstance, Refiner, Summarizer, Transcriber};
 pub use transcriber::{ProcessTranscriber, SEGMENT_CHANNEL_CAPACITY};
+pub use tuning::{EchoDrop, LiveStats, LiveTuning};
 pub use types::{AudioChunk, CaptureChunk, SegmentKind, SidecarSegment, Stream};
 pub use wav_source::WavFileSource;

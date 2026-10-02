@@ -14,12 +14,15 @@
 //! one entry (a new partial replaces the old) and a final for the same turn supersedes it.
 
 use std::collections::VecDeque;
+use std::sync::Arc;
+
+use crate::tuning::LiveStats;
 
 /// Tuning for [`EchoDedup`]. Defaults are deliberately conservative: short utterances are never
 /// dropped (so backchannels like "yeah" / "right" survive) and only a near-complete, contiguous
 /// text match inside a concurrent time window counts as an echo.
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct EchoDedupConfig {
+pub struct EchoDedupConfig {
     /// A Me final shorter than this many tokens is never treated as an echo.
     pub min_tokens: usize,
     /// Fraction of the Me final's tokens that must form one contiguous run in the concurrent Them
@@ -57,6 +60,7 @@ pub(crate) struct EchoDedup {
     partial: Option<ThemEntry>,
     /// The latest segment end time seen on either stream, i.e. "now" in meeting time. Drives pruning.
     latest_s: f64,
+    stats: Option<Arc<LiveStats>>,
 }
 
 impl EchoDedup {
@@ -66,7 +70,22 @@ impl EchoDedup {
             recent: VecDeque::new(),
             partial: None,
             latest_s: 0.0,
+            stats: None,
         }
+    }
+
+    /// A dedup that never drops (no Me final reaches `usize::MAX` tokens).
+    pub fn off() -> Self {
+        Self::new(EchoDedupConfig {
+            min_tokens: usize::MAX,
+            ..EchoDedupConfig::default()
+        })
+    }
+
+    /// Record every dropped Me final into `stats`.
+    pub fn with_stats(mut self, stats: Arc<LiveStats>) -> Self {
+        self.stats = Some(stats);
+        self
     }
 
     /// Record a finalized Them segment as a candidate echo source, superseding the open partial.
@@ -127,7 +146,13 @@ impl EchoDedup {
 
         let me_refs: Vec<&str> = me.iter().map(String::as_str).collect();
         let covered = longest_common_run(&me_refs, &pool) as f64 / me.len() as f64;
-        covered >= self.cfg.similarity
+        let echo = covered >= self.cfg.similarity;
+        if echo {
+            if let Some(stats) = &self.stats {
+                stats.record_echo_drop(start_s, end_s, text);
+            }
+        }
+        echo
     }
 
     fn prune(&mut self) {

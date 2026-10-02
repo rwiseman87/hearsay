@@ -13,6 +13,8 @@ silence of ``--gap`` seconds.
 Usage:
     uv run scripts/ami_words_to_json.py outputs/ami/annotations/ami_manual.zip ES2004a \
         shared/eval/ES2004a.utterances.json
+
+Add ``--speaker A`` to emit one speaker only (for example the single headset of a meeting).
 """
 
 from __future__ import annotations
@@ -77,7 +79,11 @@ def to_utterances(speaker: str, words: list[tuple[float, float, str]], gap_s: fl
 
 
 def main(argv: list[str]) -> int:
-    """Entry point: ``ami_words_to_json.py <zip> <meeting> <out.json> [gap_s]``."""
+    """Entry point: ``ami_words_to_json.py <zip> <meeting> <out.json> [gap_s] [--speaker X]``."""
+    speakers = SPEAKERS
+    if len(argv) >= 3 and argv[-2] == "--speaker":
+        speakers = (argv[-1],)
+        argv = argv[:-2]
     if len(argv) not in (4, 5):
         print(__doc__, file=sys.stderr)
         return 2
@@ -85,7 +91,7 @@ def main(argv: list[str]) -> int:
     gap_s = float(argv[4]) if len(argv) == 5 else DEFAULT_GAP_S
     utterances: list[Utterance] = []
     with zipfile.ZipFile(archive_path) as archive:
-        for speaker in SPEAKERS:
+        for speaker in speakers:
             utterances.extend(to_utterances(speaker, read_words(archive, meeting, speaker), gap_s))
     utterances.sort(key=lambda u: (u.start_s, u.speaker))
     payload = [

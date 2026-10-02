@@ -17,7 +17,10 @@ and a text-level dedup backstop drops any residual echo that still reaches the t
 
 Where the code lives: `hearsay-orchestrator/src/aec.rs` (the canceller, driven from the pipeline's
 `demux` task) and `hearsay-orchestrator/src/echo_dedup.rs` (the text backstop, driven from `handle`;
-see [Text-level dedup](#text-level-dedup-the-backstop)). Built under the `aec` feature.
+see [Text-level dedup](#text-level-dedup-the-backstop)). Built under the `aec` feature. The
+production settings are the `Default` of `AecConfig` (preprocessor on, 4800-sample tail) and
+`EchoDedupConfig`; `Orchestrator::with_tuning(LiveTuning)` swaps them for evals and tests, and no
+user-facing setting exposes them. See [Measuring echo handling](#measuring-echo-handling).
 
 ## The problem
 
@@ -275,6 +278,62 @@ It relies on the Them text existing (as a final or a partial) before its Me echo
 the physics favors: Them is tapped *pre-speaker*, so its ASR runs earlier and on cleaner audio than
 the mic echo, which the playout + acoustic round trip delays. Them text that is not yet emitted when
 the Me echo finalizes is not caught — an accepted limitation of a streaming backstop.
+
+## Measuring echo handling
+
+`make aec-eval` (report-only, see [testing.md](testing.md)) measures how the live Me stream copes
+with echo. It builds a synthetic mic, `Me_mic = near_end + echo(Them) + noise`, from AMI audio:
+
+- **Them** is the AMI ES2004a Mix-Headset track; **near-end speech** is the single headset of a
+  different meeting (ES2004b Headset-0), so its words never occur in the Them track. Both are
+  high-passed at 100 Hz and scaled to the same loud-speech level, in the densest 300 s window of
+  each (`HEARSAY_ECHO_WINDOW_S`).
+- **Echo** is Them through a five-tap decaying impulse response, delayed 20-150 ms and attenuated
+  6-20 dB (`HEARSAY_ECHO_GRID=delay_ms:level_db,...`; default 40/120 ms by -8/-16 dB). Scenarios are
+  echo-only (every Me word is spurious), double-talk (near-end speech over the echo) and
+  near-end-only (no Them audio, which checks for over-suppression).
+- **Stage A** feeds the stereo mix to `EchoCanceller` alone and reports ERLE, convergence time (first
+  three consecutive active seconds above 10 dB) and near-end fidelity (speech-band level and log
+  band-energy correlation against the clean near end; phase-insensitive because the canceller's input
+  notch shifts phase).
+- **Stage B** replays the mix at 4x real time through the real `Orchestrator` with `hearsay-me` and
+  `hearsay-live`, and scores the persisted Me finals: spurious words (alignment insertions against the
+  near-end reference; in echo-only, all words), words that sit in a 3-word run also found in the Them
+  reference, Me WER, and finals dropped by the dedup. Dropped finals are recorded, so the
+  dedup-off arm is the kept finals plus the dropped ones; the dedup only filters Me finals after the
+  fact, so this equals a run with it disabled. `LiveStats::dropped_chunks` confirms no audio was
+  lost on the transcriber queues.
+
+Representative results (300 s window, one Them recording, one near-end speaker; mean over the four
+echo paths; Me WER carries about 0.01-0.02 of run-to-run noise):
+
+Each cell is dedup off / dedup on.
+
+| Setting | Echo-only spurious words (of 1010 Them words) | Double-talk Me WER | Near-end-only Me WER |
+|---|---|---|---|
+| AEC off | 902 / 870 | 0.63 / 0.62 | 0.11 / 0.11 |
+| AEC on, preprocess on (shipped) | 24 / 23 | 0.14 / 0.14 | 0.14 / 0.14 |
+| AEC on, preprocess off | 12 / 9 | 0.16 / 0.16 | 0.13 / 0.13 |
+
+Findings:
+
+- The acoustic canceller removes about 97-99% of the spurious Me words; the dedup alone removes at
+  most about 7% of them, because Me finals on a speaker leak run to tens of words and rarely match the
+  Them text on 80% of a contiguous run.
+- With the canceller on, the dedup dropped a final in 2 of 8 echo-only runs (removing the last 5-12
+  words) and none elsewhere, so it never changed near-end WER.
+- The preprocessor adds 8-18 dB of ERLE (about 32 dB against 19 dB at the 4800 tail) and converges
+  within seconds; turning it off leaves fewer residual words in echo-only but lets one double-talk
+  path (120 ms, -16 dB) through with 71 spurious words (WER 0.22).
+- Even with a silent Them, the canceller's input filter attenuates content below roughly 300 Hz and
+  costs the 300 Hz-7 kHz speech band about 2 dB, and near-end-only WER rises from 0.11 to 0.13-0.14.
+- `hearsay-me` VAD thresholds 0.5, 0.7 and 0.85 give the same double-talk WER (0.14, 0.14, 0.14) and
+  near-end-only WER (0.15, 0.15, 0.14); 0.5 adds insertions (22 against 14).
+
+Limits: the echo is a linear, time-invariant synthetic path with no loudspeaker distortion, room
+noise or clock drift; the near end is a close-talk headset recording rather than a laptop mic;
+and there is one Them recording and one near-end speaker, so differences of a few words or 0.02 WER
+are not significant.
 
 ## Guardrails and edge cases
 

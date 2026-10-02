@@ -225,13 +225,31 @@ impl FrameAligner {
 /// latency) but not Bluetooth / AirPlay output, which buffers 150-300 ms — past the tail the
 /// filter never converges and the echo passes through untouched. 300 ms at 16 kHz; the cost is
 /// linear in the tail and trivial at 16 kHz mono.
-#[cfg(feature = "aec")]
-const FILTER_TAIL: i32 = 4800;
+const FILTER_TAIL: usize = 4800;
+
+/// The canceller's tunables. `Default` is the production setting; the eval builds others through
+/// [`EchoCanceller::new_with`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AecConfig {
+    /// Run the Speex residual-echo preprocessor after the adaptive filter.
+    pub preprocess: bool,
+    /// Adaptive-filter tail in samples.
+    pub filter_length: usize,
+}
+
+impl Default for AecConfig {
+    fn default() -> Self {
+        AecConfig {
+            preprocess: true,
+            filter_length: FILTER_TAIL,
+        }
+    }
+}
 
 #[cfg(feature = "aec")]
 mod cancel {
-    use super::{FrameAligner, FILTER_TAIL, FRAME, SAMPLE_RATE};
-    use aec_rs::{Aec, AecConfig};
+    use super::{AecConfig, FrameAligner, FRAME, SAMPLE_RATE};
+    use aec_rs::{Aec, AecConfig as SpeexConfig};
 
     /// The Speex echo state holds raw C pointers, so it is not `Send` by default. `demux` owns the
     /// canceller exclusively and Tokio never polls that future from two threads at once, so
@@ -239,37 +257,53 @@ mod cancel {
     struct SendAec(Aec);
     unsafe impl Send for SendAec {}
 
-    pub(crate) struct EchoCanceller {
+    pub struct EchoCanceller {
         aligner: FrameAligner,
-        aec: SendAec,
+        aec: Option<SendAec>,
     }
 
     impl EchoCanceller {
-        pub(crate) fn new() -> Self {
+        pub fn new() -> Self {
+            Self::new_with(Some(AecConfig::default()))
+        }
+
+        /// A canceller with `config`, or a pass-through when `config` is `None`.
+        pub fn new_with(config: Option<AecConfig>) -> Self {
             EchoCanceller {
                 aligner: FrameAligner::new(),
-                aec: SendAec(Aec::new(&AecConfig {
-                    frame_size: FRAME,
-                    filter_length: FILTER_TAIL,
-                    sample_rate: SAMPLE_RATE as u32,
-                    enable_preprocess: true,
-                })),
+                aec: config.map(|c| {
+                    SendAec(Aec::new(&SpeexConfig {
+                        frame_size: FRAME,
+                        filter_length: c.filter_length as i32,
+                        sample_rate: SAMPLE_RATE as u32,
+                        enable_preprocess: c.preprocess,
+                    }))
+                }),
             }
         }
 
         /// Buffer a Them chunk as the far-end reference; return any Me now ready to forward.
-        pub(crate) fn push_far(&mut self, t0_s: f64, samples: &[f32]) -> Vec<(f64, Vec<f32>)> {
+        pub fn push_far(&mut self, t0_s: f64, samples: &[f32]) -> Vec<(f64, Vec<f32>)> {
+            if self.aec.is_none() {
+                return Vec::new();
+            }
             self.aligner.push_far(t0_s, samples);
             self.drain_cancel()
         }
 
         /// Buffer a Me chunk (near end); return the cleaned Me now ready to forward.
-        pub(crate) fn process_me(&mut self, t0_s: f64, samples: &[f32]) -> Vec<(f64, Vec<f32>)> {
+        pub fn process_me(&mut self, t0_s: f64, samples: &[f32]) -> Vec<(f64, Vec<f32>)> {
+            if self.aec.is_none() {
+                return vec![(t0_s, samples.to_vec())];
+            }
             self.aligner.push_near(t0_s, samples);
             self.drain_cancel()
         }
 
         fn drain_cancel(&mut self) -> Vec<(f64, Vec<f32>)> {
+            let Some(aec) = self.aec.as_ref() else {
+                return Vec::new();
+            };
             let frames = self.aligner.drain();
             if frames.is_empty() {
                 return Vec::new();
@@ -280,7 +314,7 @@ mod cancel {
                 let near = to_i16(&f.near);
                 let far = to_i16(&f.far);
                 let mut out = [0i16; FRAME];
-                self.aec.0.cancel_echo(&near, &far, &mut out);
+                aec.0.cancel_echo(&near, &far, &mut out);
                 cleaned.extend(out.iter().map(|&s| s as f32 / 32768.0));
             }
             vec![(start0 as f64 / SAMPLE_RATE, cleaned)]
@@ -297,23 +331,33 @@ mod cancel {
 }
 
 #[cfg(feature = "aec")]
-pub(crate) use cancel::EchoCanceller;
+pub use cancel::EchoCanceller;
+
+impl Default for EchoCanceller {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 /// No-op canceller when the `aec` feature is off: Me passes through unchanged, Them is ignored.
 #[cfg(not(feature = "aec"))]
-pub(crate) struct EchoCanceller;
+pub struct EchoCanceller;
 
 #[cfg(not(feature = "aec"))]
 impl EchoCanceller {
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         EchoCanceller
     }
 
-    pub(crate) fn push_far(&mut self, _t0_s: f64, _samples: &[f32]) -> Vec<(f64, Vec<f32>)> {
+    pub fn new_with(_config: Option<AecConfig>) -> Self {
+        EchoCanceller
+    }
+
+    pub fn push_far(&mut self, _t0_s: f64, _samples: &[f32]) -> Vec<(f64, Vec<f32>)> {
         Vec::new()
     }
 
-    pub(crate) fn process_me(&mut self, t0_s: f64, samples: &[f32]) -> Vec<(f64, Vec<f32>)> {
+    pub fn process_me(&mut self, t0_s: f64, samples: &[f32]) -> Vec<(f64, Vec<f32>)> {
         vec![(t0_s, samples.to_vec())]
     }
 }
@@ -542,7 +586,7 @@ mod cancel_tests {
         // filter_length 1600, the crate default).
         let aec = aec_rs::Aec::new(&aec_rs::AecConfig {
             frame_size: FRAME,
-            filter_length: FILTER_TAIL,
+            filter_length: FILTER_TAIL as i32,
             sample_rate: SAMPLE_RATE as u32,
             enable_preprocess: false,
         });

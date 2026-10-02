@@ -980,9 +980,15 @@ name = "hearsay-eval"
 version = "0.0.0"
 dependencies = [
  "hearsay-attribution",
+ "hearsay-db",
+ "hearsay-engine",
  "hearsay-inference",
+ "hearsay-orchestrator",
+ "hound",
  "serde",
  "serde_json",
+ "tempfile",
+ "tokio",
 ]
 
 [[package]]

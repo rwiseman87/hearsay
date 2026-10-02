@@ -24,11 +24,12 @@ use uuid::Uuid;
 use hearsay_db::queries;
 
 use crate::aec::EchoCanceller;
-use crate::echo_dedup::{EchoDedup, EchoDedupConfig};
+use crate::echo_dedup::EchoDedup;
 use crate::error::OrchestratorError;
 use crate::lock::MutexExt;
 use crate::recorder::MeetingAudioRecorder;
 use crate::traits::{AudioSource, BackendInstance, StreamRole, Transcriber};
+use crate::tuning::{LiveStats, LiveTuning};
 use crate::types::{CaptureChunk, SegmentKind, SidecarSegment, Stream};
 
 /// Capacity of the per-meeting live broadcast channel (transcript events to WebSocket subscribers).
@@ -266,6 +267,7 @@ pub(crate) async fn spawn(
     audio_path: Option<PathBuf>,
     ane_gate: Arc<Semaphore>,
     inactivity: InactivityConfig,
+    tuning: &LiveTuning,
 ) -> Result<(Pipeline, oneshot::Receiver<()>, oneshot::Receiver<()>), OrchestratorError> {
     let BackendInstance {
         mut source,
@@ -373,7 +375,10 @@ pub(crate) async fn spawn(
     // Shared across both stream tasks: the Them task records finals as candidate echo sources; the
     // Me task drops a final that matches one. A backstop behind the acoustic canceller (`aec`), it
     // touches only live Me finals, never the archive or the refine.
-    let echo_dedup = Arc::new(Mutex::new(EchoDedup::new(EchoDedupConfig::default())));
+    let dedup = tuning
+        .echo_dedup
+        .map_or_else(EchoDedup::off, EchoDedup::new);
+    let echo_dedup = Arc::new(Mutex::new(dedup.with_stats(tuning.stats.clone())));
     let intentional_stop = Arc::new(AtomicBool::new(false));
     // Pause gate (the "Pause" control): while set, demux drops chunks and elides the span so the
     // timeline stays contiguous, and the watchdog holds the silence clock. Shared with those tasks.
@@ -384,10 +389,11 @@ pub(crate) async fn spawn(
         me_tx,
         them_tx,
         rec_tx,
-        EchoCanceller::new(),
+        EchoCanceller::new_with(tuning.aec),
         intentional_stop.clone(),
         paused.clone(),
         died_tx,
+        tuning.stats.clone(),
     ));
     let me_task = tokio::spawn(stream_loop(
         StreamRole::Me,
@@ -495,6 +501,7 @@ struct PcmForwarder {
     stream: Stream,
     sender: mpsc::Sender<(f64, Vec<f32>)>,
     stats: DropStats,
+    live_stats: Option<Arc<LiveStats>>,
 }
 
 impl PcmForwarder {
@@ -503,7 +510,13 @@ impl PcmForwarder {
             stream,
             sender,
             stats: DropStats::default(),
+            live_stats: None,
         }
+    }
+
+    fn with_stats(mut self, stats: Arc<LiveStats>) -> Self {
+        self.live_stats = Some(stats);
+        self
     }
 
     fn forward(&mut self, t0_s: f64, samples: Vec<f32>) {
@@ -511,6 +524,9 @@ impl PcmForwarder {
         match self.sender.try_send((t0_s, samples)) {
             Ok(()) => {}
             Err(TrySendError::Full(_)) => {
+                if let Some(live) = &self.live_stats {
+                    live.dropped_chunks.fetch_add(1, Ordering::SeqCst);
+                }
                 if let Some((chunks, samples)) = self.stats.record(len, Instant::now()) {
                     tracing::warn!(
                         stream = ?self.stream,
@@ -569,9 +585,10 @@ async fn demux(
     intentional_stop: Arc<AtomicBool>,
     paused: Arc<AtomicBool>,
     died_tx: oneshot::Sender<()>,
+    stats: Arc<LiveStats>,
 ) {
-    let mut me_fwd = PcmForwarder::new(Stream::Me, me_tx);
-    let mut them_fwd = PcmForwarder::new(Stream::Them, them_tx);
+    let mut me_fwd = PcmForwarder::new(Stream::Me, me_tx).with_stats(stats.clone());
+    let mut them_fwd = PcmForwarder::new(Stream::Them, them_tx).with_stats(stats);
     let mut epoch_ns: Option<u64> = None;
     // Total nanoseconds elided by pauses, subtracted from every chunk's meeting time so the timeline
     // (and `audio.wav`) stays contiguous across a pause — no silent gap. `pause_started_at` holds the
@@ -1372,6 +1389,7 @@ mod tests {
             Arc::new(AtomicBool::new(true)), // intentional_stop: suppress the death report on close
             paused.clone(),
             died_tx,
+            Arc::default(),
         ));
 
         let them = |host_ms: u64| CaptureChunk {
@@ -1433,6 +1451,7 @@ mod tests {
             Arc::new(AtomicBool::new(true)), // intentional_stop: suppress the death report on close
             Arc::new(AtomicBool::new(false)),
             died_tx,
+            Arc::default(),
         ));
 
         // A Them chunk anchors the epoch at t0_s=0 and is recorded raw (Them is never echo-cancelled).
