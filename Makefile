@@ -4,7 +4,7 @@ SHELL := /bin/bash
 .PHONY: help swift-plist-guard swift-build swift-test rust-build rust-test rust-lint tauri-lint tauri-test \
 	test lint fmt codegen codegen-check web-install web-typecheck web-lint web-test web-build web-ci \
 	audit licenses version-check version stamp-version set-version ci probes diarize-eval wer-eval \
-	diarizer-eval robustness-eval live-eval aec-eval eval coverage e2e test-all notarize clean \
+	diarizer-eval robustness-eval live-eval aec-eval crash-eval eval coverage e2e test-all notarize clean \
 	rust-serve stage-release mac-app dmg
 
 PKG := helper
@@ -211,6 +211,9 @@ robustness-eval: swift-build ## Refine robustness on local recordings (HEARSAY_R
 
 aec-eval: swift-build ## Report-only echo eval: Speex canceller + live pipeline on a synthetic echoed mic (needs AMI audio)
 	HEARSAY_ECHO_EVAL=1 cargo test --manifest-path $(RUST_MANIFEST) -p hearsay-eval --features $(CORE_FEATURES) --test echo_eval -- --nocapture --test-threads=1
+
+crash-eval: swift-build ## Opt-in crash recovery eval: SIGKILLs the real live sidecars mid-meeting and checks respawn and meeting times
+	HEARSAY_CRASH_EVAL=1 cargo test --manifest-path $(RUST_MANIFEST) -p hearsay-eval --test crash_eval -- --nocapture --test-threads=1
 
 eval: diarize-eval wer-eval live-eval ## Every gated accuracy/latency eval (diarization, offline transcript, live)
 

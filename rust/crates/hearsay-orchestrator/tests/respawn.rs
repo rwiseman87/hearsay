@@ -3,6 +3,7 @@
 //! across the crash.
 
 use std::path::PathBuf;
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -15,8 +16,8 @@ use hearsay_db::test_support::memory_pool;
 use hearsay_engine::LiveEngine;
 use hearsay_orchestrator::testing::{chunk, seg, ScriptedTranscriber};
 use hearsay_orchestrator::{
-    AudioSource, Backend, BackendInstance, CaptureChunk, Orchestrator, OrchestratorError,
-    ProcessTranscriber, SegmentKind, Stream,
+    AudioSource, Backend, BackendInstance, CaptureChunk, LiveStats, LiveTuning, Orchestrator,
+    OrchestratorError, ProcessTranscriber, SegmentKind, Stream,
 };
 
 const CHUNK_SAMPLES: usize = 1600;
@@ -149,7 +150,13 @@ async fn crash_mid_stream_is_recovered_with_correct_meeting_times() {
         vec![FAST_BACKOFF; 3],
         script(total),
     );
-    let orch = Orchestrator::new(pool.clone(), tmp.path().to_path_buf(), backend);
+    let stats = Arc::new(LiveStats::default());
+    let orch = Orchestrator::new(pool.clone(), tmp.path().to_path_buf(), backend).with_tuning(
+        LiveTuning {
+            stats: stats.clone(),
+            ..LiveTuning::default()
+        },
+    );
     let meeting = orch.start_meeting(Some("Respawn".into())).await.unwrap();
 
     // Wait for the replacement sidecar to transcribe late chunks.
@@ -193,6 +200,8 @@ async fn crash_mid_stream_is_recovered_with_correct_meeting_times() {
 
     // Them was never disturbed.
     assert_eq!(them_fed.lock().unwrap().len(), total * CHUNK_SAMPLES);
+    assert_eq!(stats.me_respawns.load(Ordering::SeqCst), 1);
+    assert_eq!(stats.them_respawns.load(Ordering::SeqCst), 0);
 }
 
 #[tokio::test]

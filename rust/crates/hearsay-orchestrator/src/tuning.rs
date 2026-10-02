@@ -21,6 +21,10 @@ pub struct EchoDrop {
 pub struct LiveStats {
     /// Capture chunks dropped on a full transcriber hand-off queue, both streams.
     pub dropped_chunks: AtomicU64,
+    /// Replacement sidecars started after a Me sidecar died mid-meeting.
+    pub me_respawns: AtomicU64,
+    /// Replacement sidecars started after a Them sidecar died mid-meeting.
+    pub them_respawns: AtomicU64,
     echo_drops: Mutex<Vec<EchoDrop>>,
 }
 

@@ -39,10 +39,11 @@ This document maps the targets to what they test and the suite to where it lives
 | **`make robustness-eval`** | `swift-build`, then the `hearsay-eval` `robustness` test over `HEARSAY_ROBUSTNESS_DIR` (default `outputs/recordings`) | the refine on local recordings with no reference transcript: coverage, stalls, repeat runs, loud untranscribed time and RTF as counts only, never text. Report-only | **yes** |
 | **`make live-eval`** | `swift-build`, then the `hearsay-eval` `live_eval` gate (`HEARSAY_LIVE_EVAL=1`) | `hearsay-me` and `hearsay-live` fed the corpus concurrently at real-time pace; WER and cpWER gated, final-delay percentiles reported. A 10-minute window takes about 10 minutes; `HEARSAY_EVAL_SPEED=0` feeds unpaced (WER only) | **yes** |
 | **`make aec-eval`** | `swift-build`, then the `hearsay-eval` `echo_eval` test with `--features aec` (`HEARSAY_ECHO_EVAL=1`) | how the live Me stream copes with Them leaking into the mic: a synthetic mic (AMI near-end speaker plus a simulated room echo of an AMI Them track) scored through the Speex canceller alone (ERLE, convergence, near-end fidelity) and through the full live pipeline (spurious Me words, Me WER, finals dropped by the echo dedup) across AEC, dedup and Me VAD-threshold settings. Report-only (never gates); about an hour with the defaults. See [echo-cancellation.md](echo-cancellation.md#measuring-echo-handling) | **yes** |
+| **`make crash-eval`** | `swift-build`, then the `hearsay-eval` `crash_eval` test (`HEARSAY_CRASH_EVAL=1`) | the live pipeline's sidecar respawn against the real `hearsay-me` / `hearsay-live`: SIGKILLs a sidecar mid-meeting (one Me crash, two Me crashes 20 s apart, a Them crash, a kill-loop that exhausts the retry budget) and checks a replacement started, post-crash Me finals land within 3 s of their reference utterances, the outage gap is bounded, nothing is fed twice, the other stream is unaffected, and the meeting finalizes. Asserts (fails on a regression); about 10 minutes. See the paragraph below | **yes** |
 | **`make eval`** | `diarize-eval` + `wer-eval` + `live-eval` | every gated accuracy and latency eval | **yes** |
 | `make coverage` | `cargo-llvm-cov` + vitest v8 → `outputs/coverage/` | report-only; the "what's untested" view | no |
 | **`make test-all`** | `ci` + `probes` + `e2e` | everything, on a fully-equipped box | yes |
-| `make clean-test` | `rm -rf outputs/coverage outputs/e2e` | (removes report dirs; test *data* auto-cleans via tempdirs) | no |
+| `make clean` | `rm -rf outputs/coverage outputs/e2e` plus the build artifacts | (removes report dirs; test *data* auto-cleans via tempdirs) | no |
 
 `make ci` + `make e2e` is the complete deterministic suite on a machine without the models.
 
@@ -93,7 +94,7 @@ the working tree untouched; `TempDir` cleans itself on drop (including on panic)
 test serves the core in-process on an ephemeral port (no external process to reap); the browser E2E is
 the one case that spawns a real process, managed by Playwright's `webServer` config. Triage artifacts —
 coverage (`outputs/coverage/`) and Playwright reports/traces (`outputs/e2e/`) — land only under the
-gitignored `outputs/`; `make clean-test` removes them.
+gitignored `outputs/`; `make clean` removes them.
 
 ## Running the probes
 
@@ -122,6 +123,7 @@ and `der`), and the runners live in `hearsay-eval` (plus the diarization gate in
 | `wer-eval` | WER, cpWER, RTF of the refine | `shared/eval/ES2004a.utterances.json` |
 | `live-eval` | live WER, cpWER, final delay | the same transcript |
 | `aec-eval` | echo return loss, spurious Me words, Me WER (report only) | `shared/eval/ES2004b-A.utterances.json` |
+| `crash-eval` | respawn count, post-crash Me start-time error, lost speech, Them word count | `shared/eval/ES2004b-A.utterances.json` and a crash-free control run |
 
 - **Data.** The audio is local and never committed (`outputs/ami/`, fetched with the `curl` commands
   recorded in `shared/eval/corpus.json`). Committed: the manifest, the reference transcript, and the
@@ -141,6 +143,16 @@ and `der`), and the runners live in `hearsay-eval` (plus the diarization gate in
   `hearsay-diarize --asr` Parakeet model (each word attributed to the diarizer turn it overlaps)
   on the same metrics instead of the gated Ultra. Those runs are report-only: never gated, never
   written to the baseline. The first run of a model downloads it into the FluidAudio cache.
+- **Crash recovery.** `crash_eval` runs the full `Orchestrator` over a 120 s AMI window (near-end
+  speaker as Me, another recording as Them, `HEARSAY_CRASH_SPEED` default 2) and SIGKILLs the test's own
+  `hearsay-me` / `hearsay-live` child by pid (found with `pgrep -P`). Each scenario is compared with a
+  crash-free control run. The pipeline counts replacements in `LiveStats` (`me_respawns`,
+  `them_respawns`). Each post-crash Me final is matched to the reference utterance with the best word
+  overlap; the median start-time error must stay within 3 s. The test also bounds the reference speech
+  lost beyond the control, fails on duplicate finals, and requires the surviving stream to keep at least
+  85% of the control's words. Windowing and speed: `HEARSAY_CRASH_WINDOW_S`, `HEARSAY_CRASH_SPEED`;
+  `HEARSAY_CRASH_ONLY=<scenario prefix>` runs one scenario. The report is
+  `outputs/eval/<stamp>/crash.json`.
 
 ## Not covered (by design)
 

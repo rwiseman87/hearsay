@@ -66,7 +66,16 @@ better):
 Phonon-2 requires macOS 15, above the app's 14.4 floor. The gated figures in `make wer-eval` are the
 Ultra row (`shared/eval/baseline-asr.json`). Because Parakeet decodes the track without a text
 prompt carried between windows, it has no repetition-loop or silent-stall failure mode to repair;
-a coverage guard (audible versus transcribed seconds) still flags a truncated transcript.
+a coverage guard (audible versus transcribed seconds) still flags a truncated transcript. The guard
+counts any loud audio as speech, so background music with no voice lowers coverage.
+
+The live diarizer (LS-EEND, AMI variant) scores DER 0.103 near-field but 0.600 far-field, where it finds
+one of four speakers; the offline pyannote pipeline scores 0.144 and 0.194. Live labels are best
+effort and the offline refine corrects them. Input conditioning (high-pass, level normalization, AGC)
+does not change the live result, because the model's feature extractor normalizes gain itself. Timeline
+thresholds and padding only trade misses against confusion, the other LS-EEND variants and the Nemotron 3
+and Sortformer engines do not beat pyannote on both conditions, and the streaming path matches the
+offline path, so the eval figures describe live behavior.
 
 ## Streaming versus offline
 

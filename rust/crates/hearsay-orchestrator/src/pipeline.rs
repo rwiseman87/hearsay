@@ -406,6 +406,7 @@ pub(crate) async fn spawn(
         ane_ready_rx.clone(),
         last_activity.clone(),
         echo_dedup.clone(),
+        tuning.stats.clone(),
     ));
     let them_task = tokio::spawn(stream_loop(
         StreamRole::Them,
@@ -418,6 +419,7 @@ pub(crate) async fn spawn(
         ane_ready_rx,
         last_activity.clone(),
         echo_dedup,
+        tuning.stats.clone(),
     ));
 
     // Spawn the inactivity watchdog only when a prompt or an auto-end is enabled; otherwise drop
@@ -671,6 +673,7 @@ async fn respawn_sidecar(
     attempts: &mut usize,
     last_spawn: &mut Instant,
     mut reason: String,
+    stats: &LiveStats,
 ) -> Option<mpsc::Receiver<SidecarSegment>> {
     if last_spawn.elapsed() >= RESPAWN_STABLE {
         *attempts = 0;
@@ -691,6 +694,11 @@ async fn respawn_sidecar(
         match transcriber.respawn().await {
             Ok(rx) => {
                 *last_spawn = Instant::now();
+                let counter = match role {
+                    StreamRole::Me => &stats.me_respawns,
+                    StreamRole::Them => &stats.them_respawns,
+                };
+                counter.fetch_add(1, Ordering::SeqCst);
                 return Some(rx);
             }
             Err(err) => reason = err.to_string(),
@@ -715,6 +723,7 @@ async fn stream_loop(
     mut ane_ready: watch::Receiver<bool>,
     last_activity: Arc<Mutex<Instant>>,
     echo_dedup: Arc<Mutex<EchoDedup>>,
+    stats: Arc<LiveStats>,
 ) {
     // Serialize live inference against the offline refine on the shared ANE permit: wait until this
     // meeting holds it before feeding the sidecar. Recording is unaffected (demux records on its own
@@ -770,7 +779,7 @@ async fn stream_loop(
                             while let Ok(seg) = emit_rx.try_recv() {
                                 handle(role, &seg, offset.unwrap_or(0.0), &pool, meeting_id, &broadcast_tx, &mut clusters, &echo_dedup).await;
                             }
-                            match respawn_sidecar(role, transcriber.as_mut(), &mut respawn_attempts, &mut last_spawn, "stdin write failed".into()).await {
+                            match respawn_sidecar(role, transcriber.as_mut(), &mut respawn_attempts, &mut last_spawn, "stdin write failed".into(), &stats).await {
                                 Some(rx) => {
                                     emit_rx = rx;
                                     offset = None;
@@ -814,7 +823,7 @@ async fn stream_loop(
                 // `close()` is idempotent, so a prior close on capture-end is fine.
                 None => {
                     let recovered = if feeding && transcriber.can_respawn() {
-                        respawn_sidecar(role, transcriber.as_mut(), &mut respawn_attempts, &mut last_spawn, "sidecar exited".into()).await
+                        respawn_sidecar(role, transcriber.as_mut(), &mut respawn_attempts, &mut last_spawn, "sidecar exited".into(), &stats).await
                     } else {
                         None
                     };

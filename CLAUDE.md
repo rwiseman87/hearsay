@@ -84,6 +84,8 @@ shared/protocol/ipc.md  IPC contract (source of truth)   ·   shared/fixtures/  
   `make live-eval` (live sidecars at real-time pace: WER/cpWER gate + final-delay report; opt-in, ~10 min),
   `make aec-eval` (report-only echo eval: synthetic mic = AMI near-end speaker + simulated room echo of an AMI
   Them track, scored through the Speex canceller and the live pipeline; opt-in, ~1 h),
+  `make crash-eval` (SIGKILLs the real Me/Them sidecars mid-meeting and asserts the pipeline respawns them with
+  correct meeting times and the other stream unaffected; opt-in, ~10 min),
   `make eval` (the three gated evals). See `docs/testing.md`.
 - `make ci` is the gate and must stay green (`ci: lint test tauri-test web-ci codegen-check version-check
   audit licenses`): `clippy -D warnings` + `rustfmt --check` + Swift `selftest` + `cargo test` + the Tauri
