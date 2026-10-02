@@ -349,3 +349,50 @@ mod tests {
         assert_eq!(per_speaker.len(), 2);
     }
 }
+
+/// The most times any block of up to 8 words repeats back to back (1 when nothing repeats) and that
+/// block's length in words: the signature of an ASR repetition loop.
+pub fn max_repeat_run(words: &[String]) -> (usize, usize) {
+    let mut best = (usize::from(!words.is_empty()), 1);
+    for period in 1..=8usize {
+        for start in 0..words.len() {
+            let unit = &words[start..(start + period).min(words.len())];
+            if unit.len() < period {
+                break;
+            }
+            let mut run = 1;
+            while words.get(start + (run + 1) * period - 1).is_some()
+                && words[start + run * period..start + (run + 1) * period] == *unit
+            {
+                run += 1;
+            }
+            if run > best.0 {
+                best = (run, period);
+            }
+        }
+    }
+    best
+}
+
+#[cfg(test)]
+mod repeat_tests {
+    use super::*;
+
+    fn w(text: &str) -> Vec<String> {
+        text.split_whitespace().map(str::to_string).collect()
+    }
+
+    #[test]
+    fn counts_the_longest_back_to_back_repeat() {
+        assert_eq!(max_repeat_run(&[]), (0, 1));
+        assert_eq!(max_repeat_run(&w("a b c d")).0, 1);
+        assert_eq!(max_repeat_run(&w("a a a b")), (3, 1));
+        assert_eq!(max_repeat_run(&w("x a b a b a b y")), (3, 2));
+        assert_eq!(max_repeat_run(&w("a b c a b c a b c a b c")), (4, 3));
+    }
+
+    #[test]
+    fn separated_repeats_do_not_count_as_a_run() {
+        assert_eq!(max_repeat_run(&w("a b x a b y a b")).0, 1);
+    }
+}

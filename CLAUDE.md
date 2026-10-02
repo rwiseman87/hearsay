@@ -80,6 +80,7 @@ shared/protocol/ipc.md  IPC contract (source of truth)   ·   shared/fixtures/  
   local labeled corpus; self-skips inside `make ci` when the audio/sidecar are absent).
   `make wer-eval` (offline transcript WER + cpWER vs a committed baseline; self-skips without audio/model/sidecar),
   `make diarizer-eval` (report-only diarizer comparison: pyannote, Nemotron 3, Sortformer, LS-EEND on AMI; opt-in, slow),
+  `make robustness-eval` (counts-only refine robustness over local recordings: coverage, stalls, repeat runs),
   `make live-eval` (live sidecars at real-time pace: WER/cpWER gate + final-delay report; opt-in, ~10 min),
   `make eval` (all three). See `docs/testing.md`.
 - `make ci` is the gate and must stay green (`ci: lint test tauri-test web-ci codegen-check version-check
