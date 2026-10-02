@@ -5,7 +5,7 @@ audio as **separate** streams ("Me" vs "Them"), transcribes in real time, identi
 speakers, and streams Markdown notes. Transcription, diarization, and the notes LLM all run on-device;
 audio never leaves the machine.
 
-Ships as **one Rust + Tauri application** — one installer per OS, no interpreter bundle. The
+Ships as **one Rust + Tauri application** — one installer, no interpreter bundle. The
 Rust core is the single backend and the single source of truth.
 Canonical architecture: `docs/architecture.md`. Design rationale: `docs/design-decisions.md`.
 IPC contract: `shared/protocol/ipc.md`. `README.md` is the single documentation index; there is no
@@ -50,8 +50,8 @@ rust/crates/
   hearsay-inference/    the offline refine: drives `hearsay-diarize`, word-to-speaker attribution, coverage guard (no ML in-process)
   hearsay-notes/        the local-LLM notes sidecar (llama-cpp-2); spawned by the core, kept out of its binary
   hearsay-notes-prompt/ dependency-free prompt build + reply parse, shared by the core default + the notes sidecar
-  hearsay-eval/         test-only accuracy + latency evals (WER/cpWER gate, live sidecar driver); see docs/testing.md
-  hearsay-attribution/  speaker clustering / voiceprint match / segment-speaker assignment + DER/WER/cpWER eval metrics (pure logic)
+  hearsay-eval/         test-only evals: offline WER/cpWER, diarization, live, diarizer comparison, robustness, AEC, crash; see docs/testing.md
+  hearsay-attribution/  speaker ordering / voiceprint match / segment-speaker assignment + DER/WER/cpWER eval metrics (pure logic)
   hearsay-audio/        lossless FLAC archival of the recorded meeting wav (encode + decode + byte-exact verify)
   hearsay-ipc/          binary frame codec + NDJSON control codec (source of truth for the IPC contract) + gen_fixtures bin
 helper/                 SwiftPM: hearsay-{helper,live,me,diarize,models} executables + HearsayIPC + SidecarIO libraries
@@ -77,8 +77,8 @@ shared/protocol/ipc.md  IPC contract (source of truth)   ·   shared/fixtures/  
 - Targets: `make rust-build`, `make test` (Swift selftest + cargo test), `make lint` (clippy + rustfmt),
   `make fmt`, `make codegen`, `make codegen-check`, `make web-ci`, `make audit`, `make licenses`, `make ci`,
   `make diarize-eval` (offline diarization accuracy gate: speaker-count + DER vs a committed baseline over a
-  local labeled corpus; self-skips inside `make ci` when the audio/sidecar are absent).
-  `make wer-eval` (offline transcript WER + cpWER vs a committed baseline; self-skips without audio/model/sidecar),
+  local labeled corpus; opt-in via the make target, skips when the audio/sidecar are absent).
+  `make wer-eval` (offline transcript WER + cpWER vs a committed baseline; opt-in via the make target, skips without audio/sidecar),
   `make diarizer-eval` (report-only diarizer comparison: pyannote, Nemotron 3, Sortformer, LS-EEND on AMI; opt-in, slow),
   `make robustness-eval` (counts-only refine robustness over local recordings: coverage, stalls, repeat runs),
   `make live-eval` (live sidecars at real-time pace: WER/cpWER gate + final-delay report; opt-in, ~10 min),

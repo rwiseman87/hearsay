@@ -49,10 +49,17 @@ source this page mirrors; `hearsay-core/src/routes/settings.rs` implements the w
 | Shell handshake file | `HEARSAY_HANDSHAKE_PATH` | unset (headless dev prints the URL instead) |
 | Third-party notices file | `HEARSAY_THIRD_PARTY_NOTICES` | `./THIRD-PARTY-NOTICES.md` (the shell points it at the bundled copy) |
 | Diarize clustering threshold (macOS sidecar) | `HEARSAY_DIARIZE_CLUSTER_THRESHOLD` | `0.7` |
+| Diarize fixed speaker count (`hearsay-diarize --diarizer pyannote` only; experiment) | `HEARSAY_DIARIZE_NUM_SPEAKERS` | unset |
+| Diarize maximum speaker count (`hearsay-diarize --diarizer pyannote` only; experiment) | `HEARSAY_DIARIZE_MAX_SPEAKERS` | unset |
+| Me VAD threshold (`hearsay-me`, `0 < t < 1`; experiment) | `HEARSAY_VAD_THRESHOLD` | FluidAudio default |
+| Scripted model-free engine (dev only; any value, honored only when `ENVIRONMENT=development`) | `HEARSAY_SCRIPTED` | unset (off) |
 | Environment | `ENVIRONMENT` | `development` |
 
-The handshake and FluidAudio paths are injected by the desktop shell and are normally unset in
-development.
+The desktop shell injects `DATABASE_URL`, `HEARSAY_OUTPUT_DIR`, `HEARSAY_WEB_DIR`,
+`HEARSAY_MODELS_DIR`, `HEARSAY_HELPER_PATH`, `HEARSAY_HANDSHAKE_PATH`,
+`HEARSAY_THIRD_PARTY_NOTICES`, and `ENVIRONMENT=production`, so the packaged app uses its own paths
+rather than the development defaults. The FluidAudio model cache is not configurable; it derives
+from `HOME` (`~/Library/Application Support/FluidAudio/Models`).
 
 ## The writable overlay
 

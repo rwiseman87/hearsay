@@ -91,9 +91,8 @@ The diarizer returns a `Diarization` of ordinal turns plus each speaker's raw me
 ordinal, and the refine normalizes those into stored centroids. The seam:
 
 ```rust
-// rust/crates/hearsay-inference/src/diarizer.rs
-/// A diarization result: ordinal speaker turns (start-sorted) + each speaker's raw mean voiceprint by
-/// ordinal (the refine L2-normalizes these into stored centroids). ...
+// rust/crates/hearsay-inference/src/refine.rs
+/// Ordinal speaker turns (start-sorted) and each speaker's raw mean voiceprint by ordinal.
 pub struct Diarization {
     pub turns: Vec<DiarTurn>,
     pub embeddings: HashMap<i64, Vec<f32>>,
@@ -111,9 +110,9 @@ forwards it:
 
 ```swift
 // helper/Sources/hearsay-diarize/main.swift
-var config = OfflineDiarizerConfig.default
-config.clustering.threshold = 0.7
-let manager = OfflineDiarizerManager(config: config)
+// productionDiarizerConfig(): OfflineDiarizerConfig.default with clustering.threshold = 0.7
+// (or HEARSAY_DIARIZE_CLUSTER_THRESHOLD)
+let manager = OfflineDiarizerManager(config: productionDiarizerConfig())
 let result = try await manager.process(url)
 let turns = result.segments.map {
     Turn(speaker: $0.speakerId, startS: ..., endS: ...)
@@ -126,7 +125,9 @@ let speakers = (result.speakerDatabase ?? [:]).map {
 ```
 
 The sidecar writes one JSON object to stdout (keys snake-cased): `{ sample_rate, duration_s,
-speaker_count, turns: [{speaker, start_s, end_s}], speakers: [{speaker, embedding: [f32]}] }`. The
+speaker_count, turns: [{speaker, start_s, end_s}], speakers: [{speaker, embedding: [f32]}], asr }`,
+where `asr` is present only with `--asr <model>` (the refine passes `ultra`) and carries `{ model,
+processing_s, words: [{word, start_s, end_s, confidence}] }`. The
 Rust side maps each speaker label to a 1-based ordinal by first appearance and keys the embedding by
 that ordinal — no averaging (FluidAudio already did it):
 
@@ -135,9 +136,9 @@ that ordinal — no averaging (FluidAudio already did it):
 let ordinals = order_speakers(&ordering);
 ...
 let mut embeddings: HashMap<i64, Vec<f32>> = HashMap::new();
-for speaker in diarized.speakers {
+for speaker in &output.speakers {
     if let Some(&ord) = ordinals.get(&speaker.speaker) {
-        embeddings.insert(i64::from(ord), speaker.embedding);
+        embeddings.insert(i64::from(ord), speaker.embedding.clone());
     }
 }
 ```
@@ -393,7 +394,7 @@ right verdict.
   refine is more accurate, so centroids are only ever a refine artifact. Live clusters carry a NULL
   centroid until the refine re-seeds them.
 - **No "a cluster under N seconds cannot be a speaker" rule.** That reads as a tidy denoiser but is
-  really a cliff that silently deletes a real participant who spoke briefly..
+  really a cliff that silently deletes a real participant who spoke briefly.
 - **No manual centroid editing.** A user names and locks a cluster, and can remove a stored
   voiceprint outright (Settings > Voices), but the embedding itself is never hand-edited — there is
   no "adjust this vector" or "re-record my voice" path.

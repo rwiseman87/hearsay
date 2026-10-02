@@ -38,11 +38,12 @@ later move to a server cheap without paying for it now.
 
 ## Model selection
 
-Per stage. The trait seams (`Transcriber`, `Diarizer`, `Refiner`) keep each engine interchangeable.
+Per stage. The `hearsay-orchestrator` trait seams (`Transcriber` for live ASR and diarization,
+`Refiner` for the offline refine, `Summarizer` for notes) keep each engine interchangeable.
 
 | Stage | Model |
 |---|---|
-| Live ASR | Parakeet (unified streaming for partials, Ultra for batch finals), on the ANE |
+| Live ASR | Parakeet on the ANE: unified streaming for Me and for Them partials, Ultra for Them batch finals |
 | Live diarization | FluidAudio streaming diarizer (LS-EEND), on CPU |
 | Offline diarization | pyannote community-1, CoreML |
 | Speaker embeddings | wespeaker_v2, 256-d |
@@ -60,7 +61,7 @@ better):
 |---|---|---|
 | whisper large-v3-turbo | 0.214 / 0.271 | 0.299 / 0.343 |
 | Parakeet v3 | 0.170 / 0.230 | 0.255 / 0.313 |
-| Parakeet Ultra | 0.163 / 0.222 | 0.239 / 0.305 |
+| Parakeet Ultra | 0.163 / 0.225 | 0.238 / 0.301 |
 | Parakeet Phonon-2 | 0.226 / 0.276 | n/a |
 
 Phonon-2 requires macOS 15, above the app's 14.4 floor. The gated figures in `make wer-eval` are the

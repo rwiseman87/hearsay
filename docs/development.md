@@ -95,10 +95,10 @@ than mid-meeting (see [packaging.md](packaging.md)).
 
 **The offline refine** runs one `hearsay-diarize <wav> --asr ultra` sidecar over the Them track: it
 diarizes (pyannote community-1) and transcribes with Parakeet Ultra, and `hearsay-inference`
-attributes each word to a speaker turn. The Ultra model is fetched by the same first-use download as
-the other FluidAudio models (`make swift-build` builds the sidecar; no separate fetch step). Until
-it is present, auto-refine and `POST /api/meetings/{id}/rediarize` report the model as unavailable
-rather than failing the meeting.
+attributes each word to a speaker turn. `make swift-build` builds the sidecar; the core checks only
+that the `hearsay-diarize` binary exists, and the sidecar downloads Ultra on first use if setup has
+not already. A failed download fails that refine (`refine failed: ...`): auto-refine keeps the live
+transcript, and `POST /api/meetings/{id}/rediarize` returns the error.
 
 **Notes (optional local LLM).** When enabled (`HEARSAY_NOTES`, default off), stopping a meeting
 generates Markdown notes from the finalized transcript with a local GGUF instruct model (llama.cpp)
@@ -177,7 +177,9 @@ One-time setup for `make e2e`: `cd web && npm install && npx playwright install 
   `make swift-build`. The default capture-helper path is
   `helper/.build/arm64-apple-macosx/debug/hearsay-helper` (override with `HEARSAY_HELPER_PATH`);
   the sidecars are located as its siblings.
-- **The refine reports the model missing.** Finish first-run setup so the FluidAudio
-  models, including Parakeet Ultra, are downloaded.
+- **The refine fails (`refine failed: ...`).** The live transcript is kept. If the sidecar could not
+  download its models (Parakeet Ultra, community-1), finish first-run setup or check the network,
+  then run "Refine speakers" again. A missing sidecar reports `hearsay-diarize sidecar not found`;
+  build it with `make swift-build`.
 - **Speakers over- or under-merge.** The live labels are approximate; run "Refine speakers" for a
   more accurate whole-track re-diarization. Manual renames are carried across it.

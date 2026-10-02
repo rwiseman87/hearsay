@@ -45,7 +45,7 @@ make stamp-version VERSION=0.2.0   # write all five; what the installer build ru
 make set-version VERSION=0.2.0     # the same, plus regenerated codegen
 ```
 
-`make dmg` runs the drift check first and stop if any file
+`make dmg` runs the drift check first and stops if any file
 disagrees, so a mismatched version cannot reach an installer. `make ci` runs the same check.
 Versions are `x.y.z`; that is what Cargo and Tauri require and what `CFBundleShortVersionString`
 expects.
@@ -178,8 +178,8 @@ location keyed by the bundle id `com.hearsay.app`:
 |---|---|
 | Database (meetings, speakers, settings) | `~/Library/Application Support/com.hearsay.app/db/` |
 | Recordings and transcripts (one folder per meeting) | `~/Library/Application Support/com.hearsay.app/recordings/` |
-| Downloaded refine and notes models | `~/Library/Application Support/com.hearsay.app/models/` |
-| FluidAudio live models (re-downloadable) | `~/Library/Application Support/FluidAudio/`, `~/.cache/fluidaudio/` |
+| Downloaded notes models | `~/Library/Application Support/com.hearsay.app/models/` |
+| FluidAudio live and refine models (re-downloadable) | `~/Library/Application Support/FluidAudio/`, `~/.cache/fluidaudio/` |
 | WebView and app caches | `~/Library/Caches/com.hearsay.app`, `~/Library/WebKit/com.hearsay.app`, and similar |
 
 Your recordings and transcripts live outside the `.app`, so deleting the app never deletes them.

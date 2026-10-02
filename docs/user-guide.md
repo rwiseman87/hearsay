@@ -125,7 +125,8 @@ else.
 
 ### Refine speakers
 
-**Refine speakers** re-runs diarization over the whole recording at once. Because it can see the
+**Refine speakers** re-runs diarization over the whole recording at once and re-transcribes the
+other side of the call with a more accurate speech model (Parakeet Ultra). Because it can see the
 entire meeting rather than a rolling window, it separates and merges speakers far more accurately
 than the live pass, and it recognizes people you have named in previous meetings.
 

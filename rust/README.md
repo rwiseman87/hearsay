@@ -1,7 +1,7 @@
 # Hearsay Rust workspace
 
-The Rust core of Hearsay and its supporting crates — the macOS foundation. Architecture, crate diagrams, and trait seams:
-[`../docs/architecture.md`](../docs/architecture.md).
+The Rust core of Hearsay and its supporting crates — the macOS foundation. Architecture, crate
+diagrams, and trait seams: [`../docs/architecture.md`](../docs/architecture.md).
 
 The live path runs end to end through `hearsay-core`: capture, streaming captions, diarization, the
 offline refine, and optional local-LLM notes, all behind the loopback HTTP and WebSocket API the
@@ -20,7 +20,8 @@ make rust-serve                       # runs hearsay-core (--features aec,api-co
 `open: http://127.0.0.1:<port>/?token=<token>`. Start a meeting and Me/Them captions stream in
 live with speaker diarization; "Refine speakers" after stop runs the offline re-diarize and
 higher-accuracy re-transcription. `SYNTHETIC=1 make rust-serve` drives the pipeline with generated
-audio (no microphone, no TCC prompts). `HEARSAY_HELPER_PATH` and `HEARSAY_NOTES_MODEL` override the helper and notes model paths.
+audio (no microphone, no TCC prompts). `HEARSAY_HELPER_PATH` and `HEARSAY_NOTES_MODEL` override the
+helper and notes model paths.
 
 ## Crate map
 
@@ -31,7 +32,7 @@ graph. Edges below are `path` dependencies (diagrammed there).
 | Crate | Responsibility |
 |---|---|
 | `hearsay-ipc` | Binary media-frame codec (28-byte little-endian header) plus the NDJSON control protocol; the byte-for-byte source of truth for `shared/protocol/ipc.md`, validated against the golden fixtures in `shared/fixtures/`. No internal dependencies. |
-| `hearsay-attribution` | Pure speaker-attribution logic: speaker ordering, segment-speaker assignment, cross-meeting voiceprint cosine matching. No dependencies; unit-tested in isolation. |
+| `hearsay-attribution` | Pure speaker-attribution logic: speaker ordering, segment-speaker assignment, cross-meeting voiceprint cosine matching, plus the eval metrics (DER, speaker-count error, WER, cpWER). No dependencies; unit-tested in isolation. |
 | `hearsay-audio` | Lossless FLAC archival of the recorded meeting WAV: a bounded-memory streaming encoder, a block-at-a-time decoder, and a byte-exact verifier that must pass before the original is deleted. Ships `restore` and `repair_header` examples for un-archiving a library and for repairing STREAMINFO. No first-party dependencies; unit-tested in isolation. |
 | `hearsay-db` | Persistence: SQLite via SQLx (WAL, `busy_timeout`, foreign keys), UUID primary keys, forward-only numbered migrations; the attribution policy (vote and recognition), FTS transcript search, folders, and the notes and models queries. |
 | `hearsay-engine` | The neutral `LiveEngine` trait seam (meeting lifecycle, live-transcript subscribe, rediarize, notes) and the `DisabledEngine` placeholder the whole API test suite runs against. Exists to break the core/orchestrator cycle. |
@@ -41,7 +42,7 @@ graph. Edges below are `path` dependencies (diagrammed there).
 | `hearsay-inference` | The offline refine: drives the `hearsay-diarize` sidecar (community-1 diarization + Parakeet Ultra ASR), attributes each word to a diarizer turn, and guards transcript coverage. No ML runs in-process. |
 | `hearsay-notes` | The local-LLM notes sidecar: a standalone binary that owns llama.cpp (`llama-cpp-2`), spawned by the core over stdio (JSON in, JSON out). |
 | `hearsay-notes-prompt` | Dependency-free prompt construction + reply parsing for the notes step, shared by the core's config default and the sidecar (so the sidecar never pulls `hearsay-inference`). |
-| `hearsay-eval` | Accuracy and latency evals, test-only: corpus and reference-transcript loading, the baseline gate, a driver that feeds the live sidecars over stdio and timestamps what they emit, and the `asr_accuracy` / `live_eval` tests behind `make wer-eval` / `make live-eval`. Scoring is pure `hearsay-attribution` (`word_errors`, `cpwer`, `percentiles`). |
+| `hearsay-eval` | Accuracy and latency evals, test-only: corpus and reference-transcript loading, the baseline gate, a driver that feeds the live sidecars over stdio and timestamps what they emit, the synthetic echo scenarios and scoring (`echo`), and the tests behind the eval targets: `asr_accuracy` (`make wer-eval`), `diarization_accuracy` (`make diarize-eval`), `live_eval` (`make live-eval`), `diarizer_compare` (`make diarizer-eval`), `robustness` (`make robustness-eval`), `echo_eval` (`make aec-eval`), and `crash_eval` (`make crash-eval`). Scoring is pure `hearsay-attribution` (`word_errors`, `cpwer`, `percentiles`, `der`, `speaker_count`). |
 | `hearsay-core` | The application binary: the axum HTTP and WebSocket API (loopback plus per-session token), the served React UI, and the composition root. Depends on `hearsay-engine`, `hearsay-backends`, `hearsay-db`, and `hearsay-ipc`; the concrete backends stay hidden behind the seam. |
 
 The Tauri shell lives at `../web/src-tauri/` (`tauri.conf.json` plus `src/main.rs`): it bundles
