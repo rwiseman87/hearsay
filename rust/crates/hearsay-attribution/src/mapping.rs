@@ -34,7 +34,7 @@ pub fn order_speakers(turns: &[SpeakerTurn]) -> HashMap<String, u32> {
 /// Turn times are track-relative; `offset_s` shifts them onto the meeting clock the segment
 /// timestamps use. On a tie the earliest turn wins. Index-returning so a caller keying turns by
 /// something other than the label (e.g. a numeric ordinal) can map the result onto its own list.
-pub fn max_overlap_turn(
+fn max_overlap_turn(
     start_s: f64,
     end_s: f64,
     turns: &[SpeakerTurn],

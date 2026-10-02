@@ -8,9 +8,8 @@
 //!   boundaries, and overlap scored. Reported as its [`DerBreakdown`] components so a regression is
 //!   attributable to missed / false-alarm / confusion.
 //!
-//! Kept dependency-free and I/O-free so it is unit-tested directly (like `consolidate.rs` /
-//! `voiceprint.rs`) and reused by both the committed accuracy gate and the diagnostic probe. There is
-//! deliberately no Python scorer (`pyannote.metrics` / `dscore` / `md-eval`) in the loop.
+//! Kept dependency-free and I/O-free so it is unit-tested directly (like `voiceprint.rs`) and reused
+//! by the committed accuracy gate. There is deliberately no Python scorer (`pyannote.metrics` / `dscore` / `md-eval`) in the loop.
 
 use std::collections::BTreeSet;
 

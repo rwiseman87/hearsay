@@ -188,15 +188,17 @@ pub fn refine_them(
         .words;
     let segments = assemble_refined_segments(&words, &diarization.turns);
 
-    // Keep a voiceprint only for a speaker that actually appears in the refined segments.
-    // Attribution can leave a speaker whose speech was entirely overlap-dominated with no segment;
-    // that speaker has no cluster to store a voiceprint on, so an orphan centroid would only waste a
-    // cross-meeting recognition match. This keeps `centroids` ⊆ the segments' speakers.
+    // Keep centroids only for speakers that have a segment (no orphan voiceprints).
     let present: HashSet<i64> = segments.iter().map(|s| s.ordinal).collect();
     let mut centroids = build_centroids(&diarization.embeddings);
     centroids.retain(|ordinal, _| present.contains(ordinal));
 
-    let speech: Vec<Range<f64>> = words.iter().map(|w| w.start_s..w.end_s).collect();
+    // Measure only words that reached a segment, so words dropped for lack of turns read as missing.
+    let speech: Vec<Range<f64>> = if segments.is_empty() {
+        Vec::new()
+    } else {
+        words.iter().map(|w| w.start_s..w.end_s).collect()
+    };
     Ok(RefineOutput {
         segments,
         centroids,
@@ -274,11 +276,13 @@ fn best_turn(start_s: f64, end_s: f64, turns: &[DiarTurn]) -> Option<usize> {
     best.map(|(i, _, _)| i)
 }
 
-/// Index of the turn nearest `[start_s, end_s]` in time (`turns` must be non-empty).
+/// Index of the turn nearest `[start_s, end_s]` in time (`turns` must be non-empty); ties go to the
+/// shorter turn, then the earlier one.
 fn nearest_turn(start_s: f64, end_s: f64, turns: &[DiarTurn]) -> usize {
     let mid = (start_s + end_s) / 2.0;
     let mut best = 0;
     let mut best_dist = f64::INFINITY;
+    let mut best_length = f64::INFINITY;
     for (i, turn) in turns.iter().enumerate() {
         let dist = if mid < turn.start_s {
             turn.start_s - mid
@@ -287,8 +291,10 @@ fn nearest_turn(start_s: f64, end_s: f64, turns: &[DiarTurn]) -> usize {
         } else {
             0.0
         };
-        if dist < best_dist {
+        let length = turn.end_s - turn.start_s;
+        if dist < best_dist || (dist == best_dist && length < best_length) {
             best_dist = dist;
+            best_length = length;
             best = i;
         }
     }
@@ -388,6 +394,7 @@ fn write_mono_wav(path: &Path, samples: &[f32]) -> Result<(), InferenceError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::fs::PermissionsExt;
 
     #[test]
     fn build_centroids_normalizes_and_skips_empty() {
@@ -502,9 +509,7 @@ mod tests {
 
     #[test]
     fn assemble_does_not_merge_across_turns_of_the_same_speaker() {
-        // One speaker, two turns (a real speech pause between them): the segments stay separate so
-        // the final transcript can interleave Me utterances spoken during the pause. A single blob
-        // here is the failure mode that pushed a whole meeting's Me lines after one giant segment.
+        // Two turns of one speaker stay separate so Me lines spoken in the pause can interleave.
         let turns = vec![diar(1, 0.0, 4.0), diar(1, 6.0, 10.0)];
         let words = vec![
             word("before", 0.0, 1.0),
@@ -541,6 +546,30 @@ mod tests {
         let out = assemble_refined_segments(&[word("stray", 6.0, 7.0)], &turns);
         assert_eq!(out.len(), 1);
         assert_eq!((out[0].ordinal, out[0].text.as_str()), (1, "stray"));
+    }
+
+    #[test]
+    fn assemble_gives_a_zero_length_word_to_the_shorter_containing_turn() {
+        let turns = vec![diar(1, 0.0, 10.0), diar(2, 4.0, 4.6)];
+        let out = assemble_refined_segments(&[word("x", 4.2, 4.2)], &turns);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].ordinal, 2);
+    }
+
+    #[test]
+    fn refine_with_words_but_no_turns_reports_the_words_as_uncovered() {
+        let dir = tempfile::tempdir().unwrap();
+        let sidecar = dir.path().join("hearsay-diarize");
+        std::fs::write(
+            &sidecar,
+            "#!/bin/sh\necho '{\"turns\":[],\"asr\":{\"words\":[{\"word\":\"hi\",\"start_s\":0.0,\"end_s\":2.0}]}}'\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&sidecar, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let loud = vec![0.5_f32; 2 * SAMPLE_RATE as usize];
+        let out = refine_them(&sidecar, ASR_MODEL, &loud, Duration::from_secs(10)).unwrap();
+        assert!(out.segments.is_empty());
+        assert_eq!(out.coverage.unwrap().fraction(), 0.0);
     }
 
     #[test]
