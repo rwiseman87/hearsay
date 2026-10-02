@@ -4,13 +4,12 @@
 //! gates. Opt in with `HEARSAY_DIARIZER_EVAL=1`; self-skips without the audio or sidecar.
 //! `HEARSAY_DIARIZER_ENGINES=a,b` restricts the engines.
 
-use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Instant;
 
 use hearsay_attribution::{der, speaker_count, SpeakerTurn};
-use hearsay_eval::{output_dir, repo_root, resolve_sidecar, write_report};
+use hearsay_eval::{eval_dir, parse_rttm, resolve_audio, resolve_sidecar, write_report};
 use serde::{Deserialize, Serialize};
 
 const COLLAR_S: f64 = 0.25;
@@ -127,27 +126,6 @@ struct Row {
     real_time_factor: Option<f64>,
 }
 
-/// Reference turns from an RTTM file; the speaker is field 8.
-fn parse_rttm(path: &Path) -> Vec<SpeakerTurn> {
-    let text =
-        fs::read_to_string(path).unwrap_or_else(|e| panic!("read rttm {}: {e}", path.display()));
-    text.lines()
-        .filter_map(|line| {
-            let fields: Vec<&str> = line.split_whitespace().collect();
-            if fields.first() != Some(&"SPEAKER") || fields.len() < 8 {
-                return None;
-            }
-            let start = fields[3].parse::<f64>().ok()?;
-            let dur = fields[4].parse::<f64>().ok()?;
-            Some(SpeakerTurn {
-                speaker: fields[7].to_string(),
-                start_s: start,
-                end_s: start + dur,
-            })
-        })
-        .collect()
-}
-
 fn run_engine(
     bin: &Path,
     engine: &Engine,
@@ -258,8 +236,7 @@ fn diarizer_comparison() {
         eprintln!("diarizer-eval: no hearsay-diarize sidecar (make swift-build); skipping");
         return;
     };
-    let rttm: PathBuf =
-        repo_root().join("rust/crates/hearsay-inference/tests/fixtures/ES2004a.rttm");
+    let rttm: PathBuf = eval_dir().join("ES2004a.rttm");
     if !rttm.exists() {
         eprintln!(
             "diarizer-eval: reference RTTM absent ({}); skipping",
@@ -275,7 +252,7 @@ fn diarizer_comparison() {
 
     let mut rows: Vec<Row> = Vec::new();
     for (condition, rel) in CONDITIONS {
-        let audio = output_dir().join(rel);
+        let audio = resolve_audio(rel);
         if !audio.exists() {
             eprintln!(
                 "diarizer-eval: skip {condition} (audio absent: {})",

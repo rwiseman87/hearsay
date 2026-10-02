@@ -356,15 +356,12 @@ pub fn slice_utterances(utterances: &[Utterance], start_s: f64, end_s: f64) -> V
 }
 
 /// How many of the words in `finals` sit in a run of at least `RUN` consecutive words that also
-/// occurs in `them_words`: `(matched, total)`. A coarse, order-sensitive echo detector that
-/// ignores single common words.
-pub fn echo_word_fraction(finals: &[Vec<String>], them_words: &[String]) -> (usize, usize) {
+/// occurs in `them_words`. A coarse, order-sensitive echo detector that ignores single common words.
+pub fn echo_word_count(finals: &[Vec<String>], them_words: &[String]) -> usize {
     const RUN: usize = 3;
     let them_runs: std::collections::HashSet<&[String]> = them_words.windows(RUN).collect();
     let mut matched = 0;
-    let mut total = 0;
     for words in finals {
-        total += words.len();
         let mut covered = vec![false; words.len()];
         for (start, run) in words.windows(RUN).enumerate() {
             if them_runs.contains(run) {
@@ -373,7 +370,7 @@ pub fn echo_word_fraction(finals: &[Vec<String>], them_words: &[String]) -> (usi
         }
         matched += covered.iter().filter(|c| **c).count();
     }
-    (matched, total)
+    matched
 }
 
 /// The normalized words of `texts`, one list per text.
@@ -588,7 +585,7 @@ mod tests {
     }
 
     #[test]
-    fn echo_fraction_counts_words_in_runs_that_occur_in_them() {
+    fn echo_words_are_those_in_runs_that_occur_in_them() {
         let them: Vec<String> = "we should ship the release on friday"
             .split(' ')
             .map(String::from)
@@ -600,6 +597,6 @@ mod tests {
                 .collect::<Vec<_>>(),
             "release the ship".split(' ').map(String::from).collect(),
         ];
-        assert_eq!(echo_word_fraction(&finals, &them), (3, 7));
+        assert_eq!(echo_word_count(&finals, &them), 3);
     }
 }

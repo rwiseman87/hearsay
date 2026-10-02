@@ -6,7 +6,8 @@ the API + IPC contract, and the tests consume that contract rather than re-imple
 two tiers:
 
 - a **deterministic gate** (`make ci`) — fast, hardware-independent, model-free; the pre-flight before
-  a commit or PR, and what CI enforces.
+  a commit or PR, and what CI enforces. Every eval that runs a model skips unless its `make` target
+  sets an opt-in variable, so a plain `cargo test` runs no inference even when the audio is present.
 - **model/hardware probes** (`make probes`) — the `#[ignore]`d tests that need a downloaded model and
   the ANE/GPU; run on a box that has them.
 
@@ -19,25 +20,25 @@ This document maps the targets to what they test and the suite to where it lives
 
 | Target | Runs | Tests | Models/HW? |
 |---|---|---|---|
-| **`make ci`** | `lint test tauri-test codegen-check version-check audit licenses web-ci` | the whole deterministic gate (everything below except e2e/probes/coverage) | no |
+| **`make ci`** | `lint test tauri-test web-ci codegen-check version-check audit licenses` | the whole deterministic gate (everything below except e2e/probes/coverage) | no |
 | `lint` | `rust-lint` (clippy `--all-targets -D warnings` + `rustfmt --check` on `rust/`) + `tauri-lint` (same on `web/src-tauri`) | no warnings, formatted | no |
 | `test` | `swift-build` + `swift-test` + `rust-test` | Swift codec parity + the full Rust workspace | no |
 | `swift-test` | `hearsay-helper selftest` against `shared/fixtures/` | the Swift `FrameCodec` matches the golden IPC frames byte-for-byte | no |
 | `rust-test` | `cargo test` over the `rust/` workspace | every non-`#[ignore]` Rust test (units, DB, HTTP API, full-stack, orchestrator, IPC, regression locks) | no |
 | `tauri-test` | `cargo test` on `web/src-tauri` | the shell's pure logic (e.g. `html_escape` on the untrusted error `detail`) | no |
 | `codegen-check` | regenerate IPC fixtures + OpenAPI + TS, then `git diff --exit-code` | the committed `shared/fixtures/*`, `web/openapi.json`, and `web/src/api/schema.ts` have not drifted from the Rust source | no |
-| `version-check` | compare version strings | `rust/Cargo.toml` (canonical), `tauri.conf.json`, and `web/package.json` agree | no |
+| `version-check` | compare version strings | the five version files agree: `rust/Cargo.toml` (canonical), `web/src-tauri/Cargo.toml`, `web/src-tauri/tauri.conf.json`, `web/package.json`, and `helper/Info.plist` | no |
 | `audit` | `cargo audit` (both Rust trees) + `npm audit` | no un-ignored advisories (the ignore list + rationale live in `web/src-tauri/.cargo/audit.toml`) | no |
 | `licenses` | `cargo deny check licenses` (policy `rust/deny.toml`) | every dependency is MIT/BSD/Apache-2.0 | no |
 | `web-ci` | `web-install` + `web-typecheck` (tsc) + `web-lint` (eslint) + `web-test` + `web-build` | the web UI type-checks, lints, unit/component-tests, and builds | no |
 | `web-test` | `vitest` (jsdom) | the client layer + hooks + MSW-mocked components (also folded into `web-ci`) | no |
 | **`make e2e`** | build the core, then Playwright/Chromium vs the scripted core + `vite dev` | the real React app → real core → real pipeline over a live WebSocket | no (Chromium once) |
 | **`make probes`** | `cargo test -- --ignored` on `hearsay-notes` (metal) | the notes LLM | **yes** |
-| **`make diarize-eval`** | `swift-build`, then the `diarization_accuracy` gate over the local labeled corpus | `hearsay-diarize` speaker-count + DER vs the committed baseline (AMI, plus any local recordings added to the corpus; audio stays local). The same test self-skips inside `make ci`; re-baseline an intentional change with `HEARSAY_UPDATE_DIAR_BASELINE=1` | **yes** |
-| **`make wer-eval`** | `swift-build`, then the `hearsay-eval` `asr_accuracy` gate | the offline refine (`hearsay-diarize` with Parakeet Ultra) scored with WER and cpWER against the committed reference transcript, plus RTF in the run report; self-skips when the audio or sidecar is absent. Gated on Parakeet Ultra: WER 0.163 / cpWER 0.225 on AMI ES2004a near-field, 0.238 / 0.301 far-field. Re-baseline with `HEARSAY_UPDATE_EVAL_BASELINE=1` | **yes** |
+| **`make diarize-eval`** | `swift-build`, then the `hearsay-eval` `diarization_accuracy` gate (`HEARSAY_DIARIZE_EVAL=1`) over the local labeled corpus | `hearsay-diarize` speaker-count + DER vs `shared/eval/baseline-diarization.json` (AMI, plus any local recordings added to the corpus; audio stays local). Without the opt-in the test skips, so `make ci` never runs it; with it, it self-skips when the audio or sidecar is absent. Re-baseline an intentional change with `HEARSAY_UPDATE_EVAL_BASELINE=1` | **yes** |
+| **`make wer-eval`** | `swift-build`, then the `hearsay-eval` `asr_accuracy` gate (`HEARSAY_WER_EVAL=1`) | the offline refine (`hearsay-diarize` with Parakeet Ultra) scored with WER and cpWER against the committed reference transcript, plus RTF in the run report. Without the opt-in the test skips, so `make ci` never runs it; with it, it self-skips when the audio or sidecar is absent. Gated on Parakeet Ultra: WER 0.163 / cpWER 0.225 on AMI ES2004a near-field, 0.238 / 0.301 far-field. Re-baseline with `HEARSAY_UPDATE_EVAL_BASELINE=1` | **yes** |
 | **`make diarizer-eval`** | `swift-build`, then the `hearsay-eval` `diarizer_compare` test (`HEARSAY_DIARIZER_EVAL=1`) | each candidate engine (`hearsay-diarize --diarizer <engine>`: pyannote, Nemotron 3, Sortformer, LS-EEND variants) over AMI ES2004a near-field and far-field: speaker count, DER with the missed / false-alarm / confusion split (collar 0.25 s), embedding count, wall time and RTF. Report-only (never gates); downloads each engine's models on first run; `HEARSAY_DIARIZER_ENGINES=a,b` restricts the engines. The report is written to `outputs/eval/<stamp>/diarizers.json` | **yes** |
-| **`make robustness-eval`** | `swift-build`, then the `hearsay-eval` `robustness` test over `HEARSAY_ROBUSTNESS_DIR` (default `outputs/recordings`) | the refine on local recordings with no reference transcript: coverage, stalls, repeat runs, loud untranscribed time and RTF as counts only, never text. Report-only | **yes** |
-| **`make live-eval`** | `swift-build`, then the `hearsay-eval` `live_eval` gate (`HEARSAY_LIVE_EVAL=1`) | `hearsay-me` and `hearsay-live` fed the corpus concurrently at real-time pace; WER and cpWER gated, final-delay percentiles reported. A 10-minute window takes about 10 minutes; `HEARSAY_EVAL_SPEED=0` feeds unpaced (WER only) | **yes** |
+| **`make robustness-eval`** | `swift-build`, then the `hearsay-eval` `robustness` test over `HEARSAY_ROBUSTNESS_DIR` (default `outputs/recordings`) | the refine on each meeting's `audio.wav` or `audio.flac`, with no reference transcript: coverage, stalls, repeat runs, loud untranscribed time and RTF as counts only, never text. Report-only | **yes** |
+| **`make live-eval`** | `swift-build`, then the `hearsay-eval` `live_eval` gate (`HEARSAY_LIVE_EVAL=1`) | `hearsay-me` and `hearsay-live` fed the corpus concurrently at real-time pace; WER and cpWER gated, final-delay percentiles reported. A 10-minute window takes about 10 minutes; `HEARSAY_EVAL_SPEED=0` feeds unpaced (WER only), and any speed other than 1 is report-only because the baseline is measured at real time | **yes** |
 | **`make aec-eval`** | `swift-build`, then the `hearsay-eval` `echo_eval` test with `--features aec` (`HEARSAY_ECHO_EVAL=1`) | how the live Me stream copes with Them leaking into the mic: a synthetic mic (AMI near-end speaker plus a simulated room echo of an AMI Them track) scored through the Speex canceller alone (ERLE, convergence, near-end fidelity) and through the full live pipeline (spurious Me words, Me WER, finals dropped by the echo dedup) across AEC, dedup and Me VAD-threshold settings. Report-only (never gates); about an hour with the defaults. See [echo-cancellation.md](echo-cancellation.md#measuring-echo-handling) | **yes** |
 | **`make crash-eval`** | `swift-build`, then the `hearsay-eval` `crash_eval` test (`HEARSAY_CRASH_EVAL=1`) | the live pipeline's sidecar respawn against the real `hearsay-me` / `hearsay-live`: SIGKILLs a sidecar mid-meeting (one Me crash, two Me crashes 20 s apart, a Them crash, a kill-loop that exhausts the retry budget) and checks a replacement started, post-crash Me finals land within 3 s of their reference utterances, the outage gap is bounded, nothing is fed twice, the other stream is unaffected, and the meeting finalizes. Asserts (fails on a regression); about 10 minutes. See the paragraph below | **yes** |
 | **`make eval`** | `diarize-eval` + `wer-eval` + `live-eval` | every gated accuracy and latency eval | **yes** |
@@ -106,39 +107,51 @@ HEARSAY_NOTES_MODEL=outputs/models/<instruct>.gguf \
 make probes
 ```
 
-The archival sweep compresses meetings under the dev output dir once they are old enough, so a corpus
-recording may be `audio.flac` rather than `audio.wav`. The refine and `WavFileSource` read either;
-point `HEARSAY_BENCH_WAV` at whichever the folder holds when running the evals.
+The archival sweep compresses meetings under the dev output dir once they are old enough, so a local
+recording may be `audio.flac` rather than `audio.wav`. The refine and `WavFileSource` read either:
+`make robustness-eval` picks up whichever each meeting folder holds, and a private corpus manifest
+(`HEARSAY_EVAL_CORPUS`, `HEARSAY_DIARIZE_CORPUS`) may name either file.
 
 ## Accuracy and latency evals
 
 `make eval` measures what the unit tests cannot: how accurate and how fast the shipped models are on
 real speech. The metrics are pure Rust in `hearsay-attribution` (`word_errors`, `cpwer`, `percentiles`,
-and `der`), and the runners live in `hearsay-eval` (plus the diarization gate in `hearsay-inference`).
+and `der`), and every runner lives in `hearsay-eval`.
 
-| Eval | Measures | Scored against |
-|---|---|---|
-| `diarize-eval` | speaker count, DER | the AMI RTTM |
-| `diarizer-eval` | per-engine speaker count, DER breakdown, RTF | the AMI RTTM |
-| `wer-eval` | WER, cpWER, RTF of the refine | `shared/eval/ES2004a.utterances.json` |
-| `live-eval` | live WER, cpWER, final delay | the same transcript |
-| `aec-eval` | echo return loss, spurious Me words, Me WER (report only) | `shared/eval/ES2004b-A.utterances.json` |
-| `crash-eval` | respawn count, post-crash Me start-time error, lost speech, Them word count | `shared/eval/ES2004b-A.utterances.json` and a crash-free control run |
+| Eval | Opt-in | Measures | Scored against |
+|---|---|---|---|
+| `diarize-eval` | `HEARSAY_DIARIZE_EVAL=1` | speaker count, DER | the AMI RTTM `shared/eval/ES2004a.rttm` |
+| `diarizer-eval` | `HEARSAY_DIARIZER_EVAL=1` | per-engine speaker count, DER breakdown, RTF | the same RTTM |
+| `wer-eval` | `HEARSAY_WER_EVAL=1` | WER, cpWER, RTF of the refine | `shared/eval/ES2004a.utterances.json` |
+| `live-eval` | `HEARSAY_LIVE_EVAL=1` | live WER, cpWER, final delay | the same transcript |
+| `robustness-eval` | `HEARSAY_ROBUSTNESS_DIR` | coverage, stalls, repeat runs, loud untranscribed time, RTF (counts only, report only) | no reference: local recordings |
+| `aec-eval` | `HEARSAY_ECHO_EVAL=1` | echo return loss, spurious Me words, Me WER (report only) | `shared/eval/ES2004b-A.utterances.json` |
+| `crash-eval` | `HEARSAY_CRASH_EVAL=1` | respawn count, post-crash Me start-time error, lost speech, Them word count | `shared/eval/ES2004b-A.utterances.json` and a crash-free control run |
 
-- **Data.** The audio is local and never committed (`outputs/ami/`, fetched with the `curl` commands
-  recorded in `shared/eval/corpus.json`). Committed: the manifest, the reference transcript, and the
-  baselines `shared/eval/baseline-*.json`. The transcript is generated from the AMI public manual
-  annotations (CC BY 4.0) by `uv run scripts/ami_words_to_json.py`. Score private recordings by
-  pointing `HEARSAY_EVAL_CORPUS` at a manifest outside the repo.
+Each `make` target sets its opt-in; without it the test prints why and skips, so `make ci` runs none
+of them.
+
+- **Data.** The audio is local and never committed: it is resolved under `HEARSAY_EVAL_DATA_DIR`
+  (default the repo `outputs/`, so `outputs/ami/`), fetched with the `curl` commands recorded in
+  `shared/eval/corpus.json`, and run reports land in `<data dir>/eval/<stamp>/`. Committed under
+  `shared/eval/`: the manifests (`corpus.json`, `diarization-corpus.json`), the reference transcripts,
+  the RTTM, and the baselines `baseline-asr.json`, `baseline-live.json` and `baseline-diarization.json`.
+  The transcripts are generated from the AMI public manual annotations (CC BY 4.0) by
+  `uv run scripts/ami_words_to_json.py <zip> <meeting> <out.json> [--gap 1.0] [--speaker A]`. Score
+  private recordings by pointing `HEARSAY_EVAL_CORPUS` (or `HEARSAY_DIARIZE_CORPUS` with
+  `HEARSAY_DIARIZE_BASELINE`) at files outside the repo.
 - **Scoring.** Text is lowercased, punctuation and fillers (`uh`, `um`, `mm-hmm`) are dropped, digit
   strings are spelled out, and `ok` is unified with `okay`. WER compares all speakers merged in start
   order; cpWER matches each hypothesis speaker to the reference speaker that minimizes total errors, so
   a merged or split speaker is charged.
 - **Gating.** Every gated metric is lower-is-better and may not exceed its baseline by more than 0.01
-  (0.02 for live). A new reference or metric fails until baselined. A baseline records its window and is
-  skipped, not failed, when a run used a different one (`HEARSAY_EVAL_MAX_S`,
-  `HEARSAY_EVAL_LIVE_MAX_S`). Latency and RTF are machine-dependent, so they are reported in
-  `outputs/eval/<run>/*.json` and not gated.
+  (0.02 for live). A new reference or metric fails until baselined, and so does a baselined metric a
+  run no longer measures. A baseline records its window and is skipped, not failed, when a run used a
+  different one (`HEARSAY_EVAL_MAX_S`, `HEARSAY_EVAL_LIVE_MAX_S`). The live baseline is measured at
+  real time, so a `live-eval` run at any other `HEARSAY_EVAL_SPEED` is report-only. The diarization
+  gate allows no slack on speaker-count error and 0.01 on DER, per reference and on the aggregate
+  means. `HEARSAY_UPDATE_EVAL_BASELINE=1` rewrites the baseline of whichever gate runs. Latency and RTF
+  are machine-dependent, so they are reported in `outputs/eval/<run>/*.json` and not gated.
 - **Comparing ASR backends.** `HEARSAY_EVAL_ASR=<v2|v3|ultra|redux|phonon2>` scores another
   `hearsay-diarize --asr` Parakeet model (each word attributed to the diarizer turn it overlaps)
   on the same metrics instead of the gated Ultra. Those runs are report-only: never gated, never

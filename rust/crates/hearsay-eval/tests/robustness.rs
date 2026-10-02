@@ -1,14 +1,15 @@
 //! Robustness check on local recordings (`make robustness-eval`): runs the real refine over each
-//! `audio.wav` under `HEARSAY_ROBUSTNESS_DIR` and reports only counts (coverage, stalls, repeat runs,
-//! RTF), never text, because these recordings have no reference transcript and stay private.
+//! meeting's `audio.wav` or `audio.flac` under `HEARSAY_ROBUSTNESS_DIR` and reports only counts
+//! (coverage, stalls, repeat runs, RTF), never text: they are private, with no reference.
 
 use std::fs;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use hearsay_attribution::normalize;
+use hearsay_audio::resolve_recorded_audio;
 use hearsay_eval::{max_repeat_run, repo_root, resolve_sidecar, write_report, SAMPLE_RATE};
-use hearsay_inference::{read_them_channel, refine_audio_file, InferenceError};
+use hearsay_inference::{read_them_channel, refine_them, InferenceError, ASR_MODEL};
 use serde::Serialize;
 
 const REFINE_TIMEOUT: Duration = Duration::from_secs(1800);
@@ -54,11 +55,10 @@ fn robustness_over_local_recordings() {
         .map(|entries| {
             entries
                 .flatten()
-                .map(|e| e.path().join("audio.wav"))
+                .filter_map(|e| resolve_recorded_audio(&e.path()))
                 .collect()
         })
         .unwrap_or_default();
-    audio.retain(|p| p.is_file());
     audio.sort();
 
     let mut rows = Vec::new();
@@ -67,7 +67,7 @@ fn robustness_over_local_recordings() {
         let samples = read_them_channel(path).expect("read recording");
         let audio_s = samples.len() as f64 / SAMPLE_RATE as f64;
         let started = Instant::now();
-        let result = refine_audio_file(path, &bin, REFINE_TIMEOUT);
+        let result = refine_them(&bin, ASR_MODEL, &samples, REFINE_TIMEOUT);
         let refine_wall_s = started.elapsed().as_secs_f64();
         let row = match result {
             Ok(output) => {

@@ -6,27 +6,27 @@
 //! Stage B runs the real pipeline (sidecars, canceller, echo dedup) and scores the persisted Me
 //! words. Both need `--features aec` and opt in with `HEARSAY_ECHO_EVAL=1`.
 
-use std::path::{Path, PathBuf};
+mod common;
+
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use common::{
+    env_f64, fmt_opt, load_tracks, wait_ready, warm, write_stereo, RunBackend, Sidecars,
+    TAIL_SILENCE_S,
+};
 use hearsay_attribution::{normalize, word_errors};
 use hearsay_db::models::Stream as DbStream;
 use hearsay_db::queries;
 use hearsay_db::test_support::memory_pool;
 use hearsay_engine::LiveEngine;
 use hearsay_eval::echo::{
-    build_mix, convergence_s, densest_window, echo_word_fraction, erle_db, fidelity, highpass,
-    normalize_level, normalized_words, slice_utterances, EchoPath, Mix, Scenario, TARGET_LEVEL,
+    build_mix, convergence_s, echo_word_count, erle_db, fidelity, normalized_words,
+    slice_utterances, EchoPath, Mix, Scenario,
 };
-use hearsay_eval::{
-    load_utterances, output_dir, reference_streams, resolve_audio, resolve_sidecar, write_report,
-    SAMPLE_RATE,
-};
-use hearsay_inference::read_wav_mono_16k;
+use hearsay_eval::{data_dir, reference_streams, resolve_sidecar, write_report, SAMPLE_RATE};
 use hearsay_orchestrator::{
-    AecConfig, Backend, BackendInstance, EchoCanceller, EchoDedupConfig, LiveStats, LiveTuning,
-    Orchestrator, ProcessTranscriber, WavFileSource,
+    AecConfig, EchoCanceller, EchoDedupConfig, LiveStats, LiveTuning, Orchestrator,
 };
 use serde::Serialize;
 
@@ -34,16 +34,8 @@ const DEFAULT_WINDOW_S: f64 = 300.0;
 const DEFAULT_SPEED: f64 = 4.0;
 const DEFAULT_GRID: &str = "40:-8,40:-16,120:-8,120:-16";
 const CONVERGED_ERLE_DB: f64 = 10.0;
-/// Recordings carry DC and low-frequency rumble a real mic chain removes.
-const MIC_HIGHPASS_HZ: f64 = 100.0;
 /// The Speex preprocessor delays its output by one 160-sample frame.
 const PREPROCESS_LATENCY: usize = 160;
-const TAIL_SILENCE_S: usize = 3;
-const READY_TIMEOUT: Duration = Duration::from_secs(300);
-const THEM_AUDIO: &str = "ami/ES2004a.Mix-Headset.wav";
-const THEM_TRANSCRIPT: &str = "ES2004a.utterances.json";
-const NEAR_AUDIO: &str = "ami/ES2004b.Headset-0.wav";
-const NEAR_TRANSCRIPT: &str = "ES2004b-A.utterances.json";
 
 struct Data {
     near: Vec<f32>,
@@ -65,14 +57,6 @@ fn enabled() -> bool {
     true
 }
 
-fn env_f64(name: &str, default: f64) -> f64 {
-    std::env::var(name)
-        .ok()
-        .and_then(|v| v.parse::<f64>().ok())
-        .filter(|v| *v > 0.0)
-        .unwrap_or(default)
-}
-
 fn grid() -> Vec<EchoPath> {
     let spec = std::env::var("HEARSAY_ECHO_GRID").unwrap_or_else(|_| DEFAULT_GRID.to_string());
     spec.split(',')
@@ -88,52 +72,27 @@ fn grid() -> Vec<EchoPath> {
         .collect()
 }
 
-fn window_samples(samples: &[f32], start_s: f64, len: usize) -> Vec<f32> {
-    let start = (start_s * SAMPLE_RATE as f64) as usize;
-    let end = (start + len).min(samples.len());
-    samples[start.min(end)..end].to_vec()
-}
-
 fn load_data() -> Option<Data> {
-    let them_path = resolve_audio(THEM_AUDIO);
-    let near_path = resolve_audio(NEAR_AUDIO);
-    for path in [&them_path, &near_path] {
-        if !path.exists() {
-            eprintln!("echo-eval: audio absent ({}); skipping", path.display());
-            return None;
-        }
-    }
-    let them_full = read_wav_mono_16k(&them_path).expect("read Them audio");
-    let near_full = read_wav_mono_16k(&near_path).expect("read near-end audio");
-    let secs = |n: usize| n as f64 / SAMPLE_RATE as f64;
-    let window_s = env_f64("HEARSAY_ECHO_WINDOW_S", DEFAULT_WINDOW_S)
-        .min(secs(them_full.len()))
-        .min(secs(near_full.len()));
-
-    let them_utts = load_utterances(THEM_TRANSCRIPT);
-    let near_utts = load_utterances(NEAR_TRANSCRIPT);
-    let them_start = densest_window(&them_utts, window_s, secs(them_full.len()));
-    let near_start = densest_window(&near_utts, window_s, secs(near_full.len()));
-    let len = (window_s * SAMPLE_RATE as f64) as usize;
-    let prepare = |full: &[f32], start_s: f64| {
-        let window = window_samples(full, start_s, len);
-        normalize_level(&highpass(&window, MIC_HIGHPASS_HZ), TARGET_LEVEL)
-    };
-    let them = prepare(&them_full, them_start);
-    let near = prepare(&near_full, near_start);
+    let tracks = load_tracks(
+        "echo-eval",
+        env_f64("HEARSAY_ECHO_WINDOW_S", DEFAULT_WINDOW_S),
+    )?;
+    let window_s = tracks.window_s;
     let words_in = |utts, start: f64| {
         reference_streams(&slice_utterances(utts, start, start + window_s), window_s).1
     };
     let data = Data {
-        near_ref: words_in(&near_utts, near_start),
-        them_ref: words_in(&them_utts, them_start),
-        near,
-        them,
+        near_ref: words_in(&tracks.near_utts, tracks.near_start),
+        them_ref: words_in(&tracks.them_utts, tracks.them_start),
+        near: tracks.near,
+        them: tracks.them,
         window_s,
     };
     eprintln!(
-        "echo-eval: {window_s:.0}s window; Them from {them_start:.0}s ({} ref words), near-end from {near_start:.0}s ({} ref words)",
+        "echo-eval: {window_s:.0}s window; Them from {:.0}s ({} ref words), near-end from {:.0}s ({} ref words)",
+        tracks.them_start,
         data.them_ref.len(),
+        tracks.near_start,
         data.near_ref.len()
     );
     Some(data)
@@ -160,7 +119,7 @@ fn aec_variants() -> Vec<AecVariant> {
     ]
 }
 
-fn fmt_opt(value: Option<f64>) -> String {
+fn fmt_convergence(value: Option<f64>) -> String {
     value.map_or_else(|| "never".to_string(), |v| format!("{v:.1}s"))
 }
 
@@ -268,7 +227,6 @@ fn aec_audio_metrics() {
         "corr out",
         "gain dB"
     );
-    let db = |v: Option<f64>| v.map_or_else(|| "-".to_string(), |v| format!("{v:.2}"));
     for r in &rows {
         eprintln!(
             "echo-eval A: {:<8} {:>5} {:<13} {:>5.0} {:>5.0} | {:>8.1} {:>8} | {:>8} {:>8} {:>8}",
@@ -281,11 +239,11 @@ fn aec_audio_metrics() {
             if r.scenario == "near-end-only" {
                 "-".to_string()
             } else {
-                fmt_opt(r.convergence_s)
+                fmt_convergence(r.convergence_s)
             },
-            db(r.mic_corr),
-            db(r.out_corr),
-            db(r.out_gain_db),
+            fmt_opt(r.mic_corr),
+            fmt_opt(r.out_corr),
+            fmt_opt(r.out_gain_db),
         );
     }
     let path = write_report("echo-aec", &rows);
@@ -319,65 +277,11 @@ struct PipelineRow {
     wall_s: f64,
 }
 
-struct RunBackend {
-    wav: PathBuf,
-    speed: f64,
-    me: Mutex<Option<ProcessTranscriber>>,
-    them: Mutex<Option<ProcessTranscriber>>,
-}
-
-impl Backend for RunBackend {
-    fn build(&self) -> BackendInstance {
-        BackendInstance {
-            source: Box::new(WavFileSource::new(self.wav.clone()).with_speed(self.speed)),
-            me: Box::new(self.me.lock().unwrap().take().expect("one build per run")),
-            them: Box::new(self.them.lock().unwrap().take().expect("one build per run")),
-        }
-    }
-}
-
-fn write_stereo(path: &Path, mix: &Mix) {
-    let spec = hound::WavSpec {
-        channels: 2,
-        sample_rate: SAMPLE_RATE as u32,
-        bits_per_sample: 32,
-        sample_format: hound::SampleFormat::Float,
-    };
-    let mut writer = hound::WavWriter::create(path, spec).expect("create stereo wav");
-    let tail = TAIL_SILENCE_S * SAMPLE_RATE;
-    for i in 0..mix.mic.len() + tail {
-        writer
-            .write_sample(mix.mic.get(i).copied().unwrap_or(0.0))
-            .unwrap();
-        writer
-            .write_sample(mix.them.get(i).copied().unwrap_or(0.0))
-            .unwrap();
-    }
-    writer.finalize().unwrap();
-}
-
-async fn warm(binary: &Path, vad: Option<f64>) -> ProcessTranscriber {
-    let mut transcriber = ProcessTranscriber::new(binary.to_path_buf());
-    if let Some(threshold) = vad {
-        transcriber = transcriber.with_env("HEARSAY_VAD_THRESHOLD", &threshold.to_string());
-    }
-    transcriber.spawn_warming().expect("spawn sidecar");
-    transcriber
-}
-
-async fn wait_ready(me: &ProcessTranscriber, them: &ProcessTranscriber) {
-    let deadline = Instant::now() + READY_TIMEOUT;
-    while !(me.is_ready() && them.is_ready()) {
-        assert!(Instant::now() < deadline, "sidecars never became ready");
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
-}
-
 fn score(texts: &[String], reference: &[String], them_ref: &[String]) -> WordScore {
     let words: Vec<String> = texts.iter().flat_map(|t| normalize(t)).collect();
     let breakdown = word_errors(reference, &words);
     let matched = reference.len() - breakdown.substitutions - breakdown.deletions;
-    let (echo_words, _) = echo_word_fraction(&normalized_words(texts), them_ref);
+    let echo_words = echo_word_count(&normalized_words(texts), them_ref);
     WordScore {
         words: words.len(),
         insertions: breakdown.insertions,
@@ -385,11 +289,6 @@ fn score(texts: &[String], reference: &[String], them_ref: &[String]) -> WordSco
         wer: (!reference.is_empty()).then(|| breakdown.wer()),
         echo_words,
     }
-}
-
-struct Sidecars {
-    me: PathBuf,
-    live: PathBuf,
 }
 
 #[derive(Clone, Copy)]
@@ -413,11 +312,11 @@ async fn run_pipeline(sidecars: &Sidecars, data: &Data, speed: f64, run: &Run) -
     let tmp = tempfile::tempdir().expect("temp dir");
     let wav = tmp.path().join("scenario.wav");
     let mix = build_mix(scenario, &data.near, &data.them, path);
-    write_stereo(&wav, &mix);
+    write_stereo(&wav, &mix.mic, &mix.them);
     let audio_s = (mix.mic.len() / SAMPLE_RATE + TAIL_SILENCE_S) as f64;
 
-    let me = warm(&sidecars.me, vad).await;
-    let them = warm(&sidecars.live, None).await;
+    let me = warm(&sidecars.me, vad);
+    let them = warm(&sidecars.live, None);
     wait_ready(&me, &them).await;
 
     let stats = Arc::new(LiveStats::default());
@@ -481,10 +380,6 @@ async fn run_pipeline(sidecars: &Sidecars, data: &Data, speed: f64, run: &Run) -
     }
 }
 
-fn fmt_wer(wer: Option<f64>) -> String {
-    wer.map_or_else(|| "-".to_string(), |v| format!("{v:.2}"))
-}
-
 fn print_row(r: &PipelineRow) {
     eprintln!(
         "echo-eval B: {:<8} {:>4} {:<13} {:>5.0} {:>5.0} | words {:>4}/{:>4} ins {:>4}/{:>4} echo {:>4}/{:>4} wer {:>5}/{:>5} | drops {:>3} chunks-lost {} {:>4.0}s",
@@ -499,8 +394,8 @@ fn print_row(r: &PipelineRow) {
         r.dedup_on.insertions,
         r.dedup_off.echo_words,
         r.dedup_on.echo_words,
-        fmt_wer(r.dedup_off.wer),
-        fmt_wer(r.dedup_on.wer),
+        fmt_opt(r.dedup_off.wer),
+        fmt_opt(r.dedup_on.wer),
         r.echo_drops,
         r.dropped_chunks,
         r.wall_s,
@@ -579,5 +474,5 @@ async fn live_pipeline_echo() {
         data.window_s,
         report.display()
     );
-    eprintln!("echo-eval B: outputs under {}", output_dir().display());
+    eprintln!("echo-eval B: outputs under {}", data_dir().display());
 }

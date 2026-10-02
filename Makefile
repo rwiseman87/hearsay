@@ -194,11 +194,11 @@ ci: lint test tauri-test web-ci codegen-check version-check audit licenses ## Fu
 probes: ## Model/hardware tests (the #[ignore]d notes probes); needs the models + ANE/GPU
 	cargo test --manifest-path $(RUST_MANIFEST) -p hearsay-notes --features $(NOTES_FEATURES) -- --ignored
 
-diarize-eval: swift-build ## Diarization accuracy gate (speaker count + DER vs baseline); self-skips without audio/sidecar
-	cargo test --manifest-path $(RUST_MANIFEST) -p hearsay-inference --test diarization_accuracy diarization_accuracy_gate -- --nocapture
+diarize-eval: swift-build ## Diarization accuracy gate (speaker count + DER vs baseline); self-skips without audio
+	HEARSAY_DIARIZE_EVAL=1 cargo test --manifest-path $(RUST_MANIFEST) -p hearsay-eval --test diarization_accuracy -- --nocapture
 
-wer-eval: swift-build ## Offline transcript gate (refine WER + cpWER vs baseline); self-skips without audio/sidecar
-	cargo test --manifest-path $(RUST_MANIFEST) -p hearsay-eval --test asr_accuracy -- --nocapture
+wer-eval: swift-build ## Offline transcript gate (refine WER + cpWER vs baseline); self-skips without audio
+	HEARSAY_WER_EVAL=1 cargo test --manifest-path $(RUST_MANIFEST) -p hearsay-eval --test asr_accuracy -- --nocapture
 
 diarizer-eval: swift-build ## Report-only diarizer comparison over AMI ES2004a (slow; downloads models)
 	HEARSAY_DIARIZER_EVAL=1 cargo test --manifest-path $(RUST_MANIFEST) -p hearsay-eval --test diarizer_compare -- --nocapture

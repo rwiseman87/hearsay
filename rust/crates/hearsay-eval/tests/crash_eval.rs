@@ -5,44 +5,34 @@
 //! AMI recording. Each scenario runs the full `Orchestrator` (paced `WavFileSource`, real
 //! `ProcessTranscriber`s, in-memory DB) and is compared with a crash-free control run.
 
+mod common;
+
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use common::{
+    env_f64, fmt_opt, load_tracks, wait_ready, warm, write_stereo, RunBackend, Sidecars,
+    TAIL_SILENCE_S,
+};
 use hearsay_attribution::normalize;
 use hearsay_db::models::{MeetingStatus, Stream as DbStream};
 use hearsay_db::queries;
 use hearsay_db::test_support::memory_pool;
 use hearsay_engine::LiveEngine;
-use hearsay_eval::echo::{
-    densest_window, highpass, normalize_level, slice_utterances, TARGET_LEVEL,
-};
-use hearsay_eval::{
-    load_utterances, resolve_audio, resolve_sidecar, write_report, Utterance, SAMPLE_RATE,
-};
-use hearsay_inference::read_wav_mono_16k;
-use hearsay_orchestrator::{
-    Backend, BackendInstance, LiveStats, LiveTuning, Orchestrator, ProcessTranscriber,
-    WavFileSource,
-};
+use hearsay_eval::echo::slice_utterances;
+use hearsay_eval::{resolve_sidecar, write_report, Utterance, SAMPLE_RATE};
+use hearsay_orchestrator::{LiveStats, LiveTuning, Orchestrator};
 use serde::Serialize;
 
 const DEFAULT_WINDOW_S: f64 = 120.0;
 const DEFAULT_SPEED: f64 = 2.0;
 const FIRST_KILL_AUDIO_S: f64 = 20.0;
 const SECOND_KILL_AFTER: Duration = Duration::from_secs(20);
-const TAIL_SILENCE_S: usize = 3;
-const READY_TIMEOUT: Duration = Duration::from_secs(300);
 const PID_TIMEOUT: Duration = Duration::from_secs(60);
 const END_SLACK: Duration = Duration::from_secs(8);
-const MIC_HIGHPASS_HZ: f64 = 100.0;
-const THEM_AUDIO: &str = "ami/ES2004a.Mix-Headset.wav";
-const THEM_TRANSCRIPT: &str = "ES2004a.utterances.json";
-const NEAR_AUDIO: &str = "ami/ES2004b.Headset-0.wav";
-const NEAR_TRANSCRIPT: &str = "ES2004b-A.utterances.json";
 
 const MIN_MATCH_SCORE: f64 = 0.5;
 const MIN_MATCH_WORDS: usize = 3;
@@ -70,101 +60,29 @@ fn enabled() -> bool {
     true
 }
 
-fn env_f64(name: &str, default: f64) -> f64 {
-    std::env::var(name)
-        .ok()
-        .and_then(|v| v.parse::<f64>().ok())
-        .filter(|v| *v > 0.0)
-        .unwrap_or(default)
-}
-
 fn load_data() -> Option<Data> {
-    let them_path = resolve_audio(THEM_AUDIO);
-    let near_path = resolve_audio(NEAR_AUDIO);
-    for path in [&them_path, &near_path] {
-        if !path.exists() {
-            eprintln!("crash-eval: audio absent ({}); skipping", path.display());
-            return None;
-        }
-    }
-    let them_full = read_wav_mono_16k(&them_path).expect("read Them audio");
-    let near_full = read_wav_mono_16k(&near_path).expect("read near-end audio");
-    let secs = |n: usize| n as f64 / SAMPLE_RATE as f64;
-    let window_s = env_f64("HEARSAY_CRASH_WINDOW_S", DEFAULT_WINDOW_S)
-        .min(secs(them_full.len()))
-        .min(secs(near_full.len()));
-    let them_utts = load_utterances(THEM_TRANSCRIPT);
-    let near_utts = load_utterances(NEAR_TRANSCRIPT);
-    let them_start = densest_window(&them_utts, window_s, secs(them_full.len()));
-    let near_start = densest_window(&near_utts, window_s, secs(near_full.len()));
-    let len = (window_s * SAMPLE_RATE as f64) as usize;
-    let prepare = |full: &[f32], start_s: f64| {
-        let start = ((start_s * SAMPLE_RATE as f64) as usize).min(full.len());
-        let window = &full[start..(start + len).min(full.len())];
-        normalize_level(&highpass(window, MIC_HIGHPASS_HZ), TARGET_LEVEL)
-    };
-    let me_refs = slice_utterances(&near_utts, near_start, near_start + window_s);
+    let tracks = load_tracks(
+        "crash-eval",
+        env_f64("HEARSAY_CRASH_WINDOW_S", DEFAULT_WINDOW_S),
+    )?;
+    let window_s = tracks.window_s;
+    let me_refs = slice_utterances(
+        &tracks.near_utts,
+        tracks.near_start,
+        tracks.near_start + window_s,
+    );
     eprintln!(
-        "crash-eval: {window_s:.0}s window; Them from {them_start:.0}s, Me from {near_start:.0}s ({} reference utterances)",
+        "crash-eval: {window_s:.0}s window; Them from {:.0}s, Me from {:.0}s ({} reference utterances)",
+        tracks.them_start,
+        tracks.near_start,
         me_refs.len()
     );
     Some(Data {
-        me: prepare(&near_full, near_start),
-        them: prepare(&them_full, them_start),
+        me: tracks.near,
+        them: tracks.them,
         me_refs,
         window_s,
     })
-}
-
-fn write_stereo(path: &Path, data: &Data) {
-    let spec = hound::WavSpec {
-        channels: 2,
-        sample_rate: SAMPLE_RATE as u32,
-        bits_per_sample: 32,
-        sample_format: hound::SampleFormat::Float,
-    };
-    let mut writer = hound::WavWriter::create(path, spec).expect("create stereo wav");
-    let frames = data.me.len().max(data.them.len()) + TAIL_SILENCE_S * SAMPLE_RATE;
-    for i in 0..frames {
-        writer
-            .write_sample(data.me.get(i).copied().unwrap_or(0.0))
-            .unwrap();
-        writer
-            .write_sample(data.them.get(i).copied().unwrap_or(0.0))
-            .unwrap();
-    }
-    writer.finalize().unwrap();
-}
-
-struct RunBackend {
-    wav: PathBuf,
-    speed: f64,
-    me: Mutex<Option<ProcessTranscriber>>,
-    them: Mutex<Option<ProcessTranscriber>>,
-}
-
-impl Backend for RunBackend {
-    fn build(&self) -> BackendInstance {
-        BackendInstance {
-            source: Box::new(WavFileSource::new(self.wav.clone()).with_speed(self.speed)),
-            me: Box::new(self.me.lock().unwrap().take().expect("one build per run")),
-            them: Box::new(self.them.lock().unwrap().take().expect("one build per run")),
-        }
-    }
-}
-
-fn warm(binary: &Path) -> ProcessTranscriber {
-    let mut transcriber = ProcessTranscriber::new(binary.to_path_buf());
-    transcriber.spawn_warming().expect("spawn sidecar");
-    transcriber
-}
-
-async fn wait_ready(me: &ProcessTranscriber, them: &ProcessTranscriber) {
-    let deadline = Instant::now() + READY_TIMEOUT;
-    while !(me.is_ready() && them.is_ready()) {
-        assert!(Instant::now() < deadline, "sidecars never became ready");
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
 }
 
 /// Pids of this test process's own children named `name`.
@@ -274,12 +192,12 @@ async fn run(sidecars: &Sidecars, data: &Data, speed: f64, kills: &[Kill]) -> Ou
     let started = Instant::now();
     let tmp = tempfile::tempdir().expect("temp dir");
     let wav = tmp.path().join("scenario.wav");
-    write_stereo(&wav, data);
+    write_stereo(&wav, &data.me, &data.them);
     let audio_s =
         data.me.len().max(data.them.len()) as f64 / SAMPLE_RATE as f64 + TAIL_SILENCE_S as f64;
 
-    let me = warm(&sidecars.me);
-    let them = warm(&sidecars.live);
+    let me = warm(&sidecars.me, None);
+    let them = warm(&sidecars.live, None);
     wait_ready(&me, &them).await;
 
     let stats = Arc::new(LiveStats::default());
@@ -367,11 +285,6 @@ async fn run(sidecars: &Sidecars, data: &Data, speed: f64, kills: &[Kill]) -> Ou
         panics: PANICS.load(Ordering::SeqCst) - panics_before,
         wall_s: started.elapsed().as_secs_f64(),
     }
-}
-
-struct Sidecars {
-    me: PathBuf,
-    live: PathBuf,
 }
 
 fn overlap_score(a: &[String], b: &[String]) -> f64 {
@@ -514,10 +427,6 @@ struct Row {
     failures: Vec<String>,
 }
 
-fn fmt_opt(v: Option<f64>) -> String {
-    v.map_or_else(|| "-".to_string(), |v| format!("{v:.2}"))
-}
-
 fn print_row(r: &Row) {
     eprintln!(
         "crash-eval: {:<14} respawn me/them {}/{} | me finals {:>3} words {:>4} them words {:>4} | post-crash {:>2}/{:>2} err median {:>5} max {:>5} (control {:>5}) | lost {:>3} words {:>5.1}s (control {:>5.1}s) lag {:>5} | dup {} chunks-lost {} | {} | {:>4.0}s",
@@ -621,11 +530,12 @@ fn build_row(name: &str, out: &Outcome, refs: &RefWords, control: &Outcome, wind
                 ),
             );
             let (mut late, _) = errors_after(&out.me, refs, last_kill);
+            let late_median = median(&mut late);
             check(
-                median(&mut late).is_some_and(|m| m <= MAX_MEDIAN_ERR_S),
+                late_median.is_some_and(|m| m <= MAX_MEDIAN_ERR_S),
                 format!(
                     "median start error after the last crash {} s over {MAX_MEDIAN_ERR_S} s",
-                    fmt_opt(median(&mut late))
+                    fmt_opt(late_median)
                 ),
             );
             let allowed = control_lost_s + MAX_LOST_S_PER_CRASH * kills as f64;

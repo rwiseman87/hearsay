@@ -1,6 +1,7 @@
 //! Live accuracy and latency gate (`make live-eval`): feeds the corpus to `hearsay-me` and
 //! `hearsay-live` concurrently at real-time pace, gating WER/cpWER and reporting final-delay latency.
-//! Opt-in (`HEARSAY_LIVE_EVAL=1`); `HEARSAY_EVAL_SPEED=0` feeds unpaced, which skips latency.
+//! Opt-in (`HEARSAY_LIVE_EVAL=1`); `HEARSAY_EVAL_SPEED=0` feeds unpaced, which skips latency, and
+//! any speed other than 1 is report-only.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -10,8 +11,8 @@ use hearsay_attribution::{cpwer, normalize, percentiles, word_errors, Percentile
 use hearsay_eval::live::{final_delays_s, run_sidecar, LiveRun, LiveSegment};
 use hearsay_eval::{
     eval_dir, gate, load_corpus, load_utterances, read_baseline, reference_streams, resolve_audio,
-    resolve_sidecar, round4, update_baseline_requested, window, write_baseline, write_report,
-    Baseline, Channel, GateOutcome, Metrics, SAMPLE_RATE,
+    resolve_sidecar, round4, update_baseline_requested, window, window_s, write_baseline,
+    write_report, Baseline, Channel, GateOutcome, Metrics, SAMPLE_RATE,
 };
 use hearsay_inference::{read_them_channel, read_wav_mono_16k};
 use serde::Serialize;
@@ -65,14 +66,6 @@ struct LiveReport {
     speed: f64,
     me: SidecarReport,
     them: SidecarReport,
-}
-
-fn live_window_s() -> f64 {
-    std::env::var("HEARSAY_EVAL_LIVE_MAX_S")
-        .ok()
-        .and_then(|v| v.parse::<f64>().ok())
-        .filter(|v| *v > 0.0)
-        .unwrap_or(DEFAULT_LIVE_WINDOW_S)
 }
 
 fn speed() -> f64 {
@@ -166,7 +159,7 @@ fn live_eval_gate() {
         eprintln!("live-eval: no hearsay-live sidecar (make swift-build); skipping");
         return;
     };
-    let window_s = live_window_s();
+    let window_s = window_s("HEARSAY_EVAL_LIVE_MAX_S", DEFAULT_LIVE_WINDOW_S);
     let speed = speed();
     let corpus = load_corpus();
 
@@ -221,6 +214,12 @@ fn live_eval_gate() {
     }
     let path = write_report("live", &reports);
     eprintln!("live-eval: report -> {}", path.display());
+    if speed != 1.0 {
+        eprintln!(
+            "live-eval: speed {speed} is not the real-time baseline pace; report-only, no gate"
+        );
+        return;
+    }
 
     let measured: BTreeMap<String, Metrics> = reports
         .iter()

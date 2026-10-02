@@ -75,15 +75,15 @@ fn number_words(n: u64, out: &mut Vec<String>) {
 pub fn normalize(text: &str) -> Vec<String> {
     let mut words = Vec::new();
     for raw in text.split_whitespace() {
-        let raw = if raw.chars().all(|c| c.is_ascii_digit() || c == ',') {
-            raw.replace(',', "")
-        } else {
-            raw.to_string()
-        };
         let token = raw
             .to_lowercase()
             .trim_matches(|c: char| !c.is_alphanumeric())
             .to_string();
+        let token = if token.chars().all(|c| c.is_ascii_digit() || c == ',') {
+            token.replace(',', "")
+        } else {
+            token
+        };
         if token.is_empty() || FILLERS.contains(&token.as_str()) {
             continue;
         }
@@ -206,24 +206,17 @@ pub fn word_errors(reference: &[String], hypothesis: &[String]) -> WerBreakdown 
     }
 }
 
-/// A [`cpwer`] result: the summed error breakdown and which hypothesis speaker was matched to which
-/// reference speaker (`None` on the side that had no counterpart).
+/// A [`cpwer`] result: the error breakdown summed over the best speaker assignment.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Cpwer {
     pub breakdown: WerBreakdown,
-    pub assignment: Vec<(Option<String>, Option<String>)>,
 }
 
 /// Largest speaker count (after padding both sides to equal length) the exact assignment handles.
 const MAX_ASSIGNMENT: usize = 20;
 
-/// Concatenated-permutation WER: each speaker's words are one stream in time order, and the
-/// hypothesis speakers are matched one-to-one to the reference speakers (padding the shorter side
-/// with empty streams) so the summed errors are minimal. A hypothesis that splits one person across
-/// two speakers pays deletions on the reference stream and insertions on the extra one; one that
-/// merges two people pays the same in the other direction.
-///
-/// Returns `None` when there are more than [`MAX_ASSIGNMENT`] speakers on either side.
+/// Concatenated-permutation WER: per-speaker word streams, hypothesis speakers matched one-to-one
+/// to reference speakers to minimize total errors. `None` above [`MAX_ASSIGNMENT`] speakers.
 pub fn cpwer(
     reference: &BTreeMap<String, Vec<String>>,
     hypothesis: &BTreeMap<String, Vec<String>>,
@@ -284,15 +277,10 @@ pub fn cpwer(
         mask &= !(1 << col);
     }
     let mut breakdown = WerBreakdown::default();
-    let mut assignment = Vec::with_capacity(size);
     for (row, &col) in columns.iter().enumerate() {
         breakdown.add(&cost[row][col]);
-        assignment.push((ref_names[row].cloned(), hyp_names[col].cloned()));
     }
-    Some(Cpwer {
-        breakdown,
-        assignment,
-    })
+    Some(Cpwer { breakdown })
 }
 
 /// Latency distribution summary in the unit of the input samples.
@@ -369,6 +357,14 @@ mod tests {
             words("1,250"),
             vec!["one", "thousand", "two", "hundred", "fifty"]
         );
+        assert_eq!(
+            words("1,250."),
+            vec!["one", "thousand", "two", "hundred", "fifty"]
+        );
+        assert_eq!(
+            words("$1,250"),
+            vec!["one", "thousand", "two", "hundred", "fifty"]
+        );
         assert_eq!(words("100"), vec!["one", "hundred"]);
         assert_eq!(words("2000000"), vec!["2000000"]);
     }
@@ -413,11 +409,9 @@ mod tests {
     fn cpwer_is_zero_under_a_consistent_speaker_relabel() {
         let reference = by_speaker(&[("A", "hello there"), ("B", "general kenobi")]);
         let hypothesis = by_speaker(&[("2", "hello there"), ("1", "general kenobi")]);
+        // Paired in key order (A-1, B-2) every word is an error; only the swapped match scores 0.
         let result = cpwer(&reference, &hypothesis).unwrap();
         assert_eq!(result.breakdown.errors(), 0);
-        assert!(result
-            .assignment
-            .contains(&(Some("A".to_string()), Some("2".to_string()))));
     }
 
     #[test]

@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.14"
-# dependencies = []
+# dependencies = ["click==8.5.0"]
 # ///
 """Convert AMI Meeting Corpus word annotations into a compact utterance transcript.
 
@@ -8,7 +8,7 @@ Reads the per-speaker ``words/<meeting>.<speaker>.words.xml`` files from the AMI
 annotation zip and writes ``[{speaker, start_s, end_s, text}, ...]`` sorted by start time. Truncated
 word fragments, vocal sounds, and punctuation tokens are dropped: no ASR model emits them, so keeping
 them would only add noise to the word error rate. A speaker's words split into a new utterance after a
-silence of ``--gap`` seconds.
+silence of ``--gap`` seconds (default 1.0).
 
 Usage:
     uv run scripts/ami_words_to_json.py outputs/ami/annotations/ami_manual.zip ES2004a \
@@ -20,11 +20,12 @@ Add ``--speaker A`` to emit one speaker only (for example the single headset of 
 from __future__ import annotations
 
 import json
-import sys
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 from xml.etree import ElementTree
+
+import click
 
 SPEAKERS = ("A", "B", "C", "D")
 DEFAULT_GAP_S = 1.0
@@ -78,21 +79,21 @@ def to_utterances(speaker: str, words: list[tuple[float, float, str]], gap_s: fl
     return utterances
 
 
-def main(argv: list[str]) -> int:
-    """Entry point: ``ami_words_to_json.py <zip> <meeting> <out.json> [gap_s] [--speaker X]``."""
-    speakers = SPEAKERS
-    if len(argv) >= 3 and argv[-2] == "--speaker":
-        speakers = (argv[-1],)
-        argv = argv[:-2]
-    if len(argv) not in (4, 5):
-        print(__doc__, file=sys.stderr)
-        return 2
-    archive_path, meeting, out_path = Path(argv[1]), argv[2], Path(argv[3])
-    gap_s = float(argv[4]) if len(argv) == 5 else DEFAULT_GAP_S
+@click.command()
+@click.argument("archive_path", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.argument("meeting")
+@click.argument("out_path", type=click.Path(dir_okay=False, path_type=Path))
+@click.option("--gap", "gap_s", type=float, default=DEFAULT_GAP_S, show_default=True,
+              help="Silence in seconds that splits a speaker's words into a new utterance.")
+@click.option("--speaker", type=click.Choice(SPEAKERS), default=None,
+              help="Emit this speaker only; all speakers when omitted.")
+def main(archive_path: Path, meeting: str, out_path: Path, gap_s: float, speaker: str | None) -> None:
+    """Write MEETING's utterances from the AMI annotation zip ARCHIVE_PATH to OUT_PATH as JSON."""
+    speakers: tuple[str, ...] = (speaker,) if speaker is not None else SPEAKERS
     utterances: list[Utterance] = []
     with zipfile.ZipFile(archive_path) as archive:
-        for speaker in speakers:
-            utterances.extend(to_utterances(speaker, read_words(archive, meeting, speaker), gap_s))
+        for name in speakers:
+            utterances.extend(to_utterances(name, read_words(archive, meeting, name), gap_s))
     utterances.sort(key=lambda u: (u.start_s, u.speaker))
     payload = [
         {
@@ -105,9 +106,8 @@ def main(argv: list[str]) -> int:
     ]
     out_path.write_text(json.dumps(payload, separators=(",", ":")) + "\n", encoding="utf-8")
     total_words = sum(len(u.words) for u in utterances)
-    print(f"{meeting}: {len(payload)} utterances, {total_words} words -> {out_path}")
-    return 0
+    click.echo(f"{meeting}: {len(payload)} utterances, {total_words} words -> {out_path}")
 
 
 if __name__ == "__main__":
-    raise SystemExit(main(sys.argv))
+    main()

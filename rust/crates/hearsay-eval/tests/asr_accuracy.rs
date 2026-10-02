@@ -1,15 +1,17 @@
 //! Offline transcript accuracy gate (`make wer-eval`): runs the real refine over the labeled corpus,
 //! scores WER and cpWER, and fails on a regression past `shared/eval/baseline-asr.json`.
-//! `HEARSAY_EVAL_ASR=<model>` scores another Parakeet model report-only. Self-skips without audio.
+//! Opt-in (`HEARSAY_WER_EVAL=1`); `HEARSAY_EVAL_ASR=<model>` scores another Parakeet model
+//! report-only. Self-skips without audio or sidecar.
 
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
 use hearsay_attribution::{cpwer, normalize, word_errors};
 use hearsay_eval::{
-    eval_dir, gate, load_corpus, load_utterances, read_baseline, reference_streams, resolve_audio,
-    resolve_sidecar, round4, update_baseline_requested, window, window_s, write_baseline,
-    write_report, Baseline, Channel, GateOutcome, Metrics, RATE_EPSILON, SAMPLE_RATE,
+    eval_dir, gate, load_corpus, load_utterances, opted_in, read_baseline, reference_streams,
+    resolve_audio, resolve_sidecar, round4, update_baseline_requested, window, window_s,
+    write_baseline, write_report, Baseline, Channel, GateOutcome, Metrics, DEFAULT_WINDOW_S,
+    RATE_EPSILON, SAMPLE_RATE,
 };
 use hearsay_inference::{read_them_channel, read_wav_mono_16k, refine_them, ASR_MODEL};
 use serde::Serialize;
@@ -37,6 +39,9 @@ struct AsrReport {
 
 #[test]
 fn asr_accuracy_gate() {
+    if !opted_in("HEARSAY_WER_EVAL", "wer-eval", "wer-eval") {
+        return;
+    }
     let Some(diarize_bin) = resolve_sidecar("HEARSAY_DIARIZE_BIN", "hearsay-diarize") else {
         eprintln!("wer-eval: no hearsay-diarize sidecar (make swift-build); skipping");
         return;
@@ -45,7 +50,7 @@ fn asr_accuracy_gate() {
         .ok()
         .filter(|m| !m.is_empty())
         .unwrap_or_else(|| ASR_MODEL.to_string());
-    let window_s = window_s();
+    let window_s = window_s("HEARSAY_EVAL_MAX_S", DEFAULT_WINDOW_S);
     let corpus = load_corpus();
 
     let mut reports: Vec<AsrReport> = Vec::new();

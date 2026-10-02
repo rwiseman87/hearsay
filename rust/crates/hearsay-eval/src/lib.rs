@@ -10,15 +10,14 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use hearsay_attribution::normalize;
+use hearsay_attribution::{normalize, SpeakerTurn};
 use serde::{Deserialize, Serialize};
 
 /// Sample rate every eval track is scored at.
 pub const SAMPLE_RATE: usize = 16_000;
 
-/// Default evaluation window in seconds (`HEARSAY_EVAL_MAX_S` overrides): long enough to cover the
-/// whole AMI meeting. A shorter window keeps the dev
-/// loop short; the baseline records the window it was measured on and only gates a matching one.
+/// Default evaluation window in seconds (`HEARSAY_EVAL_MAX_S` overrides): the whole AMI meeting.
+/// A baseline records its window and only gates a matching one.
 pub const DEFAULT_WINDOW_S: f64 = 1200.0;
 
 /// Absolute tolerance on WER-style rates, absorbing run-to-run nondeterminism (CoreML and Metal).
@@ -42,7 +41,7 @@ pub struct Corpus {
 #[derive(Deserialize)]
 pub struct Reference {
     pub name: String,
-    /// Absolute, or relative to the output dir (`HEARSAY_OUTPUT_DIR`, default repo `outputs/`).
+    /// Absolute, or relative to the data dir (`HEARSAY_EVAL_DATA_DIR`, default repo `outputs/`).
     pub audio: String,
     /// Mono track to use as-is, or the right (Them) channel of a stereo Hearsay `audio.wav`.
     #[serde(default)]
@@ -69,25 +68,34 @@ pub fn eval_dir() -> PathBuf {
     repo_root().join("shared/eval")
 }
 
-/// Where local audio and models live: `HEARSAY_OUTPUT_DIR`, else the repo `outputs/`.
-pub fn output_dir() -> PathBuf {
-    std::env::var_os("HEARSAY_OUTPUT_DIR")
+/// Where local eval audio and run reports live: `HEARSAY_EVAL_DATA_DIR`, else the repo `outputs/`.
+pub fn data_dir() -> PathBuf {
+    std::env::var_os("HEARSAY_EVAL_DATA_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|| repo_root().join("outputs"))
 }
 
-/// A reference's audio path, resolved against the output dir when relative.
+/// A reference's audio path, resolved against the data dir when relative.
 pub fn resolve_audio(audio: &str) -> PathBuf {
     let path = Path::new(audio);
     if path.is_absolute() {
         path.to_path_buf()
     } else {
-        output_dir().join(path)
+        data_dir().join(path)
     }
 }
 
-/// A Swift sidecar binary: the path in `env_var` if set (and present), else the `make swift-build` (debug) build, then release
-/// under `helper/.build/`. `None` when absent, so a test can skip instead of failing.
+/// Whether the opt-in variable `env_var` is `1`; prints why `label` skips otherwise.
+pub fn opted_in(env_var: &str, label: &str, target: &str) -> bool {
+    let on = std::env::var(env_var).as_deref() == Ok("1");
+    if !on {
+        eprintln!("{label}: opt-in with {env_var}=1 (run `make {target}`); skipping");
+    }
+    on
+}
+
+/// A Swift sidecar binary: the path in `env_var` if set (and present), else the debug, then the
+/// release build under `helper/.build/`. `None` when absent, so a test can skip instead of failing.
 pub fn resolve_sidecar(env_var: &str, name: &str) -> Option<PathBuf> {
     if let Some(bin) = std::env::var_os(env_var) {
         let path = PathBuf::from(bin);
@@ -113,14 +121,13 @@ pub fn load_utterances(transcript: &str) -> Vec<Utterance> {
     serde_json::from_str(&text).unwrap_or_else(|e| panic!("parse {}: {e}", path.display()))
 }
 
-/// The evaluation window in seconds: `HEARSAY_EVAL_MAX_S` (a positive number), else
-/// [`DEFAULT_WINDOW_S`].
-pub fn window_s() -> f64 {
-    std::env::var("HEARSAY_EVAL_MAX_S")
+/// The evaluation window in seconds: `env_var` when it holds a positive number, else `default`.
+pub fn window_s(env_var: &str, default: f64) -> f64 {
+    std::env::var(env_var)
         .ok()
         .and_then(|v| v.parse::<f64>().ok())
         .filter(|v| *v > 0.0)
-        .unwrap_or(DEFAULT_WINDOW_S)
+        .unwrap_or(default)
 }
 
 /// The leading `window_s` seconds of `samples`.
@@ -171,7 +178,8 @@ pub enum GateOutcome {
 
 /// The pure non-regression decision: every `measured` metric must be at most the baseline value plus
 /// `epsilon`. A missing baseline entry or metric fails, so a new reference or metric cannot slip in
-/// ungated. Equal-or-better passes. Separated from all I/O so it is unit-tested without audio.
+/// ungated, and so does a baselined metric a measured reference no longer reports. Equal-or-better
+/// passes. Separated from all I/O so it is unit-tested without audio.
 pub fn gate(
     measured: &BTreeMap<String, Metrics>,
     window_s: f64,
@@ -198,6 +206,9 @@ pub fn gate(
                 )),
                 Some(_) => {}
             }
+        }
+        for metric in base.keys().filter(|m| !metrics.contains_key(*m)) {
+            failures.push(format!("{name}.{metric}: not measured"));
         }
     }
     if failures.is_empty() {
@@ -227,12 +238,12 @@ pub fn round4(value: f64) -> f64 {
     (value * 10_000.0).round() / 10_000.0
 }
 
-/// Write a run report to `<output dir>/eval/<unix seconds>/<kind>.json` and return its path.
+/// Write a run report to `<data dir>/eval/<unix seconds>/<kind>.json` and return its path.
 pub fn write_report(kind: &str, report: &impl Serialize) -> PathBuf {
     let stamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_secs());
-    let dir = output_dir().join("eval").join(stamp.to_string());
+    let dir = data_dir().join("eval").join(stamp.to_string());
     fs::create_dir_all(&dir).unwrap_or_else(|e| panic!("create {}: {e}", dir.display()));
     let path = dir.join(format!("{kind}.json"));
     fs::write(
@@ -246,6 +257,55 @@ pub fn write_report(kind: &str, report: &impl Serialize) -> PathBuf {
 /// Whether `HEARSAY_UPDATE_EVAL_BASELINE=1` asks for the baseline to be rewritten.
 pub fn update_baseline_requested() -> bool {
     std::env::var("HEARSAY_UPDATE_EVAL_BASELINE").as_deref() == Ok("1")
+}
+
+/// The SPEAKER turns of an RTTM file (columns: `SPEAKER file chan start dur NA NA spk ...`).
+pub fn parse_rttm(path: &Path) -> Vec<SpeakerTurn> {
+    let text =
+        fs::read_to_string(path).unwrap_or_else(|e| panic!("read rttm {}: {e}", path.display()));
+    parse_rttm_text(&text)
+}
+
+fn parse_rttm_text(text: &str) -> Vec<SpeakerTurn> {
+    text.lines()
+        .filter_map(|line| {
+            let fields: Vec<&str> = line.split_whitespace().collect();
+            if fields.first() != Some(&"SPEAKER") || fields.len() < 8 {
+                return None;
+            }
+            let start = fields[3].parse::<f64>().ok()?;
+            let dur = fields[4].parse::<f64>().ok()?;
+            Some(SpeakerTurn {
+                speaker: fields[7].to_string(),
+                start_s: start,
+                end_s: start + dur,
+            })
+        })
+        .collect()
+}
+
+/// The most times any block of up to 8 words repeats back to back (1 when nothing repeats) and that
+/// block's length in words: the signature of an ASR repetition loop.
+pub fn max_repeat_run(words: &[String]) -> (usize, usize) {
+    let mut best = (usize::from(!words.is_empty()), 1);
+    for period in 1..=8usize {
+        for start in 0..words.len() {
+            let unit = &words[start..(start + period).min(words.len())];
+            if unit.len() < period {
+                break;
+            }
+            let mut run = 1;
+            while words.get(start + (run + 1) * period - 1).is_some()
+                && words[start + run * period..start + (run + 1) * period] == *unit
+            {
+                run += 1;
+            }
+            if run > best.0 {
+                best = (run, period);
+            }
+        }
+    }
+    best
 }
 
 #[cfg(test)]
@@ -306,6 +366,19 @@ mod tests {
     }
 
     #[test]
+    fn a_baselined_metric_that_was_not_measured_fails() {
+        let mut base = baseline(300.0, 0.2);
+        base.references
+            .get_mut("ref")
+            .unwrap()
+            .insert("cpwer".to_string(), 0.3);
+        assert_eq!(
+            gate(&measured(0.2), 300.0, &base, 0.01),
+            GateOutcome::Failed(vec!["ref.cpwer: not measured".to_string()])
+        );
+    }
+
+    #[test]
     fn a_different_window_is_skipped_not_failed() {
         let base = baseline(300.0, 0.20);
         assert!(matches!(
@@ -349,35 +422,6 @@ mod tests {
         assert_eq!(per_speaker["B"], vec!["second", "one"]);
         assert_eq!(per_speaker.len(), 2);
     }
-}
-
-/// The most times any block of up to 8 words repeats back to back (1 when nothing repeats) and that
-/// block's length in words: the signature of an ASR repetition loop.
-pub fn max_repeat_run(words: &[String]) -> (usize, usize) {
-    let mut best = (usize::from(!words.is_empty()), 1);
-    for period in 1..=8usize {
-        for start in 0..words.len() {
-            let unit = &words[start..(start + period).min(words.len())];
-            if unit.len() < period {
-                break;
-            }
-            let mut run = 1;
-            while words.get(start + (run + 1) * period - 1).is_some()
-                && words[start + run * period..start + (run + 1) * period] == *unit
-            {
-                run += 1;
-            }
-            if run > best.0 {
-                best = (run, period);
-            }
-        }
-    }
-    best
-}
-
-#[cfg(test)]
-mod repeat_tests {
-    use super::*;
 
     fn w(text: &str) -> Vec<String> {
         text.split_whitespace().map(str::to_string).collect()
@@ -395,5 +439,20 @@ mod repeat_tests {
     #[test]
     fn separated_repeats_do_not_count_as_a_run() {
         assert_eq!(max_repeat_run(&w("a b x a b y a b")).0, 1);
+    }
+
+    #[test]
+    fn parse_rttm_keeps_speaker_lines_with_numeric_times() {
+        let text = "SPEAKER m 1 1.5 2.0 <NA> <NA> A <NA> <NA>\n\
+                    ;; comment\n\
+                    SPEAKER m 1 x 2.0 <NA> <NA> B <NA> <NA>\n\
+                    SPEAKER m 1 4.0 0.5 <NA> <NA> B <NA> <NA>\n";
+        let turns = parse_rttm_text(text);
+        assert_eq!(turns.len(), 2);
+        assert_eq!(
+            (turns[0].speaker.as_str(), turns[0].start_s, turns[0].end_s),
+            ("A", 1.5, 3.5)
+        );
+        assert_eq!(turns[1].speaker, "B");
     }
 }

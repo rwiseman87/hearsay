@@ -980,6 +980,7 @@ name = "hearsay-eval"
 version = "0.0.0"
 dependencies = [
  "hearsay-attribution",
+ "hearsay-audio",
  "hearsay-db",
  "hearsay-engine",
  "hearsay-inference",
