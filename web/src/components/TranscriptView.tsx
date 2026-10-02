@@ -24,7 +24,13 @@ import {
   useStopMeeting,
 } from "../api/hooks";
 import { getToken } from "../api/token";
-import type { FolderRead, MeetingRead, PageIdentity, SpeakerRead } from "../api/types";
+import type {
+  FolderRead,
+  MeetingRead,
+  PageIdentity,
+  RefineGapRead,
+  SpeakerRead,
+} from "../api/types";
 import { useTranscript, type TranscriptLine } from "../hooks/useTranscript";
 import { NotesPanel } from "./NotesPanel";
 import { ME_FILTER_KEY, SpeakerPanel } from "./SpeakerPanel";
@@ -94,6 +100,57 @@ function formatTime(seconds: number): string {
     .padStart(2, "0");
   const secs = (whole % 60).toString().padStart(2, "0");
   return `${minutes}:${secs}`;
+}
+
+const MAX_LISTED_GAPS = 5;
+
+// The truncated-refine notice: where the untranscribed audio is, and how to check it by ear.
+function RefineNotice({
+  coverage,
+  gaps,
+  onPlay,
+}: {
+  coverage: number | null;
+  gaps: RefineGapRead[] | null;
+  onPlay: (seconds: number) => void;
+}) {
+  const percent = coverage === null ? null : Math.round(coverage * 100);
+  if (gaps === null) {
+    return (
+      <span className="inactivity-banner__text">
+        Only {percent === null ? "part" : `about ${percent}%`} of the other side&rsquo;s audible audio
+        was transcribed, so part of their transcript may be missing. Refine again to find exactly
+        where any untranscribed stretch is.
+      </span>
+    );
+  }
+  const totalS = Math.round(gaps.reduce((sum, g) => sum + (g.end_s - g.start_s), 0));
+  const listed = gaps.slice(0, MAX_LISTED_GAPS);
+  return (
+    <span className="inactivity-banner__text">
+      {gaps.length === 1
+        ? `One stretch of the other side’s audio (${totalS} s) has sound but no transcript`
+        : `${gaps.length} stretches of the other side’s audio (${totalS} s in total) have sound but no transcript`}
+      {percent === null ? "." : `; about ${percent}% of their audible audio was transcribed.`} Play
+      each one to check: if you hear them speaking, the transcriber missed it and refining again
+      re-reads it from the recording. If it is music, noise or silence, nothing is missing.
+      <span className="refine-gaps">
+        {listed.map((g) => (
+          <button
+            type="button"
+            key={g.start_s}
+            onClick={() => onPlay(g.start_s)}
+            aria-label={`Play the untranscribed stretch at ${formatTime(g.start_s)}`}
+          >
+            ▶ {formatTime(g.start_s)}–{formatTime(g.end_s)} ({Math.round(g.end_s - g.start_s)} s)
+          </button>
+        ))}
+        {gaps.length > listed.length ? (
+          <span>and {gaps.length - listed.length} more</span>
+        ) : null}
+      </span>
+    </span>
+  );
 }
 
 // The meeting's calendar date for the detail header ("Jul 21, 2026").
@@ -864,14 +921,11 @@ export function TranscriptView({ meeting, jumpTo }: Props) {
       </header>
       {!recording && meeting.refine_incomplete ? (
         <div className="inactivity-banner" role="alert">
-          <span className="inactivity-banner__text">
-            The transcriber stopped part-way through this meeting, so the other side&rsquo;s
-            transcript is incomplete
-            {typeof meeting.refine_coverage === "number"
-              ? ` (about ${Math.round(meeting.refine_coverage * 100)}% of the audio was transcribed)`
-              : ""}
-            . The recording is intact — refining again re-reads it from the audio.
-          </span>
+          <RefineNotice
+            coverage={meeting.refine_coverage ?? null}
+            gaps={meeting.refine_gaps ?? null}
+            onPlay={onSeek}
+          />
           <div className="inactivity-banner__actions">
             <button type="button" onClick={onRefine} disabled={rediarize.isPending}>
               {rediarize.isPending ? "Refining…" : "Refine again"}

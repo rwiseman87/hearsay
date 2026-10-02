@@ -145,6 +145,14 @@ progress::-webkit-progress-value {
   min-width: 220px;
 }
 
+.refine-gaps {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+}
+
 .inactivity-banner__actions {
   display: flex;
   gap: 8px;

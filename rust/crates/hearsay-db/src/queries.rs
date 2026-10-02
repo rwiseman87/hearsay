@@ -17,7 +17,8 @@ const KNOWN_VOICEPRINTS_SQL: &str = "SELECT i.display_name, c.centroid FROM clus
      WHERE c.locked = 1 AND c.centroid IS NOT NULL AND c.meeting_id != ?";
 
 use crate::models::{
-    Cluster, Folder, Identity, Meeting, MeetingNotes, MeetingStatus, Segment, Stream, UserNotes,
+    refine_incomplete, Cluster, Folder, Identity, Meeting, MeetingNotes, MeetingStatus, RefineGap,
+    Segment, Stream, UserNotes,
 };
 
 /// A speaker cluster joined to its bound identity's name (for the speakers list). `display_name`
@@ -61,6 +62,7 @@ pub async fn create_meeting(
         dir: dir.to_string(),
         folder_id: None,
         refine_coverage: None,
+        refine_gaps_json: None,
     };
     sqlx::query(
         "INSERT INTO meetings \
@@ -1039,19 +1041,15 @@ pub struct RefinedThemSegment {
 
 /// How much of the Them track the refine transcribed. `fraction` is the share of *audible* time, so
 /// silence does not count against it.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct RefineCoverage {
     pub fraction: f64,
-    pub uncovered_spans: usize,
+    pub gaps: Vec<RefineGap>,
 }
-
-/// Coverage below which a refine counts as truncated. Stated once; the orchestrator warns on it and
-/// the API flags it to the UI.
-pub const MIN_REFINE_COVERAGE: f64 = 0.8;
 
 impl RefineCoverage {
     pub fn is_incomplete(&self) -> bool {
-        self.fraction < MIN_REFINE_COVERAGE
+        refine_incomplete(self.fraction, Some(&self.gaps))
     }
 }
 
@@ -1448,13 +1446,17 @@ pub async fn replace_them_segments(
     }
 
     // Left untouched when the refiner reported no coverage.
-    if let Some(coverage) = result.coverage {
-        sqlx::query("UPDATE meetings SET refine_coverage = ?, updated_at = ? WHERE id = ?")
-            .bind(coverage.fraction)
-            .bind(now)
-            .bind(meeting_id)
-            .execute(&mut *tx)
-            .await?;
+    if let Some(coverage) = &result.coverage {
+        let gaps: Vec<[f64; 2]> = coverage.gaps.iter().map(|g| [g.start_s, g.end_s]).collect();
+        sqlx::query(
+            "UPDATE meetings SET refine_coverage = ?, refine_gaps = ?, updated_at = ? WHERE id = ?",
+        )
+        .bind(coverage.fraction)
+        .bind(serde_json::to_string(&gaps).expect("a list of number pairs serializes"))
+        .bind(now)
+        .bind(meeting_id)
+        .execute(&mut *tx)
+        .await?;
     }
 
     tx.commit().await?;

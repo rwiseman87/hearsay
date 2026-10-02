@@ -422,7 +422,7 @@ async fn run_auto_refine(
     match refiner.refine(&audio).await {
         Ok(result) => {
             let count = result.segments.len();
-            report_coverage(meeting, result.coverage);
+            report_coverage(meeting, result.coverage.as_ref());
             match queries::replace_them_segments(pool, meeting.id, &result, threshold).await {
                 Ok(()) => tracing::info!(
                     meeting = %meeting.id,
@@ -441,13 +441,17 @@ async fn run_auto_refine(
 
 /// Warn when the refine came back short; without this a truncated transcript ships
 /// looking complete. `replace_them_segments` persists the same number for the UI.
-fn report_coverage(meeting: &Meeting, coverage: Option<queries::RefineCoverage>) {
+fn report_coverage(meeting: &Meeting, coverage: Option<&queries::RefineCoverage>) {
     let Some(coverage) = coverage else { return };
     if coverage.is_incomplete() {
         tracing::warn!(
             meeting = %meeting.id,
             coverage = format!("{:.0}%", coverage.fraction * 100.0),
-            uncovered_spans = coverage.uncovered_spans,
+            gaps = coverage.gaps.len(),
+            gap_s = format!(
+                "{:.0}",
+                coverage.gaps.iter().map(|g| g.end_s - g.start_s).sum::<f64>()
+            ),
             "refine transcribed only part of the audible track; transcript is incomplete"
         );
     }
@@ -768,7 +772,7 @@ impl LiveEngine for Orchestrator {
                 .expect("ANE gate semaphore is never closed");
             refiner.refine(&audio).await?
         };
-        report_coverage(&meeting, result.coverage);
+        report_coverage(&meeting, result.coverage.as_ref());
         queries::replace_them_segments(&self.pool, meeting_id, &result, threshold)
             .await
             .map_err(OrchestratorError::from)?;

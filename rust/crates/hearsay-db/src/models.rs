@@ -52,6 +52,10 @@ pub struct Meeting {
     /// when never refined. A low value means the transcript is truncated.
     #[sqlx(default)]
     pub refine_coverage: Option<f64>,
+    /// JSON `[[start_s, end_s], ...]` of the refine's untranscribed audible gaps; `None` when never
+    /// refined or refined before gaps were recorded. Read it with [`Meeting::refine_gaps`].
+    #[sqlx(default, rename = "refine_gaps")]
+    pub refine_gaps_json: Option<String>,
 }
 
 impl Meeting {
@@ -65,6 +69,39 @@ impl Meeting {
             PathBuf::from(&self.dir)
         }
     }
+
+    /// The last refine's untranscribed gaps; `None` when not recorded (never refined, or legacy).
+    pub fn refine_gaps(&self) -> Option<Vec<RefineGap>> {
+        let pairs: Vec<[f64; 2]> = serde_json::from_str(self.refine_gaps_json.as_deref()?).ok()?;
+        Some(
+            pairs
+                .into_iter()
+                .map(|[start_s, end_s]| RefineGap { start_s, end_s })
+                .collect(),
+        )
+    }
+
+    /// Whether the last refine looks truncated; see [`refine_incomplete`].
+    pub fn refine_incomplete(&self) -> bool {
+        self.refine_coverage
+            .is_some_and(|f| refine_incomplete(f, self.refine_gaps().as_deref()))
+    }
+}
+
+/// Coverage below which a refine may be truncated.
+pub const MIN_REFINE_COVERAGE: f64 = 0.8;
+
+/// An audible stretch of at least 10 s that the refine left untranscribed.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RefineGap {
+    pub start_s: f64,
+    pub end_s: f64,
+}
+
+/// Truncated means low coverage plus at least one real gap; scattered short misses (noise between
+/// phrases) lower coverage without losing speech. Legacy rows with no recorded gaps use coverage alone.
+pub fn refine_incomplete(fraction: f64, gaps: Option<&[RefineGap]>) -> bool {
+    fraction < MIN_REFINE_COVERAGE && gaps.is_none_or(|g| !g.is_empty())
 }
 
 /// A user-facing organizational folder for meetings. Folders nest via `parent_id` (`None` = a root

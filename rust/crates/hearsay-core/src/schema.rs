@@ -75,13 +75,32 @@ pub struct MeetingRead {
     /// Transcribed share (0.0-1.0) of the remote track's audible time at the last refine, or `null`
     /// if this meeting has never been refined.
     pub refine_coverage: Option<f64>,
-    /// `true` when the last refine came back too short to trust as complete, so the transcript is
-    /// truncated and worth re-refining. `false` when healthy or never refined.
+    /// `true` when the last refine looks truncated: coverage under 80% plus at least one gap (or, for
+    /// a refine that predates gap recording, coverage alone). `false` when healthy or never refined.
     pub refine_incomplete: bool,
+    /// Audible stretches of at least 10 s that the last refine left untranscribed, in meeting time.
+    /// `null` when never refined or refined before gaps were recorded.
+    pub refine_gaps: Option<Vec<RefineGapRead>>,
+}
+
+/// An untranscribed audible stretch of the remote track, in seconds from the meeting start.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, ToSchema)]
+pub struct RefineGapRead {
+    pub start_s: f64,
+    pub end_s: f64,
 }
 
 impl From<Meeting> for MeetingRead {
     fn from(m: Meeting) -> Self {
+        let refine_incomplete = m.refine_incomplete();
+        let refine_gaps = m.refine_gaps().map(|gaps| {
+            gaps.into_iter()
+                .map(|g| RefineGapRead {
+                    start_s: g.start_s,
+                    end_s: g.end_s,
+                })
+                .collect()
+        });
         MeetingRead {
             id: m.id,
             title: m.title,
@@ -93,9 +112,8 @@ impl From<Meeting> for MeetingRead {
             created_at: m.created_at,
             updated_at: m.updated_at,
             refine_coverage: m.refine_coverage,
-            refine_incomplete: m
-                .refine_coverage
-                .is_some_and(|f| f < hearsay_db::queries::MIN_REFINE_COVERAGE),
+            refine_incomplete,
+            refine_gaps,
         }
     }
 }

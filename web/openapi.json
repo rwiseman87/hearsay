@@ -2442,9 +2442,19 @@
             "format": "double",
             "description": "Transcribed share (0.0-1.0) of the remote track's audible time at the last refine, or `null`\nif this meeting has never been refined."
           },
+          "refine_gaps": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/RefineGapRead"
+            },
+            "description": "Audible stretches of at least 10 s that the last refine left untranscribed, in meeting time.\n`null` when never refined or refined before gaps were recorded."
+          },
           "refine_incomplete": {
             "type": "boolean",
-            "description": "`true` when the last refine came back too short to trust as complete, so the transcript is\ntruncated and worth re-refining. `false` when healthy or never refined."
+            "description": "`true` when the last refine looks truncated: coverage under 80% plus at least one gap (or, for\na refine that predates gap recording, coverage alone). `false` when healthy or never refined."
           },
           "started_at": {
             "type": "string",
@@ -2737,9 +2747,19 @@
                   "format": "double",
                   "description": "Transcribed share (0.0-1.0) of the remote track's audible time at the last refine, or `null`\nif this meeting has never been refined."
                 },
+                "refine_gaps": {
+                  "type": [
+                    "array",
+                    "null"
+                  ],
+                  "items": {
+                    "$ref": "#/components/schemas/RefineGapRead"
+                  },
+                  "description": "Audible stretches of at least 10 s that the last refine left untranscribed, in meeting time.\n`null` when never refined or refined before gaps were recorded."
+                },
                 "refine_incomplete": {
                   "type": "boolean",
-                  "description": "`true` when the last refine came back too short to trust as complete, so the transcript is\ntruncated and worth re-refining. `false` when healthy or never refined."
+                  "description": "`true` when the last refine looks truncated: coverage under 80% plus at least one gap (or, for\na refine that predates gap recording, coverage alone). `false` when healthy or never refined."
                 },
                 "started_at": {
                   "type": "string",
@@ -3147,6 +3167,24 @@
           },
           "record": {
             "type": "boolean"
+          }
+        }
+      },
+      "RefineGapRead": {
+        "type": "object",
+        "description": "An untranscribed audible stretch of the remote track, in seconds from the meeting start.",
+        "required": [
+          "start_s",
+          "end_s"
+        ],
+        "properties": {
+          "end_s": {
+            "type": "number",
+            "format": "double"
+          },
+          "start_s": {
+            "type": "number",
+            "format": "double"
           }
         }
       },

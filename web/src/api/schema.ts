@@ -1218,8 +1218,13 @@ export interface components {
              */
             refine_coverage?: number | null;
             /**
-             * @description `true` when the last refine came back too short to trust as complete, so the transcript is
-             *     truncated and worth re-refining. `false` when healthy or never refined.
+             * @description Audible stretches of at least 10 s that the last refine left untranscribed, in meeting time.
+             *     `null` when never refined or refined before gaps were recorded.
+             */
+            refine_gaps?: components["schemas"]["RefineGapRead"][] | null;
+            /**
+             * @description `true` when the last refine looks truncated: coverage under 80% plus at least one gap (or, for
+             *     a refine that predates gap recording, coverage alone). `false` when healthy or never refined.
              */
             refine_incomplete: boolean;
             /** Format: date-time */
@@ -1348,8 +1353,13 @@ export interface components {
                  */
                 refine_coverage?: number | null;
                 /**
-                 * @description `true` when the last refine came back too short to trust as complete, so the transcript is
-                 *     truncated and worth re-refining. `false` when healthy or never refined.
+                 * @description Audible stretches of at least 10 s that the last refine left untranscribed, in meeting time.
+                 *     `null` when never refined or refined before gaps were recorded.
+                 */
+                refine_gaps?: components["schemas"]["RefineGapRead"][] | null;
+                /**
+                 * @description `true` when the last refine looks truncated: coverage under 80% plus at least one gap (or, for
+                 *     a refine that predates gap recording, coverage alone). `false` when healthy or never refined.
                  */
                 refine_incomplete: boolean;
                 /** Format: date-time */
@@ -1512,6 +1522,13 @@ export interface components {
             /** Format: int32 */
             inactivity_prompt_minutes: number;
             record: boolean;
+        };
+        /** @description An untranscribed audible stretch of the remote track, in seconds from the meeting start. */
+        RefineGapRead: {
+            /** Format: double */
+            end_s: number;
+            /** Format: double */
+            start_s: number;
         };
         /**
          * @description A backfill signal (not a transcript line): the broadcast buffer dropped events for a lagged

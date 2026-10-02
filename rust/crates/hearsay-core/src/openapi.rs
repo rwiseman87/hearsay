@@ -10,11 +10,11 @@ use crate::schema::{
     FolderUpdate, IdentityRead, IdentityRename, LevelEvent, MeetingCounts, MeetingCreate,
     MeetingFolderAssign, MeetingNotesRead, MeetingRead, MeetingSort, MeetingStatus, MeetingUpdate,
     ModelCatalog, ModelSettings, ModelsInfo, NotesEdit, PermissionsInfo, PromptEvent,
-    RecordingSettings, ResyncEvent, SearchHit, SegmentEdit, SegmentRead, SegmentSpeakerAssign,
-    SettingsRead, SetupRequest, SetupState, SetupStatus, SetupStep, SetupStepStatus, SpeakerMerge,
-    SpeakerRead, SpeakerRename, SpeakerSettings, StatusEvent, StatusInfo, StorageInfo,
-    StorageSettings, Stream, TranscriptEvent, UserNotesRead, UserNotesWrite, VoiceprintRead,
-    VoiceprintSampleRead,
+    RecordingSettings, RefineGapRead, ResyncEvent, SearchHit, SegmentEdit, SegmentRead,
+    SegmentSpeakerAssign, SettingsRead, SetupRequest, SetupState, SetupStatus, SetupStep,
+    SetupStepStatus, SpeakerMerge, SpeakerRead, SpeakerRename, SpeakerSettings, StatusEvent,
+    StatusInfo, StorageInfo, StorageSettings, Stream, TranscriptEvent, UserNotesRead,
+    UserNotesWrite, VoiceprintRead, VoiceprintSampleRead,
 };
 
 /// Registers the session-token scheme so an API console can offer an "Authorize" box, and so the
@@ -127,6 +127,7 @@ stream with `Range` support), and `/`, which serves the UI with the token inject
     ),
     components(schemas(
         MeetingRead,
+        RefineGapRead,
         MeetingStatus,
         MeetingSort,
         MeetingCounts,

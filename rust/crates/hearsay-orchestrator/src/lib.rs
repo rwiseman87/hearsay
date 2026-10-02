@@ -24,6 +24,7 @@ pub mod testing;
 pub use aec::{AecConfig, EchoCanceller};
 pub use echo_dedup::EchoDedupConfig;
 pub use error::OrchestratorError;
+pub use hearsay_db::models::RefineGap;
 pub use hearsay_db::queries::{NotesResult, RefineCoverage, RefineResult, RefinedThemSegment};
 pub use markdown::write_meeting_files;
 pub use orchestrator::{Defaults, Orchestrator};

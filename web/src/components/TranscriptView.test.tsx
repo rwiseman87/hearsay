@@ -121,12 +121,34 @@ beforeEach(() => {
 });
 
 describe("TranscriptView truncated-refine notice", () => {
-  it("warns with the coverage percentage and offers a re-refine", async () => {
-    renderView({ refine_incomplete: true, refine_coverage: 0.29 });
+  it("names each untranscribed stretch with its length and a way to play it", async () => {
+    renderView({
+      refine_incomplete: true,
+      refine_coverage: 0.62,
+      refine_gaps: [
+        { start_s: 49, end_s: 72 },
+        { start_s: 600, end_s: 615 },
+      ],
+    });
 
     const notice = await screen.findByRole("alert");
-    expect(notice.textContent).toContain("29%");
+    expect(notice.textContent).toContain("2 stretches");
+    expect(notice.textContent).toContain("38 s in total");
+    expect(notice.textContent).toContain("62%");
+    expect(notice.textContent).toContain("If it is music, noise or silence, nothing is missing");
+    expect(
+      screen.getByRole("button", { name: "Play the untranscribed stretch at 00:49" }).textContent,
+    ).toContain("00:49–01:12 (23 s)");
     expect(screen.getByRole("button", { name: "Refine again" })).toBeTruthy();
+  });
+
+  it("asks for a re-refine to locate gaps when an older refine recorded none", async () => {
+    renderView({ refine_incomplete: true, refine_coverage: 0.29, refine_gaps: null });
+
+    const notice = await screen.findByRole("alert");
+    expect(notice.textContent).toContain("about 29%");
+    expect(notice.textContent).toContain("Refine again to find exactly where");
+    expect(screen.queryByRole("button", { name: /Play the untranscribed stretch/ })).toBeNull();
   });
 
   it("stays hidden for a healthy refine", async () => {

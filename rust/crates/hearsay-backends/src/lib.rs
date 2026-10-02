@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use sqlx::SqlitePool;
 
-use hearsay_orchestrator::{Defaults, RefineCoverage, RefineResult, RefinedThemSegment};
+use hearsay_orchestrator::{Defaults, RefineCoverage, RefineGap, RefineResult, RefinedThemSegment};
 
 pub mod archive;
 mod mac;
@@ -77,7 +77,14 @@ pub(crate) fn map_refine_output(output: hearsay_inference::RefineOutput) -> Refi
         centroids: output.centroids,
         coverage: output.coverage.map(|c| RefineCoverage {
             fraction: c.fraction(),
-            uncovered_spans: c.uncovered.len(),
+            gaps: c
+                .uncovered
+                .iter()
+                .map(|r| RefineGap {
+                    start_s: r.start,
+                    end_s: r.end,
+                })
+                .collect(),
         }),
     }
 }

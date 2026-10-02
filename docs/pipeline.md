@@ -210,9 +210,13 @@ drive the same `LiveEngine::rediarize` implementation. The refine:
   merges consecutive words in the same turn into a segment, so the transcript follows speaker
   changes; `replace_them_segments` swaps the live Them segments and clusters for the refined,
   speaker-attributed segments in a single transaction (Me is untouched),
-- records what fraction of the *audible* Them track ended up transcribed (audible-vs-transcribed seconds). Below 80% the meeting is
-  flagged `refine_incomplete`, the core logs a warning, and the transcript view offers a re-refine —
-  so a truncated decode is visible instead of passing as a quiet meeting,
+- records what fraction of the *audible* Them track (one-second bins above an RMS of 0.005) ended up
+  transcribed, plus each gap: an audible run of at least 10 s with no word. A meeting is flagged
+  `refine_incomplete` only when coverage is below 80% *and* there is at least one gap, because
+  scattered one- to three-second misses (pauses, noise between phrases) lower coverage on a quiet
+  far end without losing speech. A refine recorded before gaps were stored falls back to coverage
+  alone. When flagged, the core logs a warning and the transcript view lists each gap with its
+  length and a play button, so the user can hear whether it holds speech before re-refining,
 - carries manual renames forward by voting each locked name onto the turn ordinal its old segments
   most overlap, so a re-diarize never drops a manual binding (per-line reassignments, being
   segment-level, are rebuilt only at the cluster level — like manual text edits, a refine discards

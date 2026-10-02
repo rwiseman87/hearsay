@@ -5,6 +5,7 @@ import type { components } from "./schema";
 type Schemas = components["schemas"];
 
 export type MeetingRead = Schemas["MeetingRead"];
+export type RefineGapRead = Schemas["RefineGapRead"];
 export type MeetingCreate = Schemas["MeetingCreate"];
 export type FolderRead = Schemas["FolderRead"];
 export type FolderCreate = Schemas["FolderCreate"];
