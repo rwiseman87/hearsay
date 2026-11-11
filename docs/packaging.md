@@ -84,29 +84,45 @@ Ad-hoc signing is configured by `bundle.macOS.signingIdentity: "-"` in
 
 ## Release pipeline
 
-A release is a promotion, not a build. `.github/workflows/ci.yml` builds the DMG on every merge to
-`main`, stamped with the next patch version off the last tag, and keeps it for 30 days as the
-`hearsay-macos-dmg` workflow artifact. `.github/workflows/promote.yml` is a manual
-`workflow_dispatch`: it takes one of those runs (the newest successful one on `main` by default),
-downloads the artifact, verifies its checksum, and attaches it plus its `.sha256` sidecar to a
-**draft** GitHub Release tagged at the promoted commit. The published DMG is byte-for-byte the one
-CI built — nothing is rebuilt and nothing is re-stamped. Publishing the draft is a manual click, so
-the notes and the artifact get a look first; the static half of the notes is
-`.github/release-notes-macos.md`.
+`.github/workflows/ci.yml` runs `make ci` and `make e2e` on pull requests and pushes to `main`.
+These runs do not build installers. `.github/workflows/release.yml` builds only when a `vX.Y.Z`
+tag is pushed, and rejects tags whose commit is not in `main` history.
 
-For a minor or major release, run `ci` from the Actions tab with the `bump` input set. That produces
-an artifact at the chosen version, which promotes the same way.
+To release a chosen commit already on `main`, choose its version and push that specific tag
+(replace the example version and commit):
 
-A merge does not re-run the gate its pull request already passed. The `triage` job skips it when the
-merge commit and the merged branch have the same tree — so the pull-request run tested exactly what
-landed — and when nothing in the cargo cache key changed. Anything that moves that key still runs the
-gate on `main`, because a run there is the only thing that writes a cache the next pull request can
-read: Actions caches are readable from the branch that wrote them and from the default branch, never
-sideways between pull requests. The same rule is why the installer is built on `main` and not on the
-pull request.
+```sh
+git tag -a v0.2.0 <commit> -m "Hearsay 0.2.0"
+git push origin refs/tags/v0.2.0
+```
 
-The build environment is pinned by `.github/actions/mac-build-env`, shared by the gate and the
-installer build (`promote` needs none of it — it moves a file):
+The release workflow runs both gates on the committed checkout, stamps the tag's version, then
+builds and validates the DMG. Checks run before stamping because the committed OpenAPI includes
+the placeholder version. The DMG and its SHA256 sidecar are attached to a **draft** release on the
+existing tag. Review the installer and notes, then publish the draft from GitHub Releases. The
+static half of the notes lives in `.github/release-notes-macos.md`.
+
+```mermaid
+flowchart LR
+    A[PR or main push] --> B[make ci + make e2e]
+    C[Push version tag] --> D[Validate tag and main ancestry]
+    D --> E[make ci + make e2e]
+    E --> F[Stamp version and build DMG]
+    F --> G[Draft release with checksum]
+    G --> H[Review and publish]
+```
+
+For transient failures, re-run the failed workflow at the same tag. If source changes are needed,
+fix them on `main` and use a new version tag; never delete or move a release tag. If a failed asset
+upload leaves a partial draft, inspect it and delete only that draft before retrying, leaving the
+tag untouched. Existing releases are never overwritten automatically. Packaging failures are
+first discovered at tag time rather than on routine main pushes.
+
+Configure repository rules to require the `gate` check on `main` and restrict creation, deletion,
+and updates of `v*` tags to maintainers. The workflow validates ancestry but does not configure
+those repository rules.
+
+The build environment is pinned by `.github/actions/mac-build-env`, shared by CI and releases:
 
 | Pin | Value | Why |
 |---|---|---|
@@ -130,7 +146,13 @@ restore does not preserve.
 
 Every action used is GitHub-owned (`actions/*`, MIT) and pinned to a full commit SHA, so no third party
 can change what runs in a build. `persist-credentials: false` on checkout keeps `GITHUB_TOKEN` out of
-`.git/config`: nothing in either workflow pushes, and the promote step passes `GH_TOKEN` explicitly.
+`.git/config`: neither workflow pushes commits or tags, and release API steps pass `GH_TOKEN` explicitly.
+Only the release job has `contents: write` permission.
+
+Main runs seed the gate cache that pull requests can restore. Releases keep a separate cargo cache;
+[GitHub's cache scope](https://docs.github.com/en/actions/reference/workflows-and-actions/dependency-caching)
+prevents one tag from restoring another tag's cache. Expect cold release-profile compilation on a
+new tag; shared tools and SwiftPM dependencies can still restore from main.
 
 Artifacts stay unsigned and un-notarized — the same posture as a local `make dmg`, so recipients still
 clear the quarantine flag as below.

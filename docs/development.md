@@ -149,8 +149,9 @@ cargo run --release -p hearsay-audio --example repair_header -- <recordings-dir>
 ## Testing
 
 The suite runs from the Makefile -- no timers, no git hooks. `make ci` is the fast deterministic gate
-and runs in GitHub Actions on every push and pull request; the model/hardware probes, coverage, and the
-aggregate run are separate targets, on demand. The full test-suite reference -- every target and what it
+and runs in GitHub Actions on main pushes and pull requests, followed by `make e2e`. Version-tag
+releases run both before packaging; model/hardware probes, coverage, and the aggregate run remain
+separate targets, on demand. The full test-suite reference -- every target and what it
 tests, and the suite by layer -- is [testing.md](testing.md).
 
 ```sh

@@ -134,9 +134,9 @@ The `Makefile` is the task runner and `make ci` is the gate — run it before a 
 Actions runs the same target on every push and pull request: clippy with warnings denied, rustfmt, the
 Swift codec self-test, `cargo test`, the Tauri shell's lint and tests, codegen and app-version drift
 checks, dependency-advisory and license audits, and the web gate. `make e2e` runs the browser suite
-separately, on demand. Every merge to `main` also builds the macOS DMG; the `promote` workflow
-publishes a chosen one as a draft release without rebuilding it (see
-[packaging.md](docs/packaging.md)). Full conventions are in [CLAUDE.md](CLAUDE.md).
+separately, and GitHub Actions enforces both targets on PRs and main pushes. Pushing a `vX.Y.Z`
+tag for a commit on `main` runs the gates, builds the macOS DMG at that version, and creates a draft
+release for review (see [packaging.md](docs/packaging.md)). Full conventions are in [CLAUDE.md](CLAUDE.md).
 
 ## License
 

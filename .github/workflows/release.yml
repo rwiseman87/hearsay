@@ -1,0 +1,126 @@
+name: release
+
+on:
+  push:
+    tags: ['v*']
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    runs-on: macos-26
+    timeout-minutes: 210
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Validate the release tag
+        id: version
+        env:
+          TAG: ${{ github.ref_name }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+            echo "::error::release tags must be vX.Y.Z"
+            exit 1
+          }
+          sha="$(git rev-parse "refs/tags/$TAG^{commit}")"
+          test "$sha" = "$(git rev-parse HEAD)"
+          git merge-base --is-ancestor "$sha" origin/main || {
+            echo "::error::release commit is not on main"
+            exit 1
+          }
+          # API errors must fail closed rather than look like a missing release.
+          releases="$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases" --jq '.[].tag_name')"
+          if grep -Fxq "$TAG" <<< "$releases"; then
+            echo "::error::a release for $TAG already exists; inspect it before retrying"
+            exit 1
+          fi
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+
+      - uses: ./.github/actions/mac-build-env
+        with:
+          cache-key: release
+
+      # Validate committed codegen before stamping the build-only version.
+      - run: make ci
+
+      - name: Install the browser
+        working-directory: web
+        run: npx playwright install chromium
+
+      - run: make e2e
+
+      - name: Stamp the tag version
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: make stamp-version "VERSION=$VERSION"
+
+      - name: Build the DMG
+        run: make dmg
+
+      - name: Checksum the DMG
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          dir="web/src-tauri/target/release/bundle/dmg"
+          base="Hearsay_${VERSION}_aarch64.dmg"
+          test -f "$dir/$base"
+          hdiutil imageinfo "$dir/$base" > /dev/null
+          ( cd "$dir" && shasum -a 256 "$base" > "$base.sha256" )
+
+      - name: Create the draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          dir="web/src-tauri/target/release/bundle/dmg"
+          base="Hearsay_${VERSION}_aarch64.dmg"
+          prev=""
+          seen_current=false
+          while IFS= read -r candidate; do
+            if [ "$candidate" = "$TAG" ]; then
+              seen_current=true
+            elif [ "$seen_current" = true ] && [[ "$candidate" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              prev="$candidate"
+              break
+            fi
+          done < <(git tag --merged HEAD --list 'v*' --sort=-v:refname)
+          notes="$RUNNER_TEMP/notes.md"
+          {
+            printf 'Hearsay %s -- local-first meeting transcriber for macOS.\n\n' "$VERSION"
+            printf 'Requires an Apple Silicon Mac on macOS 14.4 or later.\n'
+            cat .github/release-notes-macos.md
+            printf '\n## Checksum\n\n```\n%s\n```\n' "$(cat "$dir/$base.sha256")"
+            if [ -n "$prev" ]; then
+              printf '\n## Changes since %s\n\n' "$prev"
+              git log --pretty='- %s' "$prev..HEAD"
+            fi
+          } > "$notes"
+          gh release create "$TAG" --verify-tag --draft \
+            --title "Hearsay $VERSION" --notes-file "$notes" \
+            "$dir/$base" "$dir/$base.sha256"
+
+      - name: Upload browser failure reports
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: browser-failure-reports
+          path: |
+            outputs/e2e/playwright-report
+            outputs/e2e/test-results
+          if-no-files-found: ignore
+          retention-days: 7

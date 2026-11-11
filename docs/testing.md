@@ -1,7 +1,8 @@
 # Test suite
 
 Hearsay's tests run **from the Makefile** — no timers, no git hooks. `make ci` also runs in GitHub
-Actions on every push and pull request; everything else is on demand. Rust is the source of truth for
+Actions on main pushes and pull requests, followed by the separate `make e2e` browser gate.
+Version-tag releases run both gates before packaging; model/hardware evaluations remain on demand. Rust is the source of truth for
 the API + IPC contract, and the tests consume that contract rather than re-implementing it. There are
 two tiers:
 

@@ -191,7 +191,7 @@ ci: lint test tauri-test web-ci codegen-check version-check audit licenses ## Fu
 
 ##@ On-demand evals
 
-# Nothing below is automatic (docs/testing.md): model/hardware probes, evals, coverage and e2e.
+# Model/hardware probes, evals and coverage are opt-in; CI also runs the separate e2e target.
 probes: ## Model/hardware tests (the #[ignore]d notes probes); needs the models + ANE/GPU
 	cargo test --manifest-path $(RUST_MANIFEST) -p hearsay-notes --features $(NOTES_FEATURES) -- --ignored
 
